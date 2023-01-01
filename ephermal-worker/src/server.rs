@@ -3,6 +3,8 @@ use std::str::FromStr;
 use hyper::header::{self, HeaderName};
 use hyper::{Body, Request, Response};
 use mlua::LuaSerdeExt;
+use tokio::runtime::Handle;
+use tokio::task;
 
 use crate::runtime::module::LuaModule;
 use crate::runtime::request::LuaRequest;
@@ -25,9 +27,29 @@ macro_rules! lua_check {
 
 /// Constructs a lua runtime and runs the proper http handler per reuqest.
 pub async fn http_handler(request: Request<Body>) -> anyhow::Result<Response<Body>> {
+    let local = task::LocalSet::new();
+
+    task::block_in_place(move || {
+        Handle::current().block_on(async {
+            local
+                .run_until(async move {
+                    task::spawn_local(async move { lua_handler(request).await })
+                        .await
+                        .unwrap()
+                })
+                .await
+        })
+    })
+}
+
+/// Lua request handler.
+async fn lua_handler(request: Request<Body>) -> anyhow::Result<Response<Body>> {
     let lua = lua_check!(EphermalRuntime::new());
 
-    lua_check!(lua.set_module_from_source(LuaModule::new("test.lua", include_str!("test.lua"))));
+    lua_check!(
+        lua.set_module_from_source(LuaModule::new("test.lua", include_str!("test.lua")))
+            .await
+    );
 
     // Create a lua userdata request object based on the hyper request.
     let lua_request = LuaRequest::new(request).await;

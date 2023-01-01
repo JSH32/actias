@@ -97,8 +97,8 @@ impl EphermalRuntime {
     }
 
     /// Set a module from a [`LuaModule`].
-    pub fn set_module_from_source(&self, module: LuaModule) -> mlua::Result<()> {
-        self.set_module(&module.name, self.load(&module).call(())?)?;
+    pub async fn set_module_from_source(&self, module: LuaModule) -> mlua::Result<()> {
+        self.set_module(&module.name, self.load(&module).call_async(()).await?)?;
 
         Ok(())
     }
