@@ -1,3 +1,4 @@
+mod extensions;
 mod runtime;
 mod server;
 

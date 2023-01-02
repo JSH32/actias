@@ -1,8 +1,8 @@
 add_event_listener("fetch", function(request)
-    local hi = request.body:text()
+    local response = http.make_request({
+        uri = "https://api.waifu.pics/nsfw/waifu",
+        method = "GET",
+    })
 
-    return {
-        status_code = 200,
-        body = request.version,
-    }
+    return response
 end)

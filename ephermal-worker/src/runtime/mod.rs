@@ -1,10 +1,10 @@
-pub mod module;
-pub mod request;
-pub mod response;
+pub mod extension;
 
-use self::module::LuaModule;
-use mlua::{Lua, LuaSerdeExt, Table};
-use std::ops::Deref;
+use crate::runtime::extension::standard_extensions::JsonExtension;
+
+use self::extension::LuaExtension;
+use mlua::{AsChunk, Lua, Table};
+use std::{borrow::Cow, ops::Deref};
 use tracing::trace;
 
 /// Lua runtime with ephermal specific methods.
@@ -28,28 +28,6 @@ impl EphermalRuntime {
         )?);
 
         lua.sandbox(true)?;
-
-        // Json operations for serializing and deserializing lua values.
-        let json_methods = lua.create_table()?;
-        json_methods.set(
-            "stringify",
-            lua.create_function(|_lua, value: mlua::Value| {
-                Ok(serde_json::to_string(&value)
-                    .map_err(|e| mlua::Error::SerializeError(e.to_string()))?)
-            })?,
-        )?;
-
-        json_methods.set(
-            "parse",
-            lua.create_function(|lua, string: mlua::String| {
-                Ok(lua.to_value(
-                    &serde_json::from_str::<serde_json::Value>(string.to_str()?)
-                        .map_err(|e| mlua::Error::DeserializeError(e.to_string()))?,
-                )?)
-            })?,
-        )?;
-
-        lua.globals().set("json", json_methods.clone())?;
 
         // Function to add listener to registry
         // All added listeners are prefixed with `_listener`
@@ -79,10 +57,32 @@ impl EphermalRuntime {
         trace!("Initializing module registry");
         lua.set_named_registry_value("module_registry", lua.create_table()?)?;
 
-        // Now we can set everything in the registry
-        lua.set_module("json", mlua::Value::Table(json_methods))?;
+        lua.register_extensions(&[&JsonExtension, &crate::extensions::http::HttpExtension])?;
 
         Ok(lua)
+    }
+
+    /// Register an extension into the runtime.
+    pub fn register_extensions(&self, extensions: &[&dyn LuaExtension]) -> mlua::Result<()> {
+        for extension in extensions {
+            let info = extension.extension_info();
+
+            trace!(
+                name = info.name,
+                description = info.description,
+                "Registering extension"
+            );
+
+            let extension = extension.create_extension(&self.0)?;
+            self.set_module(&info.name, extension.clone())?;
+
+            // Register extension as a global
+            if info.default {
+                self.globals().set(info.name, extension)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Set a module from an object.
@@ -91,7 +91,7 @@ impl EphermalRuntime {
         registry.set(key, value)?;
         self.set_named_registry_value("module_registry", registry)?;
 
-        trace!(name = key, "Registered lua module");
+        trace!(module_name = key, "Registered to module registry");
 
         Ok(())
     }
@@ -101,5 +101,32 @@ impl EphermalRuntime {
         self.set_module(&module.name, self.load(&module).call_async(()).await?)?;
 
         Ok(())
+    }
+}
+
+/// Lua module.
+pub struct LuaModule {
+    /// Name or path of the module.
+    pub name: String,
+    /// Source code of the module.
+    pub source: String,
+}
+
+impl LuaModule {
+    pub fn new(name: &str, source: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            source: source.to_owned(),
+        }
+    }
+}
+
+impl AsChunk<'_> for LuaModule {
+    fn source(&self) -> std::io::Result<std::borrow::Cow<[u8]>> {
+        Ok(Cow::Owned(self.source.as_bytes().to_vec()))
+    }
+
+    fn name(&self) -> Option<String> {
+        Some(self.name.clone())
     }
 }
