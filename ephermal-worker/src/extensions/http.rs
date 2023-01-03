@@ -1,8 +1,9 @@
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 use hyper::{
+    client::{self, HttpConnector},
     header::HeaderName,
     http::{self, uri::InvalidUri},
-    Client, Version,
+    Body, Client, Version,
 };
 use hyper_tls::HttpsConnector;
 use mlua::{ExternalResult, LuaSerdeExt, UserData};
@@ -23,6 +24,10 @@ impl LuaExtension for HttpExtension {
     }
 
     fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value> {
+        lua.set_app_data::<Client<HttpsConnector<HttpConnector>, Body>>(
+            Client::builder().build(HttpsConnector::new()),
+        );
+
         // Http request method
         let http = lua.create_table()?;
         http.set(
@@ -43,15 +48,11 @@ impl LuaExtension for HttpExtension {
                     "Making request to {}", hyper_uri.to_lua_err()?.to_string()
                 );
 
-                let response = Response::new(
-                    Client::builder()
-                        .build(HttpsConnector::new())
-                        .request(request?)
-                        .await
-                        .to_lua_err()?,
-                )
-                .await?;
+                let client = lua
+                    .app_data_ref::<Client<HttpsConnector<HttpConnector>, Body>>()
+                    .unwrap();
 
+                let response = Response::new(client.request(request?).await.to_lua_err()?).await?;
                 Ok(lua.to_value(&response)?)
             })?,
         )?;
@@ -59,10 +60,6 @@ impl LuaExtension for HttpExtension {
         let uri_class = lua.create_proxy::<Uri>()?;
         http.set("Uri", uri_class.clone())?;
         lua.globals().set("Uri", uri_class)?;
-
-        // let body_class = lua.create_proxy::<Body>()?;
-        // http.set("Body", body_class.clone())?;
-        // lua.globals().set("Body", body_class)?;
 
         Ok(mlua::Value::Table(http))
     }
@@ -94,9 +91,9 @@ pub struct Request {
     version: Option<String>,
     body: Option<BodyType>,
 }
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
-
 pub enum BodyType {
     Binary(Vec<u8>),
     Text(String),
@@ -126,7 +123,7 @@ impl Into<hyper::Body> for BodyType {
 impl Request {
     pub async fn new(request: hyper::Request<hyper::Body>) -> mlua::Result<Self> {
         Ok(Self {
-            uri: UriType::Uri(request.uri().clone().into()),
+            uri: UriType::String(request.uri().to_string()),
             method: request.method().to_string(),
             headers: {
                 request

@@ -3,7 +3,8 @@ pub mod extension;
 use crate::runtime::extension::standard_extensions::JsonExtension;
 
 use self::extension::LuaExtension;
-use mlua::{AsChunk, Lua, Table};
+use ephermal_common::models::Bundle;
+use mlua::{AsChunk, ExternalResult, Lua, Table};
 use std::{borrow::Cow, ops::Deref};
 use tracing::trace;
 
@@ -19,13 +20,15 @@ impl Deref for EphermalRuntime {
 }
 
 impl EphermalRuntime {
-    pub fn new() -> mlua::Result<Self> {
+    pub async fn new(bundle: Option<Bundle>) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
 
         let lua = Self(Lua::new_with(
             mlua::StdLib::ALL_SAFE,
             mlua::LuaOptions::new().catch_rust_panics(false),
         )?);
+
+        lua.set_app_data::<Option<Bundle>>(bundle.clone());
 
         lua.sandbox(true)?;
 
@@ -47,10 +50,65 @@ impl EphermalRuntime {
         // Global function to retrieve modules from the registry.
         lua.globals().set(
             "require",
-            lua.create_function(|lua, module_name: String| {
+            lua.create_async_function(|lua, module_name: String| async move {
+                let bundle = lua.app_data_ref::<Option<Bundle>>().unwrap();
+
+                if let Some(bundle) = bundle.as_ref() {
+                    let file = bundle.files.iter().find(|file| {
+                        let path = file.path.replace("/", ".");
+                        path == module_name
+                            || path == format!("{}.lua", module_name)
+                            || path == module_name.strip_suffix(".lua").unwrap_or(&module_name)
+                    });
+
+                    if let Some(file) = file {
+                        let result: mlua::Value = lua
+                            .load(&LuaModule {
+                                name: file.file_name.clone(),
+                                source: std::str::from_utf8(&file.content)
+                                    .to_lua_err()?
+                                    .to_string(),
+                            })
+                            .eval_async()
+                            .await?;
+
+                        let registry: Table = lua.named_registry_value("module_registry")?;
+                        registry.set(file.file_name.clone(), result.clone())?;
+                        lua.set_named_registry_value("module_registry", registry)?;
+
+                        return Ok(result);
+                    }
+                }
+
                 Ok(lua
                     .named_registry_value::<_, mlua::Table>("module_registry")?
                     .get::<_, mlua::Value>(module_name)?)
+            })?,
+        )?;
+
+        // Like require but doesn't put anything in the module registry.
+        lua.globals().set(
+            "dofile",
+            lua.create_async_function(|lua, module_name: String| async move {
+                let bundle = lua.app_data_ref::<Option<Bundle>>().unwrap();
+
+                if let Some(bundle) = bundle.as_ref() {
+                    let file = bundle.files.iter().find(|file| file.path == module_name);
+
+                    if let Some(file) = file {
+                        return Ok(lua
+                            .load(&LuaModule {
+                                name: file.file_name.clone(),
+                                source: std::str::from_utf8(&file.content)
+                                    .to_lua_err()?
+                                    .to_string(),
+                            })
+                            .eval_async()
+                            .await?);
+                    }
+                }
+
+                Ok(mlua::Value::Nil)
             })?,
         )?;
 
@@ -58,6 +116,24 @@ impl EphermalRuntime {
         lua.set_named_registry_value("module_registry", lua.create_table()?)?;
 
         lua.register_extensions(&[&JsonExtension, &crate::extensions::http::HttpExtension])?;
+
+        if let Some(bundle) = bundle {
+            let entry_point = bundle
+                .files
+                .iter()
+                .find(|file| file.file_name == bundle.entry_point);
+
+            if let Some(entry_point) = entry_point {
+                lua.load(&LuaModule {
+                    name: entry_point.file_name.clone(),
+                    source: std::str::from_utf8(&entry_point.content)
+                        .to_lua_err()?
+                        .to_string(),
+                })
+                .eval_async()
+                .await?;
+            }
+        }
 
         Ok(lua)
     }
@@ -110,15 +186,6 @@ pub struct LuaModule {
     pub name: String,
     /// Source code of the module.
     pub source: String,
-}
-
-impl LuaModule {
-    pub fn new(name: &str, source: &str) -> Self {
-        Self {
-            name: name.to_owned(),
-            source: source.to_owned(),
-        }
-    }
 }
 
 impl AsChunk<'_> for LuaModule {

@@ -8,6 +8,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Server,
 };
+
 use server::http_handler;
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -17,7 +18,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Setup tracing.
     tracing::subscriber::set_global_default(
         FmtSubscriber::builder()
-            .with_max_level(Level::TRACE)
+            .with_max_level(Level::DEBUG)
             .finish(),
     )
     .unwrap();
