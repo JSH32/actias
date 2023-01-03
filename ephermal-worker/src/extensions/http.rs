@@ -1,6 +1,6 @@
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 use hyper::{
-    client::{self, HttpConnector},
+    client::HttpConnector,
     header::HeaderName,
     http::{self, uri::InvalidUri},
     Body, Client, Version,
@@ -85,7 +85,7 @@ impl UriType {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Request {
     uri: UriType,
-    method: String,
+    method: Option<String>,
     #[serde(default)]
     headers: HashMap<String, String>,
     version: Option<String>,
@@ -124,7 +124,7 @@ impl Request {
     pub async fn new(request: hyper::Request<hyper::Body>) -> mlua::Result<Self> {
         Ok(Self {
             uri: UriType::String(request.uri().to_string()),
-            method: request.method().to_string(),
+            method: Some(request.method().to_string()),
             headers: {
                 request
                     .headers()
@@ -146,7 +146,7 @@ impl From<Request> for mlua::Result<hyper::Request<hyper::Body>> {
 
         Ok(hyper::Request::builder()
             .uri(hyper_uri.to_lua_err()?)
-            .method(req.method.as_str())
+            .method(req.method.unwrap_or("GET".to_string()).as_str())
             .version(match req.version {
                 Some(v) => string_to_version(&v)?,
                 None => Version::HTTP_11,
