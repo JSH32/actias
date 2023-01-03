@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+    "ephermal-worker",
+    "ephermal-common",
+    "ephermal-api"
+]
