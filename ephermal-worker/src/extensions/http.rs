@@ -24,10 +24,6 @@ impl LuaExtension for HttpExtension {
     }
 
     fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value> {
-        lua.set_app_data::<Client<HttpsConnector<HttpConnector>, Body>>(
-            Client::builder().build(HttpsConnector::new()),
-        );
-
         // Http request method
         let http = lua.create_table()?;
         http.set(
@@ -48,9 +44,20 @@ impl LuaExtension for HttpExtension {
                     "Making request to {}", hyper_uri.to_lua_err()?.to_string()
                 );
 
-                let client = lua
-                    .app_data_ref::<Client<HttpsConnector<HttpConnector>, Body>>()
-                    .unwrap();
+                let client = match lua.app_data_ref::<Client<HttpsConnector<HttpConnector>, Body>>()
+                {
+                    // Find if exist.
+                    Some(v) => v,
+                    // Create on first use.
+                    None => {
+                        lua.set_app_data::<Client<HttpsConnector<HttpConnector>, Body>>(
+                            Client::builder().build(HttpsConnector::new()),
+                        );
+
+                        lua.app_data_ref::<Client<HttpsConnector<HttpConnector>, Body>>()
+                            .unwrap()
+                    }
+                };
 
                 let response = Response::new(client.request(request?).await.to_lua_err()?).await?;
                 Ok(lua.to_value(&response)?)
