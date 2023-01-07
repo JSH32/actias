@@ -1,4 +1,5 @@
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
+use ephermal_common::tracing::debug;
 use hyper::{
     client::HttpConnector,
     header::HeaderName,
@@ -9,7 +10,6 @@ use hyper_tls::HttpsConnector;
 use mlua::{ExternalResult, LuaSerdeExt, UserData};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr};
-use tracing::debug;
 
 /// Http oerations.
 pub struct HttpExtension;
@@ -92,6 +92,8 @@ impl UriType {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Request {
     uri: UriType,
+    /// Only used from server, client making request doesn't need this.
+    context_uri: Option<UriType>,
     method: Option<String>,
     #[serde(default)]
     headers: HashMap<String, String>,
@@ -128,10 +130,22 @@ impl Into<hyper::Body> for BodyType {
 }
 
 impl Request {
-    pub async fn new(request: hyper::Request<hyper::Body>) -> mlua::Result<Self> {
+    /// Create a new Lua Request object.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - Hyper request to convert from.
+    /// * `context_uri` - URI which is stripped from worker identifier (if relevant).
+    pub async fn new(
+        request: hyper::Request<hyper::Body>,
+        context_uri: Option<hyper::Uri>,
+    ) -> mlua::Result<Self> {
         Ok(Self {
             uri: UriType::String(request.uri().to_string()),
             method: Some(request.method().to_string()),
+            context_uri: Some(UriType::String(
+                context_uri.unwrap_or(request.uri().clone()).to_string(),
+            )),
             headers: {
                 request
                     .headers()

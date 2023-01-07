@@ -1,0 +1,23 @@
+[package]
+name = "ephermal-script-service"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+# build = "build.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ephermal-common = { path = "../ephermal-common" }
+lz4_flex = { version = "0.9.3", default-features = false, features = ["checked-decode"] }
+base64 = "0.20.0"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+mongodb = "2.3.0"
+prost = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+prost-build = { workspace = true }

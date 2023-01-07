@@ -1,0 +1,46 @@
+syntax = "proto2";
+package script_service;
+
+// Create a new script.
+message CreateScriptRequest {
+    // Public identifier of the script.
+    required string public_identifier = 1;
+    // Bundle of all files.
+    required Bundle bundle = 2;
+}
+
+// Find an existing script by id.
+message FindScriptRequest {
+    oneof query {        
+        string id = 1;
+        string public_name = 2;
+    }
+
+    // Should bundle be included in response?.
+    required bool include_bundle = 3;
+}
+
+message Script {
+    optional string _id = 1;
+    // Public identifier of the script.
+    required string public_identifier = 2;
+    // This is only included if `include_bundle` is true in `FindScript`.
+    optional Bundle bundle = 3;
+}
+
+message Bundle {
+    required string entry_point = 1;
+    // File path name and file content 
+    repeated File files = 2;
+}
+
+message File {
+    required string file_name = 1;
+    required string file_path = 2;
+    required bytes content = 3;
+}
+
+service ScriptService {
+    rpc CreateScript(CreateScriptRequest) returns (Script);
+    rpc QueryScript(FindScriptRequest) returns (Script);
+}

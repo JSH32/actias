@@ -3,10 +3,9 @@ name = "ephermal-common"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 serde_json = "1.0.91"
 serde = { version = "1.0.152", features = ["derive"] }
-base64 = "0.20.0"
-lz4_flex = { version = "0.9.3", default-features = false, features = ["checked-decode"] }
+dotenv = "0.15.0"
+tracing = "0.1"
+tracing-subscriber = "0.3.16"
