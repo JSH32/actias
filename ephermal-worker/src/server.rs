@@ -1,8 +1,9 @@
 use std::fs;
 
-use crate::script_service::find_script_request::Query;
-use crate::script_service::{Bundle, CreateScriptRequest, File};
-use crate::{script_service::FindScriptRequest, ScriptServiceClient};
+use crate::proto::bundle::{Bundle, File};
+use crate::proto::script_service::find_script_request::{Query, RevisionRequestType};
+use crate::proto::script_service::CreateScriptRequest;
+use crate::{proto::script_service::FindScriptRequest, ScriptServiceClient};
 use core::result::Result::Ok;
 use ephermal_common::tracing::Level;
 use ephermal_common::tracing::{span, trace};
@@ -62,12 +63,12 @@ async fn lua_handler(
 
     // No identifier
     let script = if let Some(identifier) = identifier {
-        read_to_bundle(&identifier, script_client.clone()).await;
+        // read_to_bundle(&identifier, script_client.clone()).await;
 
         script_client
             .query_script(FindScriptRequest {
-                include_bundle: true,
                 query: Some(Query::PublicName(identifier.to_string())),
+                revision_request_type: RevisionRequestType::Latest.into(),
             })
             .await?
     } else {

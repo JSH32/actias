@@ -1,7 +1,4 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = prost_build::Config::new();
-    config.protoc_arg("--experimental_allow_proto3_optional");
-
     tonic_build::configure()
         .build_client(false)
         .type_attribute(
@@ -9,17 +6,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
         .type_attribute(
-            "script_service.Bundle",
+            "bundle.Bundle",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
         .type_attribute(
-            "script_service.File",
+            "bundle.File",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
-        .compile_with_config(
-            config,
-            &["../protobufs/script_service.proto"],
-            &["../protobufs"],
+        .type_attribute(
+            "script_service.Revision",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .compile(
+            &[
+                "../protobufs/shared/bundle.proto",
+                "../protobufs/script_service.proto",
+            ],
+            &["../"],
         )
         .unwrap();
     Ok(())

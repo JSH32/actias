@@ -11,9 +11,11 @@ resolver = "2"
 ephermal-common = { path = "../ephermal-common" }
 lz4_flex = { version = "0.9.3", default-features = false, features = ["checked-decode"] }
 base64 = "0.20.0"
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 serde = { version = "1", features = ["derive"] }
 mongodb = "2.3.0"
+sonyflake = "0.1"
+sqlx = { version = "0.6", features = [ "runtime-tokio-rustls", "postgres", "json", "uuid", "chrono" ] }
 prost = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

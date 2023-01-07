@@ -2,11 +2,15 @@ use crate::proto_script_service::script_service_server::ScriptServiceServer;
 use crate::{config::Config, script_service::ScriptService};
 use ephermal_common::setup_tracing;
 use ephermal_common::tracing::info;
-use mongodb::{options::ClientOptions, Client};
+use sqlx::postgres::PgPoolOptions;
 use tonic::transport::Server;
 
 mod config;
 mod script_service;
+
+pub mod bundle {
+    tonic::include_proto!("bundle");
+}
 
 pub mod proto_script_service {
     tonic::include_proto!("script_service");
@@ -21,15 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Script Service listening on {}", addr);
 
-    let mut client_options = ClientOptions::parse(config.mongo_uri).await?;
-    client_options.app_name = Some("script_service".to_string());
-    let client = Client::with_options(client_options)?;
-    let database = client.database("ephermal_script_service");
+    let pool = PgPoolOptions::new().connect(&config.database_url).await?;
 
     Server::builder()
-        .add_service(ScriptServiceServer::new(
-            ScriptService::new(&database).await,
-        ))
+        .add_service(ScriptServiceServer::new(ScriptService::new(pool)))
         .serve(addr)
         .await?;
 

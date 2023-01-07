@@ -6,8 +6,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(false)
         .compile_with_config(
             config,
-            &["../protobufs/script_service.proto"],
-            &["../protobufs"],
+            &[
+                "../protobufs/script_service.proto",
+                "../protobufs/shared/bundle.proto",
+            ],
+            &["../"],
         )
         .unwrap();
 

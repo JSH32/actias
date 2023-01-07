@@ -1,9 +1,11 @@
 pub mod extension;
 
-use crate::runtime::extension::standard_extensions::JsonExtension;
+use crate::{
+    proto::{bundle::Bundle, script_service::Script},
+    runtime::extension::standard_extensions::JsonExtension,
+};
 
 use self::extension::LuaExtension;
-use crate::script_service::Script;
 use ephermal_common::tracing::trace;
 use mlua::{AsChunk, ExternalResult, Lua, Table};
 use std::{borrow::Cow, ops::Deref};
@@ -23,12 +25,17 @@ impl EphermalRuntime {
     pub async fn new(script: Option<Script>) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
 
+        let bundle = script
+            .clone()
+            .and_then(|s| s.revisions.first().cloned())
+            .and_then(|r| Some(r.bundle));
+
         let lua = Self(Lua::new_with(
             mlua::StdLib::ALL_SAFE,
             mlua::LuaOptions::new().catch_rust_panics(false),
         )?);
 
-        lua.set_app_data::<Option<Script>>(script.clone());
+        lua.set_app_data::<Option<Bundle>>(bundle.clone());
 
         lua.sandbox(true)?;
 
@@ -51,10 +58,9 @@ impl EphermalRuntime {
         lua.globals().set(
             "require",
             lua.create_async_function(|lua, module_name: String| async move {
-                let script = lua.app_data_ref::<Option<Script>>().unwrap();
+                let bundle = lua.app_data_ref::<Option<Bundle>>().unwrap();
 
-                if let Some(script) = script.as_ref() {
-                    let bundle = script.bundle.clone().unwrap();
+                if let Some(bundle) = bundle.as_ref() {
                     let file = bundle.files.iter().find(|file| {
                         let path = file.file_path.replace("/", ".");
                         path == module_name
@@ -91,10 +97,9 @@ impl EphermalRuntime {
         lua.globals().set(
             "dofile",
             lua.create_async_function(|lua, module_name: String| async move {
-                let script = lua.app_data_ref::<Option<Script>>().unwrap();
+                let bundle = lua.app_data_ref::<Option<Bundle>>().unwrap();
 
-                if let Some(script) = script.as_ref() {
-                    let bundle = script.bundle.clone().unwrap();
+                if let Some(bundle) = bundle.as_ref() {
                     let file = bundle
                         .files
                         .iter()
@@ -124,8 +129,9 @@ impl EphermalRuntime {
 
         if let Some(script) = script {
             lua.globals().set("identifier", script.public_identifier)?;
+        }
 
-            let bundle = script.bundle.unwrap();
+        if let Some(bundle) = bundle {
             let entry_point = bundle
                 .files
                 .iter()

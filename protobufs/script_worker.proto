@@ -1,0 +1,13 @@
+syntax = "proto2";
+package script_worker;
+
+import "protobufs/shared/bundle.proto";
+
+message EventNameResponse {
+    repeated string event_names = 1;
+}
+
+service ScriptWorker {
+    // Get all registered event listeners on the script.
+    rpc GetEventNames(bundle.Bundle) returns (EventNameResponse);
+}

@@ -17,10 +17,16 @@ use hyper::{
 use server::http_handler;
 
 use crate::config::Config;
-use crate::script_service::script_service_client::ScriptServiceClient;
+use crate::proto::script_service::script_service_client::ScriptServiceClient;
 
-pub mod script_service {
-    tonic::include_proto!("script_service");
+pub mod proto {
+    pub mod bundle {
+        tonic::include_proto!("bundle");
+    }
+
+    pub mod script_service {
+        tonic::include_proto!("script_service");
+    }
 }
 
 #[tokio::main]

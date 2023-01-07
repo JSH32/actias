@@ -1,46 +1,58 @@
 syntax = "proto2";
 package script_service;
 
+import "protobufs/shared/bundle.proto";
+
 // Create a new script.
+// This will create a new revision if the script already exists.
 message CreateScriptRequest {
     // Public identifier of the script.
     required string public_identifier = 1;
     // Bundle of all files.
-    required Bundle bundle = 2;
+    required bundle.Bundle bundle = 2;
+}
+
+message CreateRevisionRequest {
+    required string script_id = 1;
+    required bundle.Bundle bundle = 2;
 }
 
 // Find an existing script by id.
 message FindScriptRequest {
-    oneof query {        
+    enum RevisionRequestType {
+        NONE = 0; // No revisions, only script info.
+        LATEST = 1; // Latest script revision
+        ALL = 2; // Get all script revisions.
+    }
+
+    oneof query {
         string id = 1;
         string public_name = 2;
     }
 
     // Should bundle be included in response?.
-    required bool include_bundle = 3;
+    required RevisionRequestType revision_request_type = 3;
+}
+
+message Revision {
+    required string id = 1;
+    required string created = 2;
+    required string script_id = 3;
+
+    // Content bundle.
+    required bundle.Bundle bundle = 4; 
 }
 
 message Script {
-    optional string _id = 1;
+    required string id = 1;
     // Public identifier of the script.
     required string public_identifier = 2;
-    // This is only included if `include_bundle` is true in `FindScript`.
-    optional Bundle bundle = 3;
-}
-
-message Bundle {
-    required string entry_point = 1;
-    // File path name and file content 
-    repeated File files = 2;
-}
-
-message File {
-    required string file_name = 1;
-    required string file_path = 2;
-    required bytes content = 3;
+    required string last_updated = 3;
+    repeated Revision revisions = 4;
 }
 
 service ScriptService {
     rpc CreateScript(CreateScriptRequest) returns (Script);
+    rpc CreateRevision(CreateRevisionRequest) returns (Revision);
     rpc QueryScript(FindScriptRequest) returns (Script);
 }
