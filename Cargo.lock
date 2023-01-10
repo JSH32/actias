@@ -506,6 +506,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-tls",
+ "lz4_flex",
  "mlua",
  "prost",
  "prost-build",

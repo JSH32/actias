@@ -1,0 +1,6 @@
+export default () => ({
+  port: parseInt(process.env.PORT, 10),
+  externalServices: {
+    scriptServiceUri: process.env.SCRIPT_SERVICE_URL,
+  },
+});

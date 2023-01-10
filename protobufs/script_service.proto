@@ -1,7 +1,17 @@
 syntax = "proto2";
 package script_service;
 
-import "protobufs/shared/bundle.proto";
+import "shared/bundle.proto";
+import "google/protobuf/empty.proto";
+
+message ListScriptRequest {
+    required int32 page_size = 1;
+    required int32 page = 2;
+}
+
+message ListScriptResponse {
+    repeated Script scripts = 1;
+}
 
 // Create a new script.
 // This will create a new revision if the script already exists.
@@ -12,9 +22,35 @@ message CreateScriptRequest {
     required bundle.Bundle bundle = 2;
 }
 
+message DeleteScriptRequest {
+    required string script_id = 1;
+}
+
 message CreateRevisionRequest {
     required string script_id = 1;
     required bundle.Bundle bundle = 2;
+}
+
+message GetRevisionRequest {
+    required string id = 1;
+}
+
+message GetRevisionResponse {
+    optional Revision revision = 1;
+}
+
+message ListRevisionsRequest {
+    required int32 page_size = 1;
+    required int32 page = 2;
+    optional string script_id = 3;
+}
+
+message ListRevisionResponse {
+    repeated Revision revisions = 1;
+}
+
+message DeleteRevisionRequest {
+    required string id = 1;
 }
 
 // Find an existing script by id.
@@ -52,7 +88,12 @@ message Script {
 }
 
 service ScriptService {
+    rpc ListScripts(ListScriptRequest) returns (ListScriptResponse);
     rpc CreateScript(CreateScriptRequest) returns (Script);
+    rpc DeleteScript(DeleteScriptRequest) returns (google.protobuf.Empty);
+    rpc GetRevision(GetRevisionRequest) returns (GetRevisionResponse);
     rpc CreateRevision(CreateRevisionRequest) returns (Revision);
+    rpc ListRevisions(ListRevisionsRequest) returns (ListRevisionResponse);
+    rpc DeleteRevision(DeleteRevisionRequest) returns (google.protobuf.Empty);
     rpc QueryScript(FindScriptRequest) returns (Script);
 }

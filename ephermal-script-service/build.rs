@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "../protobufs/shared/bundle.proto",
                 "../protobufs/script_service.proto",
             ],
-            &["../"],
+            &["../protobufs"],
         )
         .unwrap();
     Ok(())

@@ -14,6 +14,7 @@ serde = { version = "1.0.152", features = ["derive"] }
 anyhow = "1.0.68"
 futures-util = "0.3.25"
 hyper-tls = "0.5.0"
+lz4_flex = { version = "0.9.3", default-features = false, features = ["checked-decode"] }
 walkdir = "2.3.2"
 hyper = { workspace = true }
 tokio = { workspace = true }

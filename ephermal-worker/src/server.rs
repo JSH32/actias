@@ -1,8 +1,5 @@
-use std::fs;
-
-use crate::proto::bundle::{Bundle, File};
 use crate::proto::script_service::find_script_request::{Query, RevisionRequestType};
-use crate::proto::script_service::CreateScriptRequest;
+
 use crate::{proto::script_service::FindScriptRequest, ScriptServiceClient};
 use core::result::Result::Ok;
 use ephermal_common::tracing::Level;
@@ -13,7 +10,6 @@ use mlua::LuaSerdeExt;
 use std::path;
 use tokio::runtime::Handle;
 use tokio::task;
-use walkdir::WalkDir;
 
 use crate::extensions;
 use crate::extensions::http::Request as LuaRequest;
@@ -112,46 +108,46 @@ async fn lua_handler(
     Ok(response?)
 }
 
-pub async fn read_to_bundle(
-    identifier: &str,
-    mut script_client: ScriptServiceClient<tonic::transport::Channel>,
-) {
-    let mut files: Vec<File> = Vec::new();
+// pub async fn read_to_bundle(
+//     identifier: &str,
+//     mut script_client: ScriptServiceClient<tonic::transport::Channel>,
+// ) {
+//     let mut files: Vec<File> = Vec::new();
 
-    for e in WalkDir::new("../test").into_iter().filter_map(|e| e.ok()) {
-        if e.metadata().unwrap().is_file() {
-            let display_name = e.path().strip_prefix("../test").unwrap();
+//     for e in WalkDir::new("../test").into_iter().filter_map(|e| e.ok()) {
+//         if e.metadata().unwrap().is_file() {
+//             let display_name = e.path().strip_prefix("../test").unwrap();
 
-            files.push(File {
-                file_name: e
-                    .path()
-                    .file_name()
-                    .to_owned()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
-                file_path: display_name.to_str().unwrap().to_string(),
-                content: fs::read(e.path().to_str().unwrap()).unwrap(),
-            });
-        }
-    }
+//             files.push(File {
+//                 file_name: e
+//                     .path()
+//                     .file_name()
+//                     .to_owned()
+//                     .unwrap()
+//                     .to_str()
+//                     .unwrap()
+//                     .to_string(),
+//                 file_path: display_name.to_str().unwrap().to_string(),
+//                 content: fs::read(e.path().to_str().unwrap()).unwrap(),
+//             });
+//         }
+//     }
 
-    let bundle = Bundle {
-        entry_point: "test.lua".into(),
-        files,
-    };
+//     let bundle = Bundle {
+//         entry_point: "main.lua".into(),
+//         files,
+//     };
 
-    let _ = script_client
-        .create_script(CreateScriptRequest {
-            public_identifier: identifier.to_string(),
-            bundle: bundle,
-        })
-        .await;
+//     let _ = script_client
+//         .create_script(CreateScriptRequest {
+//             public_identifier: identifier.to_string(),
+//             bundle: bundle.clone(),
+//         })
+//         .await;
 
-    // // let mut file = std::fs::File::create("bundle.json").unwrap();
-    // file.write_all(serde_json::to_string(&bundle).unwrap().as_bytes())
-    //     .unwrap();
+//     let mut file = std::fs::File::create("bundle.json").unwrap();
+//     file.write_all(serde_json::to_string(&bundle.clone()).unwrap().as_bytes())
+//         .unwrap();
 
-    // bundle
-}
+//     // bundle
+// }

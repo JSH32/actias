@@ -37,7 +37,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = Config::new();
     let script_client = ScriptServiceClient::connect(config.script_service_uri).await?;
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let make_svc = make_service_fn(|_conn| {
         let client = script_client.clone();
         async { Ok::<_, Infallible>(service_fn(move |req| http_handler(req, client.clone()))) }
