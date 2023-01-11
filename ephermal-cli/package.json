@@ -2,18 +2,34 @@
   "name": "ephermal-cli",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "./src/index.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "ts-node ./src/index.ts",
+    "build": "tsc -p ."
   },
-  "author": "",
+  "bin": {
+    "ephermal": "./dist/index.js"
+  },
+  "author": "JSH32",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^18.11.18",
+    "@types/yargs": "^17.0.19",
     "@typescript-eslint/eslint-plugin": "^5.48.1",
     "@typescript-eslint/parser": "^5.48.1",
     "eslint": "^8.31.0",
     "ts-node": "^10.9.1",
     "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "axios": "^1.2.2",
+    "chalk": "^4.1.2",
+    "glob": "^8.0.3",
+    "inquirer": "^8.2.5",
+    "tozod": "^3.0.0",
+    "yargonaut": "^1.1.4",
+    "yargs": "^17.6.2",
+    "zod": "^3.20.2",
+    "zod-error": "^1.1.0"
   }
 }

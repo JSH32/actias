@@ -168,15 +168,7 @@ impl script_service_server::ScriptService for ScriptService {
         request: tonic::Request<CreateScriptRequest>,
     ) -> Result<tonic::Response<Script>, tonic::Status> {
         let request = request.get_ref().clone();
-
-        let mut bundle = request.bundle.clone();
-
-        // Compress when storing in DB
-        for file in bundle.files.iter_mut() {
-            file.content = compress_prepend_size(&file.content);
-        }
-
-        let mut script_info = match self
+        let script_info = match self
             .get_script_info(find_script_request::Query::PublicName(
                 request.public_identifier.clone(),
             ))
@@ -196,12 +188,6 @@ impl script_service_server::ScriptService for ScriptService {
                 _ => return Err(Status::internal(e.to_string())),
             },
         };
-
-        // Create revision
-        script_info.revisions = vec![self
-            .create_db_revision(&script_info.id, request.bundle)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?];
 
         Ok(Response::new(script_info))
     }

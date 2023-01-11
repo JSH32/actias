@@ -9,6 +9,7 @@ import {
   OnModuleInit,
   Param,
   Patch,
+  Post,
   Query,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
@@ -77,6 +78,11 @@ export class ScriptsController implements OnModuleInit {
     } catch (e) {
       throw new HttpException(e.toString(), HttpStatus.BAD_REQUEST);
     }
+  }
+
+  @Post()
+  createScript(@Body() createScript: script_service.CreateScriptRequest) {
+    return this.scriptService.createScript(createScript);
   }
 
   @Patch(':id/revision')

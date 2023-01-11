@@ -18,8 +18,6 @@ export namespace script_service {
     export interface CreateScriptRequest {
         // Public identifier of the script.
         publicIdentifier?: string;
-        // Bundle of all files.
-        bundle?: bundle.Bundle;
     }
     export interface DeleteScriptRequest {
         scriptId?: string;
