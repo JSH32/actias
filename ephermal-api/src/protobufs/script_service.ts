@@ -24,19 +24,23 @@ export namespace script_service {
     }
     export interface CreateRevisionRequest {
         scriptId?: string;
+        projectConfig?: string;
         bundle?: bundle.Bundle;
     }
     export interface GetRevisionRequest {
         id?: string;
+        // Should bundle be included with revision.
+    // If false then this will only include revision info.
+        withBundle?: boolean;
     }
-    export interface GetRevisionResponse {
-        revision?: script_service.Revision;
-    }
+    // Return revision info.
     export interface ListRevisionsRequest {
         pageSize?: number;
         page?: number;
+        // Script id, otherwise this will show all revisions in general.
         scriptId?: string;
     }
+    // List of revision info.
     export interface ListRevisionResponse {
         revisions?: script_service.Revision[];
     }
@@ -65,6 +69,7 @@ export namespace script_service {
         id?: string;
         created?: string;
         scriptId?: string;
+        projectConfig?: string;
         // Content bundle.
         bundle?: bundle.Bundle;
     }
@@ -73,9 +78,14 @@ export namespace script_service {
         // Public identifier of the script.
         publicIdentifier?: string;
         lastUpdated?: string;
-        revisions?: script_service.Revision[];
+        currentRevisionId?: string;
     }
     export interface ScriptService {
+        queryScript(
+            data: FindScriptRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Script>;
         listScripts(
             data: ListScriptRequest,
             metadata?: Metadata,
@@ -95,7 +105,7 @@ export namespace script_service {
             data: GetRevisionRequest,
             metadata?: Metadata,
             ...rest: any[]
-        ): Observable<GetRevisionResponse>;
+        ): Observable<Revision>;
         createRevision(
             data: CreateRevisionRequest,
             metadata?: Metadata,
@@ -111,11 +121,6 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;
-        queryScript(
-            data: FindScriptRequest,
-            metadata?: Metadata,
-            ...rest: any[]
-        ): Observable<Script>;
     }
 }
 export namespace bundle {
@@ -125,6 +130,7 @@ export namespace bundle {
         files?: bundle.File[];
     }
     export interface File {
+        revisionId?: string;
         fileName?: string;
         filePath?: string;
         content?: Uint8Array;

@@ -1,7 +1,7 @@
 pub mod extension;
 
 use crate::{
-    proto::{bundle::Bundle, script_service::Script},
+    proto::{bundle::Bundle, script_service::Revision},
     runtime::extension::standard_extensions::JsonExtension,
 };
 
@@ -22,20 +22,23 @@ impl Deref for EphermalRuntime {
 }
 
 impl EphermalRuntime {
-    pub async fn new(script: Option<Script>) -> mlua::Result<Self> {
+    pub async fn new(public_identifier: Option<String>, revision: Revision) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
 
-        let bundle = script
-            .clone()
-            .and_then(|s| s.revisions.first().cloned())
-            .and_then(|r| Some(r.bundle));
+        if revision.bundle.is_none() {
+            return Err(mlua::Error::RuntimeError(format!(
+                "No bundle was attached to revision '{}'",
+                revision.id
+            )));
+        }
 
         let lua = Self(Lua::new_with(
             mlua::StdLib::ALL_SAFE,
             mlua::LuaOptions::new().catch_rust_panics(false),
         )?);
 
-        lua.set_app_data::<Option<Bundle>>(bundle.clone());
+        let bundle = revision.bundle.unwrap();
+        lua.set_app_data::<Bundle>(bundle.clone());
 
         lua.sandbox(true)?;
 
@@ -58,33 +61,29 @@ impl EphermalRuntime {
         lua.globals().set(
             "require",
             lua.create_async_function(|lua, module_name: String| async move {
-                let bundle = lua.app_data_ref::<Option<Bundle>>().unwrap();
+                let bundle = lua.app_data_ref::<Bundle>().unwrap();
 
-                if let Some(bundle) = bundle.as_ref() {
-                    let file = bundle.files.iter().find(|file| {
-                        let path = file.file_path.replace("/", ".");
-                        path == module_name
-                            || path == format!("{}.lua", module_name)
-                            || path == module_name.strip_suffix(".lua").unwrap_or(&module_name)
-                    });
+                let file = bundle.files.iter().find(|file| {
+                    let path = file.file_path.replace("/", ".");
+                    path == module_name
+                        || path == format!("{}.lua", module_name)
+                        || path == module_name.strip_suffix(".lua").unwrap_or(&module_name)
+                });
 
-                    if let Some(file) = file {
-                        let result: mlua::Value = lua
-                            .load(&LuaModule {
-                                name: file.file_path.clone(),
-                                source: std::str::from_utf8(&file.content)
-                                    .to_lua_err()?
-                                    .to_string(),
-                            })
-                            .eval_async()
-                            .await?;
+                if let Some(file) = file {
+                    let result: mlua::Value = lua
+                        .load(&LuaModule {
+                            name: file.file_path.clone(),
+                            source: std::str::from_utf8(&file.content).to_lua_err()?.to_string(),
+                        })
+                        .eval_async()
+                        .await?;
 
-                        let registry: Table = lua.named_registry_value("module_registry")?;
-                        registry.set(file.file_name.clone(), result.clone())?;
-                        lua.set_named_registry_value("module_registry", registry)?;
+                    let registry: Table = lua.named_registry_value("module_registry")?;
+                    registry.set(file.file_name.clone(), result.clone())?;
+                    lua.set_named_registry_value("module_registry", registry)?;
 
-                        return Ok(result);
-                    }
+                    return Ok(result);
                 }
 
                 Ok(lua
@@ -97,25 +96,38 @@ impl EphermalRuntime {
         lua.globals().set(
             "dofile",
             lua.create_async_function(|lua, module_name: String| async move {
-                let bundle = lua.app_data_ref::<Option<Bundle>>().unwrap();
+                let bundle = lua.app_data_ref::<Bundle>().unwrap();
 
-                if let Some(bundle) = bundle.as_ref() {
-                    let file = bundle
-                        .files
-                        .iter()
-                        .find(|file| file.file_path == module_name);
+                let file = bundle
+                    .files
+                    .iter()
+                    .find(|file| file.file_path == module_name);
 
-                    if let Some(file) = file {
-                        return Ok(lua
-                            .load(&LuaModule {
-                                name: file.file_name.clone(),
-                                source: std::str::from_utf8(&file.content)
-                                    .to_lua_err()?
-                                    .to_string(),
-                            })
-                            .eval_async()
-                            .await?);
-                    }
+                if let Some(file) = file {
+                    return Ok(lua
+                        .load(&LuaModule {
+                            name: file.file_name.clone(),
+                            source: std::str::from_utf8(&file.content).to_lua_err()?.to_string(),
+                        })
+                        .eval_async()
+                        .await?);
+                }
+
+                Ok(mlua::Value::Nil)
+            })?,
+        )?;
+
+        lua.globals().set(
+            "get_file",
+            lua.create_async_function(|lua, file_path: String| async move {
+                let bundle = lua.app_data_ref::<Bundle>().unwrap();
+
+                let file = bundle.files.iter().find(|file| file.file_path == file_path);
+
+                if let Some(file) = file {
+                    return Ok(mlua::Value::String(lua.create_string(
+                        &std::str::from_utf8(&file.content).to_lua_err()?.to_string(),
+                    )?));
                 }
 
                 Ok(mlua::Value::Nil)
@@ -127,26 +139,25 @@ impl EphermalRuntime {
 
         lua.register_extensions(&[&JsonExtension, &crate::extensions::http::HttpExtension])?;
 
-        if let Some(script) = script {
-            lua.globals().set("identifier", script.public_identifier)?;
+        if let Some(public_identifier) = public_identifier {
+            lua.globals().set("identifier", public_identifier)?;
         }
 
-        if let Some(bundle) = bundle {
-            let entry_point = bundle
-                .files
-                .iter()
-                .find(|file| file.file_name == bundle.entry_point);
+        let entry_point = bundle
+            .files
+            .iter()
+            .find(|file| file.file_name == bundle.entry_point);
 
-            if let Some(entry_point) = entry_point {
-                lua.load(&LuaModule {
-                    name: entry_point.file_name.clone(),
-                    source: std::str::from_utf8(&entry_point.content)
-                        .to_lua_err()?
-                        .to_string(),
-                })
-                .eval_async()
-                .await?;
-            }
+        // Run entry point and register handlers.
+        if let Some(entry_point) = entry_point {
+            lua.load(&LuaModule {
+                name: entry_point.file_name.clone(),
+                source: std::str::from_utf8(&entry_point.content)
+                    .to_lua_err()?
+                    .to_string(),
+            })
+            .eval_async()
+            .await?;
         }
 
         Ok(lua)
@@ -163,7 +174,7 @@ impl EphermalRuntime {
                 "Registering extension"
             );
 
-            let extension = extension.create_extension(&self.0)?;
+            let extension = extension.create_extension(&self)?;
             self.set_module(&info.name, extension.clone())?;
 
             // Register extension as a global

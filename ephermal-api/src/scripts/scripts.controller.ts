@@ -88,11 +88,16 @@ export class ScriptsController implements OnModuleInit {
   @Patch(':id/revision')
   createRevision(
     @Param('id') scriptId: string,
-    @Body() bundle: bundle.Bundle,
+    @Body()
+    request: {
+      bundle: bundle.Bundle;
+      projectConfig: object;
+    },
   ): Observable<script_service.Revision> {
     return this.scriptService.createRevision({
       scriptId,
-      bundle,
+      bundle: request.bundle,
+      projectConfig: JSON.stringify(request.projectConfig),
     });
   }
 }

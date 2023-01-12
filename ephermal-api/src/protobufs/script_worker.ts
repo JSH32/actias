@@ -25,6 +25,7 @@ export namespace bundle {
         files?: bundle.File[];
     }
     export interface File {
+        revisionId?: string;
         fileName?: string;
         filePath?: string;
         content?: Uint8Array;

@@ -26,23 +26,26 @@ message DeleteScriptRequest {
 
 message CreateRevisionRequest {
     required string script_id = 1;
-    required bundle.Bundle bundle = 2;
+    required string project_config = 2;
+    required bundle.Bundle bundle = 3;
 }
 
 message GetRevisionRequest {
     required string id = 1;
+    // Should bundle be included with revision.
+    // If false then this will only include revision info.
+    required bool with_bundle = 2;
 }
 
-message GetRevisionResponse {
-    optional Revision revision = 1;
-}
-
+// Return revision info.
 message ListRevisionsRequest {
     required int32 page_size = 1;
     required int32 page = 2;
+    // Script id, otherwise this will show all revisions in general.
     optional string script_id = 3;
 }
 
+// List of revision info.
 message ListRevisionResponse {
     repeated Revision revisions = 1;
 }
@@ -72,9 +75,10 @@ message Revision {
     required string id = 1;
     required string created = 2;
     required string script_id = 3;
+    required string project_config = 4;
 
     // Content bundle.
-    required bundle.Bundle bundle = 4; 
+    optional bundle.Bundle bundle = 5;
 }
 
 message Script {
@@ -82,16 +86,17 @@ message Script {
     // Public identifier of the script.
     required string public_identifier = 2;
     required string last_updated = 3;
-    repeated Revision revisions = 4;
+    optional string current_revision_id = 4;
 }
 
 service ScriptService {
+    rpc QueryScript(FindScriptRequest) returns (Script);
     rpc ListScripts(ListScriptRequest) returns (ListScriptResponse);
     rpc CreateScript(CreateScriptRequest) returns (Script);
     rpc DeleteScript(DeleteScriptRequest) returns (google.protobuf.Empty);
-    rpc GetRevision(GetRevisionRequest) returns (GetRevisionResponse);
+
+    rpc GetRevision(GetRevisionRequest) returns (Revision);
     rpc CreateRevision(CreateRevisionRequest) returns (Revision);
     rpc ListRevisions(ListRevisionsRequest) returns (ListRevisionResponse);
     rpc DeleteRevision(DeleteRevisionRequest) returns (google.protobuf.Empty);
-    rpc QueryScript(FindScriptRequest) returns (Script);
 }

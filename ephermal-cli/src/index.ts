@@ -21,7 +21,7 @@ const projectSchema = z.object({
     entryPoint: z.string(),
     // List of all files which will be included in their bundle.
     // All paths are relative to the project file.
-    includes: z.array(z.string())
+    includes: z.array(z.string()),
 })
 
 /**
@@ -47,12 +47,29 @@ const parseProject = (projectPath: string) => {
         throw `❌ Problem parsing ${chalk.yellow("project.json")}\n${errorMessage}`
     }
 
+    const includes = project.data.includes.map(pattern => glob.sync(pattern, {
+        cwd: projectPath
+    }))
+    .flat()
+    .filter(i => i.replace(/^.\//, '') !== "project.json" && !fs.lstatSync(path.join(projectPath, i)).isDirectory())
+
     return [project.data, {
         ...project.data,
-        includes: project.data.includes.map(pattern => glob.sync(pattern, {
-            cwd: projectPath
-        })).flat()
+        includes,
     }]
+}
+
+const parseBundle = async (projectPath: string, project: typeof projectSchema._output) => {    
+    const files = await Promise.all(project.includes.map(async (i) => ({
+        fileName: i.substring(i.lastIndexOf('/')+1),
+        filePath: i.replace(/^.\//, ''),
+        content: (await promisify(fs.readFile)(path.join(projectPath, i))).toJSON().data,
+    })))
+
+    return {
+        entryPoint: project.entryPoint,
+        files
+    }
 }
 
 const options: ErrorMessageOptions = {
@@ -76,7 +93,7 @@ yargs(hideBin(process.argv))
             fs.cpSync(path.join(__dirname, "../template"), argv.name, { recursive: true })
             console.info(chalk.green(`📜 Project ${chalk.magenta(argv.name)} was created!`))
         } else {
-            console.error(chalk.red(`❌ Specified directory "${chalk.yellow(fullPath)}" is not empty`))
+            console.error(`❌ Specified directory "${chalk.yellow(fullPath)}" is not empty`)
         }
     })
     .command(chalk.green("publish <directory>"), '🚀 Publish a new revision of the project')
@@ -119,20 +136,21 @@ yargs(hideBin(process.argv))
                 ...originalFile,
                 id: script.id
             }, null, 2))
+
+            // Set the ID's since that was the only thing missing previously.
+            originalFile.id = script.id
+            project.id = script.id
+            
             console.info(`📜 Script has been created ${chalk.gray(`(${script.id})`)}`)
         } else {
             script = (await axios.get(`${API_URL}/scripts?id=${project.id}`)).data
         }
 
-        const bundle = await Promise.all(project.includes.filter(i => i !== "./project.json").map(async (i) => ({
-            fileName: i.substring(i.lastIndexOf('/')+1),
-            filePath: i.substring(2),
-            content: (await promisify(fs.readFile)(path.join(fullPath, i))).toJSON().data,
-        })))
+        const parsedBundle = await parseBundle(fullPath, project)
         
         axios.patch(`${API_URL}/scripts/${script.id}/revision`, {
-            entryPoint: project.entryPoint,
-            files: bundle
+            bundle: parsedBundle,
+            projectConfig: originalFile
         })
         .then(() => console.log(`🚀 Project published to ${script.publicIdentifier} ${chalk.gray(`(${script.id})`)}`))
         .catch(err => console.error(`❌ Can't publish project: ${err.toString()}`))

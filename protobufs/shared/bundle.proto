@@ -8,7 +8,8 @@ message Bundle {
 }
 
 message File {
-    required string file_name = 1;
-    required string file_path = 2;
-    required bytes content = 3;
+    required string revision_id = 1;
+    required string file_name = 2;
+    required string file_path = 3;
+    required bytes content = 5;
 }

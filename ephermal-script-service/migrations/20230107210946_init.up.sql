@@ -4,6 +4,7 @@ CREATE TABLE scripts
     id                UUID        NOT NULL UNIQUE DEFAULT gen_random_uuid(),
     public_identifier VARCHAR(24) NOT NULL UNIQUE,
     last_updated      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    current_revision  UUID,
 
     PRIMARY KEY(id)
 );
@@ -11,11 +12,24 @@ CREATE TABLE scripts
 -- Script revisions.
 CREATE TABLE revisions
 (
-    id        UUID        NOT NULL DEFAULT gen_random_uuid() UNIQUE,
-    created   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    script_id UUID        NOT NULL,
-    bundle    JSONB       NOT NULL,
+    id             UUID             NOT NULL DEFAULT gen_random_uuid() UNIQUE,
+    created        TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    script_id      UUID             NOT NULL,
+    entry_point    VARCHAR(32767)   NOT NULL,
+    -- Not used for anything other than storing and retrieving.
+    project_config JSONB            NOT NULL,
 
     PRIMARY KEY (id),
     FOREIGN KEY (script_id) REFERENCES scripts (id) ON DELETE CASCADE
 );
+
+-- Files in revisions.
+CREATE TABLE files
+(
+    revision_id  UUID           NOT NULL,
+    content      bytea          NOT NULL,
+    file_name    VARCHAR(256)   NOT NULL,
+    file_path    VARCHAR(32767) NOT NULL,
+
+    FOREIGN KEY (revision_id) REFERENCES revisions (id) ON DELETE CASCADE
+)

@@ -6,6 +6,7 @@ use sqlx::postgres::PgPoolOptions;
 use tonic::transport::Server;
 
 mod config;
+mod database_types;
 mod script_service;
 
 pub mod bundle {

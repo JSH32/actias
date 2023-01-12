@@ -1,14 +1,13 @@
 use std::str::FromStr;
 
 use lz4_flex::{compress_prepend_size, decompress_size_prepended};
-use sqlx::postgres::PgRow;
-use sqlx::types::chrono::Utc;
-use sqlx::types::{chrono, Json, Uuid};
-use sqlx::{Pool, Postgres, Row};
+use sqlx::types::Uuid;
+use sqlx::{Pool, Postgres};
 use tonic::{Response, Status};
 
-use crate::bundle::Bundle;
-use crate::proto_script_service::find_script_request::{self, RevisionRequestType};
+use crate::bundle::{Bundle, File};
+use crate::database_types::{DbFile, DbRevision, DbScript, ProjectConfig};
+use crate::proto_script_service::find_script_request::{self};
 use crate::proto_script_service::{
     script_service_server, ListRevisionResponse, ListScriptResponse, Revision, Script, *,
 };
@@ -27,41 +26,93 @@ impl ScriptService {
     async fn get_script_info(
         &self,
         script_query: find_script_request::Query,
-    ) -> Result<Script, tonic::Status> {
-        sqlx::query(&format!(
+    ) -> Result<DbScript, tonic::Status> {
+        sqlx::query_as::<_, DbScript>(&format!(
             "SELECT * FROM scripts WHERE {} = $1",
             match &script_query {
                 Id(_) => "id",
                 PublicName(_) => "public_identifier",
             }
         ))
-        .bind(match script_query {
+        .bind(match &script_query {
             Id(v) => Uuid::parse_str(&v)
                 .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?
                 .to_string(),
-            PublicName(v) => v,
+            PublicName(v) => v.clone(),
         })
-        .map(map_script)
-        .fetch_one(&self.database)
+        .fetch_optional(&self.database)
         .await
-        .map_err(|e| match e {
-            sqlx::Error::RowNotFound => Status::not_found("Script with that id was not found"),
-            _ => Status::internal(e.to_string()),
-        })
+        .map_err(|e| Status::internal(e.to_string()))?
+        .ok_or(Status::not_found(format!(
+            "Script with that {} was not found",
+            match &script_query {
+                Id(_) => "id",
+                PublicName(_) => "identifier",
+            }
+        )))
     }
 
     async fn create_db_revision(
         &self,
-        script_id: &str,
-        bundle: Bundle,
-    ) -> Result<Revision, sqlx::Error> {
-        // Create revision
-        sqlx::query("INSERT INTO revisions (script_id, bundle) VALUES ($1, $2) RETURNING *")
-            .bind(script_id)
-            .bind(serde_json::to_value(bundle).unwrap())
-            .map(map_revision)
-            .fetch_one(&self.database)
+        script_id: &Uuid,
+        project_config: ProjectConfig,
+        mut bundle: Bundle,
+    ) -> Result<Revision, tonic::Status> {
+        if &project_config.id != script_id {
+            return Err(Status::invalid_argument(
+                "Project config contains a different ID than the target.",
+            ));
+        }
+
+        for file in bundle.files.iter_mut() {
+            file.content = compress_prepend_size(&file.clone().content);
+        }
+
+        let mut tx = self
+            .database
+            .begin()
             .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let revision_info = sqlx::query_as::<_, DbRevision>(
+            "INSERT INTO revisions (script_id, entry_point, project_config) VALUES ($1, $2, $3) RETURNING *",
+        )
+        .bind(script_id)
+        .bind(bundle.entry_point)
+        .bind(serde_json::to_string(&project_config).unwrap())
+        .fetch_one(&mut tx)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        for file in bundle.files.iter() {
+            sqlx::query("INSERT INTO files (revision_id, content, file_name, file_path) VALUES ($1, $2, $3, $4)")
+                .bind(revision_info.id)
+                .bind(&file.content)
+                .bind(&file.file_name)
+                .bind(&file.file_path)
+                .execute(&mut tx)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
+
+        sqlx::query("UPDATE scripts SET current_revision = $1, last_updated = now() WHERE id = $2")
+            .bind(revision_info.id)
+            .bind(script_id)
+            .execute(&mut tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Revision {
+            id: revision_info.id.to_string(),
+            created: revision_info.created.to_string(),
+            script_id: revision_info.script_id.to_string(),
+            bundle: None,
+            project_config: serde_json::to_string(&revision_info.project_config).unwrap(),
+        })
     }
 }
 
@@ -71,36 +122,72 @@ impl script_service_server::ScriptService for ScriptService {
         &self,
         request: tonic::Request<CreateRevisionRequest>,
     ) -> Result<tonic::Response<Revision>, tonic::Status> {
-        let mut request = request.get_ref().clone();
-
-        for file in request.bundle.files.iter_mut() {
-            file.content = compress_prepend_size(&file.content);
-        }
+        let request = request.get_ref().clone();
 
         let script_info = self
             .get_script_info(find_script_request::Query::Id(request.script_id.clone()))
             .await?;
 
         Ok(Response::new(
-            self.create_db_revision(&script_info.id, request.bundle)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?,
+            self.create_db_revision(
+                &script_info.id,
+                serde_json::from_str(&request.project_config)
+                    .map_err(|_| Status::invalid_argument("Project config is not valid JSON."))?,
+                request.bundle,
+            )
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?,
         ))
     }
 
     async fn get_revision(
         &self,
         request: tonic::Request<GetRevisionRequest>,
-    ) -> Result<tonic::Response<GetRevisionResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<Revision>, tonic::Status> {
         let request = request.get_ref();
 
-        Ok(Response::new(GetRevisionResponse {
-            revision: sqlx::query("SELECT * FROM revisions WHERE script_id = $1")
+        let revision_info =
+            sqlx::query_as::<_, DbRevision>("SELECT * FROM revisions WHERE id = $1")
                 .bind(&request.id)
-                .map(map_revision)
                 .fetch_optional(&self.database)
                 .await
-                .map_err(|e| Status::internal(e.to_string()))?,
+                .map_err(|e| Status::internal(e.to_string()))?
+                .ok_or(Status::not_found("Revision with that ID was not found"))?;
+
+        let mut bundle: Option<Bundle> = None;
+        if request.with_bundle {
+            let files = sqlx::query_as::<_, DbFile>(
+                r#"
+                SELECT f.file_name, f.file_path, f.content, f.revision_id
+                FROM files f, revisions r 
+                WHERE revision_id = $1 AND r.id = f.revision_id
+                "#,
+            )
+            .bind(&revision_info.id)
+            .fetch_all(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+            bundle = Some(Bundle {
+                entry_point: revision_info.entry_point,
+                files: files
+                    .iter()
+                    .map(|f| File {
+                        content: decompress_size_prepended(&f.content).unwrap(),
+                        file_name: f.file_name.clone(),
+                        file_path: f.file_path.clone(),
+                        revision_id: f.revision_id.to_string(),
+                    })
+                    .collect(),
+            })
+        };
+
+        Ok(Response::new(Revision {
+            id: revision_info.id.to_string(),
+            created: revision_info.created.to_string(),
+            script_id: revision_info.script_id.to_string(),
+            project_config: serde_json::to_string(&revision_info.project_config).unwrap(),
+            bundle,
         }))
     }
 
@@ -110,10 +197,10 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListRevisionResponse>, tonic::Status> {
         let request = request.get_ref();
 
-        let mut query: sqlx::query::Query<'_, Postgres, _> = sqlx::query(if request.script_id.is_some() {
-            "SELECT * FROM revisions ORDER BY last_updated DESC LIMIT $1 OFFSET $2 WHERE script_id = $3"
+        let mut query = sqlx::query_as::<_, DbRevision>(if request.script_id.is_some() {
+            "SELECT * FROM revisions ORDER BY created DESC LIMIT $1 OFFSET $2 WHERE script_id = $3"
         } else {
-            "SELECT * FROM revisions ORDER BY last_updated DESC LIMIT $1 OFFSET $2"
+            "SELECT * FROM revisions ORDER BY created DESC LIMIT $1 OFFSET $2"
         })
         .bind(request.page_size)
         .bind(request.page_size * request.page);
@@ -124,10 +211,18 @@ impl script_service_server::ScriptService for ScriptService {
 
         Ok(Response::new(ListRevisionResponse {
             revisions: query
-                .map(map_revision)
                 .fetch_all(&self.database)
                 .await
-                .map_err(|e| Status::internal(e.to_string()))?,
+                .map_err(|e| Status::internal(e.to_string()))?
+                .iter()
+                .map(|r| Revision {
+                    id: r.id.to_string(),
+                    created: r.created.to_string(),
+                    script_id: r.script_id.to_string(),
+                    project_config: serde_json::to_string(&r.project_config).unwrap(),
+                    bundle: None,
+                })
+                .collect(),
         }))
     }
 
@@ -151,15 +246,17 @@ impl script_service_server::ScriptService for ScriptService {
         let request = request.get_ref();
 
         Ok(Response::new(ListScriptResponse {
-            scripts: sqlx::query(
+            scripts: sqlx::query_as::<_, DbScript>(
                 "SELECT * FROM scripts ORDER BY last_updated DESC LIMIT $1 OFFSET $2",
             )
             .bind(request.page_size)
             .bind(request.page_size * request.page)
-            .map(map_script)
             .fetch_all(&self.database)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?,
+            .map_err(|e| Status::internal(e.to_string()))?
+            .iter()
+            .map(|s| Into::<Script>::into((*s).clone()))
+            .collect(),
         }))
     }
 
@@ -174,22 +271,27 @@ impl script_service_server::ScriptService for ScriptService {
             ))
             .await
         {
-            Ok(_) => return Err(Status::already_exists("Script already exists")),
+            Ok(_) => {
+                return Err(Status::already_exists(
+                    "Script with that identifier already exists",
+                ))
+            }
             Err(e) => match e.code() {
                 tonic::Code::NotFound => {
                     // Create a script.
-                    sqlx::query("INSERT INTO scripts (public_identifier) VALUES ($1) RETURNING *")
-                        .bind(request.public_identifier)
-                        .map(map_script)
-                        .fetch_one(&self.database)
-                        .await
-                        .map_err(|e| Status::internal(e.to_string()))?
+                    sqlx::query_as::<_, DbScript>(
+                        "INSERT INTO scripts (public_identifier) VALUES ($1) RETURNING *",
+                    )
+                    .bind(request.public_identifier)
+                    .fetch_one(&self.database)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?
                 }
-                _ => return Err(Status::internal(e.to_string())),
+                _ => return Err(e),
             },
         };
 
-        Ok(Response::new(script_info))
+        Ok(Response::new(script_info.into()))
     }
 
     async fn delete_script(
@@ -217,59 +319,11 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<Script>, tonic::Status> {
         let request = request.get_ref().clone();
 
-        let mut script_info = self
-            .get_script_info(request.query.unwrap())
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        script_info.revisions =
-            match RevisionRequestType::from_i32(request.revision_request_type).unwrap() {
-                RevisionRequestType::All => sqlx::query(
-                    "SELECT * FROM revisions WHERE script_id = $1 ORDER BY created DESC",
-                )
-                .bind(script_info.id.clone())
-                .map(map_revision)
-                .fetch_all(&self.database)
+        Ok(Response::new(
+            self.get_script_info(request.query.unwrap())
                 .await
-                .map_err(|e| Status::internal(e.to_string()))?,
-                // Only get latest verision.
-                RevisionRequestType::Latest => vec![sqlx::query(
-                    "SELECT * FROM revisions WHERE script_id = $1 ORDER BY created DESC LIMIT 1",
-                )
-                .bind(script_info.id.clone())
-                .map(map_revision)
-                .fetch_one(&self.database)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?],
-                _ => vec![],
-            };
-
-        Ok(Response::new(script_info))
-    }
-}
-
-fn map_script(pgrow: PgRow) -> Script {
-    Script {
-        id: pgrow.get::<Uuid, _>("id").to_string(),
-        public_identifier: pgrow.get("public_identifier"),
-        last_updated: pgrow
-            .get::<chrono::DateTime<Utc>, _>("last_updated")
-            .to_string(),
-        revisions: Vec::new(),
-    }
-}
-
-fn map_revision(pgrow: PgRow) -> Revision {
-    let mut bundle: Json<Bundle> = pgrow.get("bundle");
-    // Decompress from DB.
-    for file in bundle.files.iter_mut() {
-        file.content = decompress_size_prepended(&file.content).unwrap();
-    }
-
-    Revision {
-        id: pgrow.get::<Uuid, _>("id").to_string(),
-        created: pgrow.get::<chrono::DateTime<Utc>, _>("created").to_string(),
-        script_id: pgrow.get::<Uuid, _>("script_id").to_string(),
-        bundle: bundle.0,
+                .map_err(|e| Status::internal(e.to_string()))?
+                .into(),
+        ))
     }
 }

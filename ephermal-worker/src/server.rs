@@ -1,4 +1,5 @@
 use crate::proto::script_service::find_script_request::{Query, RevisionRequestType};
+use crate::proto::script_service::GetRevisionRequest;
 
 use crate::{proto::script_service::FindScriptRequest, ScriptServiceClient};
 use core::result::Result::Ok;
@@ -58,13 +59,26 @@ async fn lua_handler(
     let identifier = path_split.get(1);
 
     // No identifier
-    let script = if let Some(identifier) = identifier {
-        // read_to_bundle(&identifier, script_client.clone()).await;
-
-        script_client
+    let revision = if let Some(identifier) = identifier {
+        let script = script_client
             .query_script(FindScriptRequest {
                 query: Some(Query::PublicName(identifier.to_string())),
                 revision_request_type: RevisionRequestType::Latest.into(),
+            })
+            .await?;
+
+        let current_revision_id = script.get_ref().current_revision_id.clone();
+        if current_revision_id.is_none() {
+            return Ok(Response::builder()
+                .status(404)
+                .body(Body::from("Script did not have a revision."))
+                .unwrap());
+        }
+
+        script_client
+            .get_revision(GetRevisionRequest {
+                id: current_revision_id.unwrap(),
+                with_bundle: true,
             })
             .await?
     } else {
@@ -74,7 +88,8 @@ async fn lua_handler(
             .unwrap());
     };
 
-    let lua = EphermalRuntime::new(Some(script.get_ref().clone())).await?;
+    let lua =
+        EphermalRuntime::new(identifier.map(|s| s.to_string()), revision.into_inner()).await?;
 
     // Create a context URI without the identifier, used for better routing.
     let old_uri = request.uri().clone();
@@ -107,47 +122,3 @@ async fn lua_handler(
     let response: http::Result<Response<Body>> = ret.into();
     Ok(response?)
 }
-
-// pub async fn read_to_bundle(
-//     identifier: &str,
-//     mut script_client: ScriptServiceClient<tonic::transport::Channel>,
-// ) {
-//     let mut files: Vec<File> = Vec::new();
-
-//     for e in WalkDir::new("../test").into_iter().filter_map(|e| e.ok()) {
-//         if e.metadata().unwrap().is_file() {
-//             let display_name = e.path().strip_prefix("../test").unwrap();
-
-//             files.push(File {
-//                 file_name: e
-//                     .path()
-//                     .file_name()
-//                     .to_owned()
-//                     .unwrap()
-//                     .to_str()
-//                     .unwrap()
-//                     .to_string(),
-//                 file_path: display_name.to_str().unwrap().to_string(),
-//                 content: fs::read(e.path().to_str().unwrap()).unwrap(),
-//             });
-//         }
-//     }
-
-//     let bundle = Bundle {
-//         entry_point: "main.lua".into(),
-//         files,
-//     };
-
-//     let _ = script_client
-//         .create_script(CreateScriptRequest {
-//             public_identifier: identifier.to_string(),
-//             bundle: bundle.clone(),
-//         })
-//         .await;
-
-//     let mut file = std::fs::File::create("bundle.json").unwrap();
-//     file.write_all(serde_json::to_string(&bundle.clone()).unwrap().as_bytes())
-//         .unwrap();
-
-//     // bundle
-// }

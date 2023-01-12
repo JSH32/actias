@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { ApiTags } from '@nestjs/swagger';
+import { lastValueFrom } from 'rxjs';
 import { script_service } from 'src/protobufs/script_service';
 
 @ApiTags('revisions')
@@ -28,16 +29,28 @@ export class RevisionsController implements OnModuleInit {
     @Query('page') page: number,
     @Query('script') scriptId?: string,
   ) {
-    return this.scriptService.listRevisions({
-      pageSize: 10,
-      page,
-      scriptId,
-    });
+    const response = await lastValueFrom(
+      this.scriptService.listRevisions({
+        pageSize: 10,
+        page,
+        scriptId,
+      }),
+    );
+
+    return response.revisions.map((revision) => ({
+      ...revision,
+      projectConfig: JSON.parse(revision.projectConfig),
+    }));
   }
 
   @Get(':id')
   async getRevision(@Param('id') id: string) {
-    return this.scriptService.getRevision({ id });
+    return await lastValueFrom(this.scriptService.getRevision({ id })).then(
+      (revision) => ({
+        ...revision,
+        projectConfig: JSON.parse(revision.projectConfig),
+      }),
+    );
   }
 
   @Delete(':id')
