@@ -320,10 +320,7 @@ impl script_service_server::ScriptService for ScriptService {
         let request = request.get_ref().clone();
 
         Ok(Response::new(
-            self.get_script_info(request.query.unwrap())
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?
-                .into(),
+            self.get_script_info(request.query.unwrap()).await?.into(),
         ))
     }
 }

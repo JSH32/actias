@@ -4,6 +4,7 @@
 
 import { Observable } from 'rxjs';
 import { Metadata } from '@grpc/grpc-js';
+import { ApiProperty } from '@nestjs/swagger';
 
 export namespace script_service {
     export interface ListScriptRequest {

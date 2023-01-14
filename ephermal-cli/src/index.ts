@@ -128,9 +128,14 @@ yargs(hideBin(process.argv))
                 message: "What would you like the public identifier to be?"
             }])
 
-            script = (await axios.post(`${API_URL}/scripts`, {
-                publicIdentifier: projectName.projectName
-            })).data
+            try {
+                script = (await axios.post(`${API_URL}/scripts`, {
+                    publicIdentifier: projectName.projectName
+                })).data
+            } catch (err) {
+                console.error(`❌ ${err.response.data.message}`)
+                return
+            }
 
             fs.writeFileSync(path.join(fullPath, "project.json"), JSON.stringify({
                 ...originalFile,
@@ -140,10 +145,15 @@ yargs(hideBin(process.argv))
             // Set the ID's since that was the only thing missing previously.
             originalFile.id = script.id
             project.id = script.id
-            
+
             console.info(`📜 Script has been created ${chalk.gray(`(${script.id})`)}`)
         } else {
-            script = (await axios.get(`${API_URL}/scripts?id=${project.id}`)).data
+            try {
+                script = (await axios.get(`${API_URL}/scripts?id=${project.id}`)).data
+            } catch (err) {
+                console.error(`❌ ${err.response.data.message}`)
+                return
+            }
         }
 
         const parsedBundle = await parseBundle(fullPath, project)
@@ -153,7 +163,7 @@ yargs(hideBin(process.argv))
             projectConfig: originalFile
         })
         .then(() => console.log(`🚀 Project published to ${script.publicIdentifier} ${chalk.gray(`(${script.id})`)}`))
-        .catch(err => console.error(`❌ Can't publish project: ${err.toString()}`))
+        .catch(err => console.error(`❌ Can't publish project: ${err.response.data.message}`))
     })
     .strict()
     .parse()

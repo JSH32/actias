@@ -9,7 +9,7 @@ members = [
 ephermal-common = { path = "./ephermal-common" }
 hyper = { version = "0.14.23", features = ["full"] }
 tokio = { version = "1.23.0", features = ["full"] }
-tonic = "0.8"
-prost = "0.11"
-tonic-build = "0.8"
-prost-build = "0.11.5"
+tonic = "0.8.3"
+prost = "0.11.6"
+tonic-build = "0.8.4"
+prost-build = "0.11.6"

@@ -22,15 +22,13 @@ impl Deref for EphermalRuntime {
 }
 
 impl EphermalRuntime {
+    /// Create a new [`EphermalRuntime`], this will run the main script from the entrypoint defined in the [`Bundle`].
+    ///
+    /// # Arguments
+    /// - `public_identifier` - Public identifier, this is so the script can identify it's own routing pattern.
+    /// - `revision` - Script revision, ensure that this revision has a [`Bundle`] (use `with_bundle`).
     pub async fn new(public_identifier: Option<String>, revision: Revision) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
-
-        if revision.bundle.is_none() {
-            return Err(mlua::Error::RuntimeError(format!(
-                "No bundle was attached to revision '{}'",
-                revision.id
-            )));
-        }
 
         let lua = Self(Lua::new_with(
             mlua::StdLib::ALL_SAFE,
@@ -118,7 +116,7 @@ impl EphermalRuntime {
         )?;
 
         lua.globals().set(
-            "get_file",
+            "getfile",
             lua.create_async_function(|lua, file_path: String| async move {
                 let bundle = lua.app_data_ref::<Bundle>().unwrap();
 
@@ -197,12 +195,12 @@ impl EphermalRuntime {
         Ok(())
     }
 
-    /// Set a module from a [`LuaModule`].
-    pub async fn set_module_from_source(&self, module: LuaModule) -> mlua::Result<()> {
-        self.set_module(&module.name, self.load(&module).call_async(()).await?)?;
+    // /// Set a module from a [`LuaModule`].
+    // pub async fn set_module_from_source(&self, module: LuaModule) -> mlua::Result<()> {
+    //     self.set_module(&module.name, self.load(&module).call_async(()).await?)?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
 
 /// Lua module.

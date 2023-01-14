@@ -10,7 +10,9 @@ import {
 import { ClientGrpc } from '@nestjs/microservices';
 import { ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
+import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
+import { RevisionDto } from './dto/revision.dto';
 
 @ApiTags('revisions')
 @Controller('revisions')
@@ -24,37 +26,26 @@ export class RevisionsController implements OnModuleInit {
       this.client.getService<script_service.ScriptService>('ScriptService');
   }
 
-  @Get('/list')
-  async revisionList(
-    @Query('page') page: number,
-    @Query('script') scriptId?: string,
-  ) {
-    const response = await lastValueFrom(
-      this.scriptService.listRevisions({
-        pageSize: 10,
-        page,
-        scriptId,
-      }),
-    );
-
-    return response.revisions.map((revision) => ({
-      ...revision,
-      projectConfig: JSON.parse(revision.projectConfig),
-    }));
-  }
-
+  /**
+   * Get a revision by ID.
+   */
   @Get(':id')
-  async getRevision(@Param('id') id: string) {
-    return await lastValueFrom(this.scriptService.getRevision({ id })).then(
-      (revision) => ({
-        ...revision,
-        projectConfig: JSON.parse(revision.projectConfig),
-      }),
-    );
+  async getRevision(
+    @Param('id') id: string,
+    @Query('withBundle') withBundle?: boolean,
+  ): Promise<RevisionDto> {
+    return await lastValueFrom(
+      this.scriptService
+        .getRevision({ id, withBundle: withBundle || false })
+        .pipe(toHttpException()),
+    ).then((revision) => new RevisionDto(revision));
   }
 
+  /**
+   * Delete a revision by ID.
+   */
   @Delete(':id')
   async deleteRevision(@Param('id') id: string) {
-    return this.scriptService.deleteRevision({ id });
+    return this.scriptService.deleteRevision({ id }).pipe(toHttpException());
   }
 }

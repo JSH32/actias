@@ -13,11 +13,19 @@ import {
   Query,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
-import { ApiTags } from '@nestjs/swagger';
-import { lastValueFrom, Observable } from 'rxjs';
+import { ApiQuery, ApiTags } from '@nestjs/swagger';
+import { lastValueFrom } from 'rxjs';
 import { script_service } from 'src/protobufs/script_service';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { bundle } from 'src/protobufs/shared/bundle';
+
+import { toHttpException } from 'src/exceptions/grpc.exception';
+import { ScriptDto } from './dto/script.dto';
+import {
+  CreateRevisionDto,
+  CreateScriptDto,
+  RevisionRequestTypeDto,
+  toRevisionNum,
+} from './dto/requests.dto';
+import { RevisionDto } from './dto/revision.dto';
 
 @ApiTags('scripts')
 @Controller('scripts')
@@ -32,12 +40,16 @@ export class ScriptsController implements OnModuleInit {
   }
 
   @Get()
+  @ApiQuery({
+    name: 'revisions',
+    enum: RevisionRequestTypeDto,
+  })
   async getScript(
     @Query('id') id?: string,
     @Query('publicName') publicName?: string,
     @Query('revisions')
-    revisions?: script_service.FindScriptRequest.RevisionRequestType,
-  ): Promise<script_service.Script> {
+    revisions?: RevisionRequestTypeDto,
+  ): Promise<ScriptDto> {
     if (!id && !publicName) {
       throw new HttpException(
         "Must have either 'id' or 'publicName' parameter",
@@ -45,59 +57,91 @@ export class ScriptsController implements OnModuleInit {
       );
     }
 
-    return await lastValueFrom(
-      this.scriptService.queryScript({
-        id,
-        publicName,
-        revisionRequestType:
-          revisions ||
-          script_service.FindScriptRequest.RevisionRequestType.NONE,
-      }),
+    return new ScriptDto(
+      await lastValueFrom(
+        this.scriptService
+          .queryScript({
+            id,
+            publicName,
+            revisionRequestType: toRevisionNum(
+              revisions || RevisionRequestTypeDto.NONE,
+            ),
+          })
+          .pipe(toHttpException()),
+      ),
     );
   }
 
   @Get('/list')
-  async listScripts(
-    @Query('page') page: number,
-  ): Promise<script_service.Script[]> {
+  async listScripts(@Query('page') page: number): Promise<ScriptDto[]> {
     const response = await lastValueFrom(
-      this.scriptService.listScripts({
-        pageSize: 25,
-        page,
-      }),
+      this.scriptService
+        .listScripts({
+          pageSize: 25,
+          page,
+        })
+        .pipe(toHttpException()),
     );
 
-    return response.scripts;
+    return response.scripts.map((script) => new ScriptDto(script));
   }
 
   @Delete(':id')
   async deleteScript(@Param('id') scriptId: string) {
-    try {
-      lastValueFrom(this.scriptService.deleteScript({ scriptId }));
-      return { message: `Successfully deleted script ${scriptId}` };
-    } catch (e) {
-      throw new HttpException(e.toString(), HttpStatus.BAD_REQUEST);
-    }
+    this.scriptService.deleteScript({ scriptId }).pipe(toHttpException());
   }
 
   @Post()
-  createScript(@Body() createScript: script_service.CreateScriptRequest) {
-    return this.scriptService.createScript(createScript);
+  async createScript(
+    @Body() createScript: CreateScriptDto,
+  ): Promise<ScriptDto> {
+    return new ScriptDto(
+      await lastValueFrom(
+        this.scriptService.createScript(createScript).pipe(toHttpException()),
+      ),
+    );
   }
 
-  @Patch(':id/revision')
-  createRevision(
+  /**
+   * Get a list of revisions (bundle not included).
+   */
+  @Get(':id/revisions')
+  async revisionList(
+    @Param('id') scriptId: string,
+    @Query('page') page: number,
+  ): Promise<RevisionDto[]> {
+    const response = await lastValueFrom(
+      this.scriptService
+        .listRevisions({
+          scriptId,
+          pageSize: 10,
+          page,
+        })
+        .pipe(toHttpException()),
+    );
+
+    return response.revisions.map((revision) => new RevisionDto(revision));
+  }
+
+  /**
+   * Create a new revision.
+   */
+  @Patch(':id/revisions')
+  async createRevision(
     @Param('id') scriptId: string,
     @Body()
-    request: {
-      bundle: bundle.Bundle;
-      projectConfig: object;
-    },
-  ): Observable<script_service.Revision> {
-    return this.scriptService.createRevision({
-      scriptId,
-      bundle: request.bundle,
-      projectConfig: JSON.stringify(request.projectConfig),
-    });
+    request: CreateRevisionDto,
+  ): Promise<RevisionDto> {
+    return new RevisionDto(
+      await lastValueFrom(
+        this.scriptService
+          .createRevision({
+            scriptId,
+            bundle: request.bundle,
+            projectConfig: JSON.stringify(request.projectConfig),
+          })
+          .pipe(toHttpException()),
+      ),
+    );
   }
 }
