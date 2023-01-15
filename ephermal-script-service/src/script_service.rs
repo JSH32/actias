@@ -13,6 +13,7 @@ use crate::proto_script_service::{
 };
 
 use crate::proto_script_service::find_script_request::Query::{Id, PublicName};
+use crate::util::safe_divide;
 
 pub struct ScriptService {
     database: Pool<Postgres>,
@@ -197,6 +198,12 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListRevisionResponse>, tonic::Status> {
         let request = request.get_ref();
 
+        let mut count_query = sqlx::query_as(if request.script_id.is_some() {
+            "SELECT COUNT(*) as count FROM revisions WHERE script_id = $1"
+        } else {
+            "SELECT COUNT(*) as count FROM revisions"
+        });
+
         let mut query = sqlx::query_as::<_, DbRevision>(if request.script_id.is_some() {
             "SELECT * FROM revisions ORDER BY created DESC LIMIT $1 OFFSET $2 WHERE script_id = $3"
         } else {
@@ -206,10 +213,18 @@ impl script_service_server::ScriptService for ScriptService {
         .bind(request.page_size * request.page);
 
         if request.script_id.is_some() {
+            count_query = count_query.bind(request.script_id.clone());
             query = query.bind(request.script_id.clone())
         }
 
+        let count: (i64,) = count_query
+            .fetch_one(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
         Ok(Response::new(ListRevisionResponse {
+            page: request.page,
+            total_pages: safe_divide!(count.0, request.page_size),
             revisions: query
                 .fetch_all(&self.database)
                 .await
@@ -245,7 +260,14 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListScriptResponse>, tonic::Status> {
         let request = request.get_ref();
 
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) as count FROM scripts")
+            .fetch_one(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
         Ok(Response::new(ListScriptResponse {
+            page: request.page,
+            total_pages: safe_divide!(count.0, request.page_size),
             scripts: sqlx::query_as::<_, DbScript>(
                 "SELECT * FROM scripts ORDER BY last_updated DESC LIMIT $1 OFFSET $2",
             )

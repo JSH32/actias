@@ -4,7 +4,6 @@
 
 import { Observable } from 'rxjs';
 import { Metadata } from '@grpc/grpc-js';
-import { ApiProperty } from '@nestjs/swagger';
 
 export namespace script_service {
     export interface ListScriptRequest {
@@ -12,6 +11,8 @@ export namespace script_service {
         page?: number;
     }
     export interface ListScriptResponse {
+        page?: number;
+        totalPages?: number;
         scripts?: script_service.Script[];
     }
     // Create a new script.
@@ -43,6 +44,8 @@ export namespace script_service {
     }
     // List of revision info.
     export interface ListRevisionResponse {
+        page?: number;
+        totalPages?: number;
         revisions?: script_service.Revision[];
     }
     export interface DeleteRevisionRequest {
@@ -52,19 +55,6 @@ export namespace script_service {
     export interface FindScriptRequest {
         id?: string;
         publicName?: string;
-        // Should bundle be included in response?.
-        revisionRequestType?: FindScriptRequest.RevisionRequestType;
-    }
-    export namespace FindScriptRequest {
-        // Find an existing script by id.
-        export enum RevisionRequestType {
-            // No revisions, only script info.
-            NONE = 0,
-            // Latest script revision
-            LATEST = 1,
-            // Get all script revisions.
-            ALL = 2,
-        }
     }
     export interface Revision {
         id?: string;

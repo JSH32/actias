@@ -1,4 +1,4 @@
-use crate::proto::script_service::find_script_request::{Query, RevisionRequestType};
+use crate::proto::script_service::find_script_request::Query;
 use crate::proto::script_service::GetRevisionRequest;
 
 use crate::{proto::script_service::FindScriptRequest, ScriptServiceClient};
@@ -63,7 +63,6 @@ async fn lua_handler(
         let script = script_client
             .query_script(FindScriptRequest {
                 query: Some(Query::PublicName(identifier.to_string())),
-                revision_request_type: RevisionRequestType::Latest.into(),
             })
             .await?;
 

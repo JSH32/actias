@@ -1,7 +1,8 @@
+import { OmitType } from '@nestjs/swagger';
 import { script_service } from 'src/protobufs/script_service';
 import { BundleDto } from './bundle.dto';
 
-export class RevisionDto {
+export class RevisionFullDto {
   id: string;
 
   /**
@@ -36,3 +37,7 @@ export class RevisionDto {
       revision.bundle && BundleDto.fromServiceBundle(revision.bundle);
   }
 }
+
+export class RevisionDataDto extends OmitType(RevisionFullDto, [
+  'bundle',
+] as const) {}

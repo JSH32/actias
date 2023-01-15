@@ -5,12 +5,14 @@ import "shared/bundle.proto";
 import "google/protobuf/empty.proto";
 
 message ListScriptRequest {
-    required int32 page_size = 1;
-    required int32 page = 2;
+    required int64 page_size = 1;
+    required int64 page = 2;
 }
 
 message ListScriptResponse {
-    repeated Script scripts = 1;
+    required int64 page = 1;
+    required int64 total_pages = 2;
+    repeated Script scripts = 3;
 }
 
 // Create a new script.
@@ -39,15 +41,17 @@ message GetRevisionRequest {
 
 // Return revision info.
 message ListRevisionsRequest {
-    required int32 page_size = 1;
-    required int32 page = 2;
+    required int64 page_size = 1;
+    required int64 page = 2;
     // Script id, otherwise this will show all revisions in general.
     optional string script_id = 3;
 }
 
 // List of revision info.
 message ListRevisionResponse {
-    repeated Revision revisions = 1;
+    required int64 page = 1;
+    required int64 total_pages = 2;
+    repeated Revision revisions = 3;
 }
 
 message DeleteRevisionRequest {
@@ -56,19 +60,10 @@ message DeleteRevisionRequest {
 
 // Find an existing script by id.
 message FindScriptRequest {
-    enum RevisionRequestType {
-        NONE = 0; // No revisions, only script info.
-        LATEST = 1; // Latest script revision
-        ALL = 2; // Get all script revisions.
-    }
-
     oneof query {
         string id = 1;
         string public_name = 2;
     }
-
-    // Should bundle be included in response?.
-    required RevisionRequestType revision_request_type = 3;
 }
 
 message Revision {

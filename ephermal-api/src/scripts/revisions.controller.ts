@@ -12,7 +12,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
-import { RevisionDto } from './dto/revision.dto';
+import { RevisionFullDto } from './dto/revision.dto';
 
 @ApiTags('revisions')
 @Controller('revisions')
@@ -33,12 +33,12 @@ export class RevisionsController implements OnModuleInit {
   async getRevision(
     @Param('id') id: string,
     @Query('withBundle') withBundle?: boolean,
-  ): Promise<RevisionDto> {
+  ): Promise<RevisionFullDto> {
     return await lastValueFrom(
       this.scriptService
         .getRevision({ id, withBundle: withBundle || false })
         .pipe(toHttpException()),
-    ).then((revision) => new RevisionDto(revision));
+    ).then((revision) => new RevisionFullDto(revision));
   }
 
   /**

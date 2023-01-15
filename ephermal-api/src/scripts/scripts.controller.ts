@@ -3,8 +3,6 @@ import {
   Controller,
   Delete,
   Get,
-  HttpException,
-  HttpStatus,
   Inject,
   OnModuleInit,
   Param,
@@ -13,20 +11,15 @@ import {
   Query,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
-import { ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
 import { script_service } from 'src/protobufs/script_service';
 
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { ScriptDto } from './dto/script.dto';
-import {
-  CreateRevisionDto,
-  CreateScriptDto,
-  RevisionRequestTypeDto,
-  toRevisionNum,
-} from './dto/requests.dto';
-import { RevisionDto } from './dto/revision.dto';
-import { BundleDto } from './dto/bundle.dto';
+import { CreateRevisionDto, CreateScriptDto } from './dto/requests.dto';
+import { RevisionDataDto, RevisionFullDto } from './dto/revision.dto';
+import { ApiOkResponsePaginated, PaginatedDto } from 'src/shared/dto/paginated';
 
 @ApiTags('scripts')
 @Controller('scripts')
@@ -40,44 +33,64 @@ export class ScriptsController implements OnModuleInit {
       this.client.getService<script_service.ScriptService>('ScriptService');
   }
 
-  @Get()
-  @ApiQuery({
-    name: 'revisions',
-    enum: RevisionRequestTypeDto,
-    required: false,
-  })
-  @ApiQuery({ name: 'id', required: false })
-  @ApiQuery({ name: 'publicName', required: false })
-  async getScript(
-    @Query('id') id?: string,
-    @Query('publicName') publicName?: string,
-    @Query('revisions')
-    revisions?: RevisionRequestTypeDto,
-  ): Promise<ScriptDto> {
-    if (!id && !publicName) {
-      throw new HttpException(
-        "Must have either 'id' or 'publicName' parameter",
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+  /**
+   * Get a list of revisions (bundle not included).
+   */
+  @Get(':id/revisions')
+  @ApiOkResponsePaginated(RevisionDataDto)
+  async revisionList(
+    @Param('id') scriptId: string,
+    @Query('page') page: number,
+  ): Promise<PaginatedDto<RevisionDataDto>> {
+    const response = await lastValueFrom(
+      this.scriptService
+        .listRevisions({
+          scriptId,
+          pageSize: 10,
+          page,
+        })
+        .pipe(toHttpException()),
+    );
 
-    return new ScriptDto(
+    return {
+      page: response.page,
+      totalPages: response.totalPages,
+      items: response.revisions.map(
+        (revision) => new RevisionFullDto(revision),
+      ),
+    };
+  }
+
+  /**
+   * Create a new revision.
+   */
+  @Patch(':id/revisions')
+  async createRevision(
+    @Param('id') scriptId: string,
+    @Body()
+    request: CreateRevisionDto,
+  ): Promise<RevisionDataDto> {
+    return new RevisionFullDto(
       await lastValueFrom(
         this.scriptService
-          .queryScript({
-            id,
-            publicName,
-            revisionRequestType: toRevisionNum(
-              revisions || RevisionRequestTypeDto.NONE,
-            ),
+          .createRevision({
+            scriptId,
+            bundle: request.bundle.toServiceBundle(),
+            projectConfig: JSON.stringify(request.projectConfig),
           })
           .pipe(toHttpException()),
       ),
     );
   }
 
+  /**
+   * Get a paginated list of scripts.
+   */
   @Get('/list')
-  async listScripts(@Query('page') page: number): Promise<ScriptDto[]> {
+  @ApiOkResponsePaginated(ScriptDto)
+  async listScripts(
+    @Query('page') page: number,
+  ): Promise<PaginatedDto<ScriptDto>> {
     const response = await lastValueFrom(
       this.scriptService
         .listScripts({
@@ -87,7 +100,23 @@ export class ScriptsController implements OnModuleInit {
         .pipe(toHttpException()),
     );
 
-    return response.scripts.map((script) => new ScriptDto(script));
+    return {
+      page: response.page,
+      totalPages: response.totalPages,
+      items: response.scripts.map((script) => new ScriptDto(script)),
+    };
+  }
+
+  /**
+   * Get a script by ID.
+   */
+  @Get(':id')
+  async getScript(@Param('id') id: string): Promise<ScriptDto> {
+    return new ScriptDto(
+      await lastValueFrom(
+        this.scriptService.queryScript({ id }).pipe(toHttpException()),
+      ),
+    );
   }
 
   @Delete(':id')
@@ -102,49 +131,6 @@ export class ScriptsController implements OnModuleInit {
     return new ScriptDto(
       await lastValueFrom(
         this.scriptService.createScript(createScript).pipe(toHttpException()),
-      ),
-    );
-  }
-
-  /**
-   * Get a list of revisions (bundle not included).
-   */
-  @Get(':id/revisions')
-  async revisionList(
-    @Param('id') scriptId: string,
-    @Query('page') page: number,
-  ): Promise<RevisionDto[]> {
-    const response = await lastValueFrom(
-      this.scriptService
-        .listRevisions({
-          scriptId,
-          pageSize: 10,
-          page,
-        })
-        .pipe(toHttpException()),
-    );
-
-    return response.revisions.map((revision) => new RevisionDto(revision));
-  }
-
-  /**
-   * Create a new revision.
-   */
-  @Patch(':id/revisions')
-  async createRevision(
-    @Param('id') scriptId: string,
-    @Body()
-    request: CreateRevisionDto,
-  ): Promise<RevisionDto> {
-    return new RevisionDto(
-      await lastValueFrom(
-        this.scriptService
-          .createRevision({
-            scriptId,
-            bundle: new BundleDto(request.bundle).toServiceBundle(),
-            projectConfig: JSON.stringify(request.projectConfig),
-          })
-          .pipe(toHttpException()),
       ),
     );
   }

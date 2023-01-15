@@ -8,6 +8,7 @@ use tonic::transport::Server;
 mod config;
 mod database_types;
 mod script_service;
+mod util;
 
 pub mod bundle {
     tonic::include_proto!("bundle");
