@@ -136,7 +136,6 @@ export class ScriptsController implements OnModuleInit {
     @Body()
     request: CreateRevisionDto,
   ): Promise<RevisionDto> {
-    console.log(new BundleDto(request.bundle).toServiceBundle());
     return new RevisionDto(
       await lastValueFrom(
         this.scriptService
