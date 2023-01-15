@@ -26,6 +26,7 @@ import {
   toRevisionNum,
 } from './dto/requests.dto';
 import { RevisionDto } from './dto/revision.dto';
+import { BundleDto } from './dto/bundle.dto';
 
 @ApiTags('scripts')
 @Controller('scripts')
@@ -43,7 +44,10 @@ export class ScriptsController implements OnModuleInit {
   @ApiQuery({
     name: 'revisions',
     enum: RevisionRequestTypeDto,
+    required: false,
   })
+  @ApiQuery({ name: 'id', required: false })
+  @ApiQuery({ name: 'publicName', required: false })
   async getScript(
     @Query('id') id?: string,
     @Query('publicName') publicName?: string,
@@ -132,12 +136,13 @@ export class ScriptsController implements OnModuleInit {
     @Body()
     request: CreateRevisionDto,
   ): Promise<RevisionDto> {
+    console.log(new BundleDto(request.bundle).toServiceBundle());
     return new RevisionDto(
       await lastValueFrom(
         this.scriptService
           .createRevision({
             scriptId,
-            bundle: request.bundle,
+            bundle: new BundleDto(request.bundle).toServiceBundle(),
             projectConfig: JSON.stringify(request.projectConfig),
           })
           .pipe(toHttpException()),

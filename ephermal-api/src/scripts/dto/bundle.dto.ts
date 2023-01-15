@@ -2,9 +2,10 @@ import { bundle } from 'src/protobufs/shared/bundle';
 
 export class FileDto {
   /**
-   * ID of the revision this file resides in
+   * ID of the revision this file resides in.
+   * This is empty when creating a revision or uploading a bundle.
    */
-  revisionId: string;
+  revisionId?: string;
 
   /**
    * Name of the file
@@ -17,11 +18,15 @@ export class FileDto {
   filePath: string;
 
   /**
-   * Content of the file, utf-8 encoded
+   * Content of the file, base64 encoded
    */
-  content: Uint8Array;
+  content: string;
 
   constructor(file: bundle.File) {
+    this.revisionId = file.revisionId;
+    this.fileName = file.fileName;
+    this.filePath = file.filePath;
+    this.content = Buffer.from(file.content).toString('base64');
     return Object.assign(this, file);
   }
 }
@@ -38,8 +43,25 @@ export class BundleDto {
    */
   files: FileDto[];
 
-  constructor(bundle: bundle.Bundle) {
-    this.entryPoint = bundle.entryPoint;
-    this.files = bundle.files.map((file) => new FileDto(file));
+  constructor(bundle: Partial<BundleDto>) {
+    Object.assign(this, bundle);
+  }
+
+  static fromServiceBundle(bundle: bundle.Bundle) {
+    const bundleDto = new BundleDto(bundle as any);
+    bundleDto.entryPoint = bundle.entryPoint;
+    bundleDto.files = bundle.files.map((file) => new FileDto(file));
+    return bundleDto;
+  }
+
+  toServiceBundle(): bundle.Bundle {
+    const bundle = Object.assign({}, this) as unknown as bundle.Bundle;
+
+    bundle.files = bundle.files.map((file) => ({
+      ...file,
+      content: Buffer.from(file.content as any, 'base64'),
+    }));
+
+    return bundle;
   }
 }

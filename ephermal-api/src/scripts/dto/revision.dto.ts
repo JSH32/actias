@@ -32,6 +32,7 @@ export class RevisionDto {
     this.scriptId = revision.scriptId;
     // This is fine because script service does validation on JSON.
     this.projectConfig = JSON.parse(revision.projectConfig);
-    this.bundle = revision.bundle && new BundleDto(revision.bundle);
+    this.bundle =
+      revision.bundle && BundleDto.fromServiceBundle(revision.bundle);
   }
 }

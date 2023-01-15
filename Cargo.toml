@@ -2,7 +2,8 @@
 members = [
     "ephermal-worker",
     "ephermal-common",
-    "ephermal-script-service"
+    "ephermal-script-service",
+    "ephermal-cli"
 ]
 
 [workspace.dependencies]

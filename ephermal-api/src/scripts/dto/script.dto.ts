@@ -16,8 +16,9 @@ export class ScriptDto {
 
   /**
    * ID of the currently deployed revision.
+   * This is empty for newly created scripts.
    */
-  currentRevisionId: string;
+  currentRevisionId?: string;
 
   constructor(bundle: script_service.Script) {
     this.id = bundle.id;
