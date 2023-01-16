@@ -1,8 +1,8 @@
-use ephermal_common::config::{dotenv, get_env, get_env_or};
+use actias_common::config::{dotenv, get_env, get_env_or};
 
 pub struct Config {
     pub port: u16,
-    pub script_service_uri: String,
+    pub database_url: String,
 }
 
 impl Config {
@@ -11,7 +11,7 @@ impl Config {
 
         Config {
             port: get_env_or("PORT", 3000),
-            script_service_uri: get_env("SCRIPT_SERVICE_URI"),
+            database_url: get_env("DATABASE_URL"),
         }
     }
 }

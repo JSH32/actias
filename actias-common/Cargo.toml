@@ -1,5 +1,5 @@
 [package]
-name = "ephermal-common"
+name = "actias-common"
 version = "0.1.0"
 edition = "2021"
 

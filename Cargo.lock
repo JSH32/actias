@@ -3,6 +3,75 @@
 version = 3
 
 [[package]]
+name = "actias-cli"
+version = "0.1.0"
+dependencies = [
+ "base64 0.21.0",
+ "chrono",
+ "clap",
+ "colored",
+ "futures",
+ "include_dir",
+ "inquire",
+ "pathdiff",
+ "prettytable-rs",
+ "progenitor",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wax",
+]
+
+[[package]]
+name = "actias-common"
+version = "0.1.0"
+dependencies = [
+ "dotenv",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "actias-script-service"
+version = "0.1.0"
+dependencies = [
+ "actias-common",
+ "lz4_flex",
+ "prost",
+ "prost-build",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "uuid",
+]
+
+[[package]]
+name = "actias-worker"
+version = "0.1.0"
+dependencies = [
+ "actias-common",
+ "anyhow",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-tls",
+ "mlua",
+ "prost",
+ "prost-build",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "ahash"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -568,75 +637,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9852635589dc9f9ea1b6fe9f05b50ef208c85c834a562f0c6abb1c475736ec2b"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "ephermal-cli"
-version = "0.1.0"
-dependencies = [
- "base64 0.21.0",
- "chrono",
- "clap",
- "colored",
- "futures",
- "include_dir",
- "inquire",
- "pathdiff",
- "prettytable-rs",
- "progenitor",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "wax",
-]
-
-[[package]]
-name = "ephermal-common"
-version = "0.1.0"
-dependencies = [
- "dotenv",
- "serde",
- "serde_json",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "ephermal-script-service"
-version = "0.1.0"
-dependencies = [
- "ephermal-common",
- "lz4_flex",
- "prost",
- "prost-build",
- "serde",
- "serde_json",
- "sqlx",
- "tokio",
- "tonic",
- "tonic-build",
- "uuid",
-]
-
-[[package]]
-name = "ephermal-worker"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ephermal-common",
- "futures-util",
- "http-body-util",
- "hyper",
- "hyper-tls",
- "mlua",
- "prost",
- "prost-build",
- "serde",
- "serde_json",
- "tokio",
- "tonic",
- "tonic-build",
 ]
 
 [[package]]

@@ -1,13 +1,13 @@
 [workspace]
 members = [
-    "ephermal-worker",
-    "ephermal-common",
-    "ephermal-script-service",
-    "ephermal-cli"
+    "actias-worker",
+    "actias-common",
+    "actias-script-service",
+    "actias-cli"
 ]
 
 [workspace.dependencies]
-ephermal-common = { path = "./ephermal-common" }
+actias-common = { path = "./actias-common" }
 hyper = { version = "0.14.23", features = ["full"] }
 tokio = { version = "1.23.0", features = ["full"] }
 tonic = "0.8.3"

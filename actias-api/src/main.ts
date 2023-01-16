@@ -10,8 +10,8 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe({ transform: true }));
 
   const config = new DocumentBuilder()
-    .setTitle('Ephermal API')
-    .setDescription('Public facing API for ephermal.')
+    .setTitle('Actias API')
+    .setDescription('Public facing API for Actias workers.')
     .setVersion('1.0')
     .addTag('scripts', 'revisions')
     .build();

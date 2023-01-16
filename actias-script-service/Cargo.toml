@@ -1,5 +1,5 @@
 [package]
-name = "ephermal-script-service"
+name = "actias-script-service"
 version = "0.1.0"
 edition = "2021"
 resolver = "2"
@@ -7,7 +7,7 @@ resolver = "2"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ephermal-common = { path = "../ephermal-common" }
+actias-common = { workspace = true }
 lz4_flex = { version = "0.9.3", default-features = false, features = ["checked-decode"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde = { version = "1", features = ["derive"] }

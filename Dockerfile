@@ -8,9 +8,9 @@ FROM chef AS planner
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./protobufs ./protobufs
-COPY ./ephermal-common ./ephermal-common
-COPY ./ephermal-script-service ./ephermal-script-service
-COPY ./ephermal-worker ./ephermal-worker
+COPY ./actias-common ./actias-common
+COPY ./actias-script-service ./actias-script-service
+COPY ./actias-worker ./actias-worker
 RUN cargo chef prepare  --recipe-path recipe.json
 
 FROM chef AS builder
@@ -32,4 +32,4 @@ WORKDIR /app
 COPY --from=builder /app/target/release/${CRATE_NAME} /app
 CMD [ "./${CRATE_NAME}" ]
 
-LABEL org.opencontainers.image.source="https://github.com/jsh32/ephermal"
+LABEL org.opencontainers.image.source="https://github.com/jsh32/actias"

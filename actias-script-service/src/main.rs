@@ -1,7 +1,7 @@
 use crate::proto_script_service::script_service_server::ScriptServiceServer;
 use crate::{config::Config, script_service::ScriptService};
-use ephermal_common::setup_tracing;
-use ephermal_common::tracing::info;
+use actias_common::setup_tracing;
+use actias_common::tracing::info;
 use sqlx::postgres::PgPoolOptions;
 use tonic::transport::Server;
 

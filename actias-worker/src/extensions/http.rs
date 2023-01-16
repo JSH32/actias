@@ -1,5 +1,5 @@
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
-use ephermal_common::tracing::debug;
+use actias_common::tracing::debug;
 use hyper::{
     client::HttpConnector,
     header::HeaderName,

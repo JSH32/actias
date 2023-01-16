@@ -24,7 +24,7 @@ use crate::{
 
 static TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template");
 
-/// Ephermal CLI for interacting with the ephermal API.
+/// Actias CLI for interacting with the actias API.
 #[derive(Parser, Debug)]
 #[command(propagate_version = true)]
 #[command(author, version, about, long_about = None)]

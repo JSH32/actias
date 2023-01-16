@@ -1,12 +1,12 @@
 [package]
-name = "ephermal-worker"
+name = "actias-worker"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ephermal-common = { path = "../ephermal-common" }
+actias-common = { workspace = true }
 mlua = { version = "0.8", features = ["luau", "vendored", "serialize", "send", "async"] }
 http-body-util = "0.1.0-rc.2"
 serde_json = "1.0.91"

@@ -6,14 +6,14 @@ use crate::{
 };
 
 use self::extension::LuaExtension;
-use ephermal_common::tracing::trace;
+use actias_common::tracing::trace;
 use mlua::{AsChunk, ExternalResult, Lua, Table};
 use std::{borrow::Cow, ops::Deref};
 
-/// Lua runtime with ephermal specific methods.
-pub struct EphermalRuntime(Lua);
+/// Lua runtime with actias specific methods.
+pub struct ActiasRuntime(Lua);
 
-impl Deref for EphermalRuntime {
+impl Deref for ActiasRuntime {
     type Target = Lua;
 
     fn deref(&self) -> &Self::Target {
@@ -21,8 +21,8 @@ impl Deref for EphermalRuntime {
     }
 }
 
-impl EphermalRuntime {
-    /// Create a new [`EphermalRuntime`], this will run the main script from the entrypoint defined in the [`Bundle`].
+impl ActiasRuntime {
+    /// Create a new [`ActiasRuntime`], this will run the main script from the entrypoint defined in the [`Bundle`].
     ///
     /// # Arguments
     /// - `public_identifier` - Public identifier, this is so the script can identify it's own routing pattern.

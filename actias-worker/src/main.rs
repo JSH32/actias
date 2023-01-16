@@ -5,7 +5,7 @@ mod server;
 
 use std::{convert::Infallible, net::SocketAddr};
 
-use ephermal_common::{
+use actias_common::{
     setup_tracing,
     tracing::{error, info},
 };

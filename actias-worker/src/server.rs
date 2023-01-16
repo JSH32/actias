@@ -2,9 +2,9 @@ use crate::proto::script_service::find_script_request::Query;
 use crate::proto::script_service::GetRevisionRequest;
 
 use crate::{proto::script_service::FindScriptRequest, ScriptServiceClient};
+use actias_common::tracing::Level;
+use actias_common::tracing::{span, trace};
 use core::result::Result::Ok;
-use ephermal_common::tracing::Level;
-use ephermal_common::tracing::{span, trace};
 use hyper::Uri;
 use hyper::{http, Body, Request, Response};
 use mlua::LuaSerdeExt;
@@ -14,7 +14,7 @@ use tokio::task;
 
 use crate::extensions;
 use crate::extensions::http::Request as LuaRequest;
-use crate::runtime::EphermalRuntime;
+use crate::runtime::ActiasRuntime;
 
 /// Constructs a lua runtime and runs the proper http handler per reuqest.
 pub async fn http_handler(
@@ -87,8 +87,7 @@ async fn lua_handler(
             .unwrap());
     };
 
-    let lua =
-        EphermalRuntime::new(identifier.map(|s| s.to_string()), revision.into_inner()).await?;
+    let lua = ActiasRuntime::new(identifier.map(|s| s.to_string()), revision.into_inner()).await?;
 
     // Create a context URI without the identifier, used for better routing.
     let old_uri = request.uri().clone();
