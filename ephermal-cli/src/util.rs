@@ -1,7 +1,10 @@
-use std::{fs, path::PathBuf};
+use std::{fs, io::Write, path::PathBuf};
 
+use base64::Engine;
 use colored::Colorize;
 use serde::Deserialize;
+
+use crate::{client::types::RevisionFullDto, project::ProjectConfig};
 
 /// Convert an API error to a string which can be used to log.
 pub fn progenitor_error(error: progenitor::progenitor_client::Error) -> String {
@@ -61,4 +64,62 @@ pub fn get_dir(
     }
 
     Ok(dir)
+}
+
+/// Write a revision to a provided path.
+pub fn write_revision(path: PathBuf, revision: RevisionFullDto) -> Result<(), String> {
+    check_clone_dir(&revision.script_id, &path)?;
+
+    // Create copy path.
+    std::fs::create_dir_all(path.clone()).map_err(|e| e.to_string())?;
+
+    // Copy the project metadata JSON.
+    let project_file = serde_json::to_string_pretty(&revision.project_config).unwrap();
+    let mut project_config = path.clone();
+    project_config.push("project.json");
+    overwrite_file(project_config, project_file.into_bytes());
+
+    for file in revision.bundle.unwrap().files {
+        let mut path = path.clone();
+        path.push(file.file_path);
+
+        overwrite_file(
+            path,
+            base64::engine::general_purpose::STANDARD
+                .decode(file.content)
+                .unwrap(),
+        )
+    }
+
+    Ok(())
+}
+
+/// Check if revision can be cloned to this directory.
+fn check_clone_dir(script_id: &str, path: &PathBuf) -> Result<(), String> {
+    // Things exist here
+    if path.exists() && path.read_dir().unwrap().next().is_some() {
+        let config = ProjectConfig::from_path(path.as_path())
+            .map_err(|_| "Directory not empty and not a project")?;
+
+        if config.id.unwrap_or("".to_string()) != script_id {
+            return Err(
+                "Script ID in that directory doesn't match, cannot safely clone".to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Overwrite file if it exists.
+pub fn overwrite_file(path: PathBuf, content: Vec<u8>) {
+    let prefix_parent = path.parent().unwrap();
+    std::fs::create_dir_all(prefix_parent).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(path)
+        .unwrap();
+    f.write_all(&content).unwrap();
+    f.flush().unwrap();
 }

@@ -3,11 +3,14 @@ import {
   Controller,
   Delete,
   Get,
+  HttpException,
+  HttpStatus,
   Inject,
   OnModuleInit,
   Param,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
@@ -17,9 +20,16 @@ import { script_service } from 'src/protobufs/script_service';
 
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { ScriptDto } from './dto/script.dto';
-import { CreateRevisionDto, CreateScriptDto } from './dto/requests.dto';
+import {
+  CreateRevisionDto,
+  CreateScriptDto,
+  NewRevisionResponseDto,
+} from './dto/requests.dto';
 import { RevisionDataDto, RevisionFullDto } from './dto/revision.dto';
-import { ApiOkResponsePaginated, PaginatedDto } from 'src/shared/dto/paginated';
+import {
+  PaginatedResponseDto,
+  ApiOkResponsePaginated,
+} from 'src/shared/dto/paginated';
 
 @ApiTags('scripts')
 @Controller('scripts')
@@ -41,30 +51,52 @@ export class ScriptsController implements OnModuleInit {
   async revisionList(
     @Param('id') scriptId: string,
     @Query('page') page: number,
-  ): Promise<PaginatedDto<RevisionDataDto>> {
+  ): Promise<PaginatedResponseDto<RevisionDataDto>> {
     const response = await lastValueFrom(
       this.scriptService
         .listRevisions({
           scriptId,
           pageSize: 10,
-          page,
+          page: page - 1,
         })
         .pipe(toHttpException()),
     );
 
+    if (!response.revisions) {
+      throw new HttpException(
+        `Invalid page, last page is ${response.totalPages + 1}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     return {
-      page: response.page,
-      totalPages: response.totalPages,
+      page: response.page + 1,
+      totalPages: response.totalPages + 1,
       items: response.revisions.map(
         (revision) => new RevisionFullDto(revision),
       ),
     };
   }
 
+  @Patch(':id/revisions')
+  async setRevision(
+    @Param('id') scriptId: string,
+    @Query('revisionId') revisionId: string,
+  ): Promise<NewRevisionResponseDto> {
+    return (await lastValueFrom(
+      this.scriptService
+        .setScriptRevision({
+          scriptId,
+          revisionId,
+        })
+        .pipe(toHttpException()),
+    )) as NewRevisionResponseDto;
+  }
+
   /**
    * Create a new revision.
    */
-  @Patch(':id/revisions')
+  @Put(':id/revisions')
   async createRevision(
     @Param('id') scriptId: string,
     @Body()
@@ -90,19 +122,26 @@ export class ScriptsController implements OnModuleInit {
   @ApiOkResponsePaginated(ScriptDto)
   async listScripts(
     @Query('page') page: number,
-  ): Promise<PaginatedDto<ScriptDto>> {
+  ): Promise<PaginatedResponseDto<ScriptDto>> {
     const response = await lastValueFrom(
       this.scriptService
         .listScripts({
           pageSize: 25,
-          page,
+          page: page - 1,
         })
         .pipe(toHttpException()),
     );
 
+    if (!response.scripts) {
+      throw new HttpException(
+        `Invalid page, last page is ${response.totalPages + 1}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     return {
-      page: response.page,
-      totalPages: response.totalPages,
+      page: response.page + 1,
+      totalPages: response.totalPages + 1,
       items: response.scripts.map((script) => new ScriptDto(script)),
     };
   }
@@ -121,7 +160,9 @@ export class ScriptsController implements OnModuleInit {
 
   @Delete(':id')
   async deleteScript(@Param('id') scriptId: string) {
-    this.scriptService.deleteScript({ scriptId }).pipe(toHttpException());
+    await lastValueFrom(
+      this.scriptService.deleteScript({ scriptId }).pipe(toHttpException()),
+    );
   }
 
   @Post()

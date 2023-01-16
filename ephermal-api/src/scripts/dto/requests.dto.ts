@@ -10,6 +10,15 @@ export class CreateScriptDto {
   publicIdentifier: string;
 }
 
+export class NewRevisionResponseDto {
+  scriptId: string;
+  /**
+   * New revision ID.
+   * This may be null.
+   */
+  revisionId?: string;
+}
+
 export class CreateRevisionDto {
   /**
    * The bundle which will be used.

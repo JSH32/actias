@@ -27,7 +27,6 @@ export class FileDto {
     this.fileName = file.fileName;
     this.filePath = file.filePath;
     this.content = Buffer.from(file.content).toString('base64');
-    return Object.assign(this, file);
   }
 }
 

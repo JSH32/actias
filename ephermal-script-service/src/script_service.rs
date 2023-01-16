@@ -53,6 +53,19 @@ impl ScriptService {
         )))
     }
 
+    async fn get_db_revision(&self, revision_id: &str) -> Result<DbRevision, tonic::Status> {
+        sqlx::query_as::<_, DbRevision>("SELECT * FROM revisions WHERE id = $1")
+            .bind(
+                Uuid::parse_str(&revision_id)
+                    .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?
+                    .to_string(),
+            )
+            .fetch_optional(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or(Status::not_found("Revision with that ID was not found"))
+    }
+
     async fn create_db_revision(
         &self,
         script_id: &Uuid,
@@ -198,6 +211,10 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListRevisionResponse>, tonic::Status> {
         let request = request.get_ref();
 
+        if request.page < 0 {
+            return Err(Status::invalid_argument("invalid page number provided!"));
+        }
+
         let mut count_query = sqlx::query_as(if request.script_id.is_some() {
             "SELECT COUNT(*) as count FROM revisions WHERE script_id = $1"
         } else {
@@ -205,7 +222,7 @@ impl script_service_server::ScriptService for ScriptService {
         });
 
         let mut query = sqlx::query_as::<_, DbRevision>(if request.script_id.is_some() {
-            "SELECT * FROM revisions ORDER BY created DESC LIMIT $1 OFFSET $2 WHERE script_id = $3"
+            "SELECT * FROM revisions WHERE script_id = $3 ORDER BY created DESC LIMIT $1 OFFSET $2"
         } else {
             "SELECT * FROM revisions ORDER BY created DESC LIMIT $1 OFFSET $2"
         })
@@ -224,7 +241,7 @@ impl script_service_server::ScriptService for ScriptService {
 
         Ok(Response::new(ListRevisionResponse {
             page: request.page,
-            total_pages: safe_divide!(count.0, request.page_size),
+            total_pages: safe_divide!(count.0 as i32, request.page_size),
             revisions: query
                 .fetch_all(&self.database)
                 .await
@@ -244,14 +261,85 @@ impl script_service_server::ScriptService for ScriptService {
     async fn delete_revision(
         &self,
         request: tonic::Request<DeleteRevisionRequest>,
-    ) -> Result<tonic::Response<()>, tonic::Status> {
-        sqlx::query("DELETE FROM revisions WHERE script_id = $1")
-            .bind(&request.get_ref().id)
+    ) -> Result<tonic::Response<NewRevisionResponse>, tonic::Status> {
+        let request = request.get_ref();
+
+        let revision = self.get_db_revision(&request.revision_id).await?;
+        let script = self
+            .get_script_info(find_script_request::Query::Id(
+                revision.script_id.to_string(),
+            ))
+            .await?;
+
+        let mut tx = self
+            .database
+            .begin()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        sqlx::query("DELETE FROM revisions WHERE id = $1")
+            .bind(&revision.id)
+            .execute(&mut tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let newest_revision = sqlx::query_as::<_, DbRevision>(
+            "SELECT * FROM revisions WHERE script_id = $1 ORDER BY created LIMIT 1",
+        )
+        .bind(script.id)
+        .fetch_optional(&mut tx)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        let current_revision: (Option<Uuid>,) = sqlx::query_as(
+            "UPDATE scripts SET current_revision = $1, last_updated = now() WHERE id = $2 RETURNING current_revision",
+        )
+        .bind(match newest_revision {
+            Some(v) => Some(v.id),
+            None => None,
+        }).bind(script.id).fetch_one(&mut tx).await.map_err(|e| Status::internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(NewRevisionResponse {
+            script_id: script.id.to_string(),
+            revision_id: current_revision.0.map(|u| u.to_string()),
+        }))
+    }
+
+    async fn set_script_revision(
+        &self,
+        request: tonic::Request<SetRevisionRequest>,
+    ) -> Result<tonic::Response<NewRevisionResponse>, tonic::Status> {
+        let request = request.get_ref();
+
+        let script = self
+            .get_script_info(find_script_request::Query::Id(
+                request.script_id.to_string(),
+            ))
+            .await?;
+        let revision = self.get_db_revision(&request.revision_id).await?;
+
+        if revision.script_id != script.id {
+            return Err(Status::invalid_argument(format!(
+                "Script ({}) doesn't own the revision ({})",
+                script.id, revision.id
+            )));
+        }
+
+        sqlx::query("UPDATE scripts SET current_revision = $1, last_updated = now() WHERE id = $2")
+            .bind(revision.id)
+            .bind(script.id)
             .execute(&self.database)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        Ok(Response::new(()))
+        Ok(Response::new(NewRevisionResponse {
+            script_id: script.id.to_string(),
+            revision_id: Some(revision.id.to_string()),
+        }))
     }
 
     async fn list_scripts(
@@ -260,6 +348,10 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListScriptResponse>, tonic::Status> {
         let request = request.get_ref();
 
+        if request.page < 0 {
+            return Err(Status::invalid_argument("invalid page number provided!"));
+        }
+
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) as count FROM scripts")
             .fetch_one(&self.database)
             .await
@@ -267,7 +359,7 @@ impl script_service_server::ScriptService for ScriptService {
 
         Ok(Response::new(ListScriptResponse {
             page: request.page,
-            total_pages: safe_divide!(count.0, request.page_size),
+            total_pages: safe_divide!(count.0 as i32, request.page_size),
             scripts: sqlx::query_as::<_, DbScript>(
                 "SELECT * FROM scripts ORDER BY last_updated DESC LIMIT $1 OFFSET $2",
             )

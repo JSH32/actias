@@ -12,6 +12,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
+import { NewRevisionResponseDto } from './dto/requests.dto';
 import { RevisionFullDto } from './dto/revision.dto';
 
 @ApiTags('revisions')
@@ -45,7 +46,13 @@ export class RevisionsController implements OnModuleInit {
    * Delete a revision by ID.
    */
   @Delete(':id')
-  async deleteRevision(@Param('id') id: string) {
-    return this.scriptService.deleteRevision({ id }).pipe(toHttpException());
+  async deleteRevision(
+    @Param('id') id: string,
+  ): Promise<NewRevisionResponseDto> {
+    return (await lastValueFrom(
+      this.scriptService
+        .deleteRevision({ revisionId: id })
+        .pipe(toHttpException()),
+    )) as NewRevisionResponseDto;
   }
 }

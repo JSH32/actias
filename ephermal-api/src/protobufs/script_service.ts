@@ -49,7 +49,19 @@ export namespace script_service {
         revisions?: script_service.Revision[];
     }
     export interface DeleteRevisionRequest {
-        id?: string;
+        revisionId?: string;
+    }
+    export interface SetRevisionRequest {
+        scriptId?: string;
+        // New revision ID.
+    // This must be owned by the &#x60;scriptId&#x60;
+        revisionId?: string;
+    }
+    // Response sent when revision of a script is changed.
+    export interface NewRevisionResponse {
+        scriptId?: string;
+        // New revision ID.
+        revisionId?: string;
     }
     // Find an existing script by id.
     export interface FindScriptRequest {
@@ -92,6 +104,11 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;
+        setScriptRevision(
+            data: SetRevisionRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<NewRevisionResponse>;
         getRevision(
             data: GetRevisionRequest,
             metadata?: Metadata,
@@ -111,7 +128,7 @@ export namespace script_service {
             data: DeleteRevisionRequest,
             metadata?: Metadata,
             ...rest: any[]
-        ): Observable<google.protobuf.Empty>;
+        ): Observable<NewRevisionResponse>;
     }
 }
 export namespace bundle {

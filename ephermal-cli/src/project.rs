@@ -63,8 +63,9 @@ impl ProjectConfig {
                 content: base64::engine::general_purpose::STANDARD_NO_PAD
                     .encode(fs::read_to_string(file.clone()).unwrap()),
                 file_name: file.file_name().unwrap().to_str().unwrap().to_owned(),
-                file_path: pathdiff::diff_paths(self.project_path.clone().unwrap(), file)
-                    .unwrap()
+                file_path: file
+                    .strip_prefix(self.project_path.clone().unwrap().as_path())
+                    .map_err(|e| e.to_string())?
                     .to_str()
                     .unwrap()
                     .to_string(),

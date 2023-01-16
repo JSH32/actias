@@ -2,6 +2,12 @@ import { OmitType } from '@nestjs/swagger';
 import { script_service } from 'src/protobufs/script_service';
 import { BundleDto } from './bundle.dto';
 
+export class ProjectConfigDto {
+  id: string;
+  entryPoint: string;
+  includes: string[];
+}
+
 export class RevisionFullDto {
   id: string;
 
@@ -19,7 +25,7 @@ export class RevisionFullDto {
    * Config that the project was uploaded with.
    * This is metadata and is mostly included for CLI to restore revisions intact.
    */
-  projectConfig: object;
+  projectConfig: ProjectConfigDto;
 
   /**
    * Content bundle of all files.

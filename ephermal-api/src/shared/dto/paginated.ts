@@ -6,7 +6,7 @@ import {
   getSchemaPath,
 } from '@nestjs/swagger';
 
-export class PaginatedDto<T> {
+export class PaginatedResponseDto<T> {
   items: T[];
 
   @ApiProperty({ description: 'Current page.' })
@@ -14,28 +14,20 @@ export class PaginatedDto<T> {
 
   @ApiProperty({ description: 'How many pages exist.' })
   totalPages: number;
-
-  constructor(data: Partial<PaginatedDto<T>>) {
-    Object.assign(this, data);
-  }
 }
 
-/**
- * Paginated OpenAPI decorator, apply this to everywhere with a paginated response type.
- * @param dataDto type of the elements.
- */
 export const ApiOkResponsePaginated = <DataDto extends Type<unknown>>(
   dataDto: DataDto,
 ) =>
   applyDecorators(
-    ApiExtraModels(PaginatedDto, dataDto),
+    ApiExtraModels(PaginatedResponseDto, dataDto),
     ApiOkResponse({
       schema: {
         allOf: [
-          { $ref: getSchemaPath(PaginatedDto) },
+          { $ref: getSchemaPath(PaginatedResponseDto) },
           {
             properties: {
-              data: {
+              items: {
                 type: 'array',
                 items: { $ref: getSchemaPath(dataDto) },
               },
