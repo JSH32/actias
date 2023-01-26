@@ -3,4 +3,5 @@ export default () => ({
   externalServices: {
     scriptServiceUri: process.env.SCRIPT_SERVICE_URL,
   },
+  databaseUrl: process.env.DATABASE_URL,
 });

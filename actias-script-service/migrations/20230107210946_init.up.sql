@@ -6,7 +6,7 @@ CREATE TABLE scripts
     last_updated      TIMESTAMPTZ NOT NULL DEFAULT now(),
     current_revision  UUID,
 
-    PRIMARY KEY(id)
+    PRIMARY KEY (id)
 );
 
 -- Script revisions.
@@ -32,4 +32,4 @@ CREATE TABLE files
     file_path    VARCHAR(32767) NOT NULL,
 
     FOREIGN KEY (revision_id) REFERENCES revisions (id) ON DELETE CASCADE
-)
+);

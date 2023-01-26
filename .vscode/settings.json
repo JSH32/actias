@@ -5,5 +5,17 @@
         "options": [
             "--proto_path=protobufs",
         ]
-    }
+    },
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "server": "localhost",
+            "driver": "CockroachDB",
+            "name": "local",
+            "database": "actias",
+            "username": "actias",
+            "password": "actias",
+            "connectString": "postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable"
+        }
+    ]
 }
