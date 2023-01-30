@@ -1,35 +1,23 @@
-import {
-  Entity,
-  OptionalProps,
-  PrimaryKey,
-  Property,
-  Unique,
-} from '@mikro-orm/core';
+import { Entity, Enum, ManyToOne, Unique } from '@mikro-orm/core';
+import { BaseEntity } from './BaseEntity';
+import { Users } from './Users';
+
+export enum AuthMethod {
+  PASSWORD = 'password',
+  GOOGLE = 'google',
+  GITHUB = 'github',
+}
 
 @Entity()
-@Unique({
-  name: 'user_auth_methods_auth_method_user_id_key',
-  properties: ['authMethod', 'userId'],
-})
-export class UserAuthMethods {
-  [OptionalProps]?: 'id' | 'lastAccessed';
+@Unique({ properties: ['authMethod', 'user'] })
+export class UserAuthMethods extends BaseEntity {
+  @ManyToOne()
+  user!: Users;
 
-  @Unique({ name: 'user_auth_methods_id_key' })
-  @PrimaryKey({ columnType: 'uuid', defaultRaw: `gen_random_uuid()` })
-  id!: string;
-
-  @Property({ columnType: 'uuid' })
-  userId!: string;
-
-  @Property({ columnType: 'text' })
   cachedUsername!: string;
 
-  @Property({ columnType: 'auth_method' })
-  authMethod!: unknown;
-
-  @Property({ columnType: 'text' })
+  @Enum(() => AuthMethod)
+  authMethod!: AuthMethod;
   value!: string;
-
-  @Property({ length: 6, defaultRaw: `now():::TIMESTAMPTZ` })
   lastAccessed!: Date;
 }

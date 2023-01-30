@@ -5,6 +5,7 @@ import config from './config';
 import { ScriptModule } from './scripts/scripts.module';
 import { UsersModule } from './users/users.module';
 import { AclModule } from './acl/acl.module';
+import { TsMorphMetadataProvider } from '@mikro-orm/reflection';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { AclModule } from './acl/acl.module';
       useFactory: async (configService: ConfigService) => {
         const logger = new Logger('MikroORM');
         return {
+          metadataProvider: TsMorphMetadataProvider,
           entities: ['./dist/entities'],
           entitiesTs: ['./src/entities'],
           clientUrl: configService.get('databaseUrl'),

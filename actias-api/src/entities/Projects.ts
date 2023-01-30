@@ -1,22 +1,18 @@
-import {
-  Entity,
-  OptionalProps,
-  PrimaryKey,
-  Property,
-  Unique,
-} from '@mikro-orm/core';
+import { Collection, Entity, OneToMany, Property } from '@mikro-orm/core';
+import { Resources } from './Resources';
+import { BaseEntity } from './BaseEntity';
 
 @Entity()
-export class Projects {
-  [OptionalProps]?: 'id';
-
-  @Unique({ name: 'projects_id_key' })
-  @PrimaryKey({ columnType: 'uuid', defaultRaw: `gen_random_uuid()` })
-  id!: string;
-
+export class Projects extends BaseEntity {
   @Property({ length: 32 })
   name!: string;
 
   @Property({ columnType: 'uuid' })
   ownerId!: string;
+
+  @OneToMany(() => Resources, (resource) => resource.project)
+  resources = new Collection<Resources>(this);
+
+  @Property()
+  defaultPermissions!: number;
 }

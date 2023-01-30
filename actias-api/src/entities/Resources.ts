@@ -1,14 +1,15 @@
-import { Entity, ManyToOne, PrimaryKey } from '@mikro-orm/core';
+import { Entity, ManyToOne } from '@mikro-orm/core';
+import { BaseEntity } from './BaseEntity';
 import { Projects } from './Projects';
 
+enum ResourceType {
+  SCRIPT = 'script',
+}
+
 @Entity()
-export class Resources {
-  @PrimaryKey({ columnType: 'resource_type' })
-  resourceType!: unknown;
+export class Resources extends BaseEntity {
+  resourceType!: ResourceType;
 
-  @PrimaryKey({ columnType: 'uuid' })
-  resourceId!: string;
-
-  @ManyToOne({ entity: () => Projects, onDelete: 'cascade' })
+  @ManyToOne()
   project!: Projects;
 }

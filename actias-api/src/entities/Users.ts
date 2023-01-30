@@ -1,26 +1,13 @@
-import {
-  Entity,
-  OptionalProps,
-  PrimaryKey,
-  Property,
-  Unique,
-} from '@mikro-orm/core';
+import { Collection, Entity, OneToMany } from '@mikro-orm/core';
+import { BaseEntity } from './BaseEntity';
+import { UserAuthMethods } from './UserAuthMethods';
 
 @Entity()
-export class Users {
-  [OptionalProps]?: 'admin' | 'created' | 'id';
-
-  @Unique({ name: 'users_id_key' })
-  @PrimaryKey({ columnType: 'uuid', defaultRaw: `gen_random_uuid()` })
-  id!: string;
-
-  @Property({ length: 6, defaultRaw: `now():::TIMESTAMPTZ` })
-  created!: Date;
-
-  @Unique({ name: 'users_email_key' })
-  @Property({ length: 320 })
+export class Users extends BaseEntity {
   email!: string;
-
-  @Property({ default: false })
+  username!: string;
   admin = false;
+
+  @OneToMany(() => UserAuthMethods, (method) => method.user)
+  authMethods = new Collection<UserAuthMethods>(this);
 }

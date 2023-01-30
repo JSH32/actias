@@ -1,18 +1,16 @@
-import { Entity, ManyToOne, PrimaryKey } from '@mikro-orm/core';
+import { Entity, OneToOne, Unique } from '@mikro-orm/core';
+import { BaseEntity } from './BaseEntity';
 import { Projects } from './Projects';
 import { Users } from './Users';
 
 @Entity()
-export class Access {
-  @ManyToOne({ entity: () => Users, onDelete: 'cascade', primary: true })
+@Unique({ properties: ['user', 'project'] })
+export class Access extends BaseEntity {
+  @OneToOne()
   user!: Users;
 
-  @ManyToOne({ entity: () => Projects, onDelete: 'cascade', primary: true })
+  @OneToOne()
   project!: Projects;
 
-  @PrimaryKey({ columnType: 'resource_type' })
-  resourceType!: unknown;
-
-  @PrimaryKey({ columnType: 'int2' })
   permissionBitfield!: number;
 }
