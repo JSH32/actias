@@ -1,13 +1,29 @@
-import { Collection, Entity, OneToMany } from '@mikro-orm/core';
-import { BaseEntity } from './BaseEntity';
+import { Collection, Entity, OneToMany, Property } from '@mikro-orm/core';
+import { ActiasBaseEntity } from './BaseEntity';
 import { UserAuthMethods } from './UserAuthMethods';
 
+/**
+ * Users table, stores simple information about a user account.
+ */
 @Entity()
-export class Users extends BaseEntity {
+export class Users extends ActiasBaseEntity {
+  @Property({ length: 320, unique: true })
   email!: string;
-  username!: string;
-  admin = false;
 
-  @OneToMany(() => UserAuthMethods, (method) => method.user)
+  @Property({ length: 36, unique: true })
+  username!: string;
+
+  @Property({ default: false })
+  admin!: boolean;
+
+  @OneToMany(() => UserAuthMethods, (method) => method.user, {
+    orphanRemoval: true,
+  })
   authMethods = new Collection<UserAuthMethods>(this);
+
+  constructor(data: Partial<Users>) {
+    super();
+    Object.assign(this, data);
+    console.log(this);
+  }
 }

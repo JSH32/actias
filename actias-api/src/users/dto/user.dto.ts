@@ -1,22 +1,40 @@
 import { Users } from 'src/entities/Users';
 
-type AuthMethods = 'discord' | 'google' | 'github';
-
+/**
+ * A singular user.
+ */
 export class UserDto {
+  /**
+   * Users ID.
+   */
   id!: string;
-  created!: Date;
-  email!: string;
-  username!: string;
-  // TODO: this entity
-  authMethods!: AuthMethods[];
 
-  // constructor(user: Users) {
-  //   return Object.assign(this, {
-  //     id: user.id,
-  //     created: user.created,
-  //     email: user.email,
-  //     username: user.username,
-  //     authMethods: user.authMethods.toArray(),
-  //   });
-  // }
+  /**
+   * When the user was created.
+   */
+  created!: Date;
+
+  /**
+   * If the user is a systm admin.
+   */
+  admin!: boolean;
+
+  /**
+   * Users email.
+   */
+  email!: string;
+
+  /**
+   * Users username.
+   */
+  username!: string;
+
+  constructor(entity: Users) {
+    return Object.assign(this, {
+      id: entity.id,
+      created: entity.createdAt,
+      email: entity.email,
+      username: entity.username,
+    });
+  }
 }

@@ -36,7 +36,7 @@ import {
 export class ScriptsController implements OnModuleInit {
   private scriptService: script_service.ScriptService;
 
-  constructor(@Inject('SCRIPT_SERVICE') private client: ClientGrpc) {}
+  constructor(@Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc) {}
 
   onModuleInit() {
     this.scriptService =

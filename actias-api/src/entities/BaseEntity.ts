@@ -1,13 +1,13 @@
-import { PrimaryKey, Property } from '@mikro-orm/core';
-import { v4 } from 'uuid';
+import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
 
-export abstract class BaseEntity {
+@Entity({ abstract: true })
+export abstract class ActiasBaseEntity {
   @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
-  id: string = v4();
+  id: string;
 
-  @Property()
-  createdAt: Date = new Date();
+  @Property({ defaultRaw: 'now()' })
+  createdAt: Date;
 
-  @Property({ onUpdate: () => new Date() })
-  updatedAt: Date = new Date();
+  @Property({ onUpdate: () => new Date(), defaultRaw: 'now()' })
+  updatedAt: Date;
 }

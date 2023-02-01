@@ -1,0 +1,7 @@
+{
+  "entryPoint": "main.lua",
+  "id": "36ab8dc9-27bd-42ed-b513-71efa29b66e5",
+  "includes": [
+    "**"
+  ]
+}
