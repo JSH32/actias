@@ -7,7 +7,8 @@ use crate::{
 
 use self::extension::LuaExtension;
 use actias_common::tracing::trace;
-use mlua::{AsChunk, ExternalResult, Lua, Table};
+use mlua::{AsChunk, ExternalResult, Lua, LuaSerdeExt, Table, UserData};
+use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, ops::Deref};
 
 /// Lua runtime with actias specific methods.
@@ -20,6 +21,15 @@ impl Deref for ActiasRuntime {
         &self.0
     }
 }
+
+/// Script info table exposed to lua.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ScriptInfo {
+    /// Public script identifier
+    identifier: Option<String>,
+}
+
+impl UserData for ScriptInfo {}
 
 impl ActiasRuntime {
     /// Create a new [`ActiasRuntime`], this will run the main script from the entrypoint defined in the [`Bundle`].
@@ -137,9 +147,12 @@ impl ActiasRuntime {
 
         lua.register_extensions(&[&JsonExtension, &crate::extensions::http::HttpExtension])?;
 
-        if let Some(public_identifier) = public_identifier {
-            lua.globals().set("identifier", public_identifier)?;
-        }
+        lua.globals().set(
+            "script",
+            lua.to_value(&ScriptInfo {
+                identifier: public_identifier,
+            })?,
+        )?;
 
         let entry_point = bundle
             .files
