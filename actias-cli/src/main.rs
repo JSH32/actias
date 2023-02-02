@@ -8,7 +8,10 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use client::{types::CreateScriptDto, Client};
+use client::{
+    types::{CreateScriptDto, ScriptDto},
+    Client,
+};
 use include_dir::{include_dir, Dir};
 use inquire::{Confirm, Text};
 
@@ -70,6 +73,8 @@ enum ScriptOperations {
         #[clap(subcommand)]
         sub: RevisionCommands,
     },
+    /// Clone the most recent revision to filesystem.
+    Clone { path: Option<String> },
 }
 
 #[derive(Parser, Debug)]
@@ -81,7 +86,7 @@ enum RevisionCommands {
     /// 📦 Set script to use a specific revision.
     Set { revision_id: String },
     /// Clone a revision to filesystem.
-    Get {
+    Clone {
         /// This will get the current active revision if not provided.
         revision_id: Option<String>,
         #[clap(short, long)]
@@ -201,6 +206,20 @@ async fn script_manage_command(
                 format!("({})", script.id).bright_black()
             )
         }
+        ScriptOperations::Clone { path } => {
+            let script = client
+                .scripts_controller_get_script(&id)
+                .await
+                .map_err(progenitor_error)?
+                .into_inner();
+
+            match &script.current_revision_id {
+                Some(v) => {
+                    clone_revision(client, &script, &v, path.clone()).await?;
+                }
+                None => return Err("Script does not have a current revision".to_string()),
+            };
+        }
         ScriptOperations::Revisions { sub } => revision_command(client, &id, sub).await?,
     }
 
@@ -280,34 +299,46 @@ async fn revision_command(
                 response.revision_id.clone().unwrap().yellow()
             )
         }
-        RevisionCommands::Get { revision_id, path } => {
+        RevisionCommands::Clone { revision_id, path } => {
             let revision_id = revision_id
                 .clone()
                 .unwrap_or(script.clone().current_revision_id.ok_or("".to_string())?);
 
-            let revision = client
-                .revisions_controller_get_revision(&revision_id, true)
-                .await
-                .map_err(progenitor_error)?;
-
-            let mut script_path = PathBuf::from(std::env::current_dir().unwrap());
-            script_path.push(script.public_identifier.clone());
-
-            let path = path
-                .clone()
-                .map(|p| PathBuf::from(p))
-                .unwrap_or(script_path);
-
-            write_revision(path.clone(), revision.clone())?;
-
-            println!(
-                "📥 Cloned revision {} for {} {}",
-                format!("({})", revision.id).bright_black(),
-                script.public_identifier.purple(),
-                format!("({})", script.id).bright_black(),
-            )
+            clone_revision(client, &script, &revision_id, path.clone()).await?;
         }
     }
+
+    Ok(())
+}
+
+async fn clone_revision(
+    client: &Client,
+    script: &ScriptDto,
+    revision_id: &str,
+    path: Option<String>,
+) -> Result<(), String> {
+    let revision = client
+        .revisions_controller_get_revision(&revision_id, true)
+        .await
+        .map_err(progenitor_error)?;
+
+    let mut script_path = PathBuf::from(std::env::current_dir().unwrap());
+    script_path.push(script.public_identifier.clone());
+
+    let path = path
+        .clone()
+        .map(|p| PathBuf::from(p))
+        .unwrap_or(script_path);
+
+    write_revision(path.clone(), revision.clone())?;
+    copy_definitions(&path)?;
+
+    println!(
+        "📥 Cloned revision {} for {} {}",
+        format!("({})", revision.id).bright_black(),
+        script.public_identifier.purple(),
+        format!("({})", script.id).bright_black(),
+    );
 
     Ok(())
 }
