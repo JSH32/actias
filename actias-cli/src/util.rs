@@ -2,6 +2,7 @@ use std::{fs, io::Write, path::PathBuf};
 
 use base64::Engine;
 use colored::Colorize;
+use include_dir::{include_dir, Dir};
 use serde::Deserialize;
 
 use crate::{client::types::RevisionFullDto, project::ProjectConfig};
@@ -64,6 +65,23 @@ pub fn get_dir(
     }
 
     Ok(dir)
+}
+
+pub fn copy_definitions(proj_path: &PathBuf) -> Result<(), String> {
+    static DEFINITION_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template/definitions");
+
+    let mut def_path = proj_path.clone();
+    def_path.push("definitions");
+
+    // Recreate definitions
+    let _ = std::fs::remove_dir(def_path.clone());
+    std::fs::create_dir_all(def_path.clone()).unwrap();
+
+    DEFINITION_DIR
+        .extract(&def_path)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 /// Write a revision to a provided path.

@@ -1,0 +1,10 @@
+{
+  "id": null,
+  "entryPoint": "main.lua",
+  "includes": [
+    "**.lua"
+  ],
+  "ignore": [
+    "definitions/**"
+  ]
+}

@@ -19,10 +19,10 @@ use util::write_revision;
 use crate::{
     client::types::CreateRevisionDto,
     project::ProjectConfig,
-    util::{get_dir, progenitor_error},
+    util::{copy_definitions, get_dir, progenitor_error},
 };
 
-static TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template");
+static PROJ_TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template/project");
 
 /// Actias CLI for interacting with the actias API.
 #[derive(Parser, Debug)]
@@ -53,6 +53,11 @@ enum Commands {
         id: String,
         #[clap(subcommand)]
         sub: ScriptOperations,
+    },
+    /// Check a project config and generate definitions.
+    Check {
+        /// Directory of project
+        directory: String,
     },
 }
 
@@ -117,6 +122,10 @@ async fn main() {
                 println!("❌ Error, {}", e.to_string())
             }
         }
+        Commands::Check { directory } => match ProjectConfig::from_path(Path::new(&directory)) {
+            Ok(_) => println!("{}", "📜 Project validated!".green()),
+            Err(e) => println!("❌ Error, {}", e.to_string()),
+        },
     };
 }
 
@@ -289,7 +298,7 @@ async fn revision_command(
                 .map(|p| PathBuf::from(p))
                 .unwrap_or(script_path);
 
-            write_revision(path, revision.clone())?;
+            write_revision(path.clone(), revision.clone())?;
 
             println!(
                 "📥 Cloned revision {} for {} {}",
@@ -392,9 +401,11 @@ async fn publish_project(client: &Client, project_dir: &str) -> Result<(), Strin
 fn create_project(project_name: &str) -> Result<(), String> {
     let project_path = get_dir(project_name, true, true)?;
 
-    TEMPLATE_DIR
+    PROJ_TEMPLATE_DIR
         .extract(&project_path)
         .map_err(|e| e.to_string())?;
+
+    copy_definitions(&project_path)?;
 
     println!(
         "📜 Project {} was created!",

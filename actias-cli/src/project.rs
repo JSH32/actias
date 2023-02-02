@@ -9,7 +9,10 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use wax::Glob;
 
-use crate::client::types::{BundleDto, FileDto};
+use crate::{
+    client::types::{BundleDto, FileDto},
+    util,
+};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -25,6 +28,8 @@ pub struct ProjectConfig {
     /// List of all files which will be included in their bundle.
     /// All paths are relative to the project file.
     pub includes: Vec<String>,
+    /// Patterns to ignore. This will be cross referenced with `includes`.
+    pub ignore: Vec<String>,
 }
 
 impl ProjectConfig {
@@ -48,6 +53,8 @@ impl ProjectConfig {
                 e.to_string()
             )
         })?;
+
+        util::copy_definitions(&project_path.to_path_buf())?;
 
         config.project_path = Some(project_path.to_path_buf());
         Ok(config)
@@ -80,6 +87,16 @@ impl ProjectConfig {
     }
 
     fn glob_includes(&self) -> Result<Vec<PathBuf>, String> {
+        let mut ignores = vec![];
+        for ignore in &self.ignore {
+            let glob = Glob::new(ignore).map_err(|_| "Failed to read glob pattern".to_owned())?;
+            for entry in glob.walk(self.project_path.clone().unwrap()) {
+                if let Ok(entry) = entry {
+                    ignores.push(entry.into_path());
+                }
+            }
+        }
+
         let mut includes = vec![];
         for include in &self.includes {
             let glob = Glob::new(include).map_err(|_| "Failed to read glob pattern".to_owned())?;
@@ -93,6 +110,9 @@ impl ProjectConfig {
             }
         }
 
-        Ok(includes)
+        Ok(includes
+            .into_iter()
+            .filter(|item| !ignores.contains(item))
+            .collect())
     }
 }

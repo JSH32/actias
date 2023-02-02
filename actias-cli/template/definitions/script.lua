@@ -1,3 +1,6 @@
+---@meta
+---@diagnostic disable: lowercase-global
+
 ---Script metadata and info.
 ---@class ScriptInfo
 ---@field identifier string Globally unique public script identifier.

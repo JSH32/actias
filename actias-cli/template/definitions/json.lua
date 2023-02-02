@@ -1,3 +1,4 @@
+---@meta
 ---@diagnostic disable: missing-return, lowercase-global
 
 ---The `json` table contains methods for parsing JSON and converting values to JSON.
