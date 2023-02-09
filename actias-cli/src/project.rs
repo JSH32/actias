@@ -68,7 +68,7 @@ impl ProjectConfig {
         for file in file_paths {
             files.push(FileDto {
                 content: base64::engine::general_purpose::STANDARD_NO_PAD
-                    .encode(fs::read_to_string(file.clone()).unwrap()),
+                    .encode(fs::read(file.clone()).unwrap()),
                 file_name: file.file_name().unwrap().to_str().unwrap().to_owned(),
                 file_path: file
                     .strip_prefix(self.project_path.clone().unwrap().as_path())

@@ -13,7 +13,18 @@ export class UsersService {
     private readonly userRepository: EntityRepository<Users>,
   ) {}
 
-  async createUser(createUser: CreateUserDto) {
+  /**
+   * Find a user by either their email or username.
+   * @param auth email or username
+   * @returns user
+   */
+  async findByAuth(auth: string): Promise<Users> {
+    return await this.userRepository.findOneOrFail({
+      $or: [{ email: auth }, { username: auth }],
+    });
+  }
+
+  async createUser(createUser: CreateUserDto): Promise<Users> {
     const user = new Users({
       username: createUser.username,
       email: createUser.email,
@@ -26,11 +37,7 @@ export class UsersService {
       }),
     );
 
-    // this.userRepository
-
     await this.userRepository.persistAndFlush(user);
-
-    // await this.entityManager.persistAndFlush([user]);
 
     return user;
   }

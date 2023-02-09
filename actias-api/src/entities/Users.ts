@@ -1,4 +1,10 @@
-import { Collection, Entity, OneToMany, Property } from '@mikro-orm/core';
+import {
+  Collection,
+  Entity,
+  Filter,
+  OneToMany,
+  Property,
+} from '@mikro-orm/core';
 import { ActiasBaseEntity } from './BaseEntity';
 import { UserAuthMethods } from './UserAuthMethods';
 

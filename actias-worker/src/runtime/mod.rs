@@ -127,25 +127,25 @@ impl ActiasRuntime {
 
         lua.globals().set(
             "getfile",
-            lua.create_async_function(|lua, file_path: String| async move {
+            lua.create_function(|lua, path: String| {
                 let bundle = lua.app_data_ref::<Bundle>().unwrap();
+                let file = bundle.files.iter().find(|file| file.file_path == path);
 
-                let file = bundle.files.iter().find(|file| file.file_path == file_path);
-
-                if let Some(file) = file {
-                    return Ok(mlua::Value::String(lua.create_string(
-                        &std::str::from_utf8(&file.content).to_lua_err()?.to_string(),
-                    )?));
-                }
-
-                Ok(mlua::Value::Nil)
+                Ok(match file {
+                    Some(v) => lua.to_value(&v.content)?,
+                    None => mlua::Value::Nil,
+                })
             })?,
         )?;
 
         trace!("Initializing module registry");
         lua.set_named_registry_value("module_registry", lua.create_table()?)?;
 
-        lua.register_extensions(&[&JsonExtension, &crate::extensions::http::HttpExtension])?;
+        lua.register_extensions(&[
+            &JsonExtension,
+            &crate::extensions::http::HttpExtension,
+            &crate::extensions::wasm::WasmExtension,
+        ])?;
 
         lua.globals().set(
             "script",

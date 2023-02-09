@@ -5,6 +5,7 @@ import config from './config';
 import { ScriptModule } from './scripts/scripts.module';
 import { UsersModule } from './users/users.module';
 import { AclModule } from './acl/acl.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { AclModule } from './acl/acl.module';
     ScriptModule,
     UsersModule,
     AclModule,
+    AuthModule,
   ],
   controllers: [],
   providers: [],

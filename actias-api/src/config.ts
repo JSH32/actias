@@ -4,4 +4,5 @@ export default () => ({
     scriptServiceUri: process.env.SCRIPT_SERVICE_URL,
   },
   databaseUrl: process.env.DATABASE_URL,
+  jwtKey: process.env.JWT_KEY,
 });
