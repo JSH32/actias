@@ -1,6 +1,18 @@
 ---@meta
 ---@diagnostic disable: lowercase-global
 
+---Global object from Webassembly.
+---@class WasmGlobal
+WasmGlobal = {}
+
+---Get the current value of the global.
+---@return any
+function WasmGlobal:get() end
+
+---Set the current value of the global
+---@param value any new parameter value.
+function WasmGlobal:set(value) end
+
 ---Instance of a Webassembly binary.
 ---@class WasmInstance
 WasmInstance = {}
@@ -10,10 +22,15 @@ WasmInstance = {}
 ---@return WasmInstance
 WasmInstance.from = function (binary) end
 
----Get an export from the Webassembly module.
----@param export_name string name of the export.
----@return any
-function WasmInstance:get_export(export_name) end
+---Get a function from the Webassembly module.
+---@param export string name of the exported function.
+---@return function
+function WasmInstance:get_function(export) end
+
+---Get a global from the Webassembly module.
+---@param global string name of the exported global.
+---@return WasmGlobal
+function WasmInstance:get_global(global) end
 
 ---Wasm module.
 wasm = {}

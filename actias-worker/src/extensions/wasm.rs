@@ -1,7 +1,7 @@
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 use mlua::{ExternalResult, LuaSerdeExt, UserData};
 use std::sync::{Arc, RwLock};
-use wasmer::{Extern, Imports, Instance, Module, Store};
+use wasmer::{Imports, Instance, Module, Store};
 
 pub struct WasmExtension;
 
@@ -66,7 +66,7 @@ impl UserData for WasmInstance {
     fn add_fields<'lua, F: mlua::UserDataFields<'lua, Self>>(_fields: &mut F) {}
 
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_method_mut("get_export", |lua, this, export: String| {
+        methods.add_method_mut("get_function", |lua, this, export: String| {
             Ok(
                 match this
                     .0
@@ -74,22 +74,59 @@ impl UserData for WasmInstance {
                     .unwrap()
                     .wasm_instance
                     .exports
-                    .get_extern(&export)
+                    .get_function(&export)
                 {
-                    Some(v) => match v {
-                        Extern::Function(v) => wasm_to_lua(
-                            &lua,
-                            this.0.clone(),
-                            wasmer::Value::FuncRef(Some(v.to_owned())),
-                        )?,
-                        Extern::Global(_) => todo!(),
-                        Extern::Table(_) => todo!(),
-                        Extern::Memory(_) => todo!(),
-                    },
-                    None => mlua::Value::Nil,
+                    Ok(v) => {
+                        wasm_to_lua(&lua, &this.0, wasmer::Value::FuncRef(Some(v.to_owned())))?
+                    }
+                    Err(_) => mlua::Value::Nil,
                 },
             )
         });
+
+        methods.add_method_mut("get_global", |lua, this, global: String| {
+            Ok(
+                match this
+                    .0
+                    .read()
+                    .unwrap()
+                    .wasm_instance
+                    .exports
+                    .get_global(&global)
+                {
+                    Ok(v) => lua.to_value(&lua.create_userdata(WasmGlobal {
+                        global: v.clone(),
+                        inner: this.0.clone(),
+                    })?)?,
+                    Err(_) => mlua::Value::Nil,
+                },
+            )
+        });
+    }
+}
+
+struct WasmGlobal {
+    global: wasmer::Global,
+    inner: Arc<RwLock<InnerInstance>>,
+}
+
+impl UserData for WasmGlobal {
+    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("get", |lua, this, ()| {
+            Ok(wasm_to_lua(
+                lua,
+                &this.inner,
+                this.global.get(&mut this.inner.write().unwrap().store),
+            ))
+        });
+
+        methods.add_method("write", |_lua, this, value: mlua::Value| {
+            this.global
+                .set(&mut this.inner.write().unwrap().store, lua_to_wasm(value)?)
+                .to_lua_err()?;
+
+            Ok(())
+        })
     }
 }
 
@@ -112,7 +149,7 @@ impl UserData for WasmValue {
                     .call(&mut this.wasm.write().unwrap().store, params.as_slice())
                     .to_lua_err()?;
 
-                Ok(wasm_to_lua(lua, this.wasm.clone(), (*result)[0].clone()))
+                Ok(wasm_to_lua(lua, &this.wasm, (*result)[0].clone()))
             } else {
                 Err(mlua::Error::RuntimeError(
                     "Webassembly value was not a function".into(),
@@ -122,11 +159,11 @@ impl UserData for WasmValue {
     }
 }
 
-fn wasm_to_lua(
-    lua: &mlua::Lua,
-    inner: Arc<RwLock<InnerInstance>>,
+fn wasm_to_lua<'a, 'b>(
+    lua: &'a mlua::Lua,
+    inner: &'b Arc<RwLock<InnerInstance>>,
     value: wasmer::Value,
-) -> mlua::Result<mlua::Value> {
+) -> mlua::Result<mlua::Value<'a>> {
     Ok(match value {
         wasmer::Value::I32(v) => lua.to_value(&v)?,
         wasmer::Value::I64(v) => lua.to_value(&v)?,
@@ -136,14 +173,14 @@ fn wasm_to_lua(
         wasmer::Value::ExternRef(v) => match v {
             Some(v) => mlua::Value::UserData(lua.create_userdata(WasmValue {
                 value: wasmer::Value::ExternRef(Some(v)),
-                wasm: inner,
+                wasm: inner.clone(),
             })?),
             None => mlua::Value::Nil,
         },
         wasmer::Value::FuncRef(v) => match v {
             Some(v) => mlua::Value::UserData(lua.create_userdata(WasmValue {
                 value: wasmer::Value::FuncRef(Some(v)),
-                wasm: inner,
+                wasm: inner.clone(),
             })?),
             None => mlua::Value::Nil,
         },

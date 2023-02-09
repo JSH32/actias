@@ -1,31 +1,17 @@
 local html = require "libs.html"
+local url = require "libs.url"
 
 add_event_listener("fetch", function(request)
-  -- -- Reverse proxy the cat API.
-  -- if request.context_uri == "/image" then
-  --   local url_request = http.make_request({
-  --     uri = "https://aws.random.cat/meow",
-  --   })
-
-  --   local cat_image = http.make_request({
-  --     uri = json.parse(url_request.body).file
-  --   })
-
-  --   -- Disable caching.
-  --   cat_image.headers["cache-control"] = "max-age=1"
-
-  --   return cat_image
-  -- end
+  local query = url.parseQuery(Uri.parse(request.uri).query)
   
   local adder = wasm.from(getfile("add.wasm"))
-  local export = adder:get_export("add")
+  local export = adder:get_function("add")
 
   return {
     body = html {
       html.body {
         html.p 'Add result',
-        html.p { export("hi", 6) }
-        -- html.img { src = '/' .. script.identifier .. '/image' }
+        html.p { export(tonumber(query.x), tonumber(query.y)) }
       }
     }:render(),
     headers = {

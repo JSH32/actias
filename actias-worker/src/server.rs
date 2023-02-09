@@ -96,7 +96,10 @@ async fn lua_handler(
     let mut context_uri = Uri::builder().path_and_query(format!(
         "/{}{}",
         without_identifier.as_path().to_str().unwrap_or(""),
-        old_uri.query().unwrap_or("")
+        match old_uri.query() {
+            Some(v) => format!("?{}", v),
+            None => "".to_string(),
+        }
     ));
 
     if let Some(scheme) = old_uri.scheme() {
