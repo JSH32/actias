@@ -116,6 +116,7 @@ async fn lua_handler(
 
     // Lua runtime uses registry to store handlers.
     let value = lua.named_registry_value::<str, mlua::Function>("listener_fetch")?;
+
     let ret: extensions::http::Response =
         lua.from_value(value.call_async(lua.to_value(&lua_request?)?).await?)?;
 

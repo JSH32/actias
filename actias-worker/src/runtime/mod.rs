@@ -141,11 +141,7 @@ impl ActiasRuntime {
         trace!("Initializing module registry");
         lua.set_named_registry_value("module_registry", lua.create_table()?)?;
 
-        lua.register_extensions(&[
-            &JsonExtension,
-            &crate::extensions::http::HttpExtension,
-            &crate::extensions::wasm::WasmExtension,
-        ])?;
+        lua.register_extensions(&[&JsonExtension, &crate::extensions::http::HttpExtension])?;
 
         lua.globals().set(
             "script",
