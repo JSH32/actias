@@ -30,6 +30,5 @@ export class Users extends ActiasBaseEntity {
   constructor(data: Partial<Users>) {
     super();
     Object.assign(this, data);
-    console.log(this);
   }
 }

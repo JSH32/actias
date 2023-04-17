@@ -1,6 +1,8 @@
 import { Collection, Entity, OneToMany, Property } from '@mikro-orm/core';
 import { Resources } from './Resources';
 import { ActiasBaseEntity } from './BaseEntity';
+import { BitField } from 'easy-bits';
+import { AccessFields } from '../project/acl/accessFields';
 
 /**
  * Projects which contain grouped resources.
@@ -30,6 +32,15 @@ export class Projects extends ActiasBaseEntity {
   /**
    * Default permission bitfield when adding members.
    */
-  @Property()
+  @Property({
+    default: Number(
+      new BitField().on(AccessFields.SCRIPT_RESOURCE).serialize(),
+    ),
+  })
   defaultPermissions!: number;
+
+  constructor(data: Partial<Projects>) {
+    super();
+    Object.assign(this, data);
+  }
 }

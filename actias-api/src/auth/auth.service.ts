@@ -1,9 +1,10 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { AuthMethod } from 'src/entities/UserAuthMethods';
 import { UsersService } from 'src/users/users.service';
 import * as argon2 from 'argon2';
 import { Users } from 'src/entities/Users';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class AuthService {
@@ -12,6 +13,10 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
+  /**
+   * Verify user credentials.
+   * This returns a User if the credentials are verified. Otherwise null.
+   */
   async passwordVerify(auth: string, pass: string): Promise<Users | null> {
     const user = await this.usersService.findByAuth(auth);
     const password = user.authMethods
@@ -28,7 +33,13 @@ export class AuthService {
     return (await argon2.verify(password.value, pass)) ? user : null;
   }
 
-  getJwt(user: Users): string {
+  signJwt(user: Users): string {
+    console.log(this.jwtService);
     return this.jwtService.sign({ sub: user.id });
+  }
+
+  async getUserFromToken(token: string): Promise<Users> {
+    const { sub } = await this.jwtService.verifyAsync(token);
+    return this.usersService.findById(sub);
   }
 }

@@ -18,6 +18,7 @@ export const grpcClient = (
       transport: Transport.GRPC,
       options: {
         url: configService.get<string>(configValue),
+        maxReceiveMessageLength: Number.MAX_SAFE_INTEGER,
         package: packageName,
         protoPath: protoPaths,
       },

@@ -1,6 +1,6 @@
 import { EntityRepository } from '@mikro-orm/core';
 import { InjectRepository } from '@mikro-orm/nestjs';
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { AuthMethod, UserAuthMethods } from 'src/entities/UserAuthMethods';
 import { Users } from 'src/entities/Users';
 import { CreateUserDto } from './dto/requests.dto';
@@ -19,9 +19,16 @@ export class UsersService {
    * @returns user
    */
   async findByAuth(auth: string): Promise<Users> {
-    return await this.userRepository.findOneOrFail({
-      $or: [{ email: auth }, { username: auth }],
-    });
+    return await this.userRepository.findOneOrFail(
+      {
+        $or: [{ email: auth }, { username: auth }],
+      },
+      { populate: ['authMethods'] },
+    );
+  }
+
+  async findById(id: string): Promise<Users> {
+    return await this.userRepository.findOneOrFail({ id });
   }
 
   async createUser(createUser: CreateUserDto): Promise<Users> {
@@ -29,6 +36,17 @@ export class UsersService {
       username: createUser.username,
       email: createUser.email,
     });
+
+    if (
+      await this.userRepository.findOne({
+        username: user.username,
+        email: user.email,
+      })
+    ) {
+      throw new BadRequestException(
+        'User with that username/email already exists.',
+      );
+    }
 
     user.authMethods.add(
       new UserAuthMethods({

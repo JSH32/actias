@@ -7,6 +7,7 @@ const logger = new Logger('MikroORM');
 
 // Config for CLI.
 export default defineConfig({
+  debug: true,
   type: 'postgresql',
   metadataProvider: TsMorphMetadataProvider,
   entities: ['./dist/entities'],
