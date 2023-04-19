@@ -1,12 +1,6 @@
-import {
-  Collection,
-  Entity,
-  Filter,
-  OneToMany,
-  Property,
-} from '@mikro-orm/core';
+import { Embedded, Entity, Property } from '@mikro-orm/core';
 import { ActiasBaseEntity } from './BaseEntity';
-import { UserAuthMethods } from './UserAuthMethods';
+import { UserAuthMethod } from './UserAuthMethod';
 
 /**
  * Users table, stores simple information about a user account.
@@ -22,10 +16,8 @@ export class Users extends ActiasBaseEntity {
   @Property({ default: false })
   admin!: boolean;
 
-  @OneToMany(() => UserAuthMethods, (method) => method.user, {
-    orphanRemoval: true,
-  })
-  authMethods = new Collection<UserAuthMethods>(this);
+  @Embedded()
+  authMethods: UserAuthMethod[] = [];
 
   constructor(data: Partial<Users>) {
     super();

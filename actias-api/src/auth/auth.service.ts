@@ -1,10 +1,9 @@
-import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { AuthMethod } from 'src/entities/UserAuthMethods';
 import { UsersService } from 'src/users/users.service';
 import * as argon2 from 'argon2';
 import { Users } from 'src/entities/Users';
-import { ConfigService } from '@nestjs/config';
+import { AuthMethod } from 'src/entities/UserAuthMethod';
 
 @Injectable()
 export class AuthService {
@@ -19,9 +18,9 @@ export class AuthService {
    */
   async passwordVerify(auth: string, pass: string): Promise<Users | null> {
     const user = await this.usersService.findByAuth(auth);
-    const password = user.authMethods
-      .toArray()
-      .find((method) => method.authMethod === AuthMethod.PASSWORD);
+    const password = user.authMethods.find(
+      (method) => method.method === AuthMethod.PASSWORD,
+    );
 
     if (!password) {
       throw new HttpException(

@@ -1,21 +1,25 @@
-import { Cascade, Entity, ManyToOne, Property, Unique } from '@mikro-orm/core';
-import { ActiasBaseEntity } from './BaseEntity';
-import { Projects } from './Projects';
+import {
+  Cascade,
+  Embeddable,
+  ManyToOne,
+  Property,
+  Unique,
+} from '@mikro-orm/core';
 import { Users } from './Users';
 
 /**
- * Access control table per user per resource type.
- * There should be only one access record per user per project.
+ * Access control per user owned by a project.
  */
-@Entity()
-@Unique({ properties: ['user', 'project'] })
-export class Access extends ActiasBaseEntity {
+@Embeddable()
+@Unique({ properties: ['user'] })
+export class Access {
   @ManyToOne({ cascade: [Cascade.REMOVE] })
   user!: Users;
 
-  @ManyToOne({ cascade: [Cascade.REMOVE] })
-  project!: Projects;
-
   @Property()
   permissionBitfield!: number;
+
+  constructor(access: Required<Access>) {
+    Object.assign(this, access);
+  }
 }

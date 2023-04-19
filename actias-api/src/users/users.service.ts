@@ -1,10 +1,10 @@
 import { EntityRepository } from '@mikro-orm/core';
 import { InjectRepository } from '@mikro-orm/nestjs';
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { AuthMethod, UserAuthMethods } from 'src/entities/UserAuthMethods';
 import { Users } from 'src/entities/Users';
 import { CreateUserDto } from './dto/requests.dto';
 import * as argon2 from 'argon2';
+import { UserAuthMethod, AuthMethod } from 'src/entities/UserAuthMethod';
 
 @Injectable()
 export class UsersService {
@@ -48,10 +48,10 @@ export class UsersService {
       );
     }
 
-    user.authMethods.add(
-      new UserAuthMethods({
+    user.authMethods.push(
+      new UserAuthMethod({
         value: await argon2.hash(createUser.password),
-        authMethod: AuthMethod.PASSWORD,
+        method: AuthMethod.PASSWORD,
       }),
     );
 

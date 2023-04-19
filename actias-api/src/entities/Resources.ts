@@ -1,4 +1,4 @@
-import { Cascade, Entity, Enum, ManyToOne } from '@mikro-orm/core';
+import { Cascade, Entity, Enum, ManyToOne, Property } from '@mikro-orm/core';
 import { ActiasBaseEntity } from './BaseEntity';
 import { Projects } from './Projects';
 
@@ -16,6 +16,12 @@ enum ResourceType {
 export class Resources extends ActiasBaseEntity {
   @Enum(() => ResourceType)
   resourceType!: ResourceType;
+
+  /**
+   * ID of this resource in the respective service it originates from.
+   */
+  @Property()
+  serviceId!: string;
 
   @ManyToOne({ cascade: [Cascade.REMOVE] })
   project!: Projects;

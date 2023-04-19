@@ -7,8 +7,10 @@ import {
 } from '@nestjs/common';
 import { Users } from 'src/entities/Users';
 import { AclService } from './acl.service';
-import { ProjectService } from '../project.service';
 import { Reflector } from '@nestjs/core';
+import { EntityRepository } from '@mikro-orm/core';
+import { Projects } from 'src/entities/Projects';
+import { InjectRepository } from '@mikro-orm/nestjs';
 
 export const Acl = (bitfield: number) => SetMetadata('acl', bitfield);
 
@@ -16,7 +18,9 @@ export const Acl = (bitfield: number) => SetMetadata('acl', bitfield);
 export class AclGuard implements CanActivate {
   constructor(
     private aclService: AclService,
-    private projectService: ProjectService,
+    // Not using project service to avoid cyclic dependency.
+    @InjectRepository(Projects)
+    private projectRepository: EntityRepository<Projects>,
     private reflector: Reflector,
   ) {}
 
@@ -27,9 +31,11 @@ export class AclGuard implements CanActivate {
     if (bitfield) {
       // Should be provided by AuthGuard
       const user = request['user'] as Users;
-      const project = await this.projectService.findById(
+      const project = await this.projectRepository.findOneOrFail(
         request.params['project'],
       );
+
+      if (project.ownerId === user.id) return true;
 
       const access = await this.aclService.getProjectAccess(user, project);
 

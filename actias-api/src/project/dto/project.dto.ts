@@ -2,7 +2,13 @@ import { Projects } from 'src/entities/Projects';
 
 export class ProjectDto {
   id!: string;
+  /**
+   * Name of project.
+   */
   name!: string;
+  /**
+   * Owner of project, has full access.
+   */
   ownerId!: string;
   createdAt: Date;
   updatedAt: Date;
@@ -10,6 +16,7 @@ export class ProjectDto {
   constructor(entity: Projects) {
     return Object.assign(this, {
       id: entity.id,
+      name: entity.name,
       created: entity.createdAt,
       ownerId: entity.ownerId,
       createdAt: entity.createdAt,
