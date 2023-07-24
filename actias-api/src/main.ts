@@ -7,7 +7,6 @@ import {
   FastifyAdapter,
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
-import { MikroORM } from '@mikro-orm/core';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -28,9 +27,6 @@ async function bootstrap() {
   SwaggerModule.setup('api', app, document);
 
   app.getHttpAdapter().get('/api/openapi.json', (_, res) => res.send(document));
-
-  const orm = app.get(MikroORM);
-  await orm.getSchemaGenerator().createSchema();
 
   const configService = app.get(ConfigService);
   await app.listen(configService.get<number>('port'));

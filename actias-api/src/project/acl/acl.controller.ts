@@ -5,7 +5,7 @@ import {
   Put,
   UseGuards,
 } from '@nestjs/common/decorators';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiParam, ApiTags } from '@nestjs/swagger';
 import { Acl, AclGuard } from './acl.guard';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { AclService } from './acl.service';
@@ -39,6 +39,10 @@ export class AclController {
    * This doesn't require the `PERMISSIONS_READ` permission.
    */
   @Get('@me')
+  @ApiParam({
+    name: 'project',
+    schema: { type: 'string' },
+  })
   getAclMe(
     @EntityParam('project', Projects) project: Projects,
     @User() user: Users,
@@ -51,6 +55,10 @@ export class AclController {
    */
   @Get(':user')
   @Acl(AccessFields.PERMISSIONS_READ)
+  @ApiParam({
+    name: 'project',
+    schema: { type: 'string' },
+  })
   getAclSingle(
     @EntityParam('project', Projects) project: Projects,
     @EntityParam('user', Users) user: Users,
@@ -63,6 +71,10 @@ export class AclController {
    */
   @Get()
   @Acl(AccessFields.PERMISSIONS_READ)
+  @ApiParam({
+    name: 'project',
+    schema: { type: 'string' },
+  })
   getAcl(@EntityParam('project', Projects) project: Projects): AclListDto[] {
     return project.access.map(
       (a) =>
@@ -80,6 +92,10 @@ export class AclController {
    */
   @Put(':user')
   @Acl(AccessFields.PERMISSIONS_WRITE)
+  @ApiParam({
+    name: 'project',
+    schema: { type: 'string' },
+  })
   async putAcl(
     @EntityParam('user', Users) user: Users,
     @EntityParam('project', Projects) project: Projects,

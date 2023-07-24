@@ -12,8 +12,12 @@ export class PaginatedResponseDto<T> {
   @ApiProperty({ description: 'Current page.' })
   page: number;
 
-  @ApiProperty({ description: 'How many pages exist.' })
-  totalPages: number;
+  @ApiProperty({ description: 'Last possible page.' })
+  lastPage: number;
+
+  constructor(page: Required<PaginatedResponseDto<T>>) {
+    Object.assign(this, page);
+  }
 }
 
 export const ApiOkResponsePaginated = <DataDto extends Type<unknown>>(

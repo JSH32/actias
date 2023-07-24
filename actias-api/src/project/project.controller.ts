@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiParam, ApiTags } from '@nestjs/swagger';
 import { CreateProjectDto } from './dto/requests.dto';
 import { ProjectService } from './project.service';
 import { ProjectDto } from './dto/project.dto';
@@ -37,6 +37,10 @@ export class ProjectController {
    * Get a project by its ID.
    */
   @Get(':project')
+  @ApiParam({
+    name: 'project',
+    schema: { type: 'string' },
+  })
   async get(
     @User() user,
     @EntityParam('project', Projects) project,

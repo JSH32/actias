@@ -1,13 +1,9 @@
-import {
-  Collection,
-  Embedded,
-  Entity,
-  OneToMany,
-  Property,
-} from '@mikro-orm/core';
+import { Collection, Entity, OneToMany, Property } from '@mikro-orm/core';
 import { Resources } from './Resources';
 import { ActiasBaseEntity } from './BaseEntity';
 import { Access } from './Access';
+import { BitField } from 'easy-bits';
+import { AccessFields } from '../project/acl/accessFields';
 
 /**
  * Projects which contain grouped resources.
@@ -23,7 +19,7 @@ export class Projects extends ActiasBaseEntity {
   /**
    * Single owner of a project.
    */
-  @Property()
+  @Property({ columnType: 'uuid' })
   ownerId!: string;
 
   /**
@@ -34,8 +30,20 @@ export class Projects extends ActiasBaseEntity {
   })
   resources = new Collection<Resources>(this);
 
-  @Embedded()
-  access: Access[] = [];
+  /**
+   * Default permission bitfield when adding members.
+   */
+  @Property({
+    default: Number(
+      new BitField().on(AccessFields.SCRIPT_RESOURCE).serialize(),
+    ),
+  })
+  defaultPermissions!: number;
+
+  @OneToMany(() => Access, (access) => access.project, {
+    orphanRemoval: true,
+  })
+  access = new Collection<Access>(this);
 
   constructor(data: Partial<Projects>) {
     super();

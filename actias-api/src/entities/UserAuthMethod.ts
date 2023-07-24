@@ -1,11 +1,21 @@
-import { Embeddable, Property, Unique, Enum } from '@mikro-orm/core';
+import {
+  Property,
+  Unique,
+  Enum,
+  Entity,
+  ManyToOne,
+  Cascade,
+} from '@mikro-orm/core';
+import { Users } from './Users';
+import { ActiasBaseEntity } from './BaseEntity';
 
 /**
  * An authentication method owned by a user.
  * There should be only one auth method of the same type per user.
  */
-@Embeddable()
-export class UserAuthMethod {
+@Entity()
+@Unique({ properties: ['user', 'method'] })
+export class UserAuthMethod extends ActiasBaseEntity {
   /**
    * Optional cached username, for OAuth logins.
    */
@@ -19,7 +29,11 @@ export class UserAuthMethod {
   @Property()
   value!: string;
 
+  @ManyToOne({ cascade: [Cascade.REMOVE] })
+  user!: Users;
+
   constructor(data: Partial<UserAuthMethod>) {
+    super();
     Object.assign(this, data);
   }
 }

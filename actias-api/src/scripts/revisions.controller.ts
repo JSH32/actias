@@ -6,6 +6,7 @@ import {
   OnModuleInit,
   Param,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { ApiTags } from '@nestjs/swagger';
@@ -14,9 +15,12 @@ import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
 import { NewRevisionResponseDto } from './dto/requests.dto';
 import { RevisionFullDto } from './dto/revision.dto';
+import { AuthGuard } from 'src/auth/auth.guard';
+import { AclGuard } from 'src/project/acl/acl.guard';
 
+@UseGuards(AuthGuard, AclGuard)
 @ApiTags('revisions')
-@Controller('revisions')
+@Controller('project/:project/script/:script/revisions')
 export class RevisionsController implements OnModuleInit {
   private scriptService: script_service.ScriptService;
 

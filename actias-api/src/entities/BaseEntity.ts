@@ -1,22 +1,13 @@
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  SerializedPrimaryKey,
-} from '@mikro-orm/core';
-import { ObjectId } from '@mikro-orm/mongodb';
+import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
 
 @Entity({ abstract: true })
 export abstract class ActiasBaseEntity {
-  @PrimaryKey()
-  _id!: ObjectId;
+  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
+  id: string;
 
-  @SerializedPrimaryKey()
-  id!: string;
+  @Property({ defaultRaw: 'now()' })
+  createdAt: Date;
 
-  @Property()
-  createdAt: Date = new Date();
-
-  @Property({ onUpdate: () => new Date() })
-  updatedAt: Date = new Date();
+  @Property({ onUpdate: () => new Date(), defaultRaw: 'now()' })
+  updatedAt: Date;
 }

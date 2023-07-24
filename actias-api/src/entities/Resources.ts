@@ -5,7 +5,7 @@ import { Projects } from './Projects';
 /**
  * All types of resources that can be owned/accessed.
  */
-enum ResourceType {
+export enum ResourceType {
   SCRIPT = 'script',
 }
 
@@ -25,4 +25,9 @@ export class Resources extends ActiasBaseEntity {
 
   @ManyToOne({ cascade: [Cascade.REMOVE] })
   project!: Projects;
+
+  constructor(resource: Required<Omit<Resources, keyof ActiasBaseEntity>>) {
+    super();
+    Object.assign(this, resource);
+  }
 }

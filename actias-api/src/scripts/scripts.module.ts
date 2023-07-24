@@ -3,9 +3,19 @@ import { ClientsModule } from '@nestjs/microservices';
 import { grpcClient, protoBasePath } from 'src/util/grpc';
 import { RevisionsController } from './revisions.controller';
 import { ScriptsController } from './scripts.controller';
+import { AclModule } from 'src/project/acl/acl.module';
+import { AuthModule } from 'src/auth/auth.module';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { Projects } from 'src/entities/Projects';
+import { Resources } from 'src/entities/Resources';
+import { ProjectModule } from 'src/project/project.module';
 
 @Module({
   imports: [
+    AuthModule,
+    AclModule,
+    ProjectModule,
+    MikroOrmModule.forFeature([Projects, Resources]),
     ClientsModule.registerAsync(
       grpcClient(
         'SCRIPT_SERVICE',
