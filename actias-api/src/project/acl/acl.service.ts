@@ -27,19 +27,20 @@ export class AclService {
       return new BitField(AccessFields.FULL);
     }
 
-    const permissions = project.access.find((access) => access.user === user);
+    const permissions = await this.em.findOne(Access, { project, user });
+
     if (!permissions) {
       throw new ForbiddenException(`You can't access this project.`);
     }
 
-    return BitField.deserialize(permissions.toString());
+    return BitField.deserialize(permissions.permissionBitfield.toString());
   }
 
-  setPermissions(
+  async setPermissions(
     project: Projects,
     user: Users,
     permissions: string[],
-  ): number {
+  ): Promise<number> {
     const bitfield = new BitField<AccessFields>();
 
     for (const p of permissions) {
@@ -48,21 +49,12 @@ export class AclService {
       bitfield.on(perm);
     }
 
-    // Remove (if exist).
-    const access = project.access.filter((a) => a.user.id !== user.id);
+    const access = await this.em.findOneOrFail(Access, { project, user });
 
     if (bitfield.serialize() !== '0') {
-      access.push(
-        new Access({
-          user,
-          permissionBitfield: Number(bitfield.serialize()),
-        }),
-      );
+      access.permissionBitfield = Number(bitfield.serialize());
+      await this.em.persistAndFlush(project);
     }
-
-    project.access = access;
-
-    this.em.persistAndFlush(project);
 
     return Number(bitfield.serialize());
   }
@@ -70,7 +62,7 @@ export class AclService {
   /**
    * Get ACL list for a single user.
    */
-  getAclList(user: Users, project: Projects) {
+  async getAclList(user: Users, project: Projects) {
     if (project.ownerId === user.id) {
       const bitfield = new BitField();
       bitfield.on(AccessFields.FULL);
@@ -81,7 +73,7 @@ export class AclService {
       });
     }
 
-    const access = project.access.find((a) => a.user.id === user.id);
+    const access = await this.em.findOneOrFail(Access, { project, user });
     if (!access) {
       return new AclListDto({
         userId: user.id,

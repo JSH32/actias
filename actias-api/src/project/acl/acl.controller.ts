@@ -6,7 +6,7 @@ import {
   UseGuards,
 } from '@nestjs/common/decorators';
 import { ApiParam, ApiTags } from '@nestjs/swagger';
-import { Acl, AclGuard } from './acl.guard';
+import { AclByProject, AclGuard } from './acl.guard';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { AclService } from './acl.service';
 import { ACCESS_KEYS, AccessFields, getListFromBitfield } from './accessFields';
@@ -42,6 +42,7 @@ export class AclController {
   @ApiParam({
     name: 'project',
     schema: { type: 'string' },
+    type: 'string',
   })
   getAclMe(
     @EntityParam('project', Projects) project: Projects,
@@ -54,10 +55,16 @@ export class AclController {
    * Get ACL list for a single user.
    */
   @Get(':user')
-  @Acl(AccessFields.PERMISSIONS_READ)
+  @AclByProject(AccessFields.PERMISSIONS_READ)
   @ApiParam({
     name: 'project',
     schema: { type: 'string' },
+    type: 'string',
+  })
+  @ApiParam({
+    name: 'user',
+    schema: { type: 'string' },
+    type: 'string',
   })
   getAclSingle(
     @EntityParam('project', Projects) project: Projects,
@@ -69,14 +76,15 @@ export class AclController {
   /**
    * Get ACL list for all users.
    */
-  @Get()
-  @Acl(AccessFields.PERMISSIONS_READ)
   @ApiParam({
     name: 'project',
     schema: { type: 'string' },
+    type: 'string',
   })
+  @Get()
+  @AclByProject(AccessFields.PERMISSIONS_READ)
   getAcl(@EntityParam('project', Projects) project: Projects): AclListDto[] {
-    return project.access.map(
+    return project.access.getItems().map(
       (a) =>
         new AclListDto({
           userId: a.user.id,
@@ -91,10 +99,16 @@ export class AclController {
    * If `permissions` is empty then the user will be removed from the project.
    */
   @Put(':user')
-  @Acl(AccessFields.PERMISSIONS_WRITE)
+  @AclByProject(AccessFields.PERMISSIONS_WRITE)
   @ApiParam({
     name: 'project',
     schema: { type: 'string' },
+    type: 'string',
+  })
+  @ApiParam({
+    name: 'user',
+    schema: { type: 'string' },
+    type: 'string',
   })
   async putAcl(
     @EntityParam('user', Users) user: Users,
@@ -104,7 +118,7 @@ export class AclController {
     return new AclListDto({
       userId: user.id,
       permissions: getListFromBitfield(
-        this.aclService.setPermissions(project, user, permissions),
+        await this.aclService.setPermissions(project, user, permissions),
       ),
     });
   }

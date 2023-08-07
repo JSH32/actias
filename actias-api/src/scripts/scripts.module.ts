@@ -2,7 +2,10 @@ import { Module } from '@nestjs/common';
 import { ClientsModule } from '@nestjs/microservices';
 import { grpcClient, protoBasePath } from 'src/util/grpc';
 import { RevisionsController } from './revisions.controller';
-import { ScriptsController } from './scripts.controller';
+import {
+  ProjectScriptController,
+  ScriptsController,
+} from './scripts.controller';
 import { AclModule } from 'src/project/acl/acl.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
@@ -29,6 +32,10 @@ import { ProjectModule } from 'src/project/project.module';
       ),
     ),
   ],
-  controllers: [ScriptsController, RevisionsController],
+  controllers: [
+    ScriptsController,
+    ProjectScriptController,
+    RevisionsController,
+  ],
 })
 export class ScriptModule {}

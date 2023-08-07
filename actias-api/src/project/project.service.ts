@@ -1,5 +1,4 @@
-import { EntityRepository } from '@mikro-orm/core';
-import { InjectRepository } from '@mikro-orm/nestjs';
+import { EntityManager } from '@mikro-orm/core';
 import { Injectable } from '@nestjs/common';
 import { Projects } from 'src/entities/Projects';
 import { ResourceType, Resources } from 'src/entities/Resources';
@@ -7,12 +6,7 @@ import { PaginatedResponseDto } from 'src/shared/dto/paginated';
 
 @Injectable()
 export class ProjectService {
-  constructor(
-    @InjectRepository(Projects)
-    private readonly projectRepository: EntityRepository<Projects>,
-    @InjectRepository(Resources)
-    private readonly resourceRepository: EntityRepository<Resources>,
-  ) {}
+  constructor(private readonly em: EntityManager) {}
 
   async createProject(owner: string, name: string): Promise<Projects> {
     const project = new Projects({
@@ -20,12 +14,12 @@ export class ProjectService {
       name,
     });
 
-    await this.projectRepository.persistAndFlush(project);
+    await this.em.persistAndFlush(project);
     return project;
   }
 
   async findById(id: string): Promise<Projects> {
-    return await this.projectRepository.findOneOrFail({ id });
+    return await this.em.findOneOrFail(Projects, { id });
   }
 
   async createResource(
@@ -39,17 +33,16 @@ export class ProjectService {
       project,
     });
 
-    await this.resourceRepository.persistAndFlush(resource);
+    await this.em.persistAndFlush(resource);
     return resource;
   }
 
   /**
-   * Get resource owned by a project.
+   * Get a resource by its type/id.
    */
-  async getResource(type: ResourceType, project: Projects, id: string) {
-    return await this.resourceRepository.findOneOrFail({
+  async getResource(type: ResourceType, id: string) {
+    return await this.em.findOneOrFail(Resources, {
       resourceType: type,
-      project,
       id,
     });
   }
@@ -61,7 +54,8 @@ export class ProjectService {
     callback: (serviceId: Resources) => Promise<T>,
     pageSize = 25,
   ): Promise<PaginatedResponseDto<T>> {
-    const [resources, count] = await this.resourceRepository.findAndCount(
+    const [resources, count] = await this.em.findAndCount(
+      Resources,
       {
         resourceType: type,
         project,

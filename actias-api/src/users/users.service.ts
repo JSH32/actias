@@ -1,5 +1,4 @@
-import { EntityRepository } from '@mikro-orm/core';
-import { InjectRepository } from '@mikro-orm/nestjs';
+import { EntityManager } from '@mikro-orm/core';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Users } from 'src/entities/Users';
 import { CreateUserDto } from './dto/requests.dto';
@@ -8,10 +7,7 @@ import { UserAuthMethod, AuthMethod } from 'src/entities/UserAuthMethod';
 
 @Injectable()
 export class UsersService {
-  constructor(
-    @InjectRepository(Users)
-    private readonly userRepository: EntityRepository<Users>,
-  ) {}
+  constructor(private readonly em: EntityManager) {}
 
   /**
    * Find a user by either their email or username.
@@ -19,7 +15,8 @@ export class UsersService {
    * @returns user
    */
   async findByAuth(auth: string): Promise<Users> {
-    return await this.userRepository.findOneOrFail(
+    return await this.em.findOneOrFail(
+      Users,
       {
         $or: [{ email: auth }, { username: auth }],
       },
@@ -28,7 +25,7 @@ export class UsersService {
   }
 
   async findById(id: string): Promise<Users> {
-    return await this.userRepository.findOneOrFail({ id });
+    return await this.em.findOneOrFail(Users, { id });
   }
 
   async createUser(createUser: CreateUserDto): Promise<Users> {
@@ -38,7 +35,7 @@ export class UsersService {
     });
 
     if (
-      await this.userRepository.findOne({
+      await this.em.findOne(Users, {
         username: user.username,
         email: user.email,
       })
@@ -48,14 +45,14 @@ export class UsersService {
       );
     }
 
-    user.authMethods.push(
+    user.authMethods.add(
       new UserAuthMethod({
         value: await argon2.hash(createUser.password),
         method: AuthMethod.PASSWORD,
       }),
     );
 
-    await this.userRepository.persistAndFlush(user);
+    await this.em.persistAndFlush(user);
 
     return user;
   }

@@ -18,9 +18,9 @@ export class AuthService {
    */
   async passwordVerify(auth: string, pass: string): Promise<Users | null> {
     const user = await this.usersService.findByAuth(auth);
-    const password = user.authMethods.find(
-      (method) => method.method === AuthMethod.PASSWORD,
-    );
+    const password = user.authMethods
+      .getItems()
+      .find((method) => method.method === AuthMethod.PASSWORD);
 
     if (!password) {
       throw new HttpException(

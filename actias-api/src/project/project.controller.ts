@@ -40,6 +40,7 @@ export class ProjectController {
   @ApiParam({
     name: 'project',
     schema: { type: 'string' },
+    type: 'string',
   })
   async get(
     @User() user,

@@ -1,5 +1,4 @@
-import { EntityName, EntityRepository } from '@mikro-orm/core';
-import { InjectRepository } from '@mikro-orm/nestjs';
+import { EntityManager, EntityName } from '@mikro-orm/core';
 import { Injectable, Param, PipeTransform, Scope } from '@nestjs/common';
 
 /**
@@ -10,13 +9,11 @@ import { Injectable, Param, PipeTransform, Scope } from '@nestjs/common';
 export const EntityPipe = <T extends object>(type: EntityName<T>) => {
   @Injectable({ scope: Scope.REQUEST })
   class EntityPipe<T extends object> implements PipeTransform {
-    constructor(
-      @InjectRepository(type)
-      readonly manager: EntityRepository<T>,
-    ) {}
+    constructor(readonly em: EntityManager) {}
 
     async transform(value: any): Promise<T> {
-      return await this.manager.findOneOrFail(value);
+      const entity = await this.em.findOneOrFail(type, value);
+      return entity as unknown as T;
     }
   }
 
