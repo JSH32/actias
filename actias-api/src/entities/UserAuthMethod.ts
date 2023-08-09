@@ -22,7 +22,6 @@ export class UserAuthMethod extends ActiasBaseEntity {
   @Property()
   cachedUsername?: string;
 
-  @Unique()
   @Enum(() => AuthMethod)
   method!: AuthMethod;
 

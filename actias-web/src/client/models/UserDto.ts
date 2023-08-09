@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 
 export type UserDto = {
     /**
@@ -13,7 +11,7 @@ export type UserDto = {
      */
     created: string;
     /**
-     * If the user is a systm admin.
+     * If the user is a system admin.
      */
     admin: boolean;
     /**

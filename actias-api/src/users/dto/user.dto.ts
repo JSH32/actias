@@ -15,7 +15,7 @@ export class UserDto {
   created!: Date;
 
   /**
-   * If the user is a systm admin.
+   * If the user is a system admin.
    */
   admin!: boolean;
 

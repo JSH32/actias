@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 import type { CreateUserDto } from '../models/CreateUserDto';
 import type { UserDto } from '../models/UserDto';
 
@@ -18,14 +16,26 @@ export class UsersService {
      * @returns UserDto
      * @throws ApiError
      */
-    public usersControllerCreateUser(
+    public createUser(
         requestBody: CreateUserDto,
     ): CancelablePromise<UserDto> {
         return this.httpRequest.request({
             method: 'POST',
-            url: '/users',
+            url: '/api/users',
             body: requestBody,
             mediaType: 'application/json',
+        });
+    }
+
+    /**
+     * Get the currently logged in user's details.
+     * @returns UserDto
+     * @throws ApiError
+     */
+    public me(): CancelablePromise<UserDto> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/users/@me',
         });
     }
 

@@ -7,12 +7,22 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "generateClient": "find ./src/client ! -name 'README.md' -type f -exec rm -f {} + && openapi --input http://localhost:3006/api/openapi.json --output ./src/client --client axios --name ActiasClient"
+    "generateClient": "find ./src/client ! -name 'README.md' -type f -exec rm -f {} + && openapi --input http://localhost:3006/docs/openapi.json --output ./src/client --client axios --name ActiasClient"
   },
   "dependencies": {
+    "@emotion/react": "^11.11.1",
+    "@emotion/server": "^11.11.0",
+    "@mantine/core": "^6.0.18",
+    "@mantine/form": "^6.0.18",
+    "@mantine/hooks": "^6.0.18",
+    "@mantine/next": "^6.0.18",
+    "@mantine/notifications": "^6.0.18",
+    "@tabler/icons-react": "^2.30.0",
     "@types/node": "20.4.8",
     "@types/react": "18.2.18",
     "@types/react-dom": "18.2.7",
+    "axios": "^1.4.0",
+    "cookies-next": "^2.1.2",
     "eslint": "8.46.0",
     "eslint-config-next": "13.4.13",
     "next": "13.4.13",
@@ -21,11 +31,11 @@
     "typescript": "5.1.6"
   },
   "devDependencies": {
+    "@backpack-app/openapi-typescript-codegen": "^0.23.5",
     "@typescript-eslint/eslint-plugin": "^6.3.0",
     "@typescript-eslint/parser": "^6.3.0",
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.0",
-    "openapi-typescript-codegen": "^0.25.0",
     "prettier": "3.0.1"
   }
 }

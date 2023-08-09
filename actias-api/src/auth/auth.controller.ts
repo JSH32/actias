@@ -15,11 +15,11 @@ export class AuthController {
   @Post('login')
   async login(@Body() login: LoginDto): Promise<AuthTokenDto> {
     const user = await this.authService.passwordVerify(
-      login.username,
+      login.auth,
       login.password,
     );
 
-    if (!user) throw new UnauthorizedException();
+    if (!user) throw new UnauthorizedException('Invalid username/password.');
 
     return {
       token: this.authService.signJwt(user),

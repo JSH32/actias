@@ -1,10 +1,8 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 import axios from 'axios';
-import type { AxiosError, AxiosRequestConfig, AxiosResponse, AxiosInstance } from 'axios';
-import FormData from 'form-data';
+import type { AxiosError, AxiosRequestConfig, AxiosResponse } from 'axios';
+import * as FormData from 'form-data';
 
 import { ApiError } from './ApiError';
 import type { ApiRequestOptions } from './ApiRequestOptions';
@@ -13,19 +11,19 @@ import { CancelablePromise } from './CancelablePromise';
 import type { OnCancel } from './CancelablePromise';
 import type { OpenAPIConfig } from './OpenAPI';
 
-export const isDefined = <T>(value: T | null | undefined): value is Exclude<T, null | undefined> => {
+const isDefined = <T>(value: T | null | undefined): value is Exclude<T, null | undefined> => {
     return value !== undefined && value !== null;
 };
 
-export const isString = (value: any): value is string => {
+const isString = (value: any): value is string => {
     return typeof value === 'string';
 };
 
-export const isStringWithValue = (value: any): value is string => {
+const isStringWithValue = (value: any): value is string => {
     return isString(value) && value !== '';
 };
 
-export const isBlob = (value: any): value is Blob => {
+const isBlob = (value: any): value is Blob => {
     return (
         typeof value === 'object' &&
         typeof value.type === 'string' &&
@@ -38,15 +36,15 @@ export const isBlob = (value: any): value is Blob => {
     );
 };
 
-export const isFormData = (value: any): value is FormData => {
+const isFormData = (value: any): value is FormData => {
     return value instanceof FormData;
 };
 
-export const isSuccess = (status: number): boolean => {
+const isSuccess = (status: number): boolean => {
     return status >= 200 && status < 300;
 };
 
-export const base64 = (str: string): string => {
+const base64 = (str: string): string => {
     try {
         return btoa(str);
     } catch (err) {
@@ -55,7 +53,7 @@ export const base64 = (str: string): string => {
     }
 };
 
-export const getQueryString = (params: Record<string, any>): string => {
+const getQueryString = (params: Record<string, any>): string => {
     const qs: string[] = [];
 
     const append = (key: string, value: any) => {
@@ -108,7 +106,7 @@ const getUrl = (config: OpenAPIConfig, options: ApiRequestOptions): string => {
     return url;
 };
 
-export const getFormData = (options: ApiRequestOptions): FormData | undefined => {
+const getFormData = (options: ApiRequestOptions): FormData | undefined => {
     if (options.formData) {
         const formData = new FormData();
 
@@ -137,14 +135,14 @@ export const getFormData = (options: ApiRequestOptions): FormData | undefined =>
 
 type Resolver<T> = (options: ApiRequestOptions) => Promise<T>;
 
-export const resolve = async <T>(options: ApiRequestOptions, resolver?: T | Resolver<T>): Promise<T | undefined> => {
+const resolve = async <T>(options: ApiRequestOptions, resolver?: T | Resolver<T>): Promise<T | undefined> => {
     if (typeof resolver === 'function') {
         return (resolver as Resolver<T>)(options);
     }
     return resolver;
 };
 
-export const getHeaders = async (config: OpenAPIConfig, options: ApiRequestOptions, formData?: FormData): Promise<Record<string, string>> => {
+const getHeaders = async (config: OpenAPIConfig, options: ApiRequestOptions, formData?: FormData): Promise<Record<string, string>> => {
     const token = await resolve(options, config.TOKEN);
     const username = await resolve(options, config.USERNAME);
     const password = await resolve(options, config.PASSWORD);
@@ -187,22 +185,21 @@ export const getHeaders = async (config: OpenAPIConfig, options: ApiRequestOptio
     return headers;
 };
 
-export const getRequestBody = (options: ApiRequestOptions): any => {
+const getRequestBody = (options: ApiRequestOptions): any => {
     if (options.body) {
         return options.body;
     }
     return undefined;
 };
 
-export const sendRequest = async <T>(
+const sendRequest = async <T>(
     config: OpenAPIConfig,
     options: ApiRequestOptions,
     url: string,
     body: any,
     formData: FormData | undefined,
     headers: Record<string, string>,
-    onCancel: OnCancel,
-    axiosClient: AxiosInstance
+    onCancel: OnCancel
 ): Promise<AxiosResponse<T>> => {
     const source = axios.CancelToken.source();
 
@@ -218,7 +215,7 @@ export const sendRequest = async <T>(
     onCancel(() => source.cancel('The user aborted a request.'));
 
     try {
-        return await axiosClient.request(requestConfig);
+        return await axios.request(requestConfig);
     } catch (error) {
         const axiosError = error as AxiosError<T>;
         if (axiosError.response) {
@@ -228,7 +225,7 @@ export const sendRequest = async <T>(
     }
 };
 
-export const getResponseHeader = (response: AxiosResponse<any>, responseHeader?: string): string | undefined => {
+const getResponseHeader = (response: AxiosResponse<any>, responseHeader?: string): string | undefined => {
     if (responseHeader) {
         const content = response.headers[responseHeader];
         if (isString(content)) {
@@ -238,14 +235,14 @@ export const getResponseHeader = (response: AxiosResponse<any>, responseHeader?:
     return undefined;
 };
 
-export const getResponseBody = (response: AxiosResponse<any>): any => {
+const getResponseBody = (response: AxiosResponse<any>): any => {
     if (response.status !== 204) {
         return response.data;
     }
     return undefined;
 };
 
-export const catchErrorCodes = (options: ApiRequestOptions, result: ApiResult): void => {
+const catchErrorCodes = (options: ApiRequestOptions, result: ApiResult): void => {
     const errors: Record<number, string> = {
         400: 'Bad Request',
         401: 'Unauthorized',
@@ -263,19 +260,7 @@ export const catchErrorCodes = (options: ApiRequestOptions, result: ApiResult): 
     }
 
     if (!result.ok) {
-        const errorStatus = result.status ?? 'unknown';
-        const errorStatusText = result.statusText ?? 'unknown';
-        const errorBody = (() => {
-            try {
-                return JSON.stringify(result.body, null, 2);
-            } catch (e) {
-                return undefined;
-            }
-        })();
-
-        throw new ApiError(options, result,
-            `Generic Error: status: ${errorStatus}; status text: ${errorStatusText}; body: ${errorBody}`
-        );
+        throw new ApiError(options, result, 'Generic Error');
     }
 };
 
@@ -283,11 +268,10 @@ export const catchErrorCodes = (options: ApiRequestOptions, result: ApiResult): 
  * Request method
  * @param config The OpenAPI configuration object
  * @param options The request options from the service
- * @param axiosClient The axios client instance to use
  * @returns CancelablePromise<T>
  * @throws ApiError
  */
-export const request = <T>(config: OpenAPIConfig, options: ApiRequestOptions, axiosClient: AxiosInstance = axios): CancelablePromise<T> => {
+export const request = <T>(config: OpenAPIConfig, options: ApiRequestOptions): CancelablePromise<T> => {
     return new CancelablePromise(async (resolve, reject, onCancel) => {
         try {
             const url = getUrl(config, options);
@@ -296,7 +280,7 @@ export const request = <T>(config: OpenAPIConfig, options: ApiRequestOptions, ax
             const headers = await getHeaders(config, options, formData);
 
             if (!onCancel.isCancelled) {
-                const response = await sendRequest<T>(config, options, url, body, formData, headers, onCancel, axiosClient);
+                const response = await sendRequest<T>(config, options, url, body, formData, headers, onCancel);
                 const responseBody = getResponseBody(response);
                 const responseHeader = getResponseHeader(response, options.responseHeader);
 

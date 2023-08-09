@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 
 import type { BundleDto } from './BundleDto';
 
@@ -13,6 +11,6 @@ export type CreateRevisionDto = {
     /**
      * A valid project configuration.
      */
-    projectConfig: Record<string, any>;
+    projectConfig: any;
 };
 

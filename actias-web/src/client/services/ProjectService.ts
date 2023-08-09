@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 import type { CreateProjectDto } from '../models/CreateProjectDto';
 import type { ProjectDto } from '../models/ProjectDto';
 
@@ -18,12 +16,12 @@ export class ProjectService {
      * @returns ProjectDto
      * @throws ApiError
      */
-    public projectControllerCreateProject(
+    public createProject(
         requestBody: CreateProjectDto,
     ): CancelablePromise<ProjectDto> {
         return this.httpRequest.request({
             method: 'POST',
-            url: '/project',
+            url: '/api/project',
             body: requestBody,
             mediaType: 'application/json',
         });
@@ -35,12 +33,12 @@ export class ProjectService {
      * @returns ProjectDto
      * @throws ApiError
      */
-    public projectControllerGet(
+    public get(
         project: string,
     ): CancelablePromise<ProjectDto> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/project/{project}',
+            url: '/api/project/{project}',
             path: {
                 'project': project,
             },

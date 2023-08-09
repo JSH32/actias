@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 import type { AclListDto } from '../models/AclListDto';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -18,12 +16,12 @@ export class AclService {
      * @returns AclListDto
      * @throws ApiError
      */
-    public aclControllerGetAclMe(
+    public getAclMe(
         project: string,
     ): CancelablePromise<AclListDto> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/project/{project}/acl/@me',
+            url: '/api/project/{project}/acl/@me',
             path: {
                 'project': project,
             },
@@ -37,13 +35,13 @@ export class AclService {
      * @returns AclListDto
      * @throws ApiError
      */
-    public aclControllerGetAclSingle(
+    public getAclSingle(
         project: string,
         user: string,
     ): CancelablePromise<AclListDto> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/project/{project}/acl/{user}',
+            url: '/api/project/{project}/acl/{user}',
             path: {
                 'project': project,
                 'user': user,
@@ -61,14 +59,14 @@ export class AclService {
      * @returns AclListDto
      * @throws ApiError
      */
-    public aclControllerPutAcl(
+    public putAcl(
         user: string,
         project: string,
         requestBody: Array<string>,
     ): CancelablePromise<AclListDto> {
         return this.httpRequest.request({
             method: 'PUT',
-            url: '/project/{project}/acl/{user}',
+            url: '/api/project/{project}/acl/{user}',
             path: {
                 'user': user,
                 'project': project,
@@ -84,12 +82,12 @@ export class AclService {
      * @returns AclListDto
      * @throws ApiError
      */
-    public aclControllerGetAcl(
+    public getAcl(
         project: string,
     ): CancelablePromise<Array<AclListDto>> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/project/{project}/acl',
+            url: '/api/project/{project}/acl',
             path: {
                 'project': project,
             },
@@ -101,10 +99,10 @@ export class AclService {
      * @returns string
      * @throws ApiError
      */
-    public aclInfoControllerGetPermissions(): CancelablePromise<Array<string>> {
+    public getPermissions(): CancelablePromise<Array<string>> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/acl/permissions',
+            url: '/api/acl/permissions',
         });
     }
 

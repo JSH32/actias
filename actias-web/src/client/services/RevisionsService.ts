@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 import type { NewRevisionResponseDto } from '../models/NewRevisionResponseDto';
 import type { RevisionFullDto } from '../models/RevisionFullDto';
 
@@ -19,13 +17,13 @@ export class RevisionsService {
      * @returns RevisionFullDto
      * @throws ApiError
      */
-    public revisionsControllerGetRevision(
+    public getRevision(
         id: string,
         withBundle: boolean,
     ): CancelablePromise<RevisionFullDto> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/revisions/{id}',
+            url: '/api/revisions/{id}',
             path: {
                 'id': id,
             },
@@ -41,12 +39,12 @@ export class RevisionsService {
      * @returns NewRevisionResponseDto
      * @throws ApiError
      */
-    public revisionsControllerDeleteRevision(
+    public deleteRevision(
         id: string,
     ): CancelablePromise<NewRevisionResponseDto> {
         return this.httpRequest.request({
             method: 'DELETE',
-            url: '/revisions/{id}',
+            url: '/api/revisions/{id}',
             path: {
                 'id': id,
             },

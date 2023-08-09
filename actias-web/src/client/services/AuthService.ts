@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 import type { AuthTokenDto } from '../models/AuthTokenDto';
 import type { LoginDto } from '../models/LoginDto';
 
@@ -18,12 +16,12 @@ export class AuthService {
      * @returns AuthTokenDto
      * @throws ApiError
      */
-    public authControllerLogin(
+    public login(
         requestBody: LoginDto,
     ): CancelablePromise<AuthTokenDto> {
         return this.httpRequest.request({
             method: 'POST',
-            url: '/auth/login',
+            url: '/api/auth/login',
             body: requestBody,
             mediaType: 'application/json',
         });

@@ -357,15 +357,6 @@
       "schema": "public",
       "indexes": [
         {
-          "columnNames": [
-            "method"
-          ],
-          "composite": false,
-          "keyName": "user_auth_method_method_unique",
-          "primary": false,
-          "unique": true
-        },
-        {
           "keyName": "user_auth_method_user_id_method_unique",
           "columnNames": [
             "user_id",

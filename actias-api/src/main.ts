@@ -2,7 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
-import { ValidationPipe } from '@nestjs/common';
+import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import {
   FastifyAdapter,
   NestFastifyApplication,
@@ -14,7 +14,37 @@ async function bootstrap() {
     new FastifyAdapter({ logger: true }),
   );
 
-  app.useGlobalPipes(new ValidationPipe({ transform: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true,
+      exceptionFactory: (errors) => {
+        const newErrors = {};
+
+        for (const error of errors) {
+          const key = error.property;
+
+          // Remove the field name from the beginning,
+          // capitalize first letter, add period at the end
+          const value =
+            Object.values(error.constraints)[0]
+              .split(' ')
+              .slice(1)
+              .join(' ')
+              .replace(/^\w/, (c) => c.toUpperCase()) + '.';
+
+          newErrors[key] = value;
+        }
+
+        return new BadRequestException({
+          statusCode: 400,
+          message: 'Validation failed',
+          errors: newErrors,
+        });
+      },
+    }),
+  );
+
+  app.setGlobalPrefix('api');
 
   const config = new DocumentBuilder()
     .setTitle('Actias API')
@@ -23,10 +53,14 @@ async function bootstrap() {
     .addTag('scripts', 'revisions')
     .build();
 
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api', app, document);
+  const document = SwaggerModule.createDocument(app, config, {
+    operationIdFactory: (_, methodKey) => methodKey,
+  });
+  SwaggerModule.setup('docs', app, document);
 
-  app.getHttpAdapter().get('/api/openapi.json', (_, res) => res.send(document));
+  app
+    .getHttpAdapter()
+    .get('/docs/openapi.json', (_, res) => res.send(document));
 
   const configService = app.get(ConfigService);
   await app.listen(configService.get<number>('port'));

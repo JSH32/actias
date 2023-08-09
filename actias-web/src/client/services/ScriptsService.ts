@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 import type { CreateRevisionDto } from '../models/CreateRevisionDto';
 import type { CreateScriptDto } from '../models/CreateScriptDto';
 import type { NewRevisionResponseDto } from '../models/NewRevisionResponseDto';
@@ -23,13 +21,13 @@ export class ScriptsService {
      * @returns any
      * @throws ApiError
      */
-    public scriptsControllerRevisionList(
+    public revisionList(
         id: string,
         page: number,
     ): CancelablePromise<PaginatedResponseDto> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/script/{id}/revisions',
+            url: '/api/script/{id}/revisions',
             path: {
                 'id': id,
             },
@@ -46,13 +44,13 @@ export class ScriptsService {
      * @returns NewRevisionResponseDto
      * @throws ApiError
      */
-    public scriptsControllerSetRevision(
+    public setRevision(
         id: string,
         revisionId: string,
     ): CancelablePromise<NewRevisionResponseDto> {
         return this.httpRequest.request({
             method: 'PATCH',
-            url: '/script/{id}/revisions',
+            url: '/api/script/{id}/revisions',
             path: {
                 'id': id,
             },
@@ -69,13 +67,13 @@ export class ScriptsService {
      * @returns RevisionDataDto
      * @throws ApiError
      */
-    public scriptsControllerCreateRevision(
+    public createRevision(
         id: string,
         requestBody: CreateRevisionDto,
     ): CancelablePromise<RevisionDataDto> {
         return this.httpRequest.request({
             method: 'PUT',
-            url: '/script/{id}/revisions',
+            url: '/api/script/{id}/revisions',
             path: {
                 'id': id,
             },
@@ -90,12 +88,12 @@ export class ScriptsService {
      * @returns ScriptDto
      * @throws ApiError
      */
-    public scriptsControllerGetScript(
+    public getScript(
         id: string,
     ): CancelablePromise<ScriptDto> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/script/{id}',
+            url: '/api/script/{id}',
             path: {
                 'id': id,
             },
@@ -107,12 +105,12 @@ export class ScriptsService {
      * @returns any
      * @throws ApiError
      */
-    public scriptsControllerDeleteScript(
+    public deleteScript(
         id: string,
     ): CancelablePromise<any> {
         return this.httpRequest.request({
             method: 'DELETE',
-            url: '/script/{id}',
+            url: '/api/script/{id}',
             path: {
                 'id': id,
             },
@@ -126,13 +124,13 @@ export class ScriptsService {
      * @returns any
      * @throws ApiError
      */
-    public projectScriptControllerListScripts(
+    public listScripts(
         project: string,
         page: number,
     ): CancelablePromise<PaginatedResponseDto> {
         return this.httpRequest.request({
             method: 'GET',
-            url: '/project/{project}/scripts',
+            url: '/api/project/{project}/scripts',
             path: {
                 'project': project,
             },
@@ -148,13 +146,13 @@ export class ScriptsService {
      * @returns ScriptDto
      * @throws ApiError
      */
-    public projectScriptControllerCreateScript(
+    public createScript(
         project: string,
         requestBody: CreateScriptDto,
     ): CancelablePromise<ScriptDto> {
         return this.httpRequest.request({
             method: 'POST',
-            url: '/project/{project}/scripts',
+            url: '/api/project/{project}/scripts',
             path: {
                 'project': project,
             },

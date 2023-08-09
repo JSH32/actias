@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
 /* istanbul ignore file */
 /* tslint:disable */
-/* eslint-disable */
 
 export type AclListDto = {
     /**
@@ -11,6 +9,6 @@ export type AclListDto = {
     /**
      * List of permissions
      */
-    permissions: Record<string, any>;
+    permissions: any;
 };
 
