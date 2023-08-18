@@ -1,5 +1,11 @@
 import { EntityManager, EntityName } from '@mikro-orm/core';
-import { Injectable, Param, PipeTransform, Scope } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Param,
+  PipeTransform,
+  Scope,
+} from '@nestjs/common';
 
 /**
  * Pipe to convert a primary key to the respective entity.

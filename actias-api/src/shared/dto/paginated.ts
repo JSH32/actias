@@ -18,6 +18,18 @@ export class PaginatedResponseDto<T> {
   constructor(page: Required<PaginatedResponseDto<T>>) {
     Object.assign(this, page);
   }
+
+  static fromArray<T>(
+    page: number,
+    lastPage: number,
+    data: T[],
+  ): PaginatedResponseDto<T> {
+    return new this({
+      items: data,
+      page,
+      lastPage,
+    });
+  }
 }
 
 export const ApiOkResponsePaginated = <DataDto extends Type<unknown>>(

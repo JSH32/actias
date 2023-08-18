@@ -39,7 +39,7 @@ export class AclGuard implements CanActivate {
 
     const aclData = this.reflector.get<any>('acl', context.getHandler());
 
-    if (aclData.bitfield) {
+    if (aclData?.bitfield) {
       // Should be provided by AuthGuard
       const user = request['user'] as Users;
 
@@ -69,7 +69,7 @@ export class AclGuard implements CanActivate {
         );
       }
 
-      if (project.ownerId === user.id) return true;
+      if (project.owner === user) return true;
 
       const access = await this.aclService.getProjectAccess(user, project);
 

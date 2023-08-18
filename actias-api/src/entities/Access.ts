@@ -1,4 +1,4 @@
-import { Cascade, Entity, ManyToOne, Property, Unique } from '@mikro-orm/core';
+import { Entity, ManyToOne, Property, Unique } from '@mikro-orm/core';
 import { Users } from './Users';
 import { Projects } from './Projects';
 import { ActiasBaseEntity } from './BaseEntity';
@@ -9,16 +9,16 @@ import { ActiasBaseEntity } from './BaseEntity';
 @Entity()
 @Unique({ properties: ['user', 'project'] })
 export class Access extends ActiasBaseEntity {
-  @ManyToOne({ cascade: [Cascade.REMOVE] })
+  @ManyToOne({ onDelete: 'cascade' })
   user!: Users;
 
-  @ManyToOne({ cascade: [Cascade.REMOVE] })
+  @ManyToOne({ onDelete: 'cascade' })
   project!: Projects;
 
   @Property()
   permissionBitfield!: number;
 
-  constructor(access: Required<Access>) {
+  constructor(access: Partial<Access>) {
     super();
     Object.assign(this, access);
   }

@@ -23,7 +23,7 @@ export class AclService {
     user: Users,
     project: Projects,
   ): Promise<BitSet<AccessFields>> {
-    if (project.ownerId === user.id) {
+    if (project.owner === user) {
       return new BitField(AccessFields.FULL);
     }
 
@@ -63,7 +63,7 @@ export class AclService {
    * Get ACL list for a single user.
    */
   async getAclList(user: Users, project: Projects) {
-    if (project.ownerId === user.id) {
+    if (project.owner === user) {
       const bitfield = new BitField();
       bitfield.on(AccessFields.FULL);
 

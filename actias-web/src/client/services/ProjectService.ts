@@ -1,6 +1,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 import type { CreateProjectDto } from '../models/CreateProjectDto';
+import type { MessageResponseDto } from '../models/MessageResponseDto';
+import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
 import type { ProjectDto } from '../models/ProjectDto';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -28,6 +30,24 @@ export class ProjectService {
     }
 
     /**
+     * Get all projects that a user has access to.
+     * @param page
+     * @returns any
+     * @throws ApiError
+     */
+    public getAll(
+        page: number,
+    ): CancelablePromise<PaginatedResponseDto> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/project',
+            query: {
+                'page': page,
+            },
+        });
+    }
+
+    /**
      * Get a project by its ID.
      * @param project
      * @returns ProjectDto
@@ -38,6 +58,24 @@ export class ProjectService {
     ): CancelablePromise<ProjectDto> {
         return this.httpRequest.request({
             method: 'GET',
+            url: '/api/project/{project}',
+            path: {
+                'project': project,
+            },
+        });
+    }
+
+    /**
+     * Delete a project by its ID.
+     * @param project
+     * @returns MessageResponseDto
+     * @throws ApiError
+     */
+    public delete(
+        project: string,
+    ): CancelablePromise<MessageResponseDto> {
+        return this.httpRequest.request({
+            method: 'DELETE',
             url: '/api/project/{project}',
             path: {
                 'project': project,

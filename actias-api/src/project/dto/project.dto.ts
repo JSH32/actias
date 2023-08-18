@@ -18,7 +18,7 @@ export class ProjectDto {
       id: entity.id,
       name: entity.name,
       created: entity.createdAt,
-      ownerId: entity.ownerId,
+      ownerId: entity.owner.id,
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt,
     });

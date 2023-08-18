@@ -29,21 +29,21 @@ export class UsersService {
   }
 
   async createUser(createUser: CreateUserDto): Promise<Users> {
-    const user = new Users({
-      username: createUser.username,
-      email: createUser.email,
-    });
-
+    // Check if user exists.
     if (
       await this.em.findOne(Users, {
-        username: user.username,
-        email: user.email,
+        $or: [{ email: createUser.email }, { username: createUser.username }],
       })
     ) {
       throw new BadRequestException(
         'User with that username/email already exists.',
       );
     }
+
+    const user = new Users({
+      username: createUser.username,
+      email: createUser.email,
+    });
 
     user.authMethods.add(
       new UserAuthMethod({

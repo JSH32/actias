@@ -1,9 +1,16 @@
-import { Collection, Entity, OneToMany, Property } from '@mikro-orm/core';
+import {
+  Collection,
+  Entity,
+  ManyToOne,
+  OneToMany,
+  Property,
+} from '@mikro-orm/core';
 import { Resources } from './Resources';
 import { ActiasBaseEntity } from './BaseEntity';
 import { Access } from './Access';
 import { BitField } from 'easy-bits';
 import { AccessFields } from '../project/acl/accessFields';
+import { Users } from './Users';
 
 /**
  * Projects which contain grouped resources.
@@ -19,8 +26,8 @@ export class Projects extends ActiasBaseEntity {
   /**
    * Single owner of a project.
    */
-  @Property({ columnType: 'uuid' })
-  ownerId!: string;
+  @ManyToOne({ onDelete: 'cascade' })
+  owner!: Users;
 
   /**
    * All resources owned by the project.

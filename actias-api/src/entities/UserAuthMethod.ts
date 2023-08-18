@@ -1,11 +1,4 @@
-import {
-  Property,
-  Unique,
-  Enum,
-  Entity,
-  ManyToOne,
-  Cascade,
-} from '@mikro-orm/core';
+import { Property, Unique, Enum, Entity, ManyToOne } from '@mikro-orm/core';
 import { Users } from './Users';
 import { ActiasBaseEntity } from './BaseEntity';
 
@@ -28,7 +21,7 @@ export class UserAuthMethod extends ActiasBaseEntity {
   @Property()
   value!: string;
 
-  @ManyToOne({ cascade: [Cascade.REMOVE] })
+  @ManyToOne({ onDelete: 'cascade' })
   user!: Users;
 
   constructor(data: Partial<UserAuthMethod>) {

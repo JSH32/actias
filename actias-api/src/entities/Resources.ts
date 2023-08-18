@@ -1,4 +1,4 @@
-import { Cascade, Entity, Enum, ManyToOne, Property } from '@mikro-orm/core';
+import { Entity, Enum, ManyToOne, Property } from '@mikro-orm/core';
 import { ActiasBaseEntity } from './BaseEntity';
 import { Projects } from './Projects';
 
@@ -23,7 +23,7 @@ export class Resources extends ActiasBaseEntity {
   @Property()
   serviceId!: string;
 
-  @ManyToOne({ cascade: [Cascade.REMOVE] })
+  @ManyToOne()
   project!: Projects;
 
   constructor(resource: Required<Omit<Resources, keyof ActiasBaseEntity>>) {

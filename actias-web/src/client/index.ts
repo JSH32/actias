@@ -17,6 +17,7 @@ export type { CreateScriptDto } from './models/CreateScriptDto';
 export type { CreateUserDto } from './models/CreateUserDto';
 export type { FileDto } from './models/FileDto';
 export type { LoginDto } from './models/LoginDto';
+export type { MessageResponseDto } from './models/MessageResponseDto';
 export type { NewRevisionResponseDto } from './models/NewRevisionResponseDto';
 export type { PaginatedResponseDto } from './models/PaginatedResponseDto';
 export type { ProjectConfigDto } from './models/ProjectConfigDto';

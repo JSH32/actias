@@ -15,8 +15,14 @@ import { useForm } from '@mantine/form';
 import Link from 'next/link';
 import api, { showError } from '@/helpers/api';
 import { notifications } from '@mantine/notifications';
+import { useRouter } from 'next/router';
+import { useStore } from '@/helpers/state';
 
 export default function Login() {
+  const router = useRouter();
+
+  const store = useStore();
+
   const form = useForm({
     initialValues: {
       auth: '',
@@ -24,21 +30,33 @@ export default function Login() {
     },
   });
 
-  const login = React.useCallback((values: any) => {
-    api.auth
-      .login(values)
-      .then((res) => {
-        localStorage.setItem('token', res.token);
+  // Go to user info if logged in
+  React.useEffect(() => {
+    if (store?.userData) router.push('/user');
+  }, [store, router]);
 
-        api.users.me().then((info) => {
-          notifications.show({
-            title: 'Logged in!',
-            message: `Welcome ${info.username}`,
+  const login = React.useCallback(
+    (values: any) => {
+      api.auth
+        .login(values)
+        .then((res) => {
+          localStorage.setItem('token', res.token);
+
+          api.users.me().then((user) => {
+            store?.setUserInfo(user);
+
+            notifications.show({
+              title: 'Logged in!',
+              message: `Welcome ${user.username}`,
+            });
+
+            router.push('/user');
           });
-        });
-      })
-      .catch((err) => showError(err.body));
-  }, []);
+        })
+        .catch((err) => showError(err?.body));
+    },
+    [router, store],
+  );
 
   return (
     <Container size={420} my={40}>

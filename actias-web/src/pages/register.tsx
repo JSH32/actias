@@ -14,9 +14,11 @@ import { useForm } from '@mantine/form';
 import api, { errorForm } from '@/helpers/api';
 import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/router';
+import { useStore } from '@/helpers/state';
 
 export default function Register() {
   const router = useRouter();
+  const store = useStore();
 
   const form = useForm({
     initialValues: {
@@ -31,6 +33,11 @@ export default function Register() {
         value === values.password ? null : "Passwords don't match",
     },
   });
+
+  // Go to user info if logged in
+  React.useEffect(() => {
+    if (store?.userData) router.push('/user');
+  }, [store, router]);
 
   const createAccount = React.useCallback(
     (values: any) => {

@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiParam, ApiTags } from '@nestjs/swagger';
 import { CreateProjectDto } from './dto/requests.dto';
 import { ProjectService } from './project.service';
@@ -10,6 +18,11 @@ import { User } from 'src/auth/user.decorator';
 import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
 import { AclService } from './acl/acl.service';
+import {
+  ApiOkResponsePaginated,
+  PaginatedResponseDto,
+} from 'src/shared/dto/paginated';
+import { MessageResponseDto } from 'src/shared/dto/message';
 
 @UseGuards(AuthGuard, AclGuard)
 @ApiTags('project')
@@ -29,8 +42,25 @@ export class ProjectController {
     @Body() createProject: CreateProjectDto,
   ): Promise<ProjectDto> {
     return new ProjectDto(
-      await this.projectService.createProject(user.id, createProject.name),
+      await this.projectService.createProject(user, createProject.name),
     );
+  }
+
+  /**
+   * Get all projects that a user has access to.
+   */
+  @Get()
+  @ApiOkResponsePaginated(ProjectDto)
+  async getAll(
+    @User() user,
+    @Query('page')
+    page: number,
+  ): Promise<PaginatedResponseDto<ProjectDto>> {
+    const projectPage = await this.projectService.getAll(user, 10, page);
+    return new PaginatedResponseDto({
+      ...projectPage,
+      items: projectPage.items.map((item) => new ProjectDto(item)),
+    });
   }
 
   /**
@@ -42,11 +72,25 @@ export class ProjectController {
     schema: { type: 'string' },
     type: 'string',
   })
-  async get(
-    @User() user,
-    @EntityParam('project', Projects) project,
-  ): Promise<ProjectDto> {
-    await this.accessService.getProjectAccess(user, project);
+  async get(@EntityParam('project', Projects) project): Promise<ProjectDto> {
     return new ProjectDto(project);
+  }
+
+  /**
+   * Delete a project by its ID.
+   */
+  @Delete(':project')
+  @ApiParam({
+    name: 'project',
+    schema: { type: 'string' },
+    type: 'string',
+  })
+  async delete(
+    @EntityParam('project', Projects) project,
+  ): Promise<MessageResponseDto> {
+    await this.projectService.delete(project);
+    return new MessageResponseDto(
+      `Deleted project (${project.name}) successfully.`,
+    );
   }
 }

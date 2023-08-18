@@ -1,6 +1,6 @@
 import { defineConfig } from '@mikro-orm/postgresql';
 import { TsMorphMetadataProvider } from '@mikro-orm/reflection';
-import { Logger } from '@nestjs/common';
+import { BadRequestException, Logger } from '@nestjs/common';
 import config from './config';
 
 const logger = new Logger('MikroORM');
@@ -17,4 +17,6 @@ export default defineConfig({
   migrations: {
     disableForeignKeys: false,
   },
+  findOneOrFailHandler: (entityName) =>
+    new BadRequestException(`${entityName} was not found.`),
 });

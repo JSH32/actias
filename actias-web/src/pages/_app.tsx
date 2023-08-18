@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import NextApp, { AppProps, AppContext } from 'next/app';
 import { getCookie, setCookie } from 'cookies-next';
 import Head from 'next/head';
@@ -10,6 +10,7 @@ import {
 } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { Header } from '@/components/Header';
+import { Store, StoreContext } from '@/helpers/state';
 
 export default function App(props: AppProps & { colorScheme: ColorScheme }) {
   const { Component, pageProps } = props;
@@ -26,43 +27,51 @@ export default function App(props: AppProps & { colorScheme: ColorScheme }) {
     });
   };
 
+  const [dataStore, setDataStore] = useState<Store | null>(null);
+
+  useEffect(() => {
+    setDataStore(new Store());
+  }, []);
+
   return (
     <>
-      <Head>
-        <title>Actias</title>
-        <meta
-          name="viewport"
-          content="minimum-scale=1, initial-scale=1, width=device-width"
-        />
-        <link rel="shortcut icon" href="/favicon.ico" />
-      </Head>
+      <StoreContext.Provider value={dataStore}>
+        <Head>
+          <title>Actias</title>
+          <meta
+            name="viewport"
+            content="minimum-scale=1, initial-scale=1, width=device-width"
+          />
+          <link rel="shortcut icon" href="/favicon.ico" />
+        </Head>
 
-      <ColorSchemeProvider
-        colorScheme={colorScheme}
-        toggleColorScheme={toggleColorScheme}
-      >
-        <MantineProvider
-          theme={{ colorScheme, primaryColor: 'grape' }}
-          withGlobalStyles
-          withNormalizeCSS
+        <ColorSchemeProvider
+          colorScheme={colorScheme}
+          toggleColorScheme={toggleColorScheme}
         >
-          <Notifications />
-          <AppShell
-            padding="md"
-            header={<Header />}
-            styles={(theme) => ({
-              main: {
-                backgroundColor:
-                  theme.colorScheme === 'dark'
-                    ? theme.colors.dark[8]
-                    : theme.colors.gray[0],
-              },
-            })}
+          <MantineProvider
+            theme={{ colorScheme, primaryColor: 'grape' }}
+            withGlobalStyles
+            withNormalizeCSS
           >
-            <Component {...pageProps} />
-          </AppShell>
-        </MantineProvider>
-      </ColorSchemeProvider>
+            <Notifications />
+            <AppShell
+              padding="md"
+              header={<Header />}
+              styles={(theme) => ({
+                main: {
+                  backgroundColor:
+                    theme.colorScheme === 'dark'
+                      ? theme.colors.dark[8]
+                      : theme.colors.gray[0],
+                },
+              })}
+            >
+              <Component {...pageProps} />
+            </AppShell>
+          </MantineProvider>
+        </ColorSchemeProvider>
+      </StoreContext.Provider>
     </>
   );
 }

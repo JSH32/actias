@@ -1,6 +1,8 @@
 import { Collection, Entity, OneToMany, Property } from '@mikro-orm/core';
 import { ActiasBaseEntity } from './BaseEntity';
 import { UserAuthMethod } from './UserAuthMethod';
+import { Projects } from './Projects';
+import { Access } from './Access';
 
 /**
  * Users table, stores simple information about a user account.
@@ -20,6 +22,16 @@ export class Users extends ActiasBaseEntity {
     orphanRemoval: true,
   })
   authMethods = new Collection<UserAuthMethod>(this);
+
+  @OneToMany(() => Projects, (method) => method.owner, {
+    orphanRemoval: true,
+  })
+  ownedProjects = new Collection<Projects>(this);
+
+  @OneToMany(() => Access, (method) => method.user, {
+    orphanRemoval: true,
+  })
+  access = new Collection<Access>(this);
 
   constructor(data: Partial<Users>) {
     super();
