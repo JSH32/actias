@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { Users } from 'src/entities/Users';
 import { AclService } from './acl.service';
-import { Reflector } from '@nestjs/core';
+import { ModuleRef, Reflector } from '@nestjs/core';
 import { EntityManager } from '@mikro-orm/core';
 import { Projects } from 'src/entities/Projects';
 import { Resources } from 'src/entities/Resources';
@@ -32,6 +32,7 @@ export class AclGuard implements CanActivate {
     // Not using project service to avoid cyclic dependency.
     private readonly em: EntityManager,
     private readonly reflector: Reflector,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -46,13 +47,15 @@ export class AclGuard implements CanActivate {
       let project;
 
       if (aclData.projectFinder != null) {
-        if (aclData.projectFinder instanceof String) {
-          const finderMethod = this.reflector.get<string>(
-            aclData.projectFinder,
-            context.getHandler(),
-          ) as any;
+        if (
+          typeof aclData.projectFinder === 'string' ||
+          aclData.projectFinder instanceof String
+        ) {
+          // Create instance and run init hook.
+          const instance = await this.moduleRef.create(context.getClass());
+          instance.onModuleInit();
 
-          project = await finderMethod(request, this.em);
+          project = await instance[aclData.projectFinder](request, this.em);
         } else {
           project = await aclData.projectFinder(request, this.em);
         }

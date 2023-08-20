@@ -63,8 +63,7 @@ impl ScriptService {
         sqlx::query_as::<_, DbRevision>("SELECT * FROM revisions WHERE id = $1")
             .bind(
                 Uuid::parse_str(&revision_id)
-                    .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?
-                    .to_string(),
+                    .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?,
             )
             .fetch_optional(&self.database)
             .await

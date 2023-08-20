@@ -41,7 +41,7 @@ export class RevisionsController implements OnModuleInit {
     const revision = await lastValueFrom(
       this.scriptService
         .getRevision({
-          id: request['id'],
+          id: request.params['id'],
           withBundle: false,
         })
         .pipe(toHttpException()),
@@ -63,6 +63,7 @@ export class RevisionsController implements OnModuleInit {
     @Param('id') id: string,
     @Query('withBundle') withBundle?: boolean,
   ): Promise<RevisionFullDto> {
+    console.log(withBundle);
     const revision = await lastValueFrom(
       this.scriptService
         .getRevision({ id, withBundle: withBundle || false })
