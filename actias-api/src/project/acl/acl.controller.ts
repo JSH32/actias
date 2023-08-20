@@ -48,6 +48,7 @@ export class AclController {
     @EntityParam('project', Projects) project: Projects,
     @User() user: Users,
   ) {
+    console.log('hi');
     return this.aclService.getAclList(user, project);
   }
 

@@ -1,7 +1,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 
-import type { ProjectConfigDto } from './ProjectConfigDto';
+import type { ScriptConfigDto } from './ScriptConfigDto';
 
 export type RevisionDataDto = {
     id: string;
@@ -17,6 +17,6 @@ export type RevisionDataDto = {
      * Config that the project was uploaded with.
      * This is metadata and is mostly included for CLI to restore revisions intact.
      */
-    projectConfig: ProjectConfigDto;
+    scriptConfig: ScriptConfigDto;
 };
 

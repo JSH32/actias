@@ -1,11 +1,5 @@
 import { EntityManager, EntityName } from '@mikro-orm/core';
-import {
-  BadRequestException,
-  Injectable,
-  Param,
-  PipeTransform,
-  Scope,
-} from '@nestjs/common';
+import { Injectable, Param, PipeTransform } from '@nestjs/common';
 
 /**
  * Pipe to convert a primary key to the respective entity.
@@ -13,7 +7,7 @@ import {
  * @returns entity.
  */
 export const EntityPipe = <T extends object>(type: EntityName<T>) => {
-  @Injectable({ scope: Scope.REQUEST })
+  @Injectable()
   class EntityPipe<T extends object> implements PipeTransform {
     constructor(readonly em: EntityManager) {}
 

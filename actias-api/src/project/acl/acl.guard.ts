@@ -58,8 +58,12 @@ export class AclGuard implements CanActivate {
         }
       } else if (aclData.resourceParam != null) {
         // Get the project by the resource ID if resourceParam is provided.
-        const serviceId = request.params[aclData.resourceParam];
-        const resource = await this.em.findOneOrFail(Resources, { serviceId });
+        const id = request.params[aclData.resourceParam];
+        const resource = await this.em.findOneOrFail(
+          Resources,
+          { id },
+          { populate: ['project'] },
+        );
 
         project = resource.project;
       } else {

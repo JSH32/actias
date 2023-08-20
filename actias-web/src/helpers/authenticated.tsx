@@ -13,7 +13,11 @@ export function withAuthentication(Component: React.FC<any>) {
     React.useEffect(() => {
       setIsClient(true);
 
-      if (!store?.userData) router.push('/login');
+      store?.fetchUserInfo().then(() => {
+        if (!store?.userData) {
+          router.push('/login');
+        }
+      });
     }, [store, router]);
 
     if (!store?.userData || !isClient) {

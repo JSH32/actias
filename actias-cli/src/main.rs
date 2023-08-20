@@ -1,11 +1,9 @@
 mod client;
-mod project;
+mod script;
+mod settings;
 mod util;
 
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use client::{
@@ -17,11 +15,13 @@ use inquire::{Confirm, Text};
 
 use colored::*;
 use prettytable::{row, Table};
+use reqwest::header;
+use settings::Settings;
 use util::write_revision;
 
 use crate::{
     client::types::CreateRevisionDto,
-    project::ProjectConfig,
+    script::ScriptConfig,
     util::{copy_definitions, get_dir, progenitor_error},
 };
 
@@ -38,10 +38,14 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    // TODO: Implement logins
+    // 🔑 Login to Actias account.
     /// 📜 Initialize a new sample project
     Init {
         /// Folder name of the new project
         name: String,
+        /// Id of the project to create the script under.
+        project_id: Option<String>,
     },
     /// 🚀 Publish a new revision of the project
     Publish {
@@ -49,7 +53,7 @@ enum Commands {
         directory: String,
     },
     /// 📑 List scripts
-    Scripts { page: Option<i64> },
+    Scripts { project: String, page: Option<i64> },
     /// 📜 Manage a script
     Script {
         /// Script to manage.
@@ -104,21 +108,40 @@ struct RevisionCommand {
 async fn main() {
     let cli = Cli::parse();
 
-    let client = Client::new("http://localhost:3006");
+    let auth_header = match Settings::new() {
+        Ok(v) => format!("Bearer {}", v.token),
+        Err(e) => {
+            println!("❌ Error while initializing project, {}", e.to_string());
+            return;
+        }
+    };
+
+    let mut headers = header::HeaderMap::new();
+    headers.insert(
+        "Authorization",
+        header::HeaderValue::from_str(&auth_header).unwrap(),
+    );
+
+    let req_client = reqwest::ClientBuilder::new()
+        .default_headers(headers)
+        .build()
+        .unwrap();
+
+    let client = Client::new_with_client("http://localhost:3006", req_client);
 
     match cli.command {
-        Commands::Init { name } => {
-            if let Err(e) = create_project(&name) {
+        Commands::Init { project_id, name } => {
+            if let Err(e) = create_script(&client, &name, project_id).await {
                 println!("❌ Error while initializing project, {}", e.to_string())
             }
         }
         Commands::Publish { directory } => {
-            if let Err(e) = publish_project(&client, &directory).await {
+            if let Err(e) = publish_script(&client, &directory).await {
                 println!("❌ Error while publishing project, {}", e.to_string())
             }
         }
-        Commands::Scripts { page } => {
-            if let Err(e) = list_scripts(&client, page.unwrap_or(1) as f64).await {
+        Commands::Scripts { project, page } => {
+            if let Err(e) = list_scripts(&client, &project, page.unwrap_or(1) as f64).await {
                 println!("❌ Error, {}", e.to_string())
             }
         }
@@ -127,16 +150,16 @@ async fn main() {
                 println!("❌ Error, {}", e.to_string())
             }
         }
-        Commands::Check { directory } => match ProjectConfig::from_path(Path::new(&directory)) {
+        Commands::Check { directory } => match ScriptConfig::from_path(Path::new(&directory)) {
             Ok(_) => println!("{}", "📜 Project validated!".green()),
             Err(e) => println!("❌ Error, {}", e.to_string()),
         },
     };
 }
 
-async fn list_scripts(client: &Client, page: f64) -> Result<(), String> {
+async fn list_scripts(client: &Client, project: &str, page: f64) -> Result<(), String> {
     let response = client
-        .scripts_controller_list_scripts(page)
+        .list_scripts(project, page)
         .await
         .map_err(progenitor_error)?
         .into_inner();
@@ -154,7 +177,7 @@ async fn list_scripts(client: &Client, page: f64) -> Result<(), String> {
         response.paginated_response_dto.page.to_string().yellow(),
         response
             .paginated_response_dto
-            .total_pages
+            .last_page
             .to_string()
             .yellow()
     );
@@ -181,7 +204,7 @@ async fn script_manage_command(
     command: &ScriptOperations,
 ) -> Result<(), String> {
     let path = Path::new(script_id);
-    let id = match ProjectConfig::from_path(&path) {
+    let id = match ScriptConfig::from_path(&path) {
         Ok(v) => v.id.unwrap_or(script_id.to_string()),
         Err(_) => script_id.to_string(),
     };
@@ -189,13 +212,13 @@ async fn script_manage_command(
     match command {
         ScriptOperations::Delete => {
             let script = client
-                .scripts_controller_get_script(&id)
+                .get_script(&id)
                 .await
                 .map_err(progenitor_error)?
                 .into_inner();
 
             client
-                .scripts_controller_delete_script(&id)
+                .delete_script(&id)
                 .await
                 .map_err(progenitor_error)?
                 .into_inner();
@@ -208,7 +231,7 @@ async fn script_manage_command(
         }
         ScriptOperations::Clone { path } => {
             let script = client
-                .scripts_controller_get_script(&id)
+                .get_script(&id)
                 .await
                 .map_err(progenitor_error)?
                 .into_inner();
@@ -232,14 +255,14 @@ async fn revision_command(
     command: &RevisionCommands,
 ) -> Result<(), String> {
     let script = client
-        .scripts_controller_get_script(&script_id)
+        .get_script(&script_id)
         .await
         .map_err(progenitor_error)?;
 
     match command {
         RevisionCommands::Delete { revision_id } => {
             let result = client
-                .revisions_controller_delete_revision(&revision_id)
+                .delete_revision(&revision_id)
                 .await
                 .map_err(progenitor_error)?;
 
@@ -256,7 +279,7 @@ async fn revision_command(
         }
         RevisionCommands::List { page } => {
             let response = client
-                .scripts_controller_revision_list(script_id, page.unwrap_or(1) as f64)
+                .revision_list(script_id, page.unwrap_or(1) as f64)
                 .await
                 .map_err(progenitor_error)?;
 
@@ -268,7 +291,7 @@ async fn revision_command(
                 response.paginated_response_dto.page.to_string().yellow(),
                 response
                     .paginated_response_dto
-                    .total_pages
+                    .last_page
                     .to_string()
                     .yellow()
             );
@@ -288,7 +311,7 @@ async fn revision_command(
         }
         RevisionCommands::Set { revision_id } => {
             let response = client
-                .scripts_controller_set_revision(script_id, revision_id)
+                .set_revision(script_id, revision_id)
                 .await
                 .map_err(progenitor_error)?;
 
@@ -318,7 +341,7 @@ async fn clone_revision(
     path: Option<String>,
 ) -> Result<(), String> {
     let revision = client
-        .revisions_controller_get_revision(&revision_id, true)
+        .get_revision(&revision_id, true)
         .await
         .map_err(progenitor_error)?;
 
@@ -343,33 +366,37 @@ async fn clone_revision(
     Ok(())
 }
 
-async fn publish_project(client: &Client, project_dir: &str) -> Result<(), String> {
-    let project_path = get_dir(project_dir, false, false)?;
+async fn publish_script(client: &Client, script_dir: &str) -> Result<(), String> {
+    let script_path = get_dir(script_dir, false, false)?;
 
-    let mut project_config = ProjectConfig::from_path(&project_path)?;
+    let mut script_config = ScriptConfig::from_path(&script_path)?;
 
-    let script = match &project_config.id {
-        Some(v) => client
-            .scripts_controller_get_script(&v)
-            .await
-            .map_err(progenitor_error)?,
+    let script = match &script_config.id {
+        Some(v) => client.get_script(&v).await.map_err(progenitor_error)?,
         None => {
-            if !Confirm::new("Project doesn't have an ID, would you like to create a new project?")
+            if !Confirm::new("Script doesn't have an ID, would you like to create a new one?")
                 .with_default(false)
                 .prompt()
                 .map_err(|e| e.to_string())?
             {
-                return Err("can't publish project without an ID".to_owned());
+                return Err("can't publish script without an ID".to_owned());
             }
 
-            let project_name = Text::new("What would you like the public identifier to be?")
+            let script_name = Text::new("What would you like the public identifier to be?")
+                .prompt()
+                .map_err(|e| e.to_string())?;
+
+            let project_select = Text::new("What project ID should this be under?")
                 .prompt()
                 .map_err(|e| e.to_string())?;
 
             let script = client
-                .scripts_controller_create_script(&CreateScriptDto {
-                    public_identifier: project_name,
-                })
+                .create_script(
+                    &project_select,
+                    &CreateScriptDto {
+                        public_identifier: script_name,
+                    },
+                )
                 .await
                 .map_err(progenitor_error)?;
 
@@ -379,49 +406,29 @@ async fn publish_project(client: &Client, project_dir: &str) -> Result<(), Strin
                 format!("({})", script.id).bright_black()
             );
 
-            project_config.id = Some(script.id.clone());
+            script_config.id = Some(script.id.clone());
 
             // Write the new ID to the config.
-            let mut config = std::fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open({
-                    let mut project_config = project_path.clone();
-                    project_config.push("project.json");
-                    project_config
-                })
-                .unwrap();
-
-            config
-                .write_all(
-                    serde_json::to_string_pretty(&project_config)
-                        .unwrap()
-                        .as_bytes(),
-                )
-                .unwrap();
-
-            config.flush().unwrap();
+            script_config.write_config(&script_path)?;
 
             script
         }
     };
 
     client
-        .scripts_controller_create_revision(
+        .create_revision(
             &script.id,
             &CreateRevisionDto {
-                bundle: project_config.to_bundle()?,
-                project_config: serde_json::from_value(
-                    serde_json::to_value(project_config).unwrap(),
-                )
-                .unwrap(),
+                bundle: script_config.to_bundle()?,
+                script_config: serde_json::from_value(serde_json::to_value(script_config).unwrap())
+                    .unwrap(),
             },
         )
         .await
         .map_err(|e| format!("failed to upload revision: {}", e.to_string()))?;
 
     println!(
-        "🚀 Project published to {} {}",
+        "🚀 Script published to {} {}",
         script.public_identifier.purple(),
         format!("({})", script.id).bright_black(),
     );
@@ -429,24 +436,73 @@ async fn publish_project(client: &Client, project_dir: &str) -> Result<(), Strin
     Ok(())
 }
 
-fn create_project(project_name: &str) -> Result<(), String> {
-    let project_path = get_dir(project_name, true, true)?;
+async fn create_script(
+    client: &Client,
+    script_name: &str,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    // Ensure access
+    if let Some(project_id) = &project_id {
+        let acl: progenitor::progenitor_client::ResponseValue<client::types::AclListDto> = client
+            .get_acl_me(&project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !acl.permissions.contains_key("SCRIPT_WRITE") {
+            return Err("No permission to write scripts.".to_string());
+        }
+    }
+
+    let script_path = get_dir(script_name, true, true)?;
 
     PROJ_TEMPLATE_DIR
-        .extract(&project_path)
+        .extract(&script_path)
         .map_err(|e| e.to_string())?;
 
-    copy_definitions(&project_path)?;
+    copy_definitions(&script_path)?;
 
     println!(
-        "📜 Project {} was created!",
-        project_path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .magenta()
+        "📜 Script {} was created!",
+        script_path.file_name().unwrap().to_str().unwrap().magenta()
     );
+
+    // Create a script and publish a revision.
+    if let Some(project_id) = project_id {
+        let mut script_config = ScriptConfig::from_path(&script_path)?;
+
+        let script = client
+            .create_script(
+                &project_id,
+                &CreateScriptDto {
+                    public_identifier: script_name.to_string(),
+                },
+            )
+            .await
+            .map_err(progenitor_error)?;
+
+        script_config.id = Some(script.id.clone());
+        script_config.write_config(&script_path)?;
+
+        client
+            .create_revision(
+                &script.id,
+                &CreateRevisionDto {
+                    bundle: script_config.to_bundle()?,
+                    script_config: serde_json::from_value(
+                        serde_json::to_value(script_config).unwrap(),
+                    )
+                    .unwrap(),
+                },
+            )
+            .await
+            .map_err(|e| format!("failed to upload revision: {}", e.to_string()))?;
+
+        println!(
+            "🚀 Script published to {} {}",
+            script.public_identifier.purple(),
+            format!("({})", script.id).bright_black(),
+        );
+    }
 
     Ok(())
 }

@@ -2,7 +2,7 @@
 /* tslint:disable */
 
 import type { BundleDto } from './BundleDto';
-import type { ProjectConfigDto } from './ProjectConfigDto';
+import type { ScriptConfigDto } from './ScriptConfigDto';
 
 export type RevisionFullDto = {
     id: string;
@@ -18,7 +18,7 @@ export type RevisionFullDto = {
      * Config that the project was uploaded with.
      * This is metadata and is mostly included for CLI to restore revisions intact.
      */
-    projectConfig: ProjectConfigDto;
+    scriptConfig: ScriptConfigDto;
     /**
      * Content bundle of all files.
      * This is only present in some responses.

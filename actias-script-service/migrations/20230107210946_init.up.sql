@@ -17,7 +17,7 @@ CREATE TABLE revisions
     script_id      UUID             NOT NULL,
     entry_point    VARCHAR(32767)   NOT NULL,
     -- Not used for anything other than storing and retrieving.
-    project_config JSONB            NOT NULL,
+    script_config  JSONB            NOT NULL,
 
     PRIMARY KEY (id),
     FOREIGN KEY (script_id) REFERENCES scripts (id) ON DELETE CASCADE

@@ -17,5 +17,9 @@ export type ScriptDto = {
      * This is empty for newly created scripts.
      */
     currentRevisionId?: string;
+    /**
+     * Parent project that owns this script.
+     */
+    projectId: string;
 };
 

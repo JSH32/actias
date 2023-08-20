@@ -20,8 +20,14 @@ export class ScriptDto {
    */
   currentRevisionId?: string;
 
-  constructor(id: string, bundle: script_service.Script) {
+  /**
+   * Parent project that owns this script.
+   */
+  projectId: string;
+
+  constructor(id: string, projectId: string, bundle: script_service.Script) {
     this.id = id;
+    this.projectId = projectId;
     this.currentRevisionId = bundle.currentRevisionId;
     this.publicIdentifier = bundle.publicIdentifier;
     this.lastUpdated = new Date(bundle.lastUpdated);

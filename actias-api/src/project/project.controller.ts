@@ -17,7 +17,6 @@ import { Users } from 'src/entities/Users';
 import { User } from 'src/auth/user.decorator';
 import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
-import { AclService } from './acl/acl.service';
 import {
   ApiOkResponsePaginated,
   PaginatedResponseDto,
@@ -28,10 +27,7 @@ import { MessageResponseDto } from 'src/shared/dto/message';
 @ApiTags('project')
 @Controller('project')
 export class ProjectController {
-  constructor(
-    private readonly projectService: ProjectService,
-    private readonly accessService: AclService,
-  ) {}
+  constructor(private readonly projectService: ProjectService) {}
 
   /**
    * Create a project and return the data.
@@ -47,11 +43,11 @@ export class ProjectController {
   }
 
   /**
-   * Get all projects that a user has access to.
+   * Get projects that a user has access to.
    */
   @Get()
   @ApiOkResponsePaginated(ProjectDto)
-  async getAll(
+  async listProjects(
     @User() user,
     @Query('page')
     page: number,
@@ -72,7 +68,9 @@ export class ProjectController {
     schema: { type: 'string' },
     type: 'string',
   })
-  async get(@EntityParam('project', Projects) project): Promise<ProjectDto> {
+  async getProject(
+    @EntityParam('project', Projects) project,
+  ): Promise<ProjectDto> {
     return new ProjectDto(project);
   }
 
@@ -85,7 +83,7 @@ export class ProjectController {
     schema: { type: 'string' },
     type: 'string',
   })
-  async delete(
+  async deleteProject(
     @EntityParam('project', Projects) project,
   ): Promise<MessageResponseDto> {
     await this.projectService.delete(project);

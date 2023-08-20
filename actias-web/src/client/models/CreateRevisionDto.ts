@@ -11,6 +11,6 @@ export type CreateRevisionDto = {
     /**
      * A valid project configuration.
      */
-    projectConfig: any;
+    scriptConfig: any;
 };
 

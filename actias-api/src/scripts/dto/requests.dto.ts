@@ -30,5 +30,5 @@ export class CreateRevisionDto {
   /**
    * A valid project configuration.
    */
-  projectConfig: object;
+  scriptConfig: object;
 }

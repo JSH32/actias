@@ -1,6 +1,19 @@
-import { Entity, Enum, ManyToOne, Property } from '@mikro-orm/core';
+import {
+  Entity,
+  EntityManager,
+  EntityName,
+  Enum,
+  EventArgs,
+  EventSubscriber,
+  ManyToOne,
+  Property,
+  Subscriber,
+} from '@mikro-orm/core';
 import { ActiasBaseEntity } from './BaseEntity';
 import { Projects } from './Projects';
+import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import { ClientGrpc } from '@nestjs/microservices';
+import { script_service } from 'src/protobufs/script_service';
 
 /**
  * All types of resources that can be owned/accessed.

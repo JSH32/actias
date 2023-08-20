@@ -6,6 +6,8 @@ import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { ProjectModule } from './project/project.module';
 import { ScriptModule } from './scripts/scripts.module';
+import { AspectLogger } from './util/aspectlogger';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 
 @Module({
   imports: [
@@ -20,6 +22,11 @@ import { ScriptModule } from './scripts/scripts.module';
     ProjectModule,
   ],
   controllers: [],
-  providers: [],
+  providers: [
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AspectLogger,
+    },
+  ],
 })
 export class AppModule {}

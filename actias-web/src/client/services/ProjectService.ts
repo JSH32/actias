@@ -30,12 +30,12 @@ export class ProjectService {
     }
 
     /**
-     * Get all projects that a user has access to.
+     * Get projects that a user has access to.
      * @param page
      * @returns any
      * @throws ApiError
      */
-    public getAll(
+    public listProjects(
         page: number,
     ): CancelablePromise<PaginatedResponseDto> {
         return this.httpRequest.request({

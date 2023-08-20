@@ -95,12 +95,12 @@ export class ProjectService {
         resourceType: type,
         project,
       },
-      { limit: pageSize, offset: pageSize * page },
+      { limit: pageSize, offset: pageSize * (page - 1) },
     );
 
     return new PaginatedResponseDto({
       page,
-      lastPage: count / pageSize,
+      lastPage: Math.ceil(count / pageSize),
       items: await Promise.all(resources.map((res) => callback(res))),
     });
   }

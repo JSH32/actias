@@ -6,9 +6,9 @@ use sqlx::types::{
 
 use crate::proto_script_service::Script;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectConfig {
+pub struct ScriptConfig {
     pub id: Uuid,
     pub entry_point: String,
     pub includes: Vec<String>,
@@ -20,7 +20,7 @@ pub struct DbRevision {
     pub created: DateTime<Utc>,
     pub script_id: Uuid,
     pub entry_point: String,
-    pub project_config: sqlx::types::Json<ProjectConfig>,
+    pub script_config: sqlx::types::Json<ScriptConfig>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -31,7 +31,7 @@ pub struct DbFile {
     pub file_path: String,
 }
 
-#[derive(sqlx::FromRow, Clone)]
+#[derive(sqlx::FromRow, Clone, Debug)]
 pub struct DbScript {
     pub id: Uuid,
     pub public_identifier: String,

@@ -6,7 +6,7 @@ use sqlx::{Pool, Postgres};
 use tonic::{Response, Status};
 
 use crate::bundle::{Bundle, File};
-use crate::database_types::{DbFile, DbRevision, DbScript, ProjectConfig};
+use crate::database_types::{DbFile, DbRevision, DbScript, ScriptConfig};
 use crate::proto_script_service::find_script_request::{self};
 use crate::proto_script_service::{
     script_service_server, ListRevisionResponse, ListScriptResponse, Revision, Script, *,
@@ -28,29 +28,35 @@ impl ScriptService {
         &self,
         script_query: find_script_request::Query,
     ) -> Result<DbScript, tonic::Status> {
-        sqlx::query_as::<_, DbScript>(&format!(
+        let sql = &format!(
             "SELECT * FROM scripts WHERE {} = $1",
             match &script_query {
                 Id(_) => "id",
                 PublicName(_) => "public_identifier",
             }
-        ))
-        .bind(match &script_query {
-            Id(v) => Uuid::parse_str(&v)
-                .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?
-                .to_string(),
-            PublicName(v) => v.clone(),
-        })
-        .fetch_optional(&self.database)
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?
-        .ok_or(Status::not_found(format!(
-            "Script with that {} was not found",
-            match &script_query {
-                Id(_) => "id",
-                PublicName(_) => "identifier",
-            }
-        )))
+        );
+
+        let qb = sqlx::query_as::<_, DbScript>(sql);
+
+        let query = match &script_query {
+            Id(v) => qb.bind(
+                Uuid::parse_str(&v)
+                    .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?,
+            ),
+            PublicName(v) => qb.bind(v.clone()),
+        };
+
+        query
+            .fetch_optional(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or(Status::not_found(format!(
+                "Script with that {} was not found",
+                match &script_query {
+                    Id(_) => "id",
+                    PublicName(_) => "identifier",
+                }
+            )))
     }
 
     async fn get_db_revision(&self, revision_id: &str) -> Result<DbRevision, tonic::Status> {
@@ -69,12 +75,12 @@ impl ScriptService {
     async fn create_db_revision(
         &self,
         script_id: &Uuid,
-        project_config: ProjectConfig,
+        script_config: ScriptConfig,
         mut bundle: Bundle,
     ) -> Result<Revision, tonic::Status> {
-        if &project_config.id != script_id {
+        if &script_config.id != script_id {
             return Err(Status::invalid_argument(
-                "Project config contains a different ID than the target.",
+                "Script config contains a different ID than the target.",
             ));
         }
 
@@ -89,12 +95,12 @@ impl ScriptService {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let revision_info = sqlx::query_as::<_, DbRevision>(
-            "INSERT INTO revisions (script_id, entry_point, project_config) VALUES ($1, $2, $3) RETURNING *",
+            "INSERT INTO revisions (script_id, entry_point, script_config) VALUES ($1, $2, $3) RETURNING *",
         )
         .bind(script_id)
         .bind(bundle.entry_point)
-        .bind(serde_json::to_string(&project_config).unwrap())
-        .fetch_one(&mut tx)
+        .bind(sqlx::types::Json(script_config))
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -104,7 +110,7 @@ impl ScriptService {
                 .bind(&file.content)
                 .bind(&file.file_name)
                 .bind(&file.file_path)
-                .execute(&mut tx)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?;
         }
@@ -112,7 +118,7 @@ impl ScriptService {
         sqlx::query("UPDATE scripts SET current_revision = $1, last_updated = now() WHERE id = $2")
             .bind(revision_info.id)
             .bind(script_id)
-            .execute(&mut tx)
+            .execute(&mut *tx)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -125,7 +131,7 @@ impl ScriptService {
             created: revision_info.created.to_string(),
             script_id: revision_info.script_id.to_string(),
             bundle: None,
-            project_config: serde_json::to_string(&revision_info.project_config).unwrap(),
+            script_config: serde_json::to_string(&revision_info.script_config).unwrap(),
         })
     }
 }
@@ -145,7 +151,7 @@ impl script_service_server::ScriptService for ScriptService {
         Ok(Response::new(
             self.create_db_revision(
                 &script_info.id,
-                serde_json::from_str(&request.project_config)
+                serde_json::from_str(&request.script_config)
                     .map_err(|_| Status::invalid_argument("Project config is not valid JSON."))?,
                 request.bundle,
             )
@@ -159,10 +165,11 @@ impl script_service_server::ScriptService for ScriptService {
         request: tonic::Request<GetRevisionRequest>,
     ) -> Result<tonic::Response<Revision>, tonic::Status> {
         let request = request.get_ref();
+        let id = Uuid::from_str(&request.id).map_err(|e| Status::internal(e.to_string()))?;
 
         let revision_info =
             sqlx::query_as::<_, DbRevision>("SELECT * FROM revisions WHERE id = $1")
-                .bind(&request.id)
+                .bind(id)
                 .fetch_optional(&self.database)
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?
@@ -200,7 +207,7 @@ impl script_service_server::ScriptService for ScriptService {
             id: revision_info.id.to_string(),
             created: revision_info.created.to_string(),
             script_id: revision_info.script_id.to_string(),
-            project_config: serde_json::to_string(&revision_info.project_config).unwrap(),
+            script_config: serde_json::to_string(&revision_info.script_config).unwrap(),
             bundle,
         }))
     }
@@ -229,9 +236,11 @@ impl script_service_server::ScriptService for ScriptService {
         .bind(request.page_size)
         .bind(request.page_size * request.page);
 
-        if request.script_id.is_some() {
-            count_query = count_query.bind(request.script_id.clone());
-            query = query.bind(request.script_id.clone())
+        if let Some(script_id) = &request.script_id {
+            let uuid = Uuid::from_str(&script_id).map_err(|e| Status::internal(e.to_string()))?;
+
+            count_query = count_query.bind(uuid.clone());
+            query = query.bind(uuid)
         }
 
         let count: (i64,) = count_query
@@ -251,7 +260,7 @@ impl script_service_server::ScriptService for ScriptService {
                     id: r.id.to_string(),
                     created: r.created.to_string(),
                     script_id: r.script_id.to_string(),
-                    project_config: serde_json::to_string(&r.project_config).unwrap(),
+                    script_config: serde_json::to_string(&r.script_config).unwrap(),
                     bundle: None,
                 })
                 .collect(),
@@ -279,7 +288,7 @@ impl script_service_server::ScriptService for ScriptService {
 
         sqlx::query("DELETE FROM revisions WHERE id = $1")
             .bind(&revision.id)
-            .execute(&mut tx)
+            .execute(&mut *tx)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -287,7 +296,7 @@ impl script_service_server::ScriptService for ScriptService {
             "SELECT * FROM revisions WHERE script_id = $1 ORDER BY created LIMIT 1",
         )
         .bind(script.id)
-        .fetch_optional(&mut tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -297,7 +306,7 @@ impl script_service_server::ScriptService for ScriptService {
         .bind(match newest_revision {
             Some(v) => Some(v.id),
             None => None,
-        }).bind(script.id).fetch_one(&mut tx).await.map_err(|e| Status::internal(e.to_string()))?;
+        }).bind(script.id).fetch_one(&mut *tx).await.map_err(|e| Status::internal(e.to_string()))?;
 
         tx.commit()
             .await

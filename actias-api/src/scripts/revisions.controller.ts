@@ -18,7 +18,7 @@ import { RevisionFullDto } from './dto/revision.dto';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { AclByFinder, AclGuard } from 'src/project/acl/acl.guard';
 import { EntityManager } from '@mikro-orm/core';
-import { Resources } from 'src/entities/Resources';
+import { ResourceType, Resources } from 'src/entities/Resources';
 import { AccessFields } from 'src/project/acl/accessFields';
 
 @UseGuards(AuthGuard, AclGuard)
@@ -27,7 +27,10 @@ import { AccessFields } from 'src/project/acl/accessFields';
 export class RevisionsController implements OnModuleInit {
   private scriptService: script_service.ScriptService;
 
-  constructor(@Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc) {}
+  constructor(
+    @Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc,
+    private readonly em: EntityManager,
+  ) {}
 
   onModuleInit() {
     this.scriptService =
@@ -35,15 +38,13 @@ export class RevisionsController implements OnModuleInit {
   }
 
   async checkPermissions(request: any, em: EntityManager) {
-    const revision = new RevisionFullDto(
-      await lastValueFrom(
-        this.scriptService
-          .getRevision({
-            id: request['id'],
-            withBundle: false,
-          })
-          .pipe(toHttpException()),
-      ),
+    const revision = await lastValueFrom(
+      this.scriptService
+        .getRevision({
+          id: request['id'],
+          withBundle: false,
+        })
+        .pipe(toHttpException()),
     );
 
     return (
@@ -62,18 +63,25 @@ export class RevisionsController implements OnModuleInit {
     @Param('id') id: string,
     @Query('withBundle') withBundle?: boolean,
   ): Promise<RevisionFullDto> {
-    return await lastValueFrom(
+    const revision = await lastValueFrom(
       this.scriptService
         .getRevision({ id, withBundle: withBundle || false })
         .pipe(toHttpException()),
-    ).then((revision) => new RevisionFullDto(revision));
+    );
+
+    const script = await this.em.findOneOrFail(Resources, {
+      resourceType: ResourceType.SCRIPT,
+      serviceId: revision.scriptId,
+    });
+
+    return new RevisionFullDto(script.id, revision);
   }
 
   /**
    * Delete a revision by ID.
    */
   @Delete(':id')
-  @AclByFinder(AccessFields.SCRIPT_READ, 'checkPermissions')
+  @AclByFinder(AccessFields.SCRIPT_WRITE, 'checkPermissions')
   async deleteRevision(
     @Param('id') id: string,
   ): Promise<NewRevisionResponseDto> {

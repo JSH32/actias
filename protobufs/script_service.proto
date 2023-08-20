@@ -28,7 +28,7 @@ message DeleteScriptRequest {
 
 message CreateRevisionRequest {
     required string script_id = 1;
-    required string project_config = 2;
+    required string script_config = 2;
     required bundle.Bundle bundle = 3;
 }
 
@@ -84,7 +84,7 @@ message Revision {
     required string id = 1;
     required string created = 2;
     required string script_id = 3;
-    required string project_config = 4;
+    required string script_config = 4;
 
     // Content bundle.
     optional bundle.Bundle bundle = 5;

@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::BufReader,
+    io::{BufReader, Write},
     path::{Path, PathBuf},
 };
 
@@ -16,7 +16,7 @@ use crate::{
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectConfig {
+pub struct ScriptConfig {
     #[serde(skip)]
     pub project_path: Option<PathBuf>,
 
@@ -32,24 +32,24 @@ pub struct ProjectConfig {
     pub ignore: Vec<String>,
 }
 
-impl ProjectConfig {
-    /// Parse project directory to a proper [`ProjectConfig`].
+impl ScriptConfig {
+    /// Parse project directory to a proper [`ScriptConfig`].
     pub fn from_path(project_path: &Path) -> Result<Self, String> {
         let mut config_path = project_path.to_path_buf();
-        config_path.push("project.json");
+        config_path.push("script.json");
 
         if !config_path.exists() {
             return Err(format!(
                 "{} is missing from the provided directory!",
-                "project.json".yellow()
+                "script.json".yellow()
             ));
         }
 
-        let reader = BufReader::new(File::open(config_path).unwrap());
-        let mut config: ProjectConfig = serde_json::from_reader(reader).map_err(|e| {
+        let reader: BufReader<File> = BufReader::new(File::open(config_path).unwrap());
+        let mut config: ScriptConfig = serde_json::from_reader(reader).map_err(|e| {
             format!(
                 "Problem parsing {}, error: {}",
-                "project.json".yellow(),
+                "script.json".yellow(),
                 e.to_string()
             )
         })?;
@@ -84,6 +84,27 @@ impl ProjectConfig {
             entry_point: self.entry_point.clone(),
             files: files,
         })
+    }
+
+    pub fn write_config(&self, script_path: &PathBuf) -> Result<(), String> {
+        // Write the new ID to the config.
+        let mut config = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open({
+                let mut script_config = script_path.clone();
+                script_config.push("script.json");
+                script_config
+            })
+            .unwrap();
+
+        config
+            .write_all(serde_json::to_string_pretty(&self).unwrap().as_bytes())
+            .unwrap();
+
+        config.flush().unwrap();
+
+        Ok(())
     }
 
     fn glob_includes(&self) -> Result<Vec<PathBuf>, String> {

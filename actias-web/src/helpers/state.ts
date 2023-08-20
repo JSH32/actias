@@ -12,11 +12,15 @@ export class Store {
   constructor() {
     makeAutoObservable(this);
 
-    api.users
+    this.fetchUserInfo();
+  }
+
+  @action fetchUserInfo = () => {
+    return api.users
       .me()
       .then(this.setUserInfo)
       .catch(() => this.setUserInfo(undefined));
-  }
+  };
 
   @action setUserInfo = (value?: UserDto) => {
     this.userData = value;

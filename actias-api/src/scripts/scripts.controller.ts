@@ -40,6 +40,8 @@ import { Projects } from 'src/entities/Projects';
 import { ProjectService } from 'src/project/project.service';
 import { ResourceType } from 'src/entities/Resources';
 import { AccessFields } from 'src/project/acl/accessFields';
+import { EntityManager } from '@mikro-orm/postgresql';
+import { MessageResponseDto } from 'src/shared/dto/message';
 
 @UseGuards(AuthGuard, AclGuard)
 @ApiTags('scripts')
@@ -82,7 +84,7 @@ export class ProjectScriptController implements OnModuleInit {
           this.scriptService
             .queryScript({ id: res.serviceId })
             .pipe(toHttpException()),
-        ).then((s) => new ScriptDto(res.id, s)),
+        ).then((s) => new ScriptDto(res.id, project.id, s)),
     );
   }
 
@@ -107,12 +109,7 @@ export class ProjectScriptController implements OnModuleInit {
       rpcScript.id,
     );
 
-    return new ScriptDto(
-      script.id,
-      await lastValueFrom(
-        this.scriptService.createScript(createScript).pipe(toHttpException()),
-      ),
-    );
+    return new ScriptDto(script.id, project.id, rpcScript);
   }
 }
 
@@ -125,6 +122,7 @@ export class ScriptsController implements OnModuleInit {
   constructor(
     @Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc,
     private readonly projectService: ProjectService,
+    private readonly em: EntityManager,
   ) {}
 
   onModuleInit() {
@@ -152,16 +150,16 @@ export class ScriptsController implements OnModuleInit {
         .listRevisions({
           scriptId: resource.serviceId,
           pageSize: 10,
-          page: page,
+          page: page - 1,
         })
         .pipe(toHttpException()),
     );
 
     return {
-      lastPage: revisionPage.totalPages,
-      page: revisionPage.page,
-      items: revisionPage.revisions.map(
-        (revision) => new RevisionFullDto(revision),
+      lastPage: revisionPage.totalPages + 1,
+      page: page,
+      items: revisionPage.revisions?.map(
+        (revision) => new RevisionFullDto(scriptId, revision),
       ),
     };
   }
@@ -206,12 +204,17 @@ export class ScriptsController implements OnModuleInit {
     );
 
     return new RevisionFullDto(
+      scriptId,
       await lastValueFrom(
         this.scriptService
           .createRevision({
             scriptId: resource.serviceId,
             bundle: request.bundle.toServiceBundle(),
-            projectConfig: JSON.stringify(request.projectConfig),
+            scriptConfig: JSON.stringify({
+              ...request.scriptConfig,
+              // Adapt the service ID.
+              id: resource.serviceId,
+            }),
           })
           .pipe(toHttpException()),
       ),
@@ -231,6 +234,7 @@ export class ScriptsController implements OnModuleInit {
 
     return new ScriptDto(
       resource.id,
+      resource.project.id,
       await lastValueFrom(
         this.scriptService
           .queryScript({ id: resource.serviceId })
@@ -247,10 +251,8 @@ export class ScriptsController implements OnModuleInit {
       scriptId,
     );
 
-    await lastValueFrom(
-      this.scriptService
-        .deleteScript({ scriptId: resource.serviceId })
-        .pipe(toHttpException()),
-    );
+    await this.em.removeAndFlush(resource);
+
+    return new MessageResponseDto('Successfully deleted script');
   }
 }

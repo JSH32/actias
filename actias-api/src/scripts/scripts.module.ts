@@ -12,6 +12,7 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { Projects } from 'src/entities/Projects';
 import { Resources } from 'src/entities/Resources';
 import { ProjectModule } from 'src/project/project.module';
+import { ScriptSubscriber } from './scripts.subscriber';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ProjectModule } from 'src/project/project.module';
       ),
     ),
   ],
+  providers: [ScriptSubscriber],
   controllers: [
     ScriptsController,
     ProjectScriptController,

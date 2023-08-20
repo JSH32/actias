@@ -5,7 +5,7 @@ use colored::Colorize;
 use include_dir::{include_dir, Dir};
 use serde::Deserialize;
 
-use crate::{client::types::RevisionFullDto, project::ProjectConfig};
+use crate::{client::types::RevisionFullDto, script::ScriptConfig};
 
 /// Convert an API error to a string which can be used to log.
 pub fn progenitor_error(error: progenitor::progenitor_client::Error) -> String {
@@ -92,9 +92,9 @@ pub fn write_revision(path: PathBuf, revision: RevisionFullDto) -> Result<(), St
     std::fs::create_dir_all(path.clone()).map_err(|e| e.to_string())?;
 
     // Copy the project metadata JSON.
-    let project_file = serde_json::to_string_pretty(&revision.project_config).unwrap();
+    let project_file = serde_json::to_string_pretty(&revision.script_config).unwrap();
     let mut project_config = path.clone();
-    project_config.push("project.json");
+    project_config.push("script.json");
     overwrite_file(project_config, project_file.into_bytes());
 
     for file in revision.bundle.unwrap().files {
@@ -116,7 +116,7 @@ pub fn write_revision(path: PathBuf, revision: RevisionFullDto) -> Result<(), St
 fn check_clone_dir(script_id: &str, path: &PathBuf) -> Result<(), String> {
     // Things exist here
     if path.exists() && path.read_dir().unwrap().next().is_some() {
-        let config = ProjectConfig::from_path(path.as_path())
+        let config = ScriptConfig::from_path(path.as_path())
             .map_err(|_| "Directory not empty and not a project")?;
 
         if config.id.unwrap_or("".to_string()) != script_id {

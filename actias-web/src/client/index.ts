@@ -20,10 +20,10 @@ export type { LoginDto } from './models/LoginDto';
 export type { MessageResponseDto } from './models/MessageResponseDto';
 export type { NewRevisionResponseDto } from './models/NewRevisionResponseDto';
 export type { PaginatedResponseDto } from './models/PaginatedResponseDto';
-export type { ProjectConfigDto } from './models/ProjectConfigDto';
 export type { ProjectDto } from './models/ProjectDto';
 export type { RevisionDataDto } from './models/RevisionDataDto';
 export type { RevisionFullDto } from './models/RevisionFullDto';
+export type { ScriptConfigDto } from './models/ScriptConfigDto';
 export type { ScriptDto } from './models/ScriptDto';
 export type { UserDto } from './models/UserDto';
 

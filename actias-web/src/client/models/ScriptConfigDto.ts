@@ -1,7 +1,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 
-export type ProjectConfigDto = {
+export type ScriptConfigDto = {
     id: string;
     entryPoint: string;
     includes: Array<string>;

@@ -20,15 +20,15 @@ import { useDisclosure } from '@mantine/hooks';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { IconTrash } from '@tabler/icons-react';
+import Link from 'next/link';
 
-export const User = () => {
+const User = () => {
   const store = useStore();
 
   const [projects, setProjects] = useState<ProjectDto[] | null>(null);
 
   const loadProjects = useCallback(() => {
-    api.project.getAll(0).then((projects) => {
-      console.log(projects);
+    api.project.listProjects(0).then((projects) => {
       setProjects((projects as any).items);
     });
   }, []);
@@ -86,7 +86,7 @@ export const User = () => {
   return (
     <>
       <Json value={store?.userData} />
-      <Stack h={300}>
+      <Stack>
         <Title>Projects</Title>
         <Button w={150} onClick={open}>
           Create Project
@@ -139,9 +139,11 @@ const ProjectCard: React.FC<{
         {project.id}
       </Text>
 
-      <Button variant="light" fullWidth mt="md" radius="md">
-        Open
-      </Button>
+      <Link href={`/project/${project.id}`}>
+        <Button variant="light" fullWidth mt="md" radius="md">
+          Open
+        </Button>
+      </Link>
     </Card>
   );
 };
