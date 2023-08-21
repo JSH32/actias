@@ -1,7 +1,5 @@
 import { ProjectDto } from '@/client';
 import { withAuthentication } from '@/helpers/authenticated';
-import { Json } from '@/components/Json';
-import { useStore } from '@/helpers/state';
 import React, { useCallback, useEffect, useState } from 'react';
 import api, { errorForm, showError } from '@/helpers/api';
 import {
@@ -23,8 +21,6 @@ import { IconTrash } from '@tabler/icons-react';
 import Link from 'next/link';
 
 const User = () => {
-  const store = useStore();
-
   const [projects, setProjects] = useState<ProjectDto[] | null>(null);
 
   const loadProjects = useCallback(() => {
@@ -59,7 +55,7 @@ const User = () => {
           projects?.push(res);
           close();
         })
-        .catch((err) => errorForm(err.body, createProjectForm));
+        .catch((err) => errorForm(err, createProjectForm));
 
       createProjectForm.reset();
     },
@@ -78,14 +74,13 @@ const User = () => {
 
           loadProjects();
         })
-        .catch((err) => showError(err));
+        .catch(showError);
     },
     [loadProjects],
   );
 
   return (
     <>
-      <Json value={store?.userData} />
       <Stack>
         <Title>Projects</Title>
         <Button w={150} onClick={open}>

@@ -6,6 +6,7 @@ import { ResourceType, Resources } from 'src/entities/Resources';
 import { Users } from 'src/entities/Users';
 import { PaginatedResponseDto } from 'src/shared/dto/paginated';
 import { AccessFields } from './acl/accessFields';
+import { BitField } from 'easy-bits';
 
 @Injectable()
 export class ProjectService {
@@ -20,7 +21,9 @@ export class ProjectService {
     const access = new Access({
       user: owner,
       project,
-      permissionBitfield: AccessFields.FULL,
+      permissionBitfield: new BitField<AccessFields>()
+        .on(AccessFields.FULL)
+        .serialize(),
     });
 
     await this.em.persistAndFlush(access);
@@ -32,8 +35,14 @@ export class ProjectService {
     return await this.em.findOneOrFail(Projects, { id });
   }
 
-  async delete(project: Projects) {
-    await this.em.removeAndFlush(project);
+  async deleteProject(project: Projects) {
+    const entity = await this.em.find(
+      Projects,
+      { id: project.id },
+      { populate: true },
+    );
+
+    return await this.em.removeAndFlush(entity);
   }
 
   /**
@@ -54,7 +63,11 @@ export class ProjectService {
       { limit: pageSize, offset: page * pageSize, populate: ['access'] },
     );
 
-    return PaginatedResponseDto.fromArray(page, count / pageSize, projects);
+    return PaginatedResponseDto.fromArray(
+      page,
+      Math.ceil(count / pageSize),
+      projects,
+    );
   }
 
   async createResource(

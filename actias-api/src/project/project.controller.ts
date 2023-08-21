@@ -86,7 +86,7 @@ export class ProjectController {
   async deleteProject(
     @EntityParam('project', Projects) project,
   ): Promise<MessageResponseDto> {
-    await this.projectService.delete(project);
+    await this.projectService.deleteProject(project);
     return new MessageResponseDto(
       `Deleted project (${project.name}) successfully.`,
     );

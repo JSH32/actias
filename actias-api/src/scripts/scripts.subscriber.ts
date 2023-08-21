@@ -1,9 +1,4 @@
-import {
-  EventSubscriber,
-  EntityManager,
-  EventArgs,
-  Subscriber,
-} from '@mikro-orm/core';
+import { EventSubscriber, EntityManager, EventArgs } from '@mikro-orm/core';
 import { Injectable, OnModuleInit, Inject } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { lastValueFrom } from 'rxjs';

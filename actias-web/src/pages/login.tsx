@@ -53,7 +53,7 @@ export default function Login() {
             router.push('/user');
           });
         })
-        .catch((err) => showError(err?.body));
+        .catch(showError);
     },
     [router, store],
   );

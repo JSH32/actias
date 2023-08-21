@@ -27,8 +27,8 @@ export const ACCESS_KEYS = Object.keys(AccessFields).filter(
   (x) => !(parseInt(x) >= 0),
 );
 
-export const getListFromBitfield = (bitfield: number) => {
-  const parsed = BitField.deserialize(bitfield.toString());
+export const getListFromBitfield = (bitfield: string) => {
+  const parsed = BitField.deserialize(bitfield);
 
   return Object.fromEntries(
     ACCESS_KEYS.map((key) => [key, parsed.test(AccessFields[key])]),

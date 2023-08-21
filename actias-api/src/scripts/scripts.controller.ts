@@ -158,9 +158,11 @@ export class ScriptsController implements OnModuleInit {
     return {
       lastPage: revisionPage.totalPages + 1,
       page: page,
-      items: revisionPage.revisions?.map(
-        (revision) => new RevisionFullDto(scriptId, revision),
-      ),
+      items: revisionPage.revisions
+        ? revisionPage.revisions.map(
+          (revision) => new RevisionFullDto(scriptId, revision),
+        )
+        : [],
     };
   }
 

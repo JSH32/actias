@@ -33,14 +33,14 @@ export class AclService {
       throw new ForbiddenException(`You can't access this project.`);
     }
 
-    return BitField.deserialize(permissions.permissionBitfield.toString());
+    return BitField.deserialize(permissions.permissionBitfield);
   }
 
   async setPermissions(
     project: Projects,
     user: Users,
     permissions: string[],
-  ): Promise<number> {
+  ): Promise<string> {
     const bitfield = new BitField<AccessFields>();
 
     for (const p of permissions) {
@@ -52,11 +52,11 @@ export class AclService {
     const access = await this.em.findOneOrFail(Access, { project, user });
 
     if (bitfield.serialize() !== '0') {
-      access.permissionBitfield = Number(bitfield.serialize());
+      access.permissionBitfield = bitfield.serialize();
       await this.em.persistAndFlush(project);
     }
 
-    return Number(bitfield.serialize());
+    return bitfield.serialize();
   }
 
   /**
@@ -69,7 +69,7 @@ export class AclService {
 
       return new AclListDto({
         userId: user.id,
-        permissions: getListFromBitfield(Number(bitfield.serialize())),
+        permissions: getListFromBitfield(bitfield.serialize()),
       });
     }
 
@@ -77,7 +77,7 @@ export class AclService {
     if (!access) {
       return new AclListDto({
         userId: user.id,
-        permissions: getListFromBitfield(0),
+        permissions: getListFromBitfield('0'),
       });
     }
 

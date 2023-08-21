@@ -30,9 +30,12 @@ type Error = ValidationError | StandardError;
  * @param error error object received from {@link ActiasClient}.
  * @param form mantine form to show possible errors on.
  */
-export const errorForm = (error: Error, form: UseFormReturnType<any, any>) => {
-  if ('errors' in error) {
-    form.setErrors(error.errors);
+export const errorForm = (
+  error: { body: ValidationError },
+  form: UseFormReturnType<any, any>,
+) => {
+  if ('errors' in error?.body) {
+    form.setErrors(error.body.errors);
   } else {
     showError(error);
   }
@@ -43,9 +46,9 @@ export const errorForm = (error: Error, form: UseFormReturnType<any, any>) => {
  *
  * @param error error object received from {@link ActiasClient}.
  */
-export const showError = (error: Error) =>
+export const showError = (error: { body: Error }) =>
   notifications.show({
     color: 'red',
     title: 'Error',
-    message: error.message,
+    message: error.body.message,
   });

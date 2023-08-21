@@ -2,7 +2,7 @@
 CREATE TABLE scripts 
 (
     id                UUID        NOT NULL UNIQUE DEFAULT gen_random_uuid(),
-    public_identifier VARCHAR(24) NOT NULL UNIQUE,
+    public_identifier VARCHAR(64) NOT NULL UNIQUE,
     last_updated      TIMESTAMPTZ NOT NULL DEFAULT now(),
     current_revision  UUID,
 

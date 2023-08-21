@@ -33,7 +33,6 @@ export class AuthService {
   }
 
   signJwt(user: Users): string {
-    console.log(this.jwtService);
     return this.jwtService.sign({ sub: user.id });
   }
 

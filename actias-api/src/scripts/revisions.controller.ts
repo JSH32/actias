@@ -48,9 +48,13 @@ export class RevisionsController implements OnModuleInit {
     );
 
     return (
-      await em.findOneOrFail(Resources, {
-        serviceId: revision.scriptId,
-      })
+      await em.findOneOrFail(
+        Resources,
+        {
+          serviceId: revision.scriptId,
+        },
+        { populate: ['project'] },
+      )
     ).project;
   }
 
@@ -63,7 +67,6 @@ export class RevisionsController implements OnModuleInit {
     @Param('id') id: string,
     @Query('withBundle') withBundle?: boolean,
   ): Promise<RevisionFullDto> {
-    console.log(withBundle);
     const revision = await lastValueFrom(
       this.scriptService
         .getRevision({ id, withBundle: withBundle || false })

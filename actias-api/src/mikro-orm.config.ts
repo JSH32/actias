@@ -2,7 +2,6 @@ import { defineConfig } from '@mikro-orm/postgresql';
 import { TsMorphMetadataProvider } from '@mikro-orm/reflection';
 import { BadRequestException, Logger } from '@nestjs/common';
 import config from './config';
-import { ScriptSubscriber } from './scripts/scripts.subscriber';
 
 const logger = new Logger('MikroORM');
 

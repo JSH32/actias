@@ -7,7 +7,7 @@ import {
 import { withAuthentication } from '@/helpers/authenticated';
 import { useRouter } from 'next/router';
 import { useCallback, useEffect, useState } from 'react';
-import api, { showError } from '@/helpers/api';
+import api, { errorForm, showError } from '@/helpers/api';
 import { Json } from '@/components/Json';
 import {
   Anchor,
@@ -74,17 +74,20 @@ const Project = () => {
 
   const createScript = useCallback(
     (values: any) => {
-      api.scripts.createScript(project!.id, values).then((res) => {
-        notifications.show({
-          title: 'Script created!',
-          message: `New script named ${res.publicIdentifier} was created.`,
-        });
+      api.scripts
+        .createScript(project!.id, values)
+        .then((res) => {
+          notifications.show({
+            title: 'Script created!',
+            message: `New script named ${res.publicIdentifier} was created.`,
+          });
 
-        scriptPage(scripts!.page);
-        scriptModal.close();
-      });
+          scriptPage(scripts!.page);
+          scriptModal.close();
+        })
+        .catch((err) => errorForm(err, scriptModalForm));
     },
-    [project, scriptModal, scriptPage, scripts],
+    [project, scriptModal, scriptModalForm, scriptPage, scripts],
   );
 
   const deleteScript = useCallback(
@@ -144,7 +147,7 @@ const Project = () => {
           <>
             <Grid gutter="xs">
               {(scripts as any).items.map((script: ScriptDto) => (
-                <Grid.Col key={script.id} span="content">
+                <Grid.Col key={script.id} md={6} lg={3}>
                   <ScriptCard
                     script={script}
                     onDelete={() => deleteScript(script)}
@@ -173,9 +176,19 @@ const ScriptCard: React.FC<{
   onDelete: (script: ScriptDto) => void;
 }> = ({ script, onDelete }) => {
   return (
-    <Card shadow="sm" padding="lg" radius="md" withBorder w={400}>
+    <Card shadow="sm" padding="lg" radius="md" withBorder>
       <Group position="apart" mt="md" mb="xs">
-        <Title order={3}>{script.publicIdentifier}</Title>
+        <Title
+          maw={'80%'}
+          order={3}
+          style={{
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {script.publicIdentifier}
+        </Title>
         <Anchor component="button" onClick={() => onDelete(script)}>
           <IconTrash />
         </Anchor>

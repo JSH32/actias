@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { ValidateNested } from 'class-validator';
+import { IsAlphanumeric, Length, ValidateNested } from 'class-validator';
 import { BundleDto } from './bundle.dto';
 
 export class CreateScriptDto {
@@ -7,6 +7,8 @@ export class CreateScriptDto {
    * Public identifier of the script.
    * This will be the globally unique identifier of your script.
    */
+  @IsAlphanumeric()
+  @Length(3, 63) // Length of S3 containers.
   publicIdentifier: string;
 }
 

@@ -403,6 +403,7 @@
             "id"
           ],
           "referencedTableName": "public.projects",
+          "deleteRule": "cascade",
           "updateRule": "cascade"
         }
       }
@@ -461,12 +462,12 @@
         },
         "permission_bitfield": {
           "name": "permission_bitfield",
-          "type": "int",
+          "type": "varchar(255)",
           "unsigned": false,
           "autoincrement": false,
           "primary": false,
           "nullable": false,
-          "mappedType": "integer"
+          "mappedType": "string"
         }
       },
       "name": "access",

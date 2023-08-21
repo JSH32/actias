@@ -55,7 +55,7 @@ export default function Register() {
 
           router.push('/login');
         })
-        .catch((err) => errorForm(err.body, form));
+        .catch((err) => errorForm(err, form));
     },
     [form, router],
   );

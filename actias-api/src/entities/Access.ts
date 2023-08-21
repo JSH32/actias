@@ -16,7 +16,7 @@ export class Access extends ActiasBaseEntity {
   project!: Projects;
 
   @Property()
-  permissionBitfield!: number;
+  permissionBitfield!: string;
 
   constructor(access: Partial<Access>) {
     super();

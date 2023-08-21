@@ -21,7 +21,9 @@ export const Header: React.FC = () => {
   return (
     <MantineHeader height={60} p="xs">
       <Group sx={{ height: '100%' }} px={20} position="apart">
-        <Image src={'/banner.png'} alt="Actias" width={'120px'} />
+        <Link href="/">
+          <Image src={'/banner.png'} alt="Actias" width={'120px'} />
+        </Link>
         <Group>
           <ActionIcon
             variant="default"
