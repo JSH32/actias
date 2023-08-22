@@ -1,0 +1,18 @@
+[package]
+name = "actias-kv"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+scylla = "0.9.0"
+actias-common = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+prost-build = { workspace = true }

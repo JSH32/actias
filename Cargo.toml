@@ -3,7 +3,8 @@ members = [
     "actias-worker",
     "actias-common",
     "actias-script-service",
-    "actias-cli"
+    "actias-cli",
+    "actias-kv",
 ]
 
 [workspace.dependencies]

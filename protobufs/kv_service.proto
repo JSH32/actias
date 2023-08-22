@@ -1,0 +1,76 @@
+syntax = "proto2";
+package kv_service;
+
+import "google/protobuf/empty.proto";
+
+enum ValueType {
+    VALUE_TYPE_STRING = 0;
+    VALUE_TYPE_INTEGER = 1;
+    VALUE_TYPE_OBJECT = 2;
+}
+
+message Pair {
+    // Project that this key belongs to.
+    required string project_id = 1;
+    // Grouped namespace that this belongs to.
+    required string namespace = 2;
+    // Time that this value was last updated.
+    required string last_updated = 3;
+    // The value is always stored as a string, this metadata helps for parsing.
+    required ValueType type = 4;
+    // Unique key.
+    required string key = 5;
+    required string value = 6;
+}
+
+message PairRequest {
+    // Project that this key belongs to.
+    required string project_id = 1;
+    // Grouped namespace that this belongs to.
+    required string namespace = 2;
+    // Unique key.
+    required string key = 4;
+}
+
+// List pairs belonging to a namespace.
+message ListPairsRequest {
+    required int32 page_size = 1;
+    required int32 page = 2;
+    // Project.
+    required string project_id = 3;
+    // Grouped namespace.
+    required string namespace = 4;
+}
+
+// A list of pairs.
+message ListPairsResponse {
+    required int32 page = 1;
+    required int32 total_pages = 2;
+    repeated Pair pairs = 3;
+}
+
+// List all namespaces belonging to a project.
+message ListNamespacesRequest {
+    // Project to find all namespaces within.
+    required string project_id = 1;
+}
+
+// Information about a namespace.
+message Namespace {
+    required string project_id = 1;
+    required string name = 2;
+    required string last_updated = 3;
+}
+
+// List of namespaces.
+message ListNamespacesResponse {
+    repeated Namespace namespaces = 1;
+}
+
+service KvService {
+    rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+    rpc ListPairs(ListPairsRequest) returns (ListPairsResponse);
+    rpc CreatePair(Pair) returns (google.protobuf.Empty);
+    rpc GetPair(PairRequest) returns (Pair);
+    rpc DeletePair(PairRequest) returns (google.protobuf.Empty);
+}

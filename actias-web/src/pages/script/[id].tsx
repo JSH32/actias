@@ -207,7 +207,7 @@ const Details: React.FC<{ script: ScriptDto }> = ({ script }) => {
             value="clone"
             language="bash"
             // eslint-disable-next-line react/no-children-prop
-            children={`actias script ${script.id} clone`}
+            children={`actias-cli script ${script.id} clone`}
           />
         </Prism.Tabs>
       </Stack>

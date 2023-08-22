@@ -103,7 +103,7 @@ const User = () => {
 
         <Grid gutter="xs">
           {projects?.map((project) => (
-            <Grid.Col key={project.id} span="content">
+            <Grid.Col key={project.id} md={6} lg={3}>
               <ProjectCard
                 key={project.id}
                 project={project}
@@ -122,7 +122,7 @@ const ProjectCard: React.FC<{
   onDelete: (project: ProjectDto) => void;
 }> = ({ project, onDelete }) => {
   return (
-    <Card shadow="sm" padding="lg" radius="md" withBorder w={400}>
+    <Card shadow="sm" padding="lg" radius="md" withBorder>
       <Group position="apart" mt="md" mb="xs">
         <Title order={3}>{project.name}</Title>
         <Anchor component="button" onClick={() => onDelete(project)}>
