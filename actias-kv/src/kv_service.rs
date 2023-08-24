@@ -1,8 +1,10 @@
+use tonic::{Response, Status};
+
 use crate::{
-    database::Database,
+    database::{Database, DatabaseError},
     proto_kv_service::{
-        self, kv_service_server, ListNamespacesRequest, ListNamespacesResponse, ListPairsRequest,
-        ListPairsResponse, PairRequest,
+        self, kv_service_server, CreatePairsRequest, DeletePairsRequest, ListNamespacesRequest,
+        ListNamespacesResponse, ListPairsRequest, ListPairsResponse, PairRequest,
     },
 };
 
@@ -29,26 +31,67 @@ impl kv_service_server::KvService for KvService {
         &self,
         request: tonic::Request<ListPairsRequest>,
     ) -> Result<tonic::Response<ListPairsResponse>, tonic::Status> {
-        todo!()
+        let request: &ListPairsRequest = request.get_ref();
+
+        Ok(Response::new(
+            self.database
+                .list(
+                    &request.project_id,
+                    &request.namespace,
+                    request.page_size,
+                    request.token.clone(),
+                )
+                .await
+                .map_err(|e| Status::invalid_argument(e.to_string()))?,
+        ))
     }
 
-    async fn create_pair(
+    async fn create_pairs(
         &self,
-        request: tonic::Request<proto_kv_service::Pair>,
+        request: tonic::Request<CreatePairsRequest>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
-        todo!()
+        let request = request.get_ref();
+        self.database
+            .set(request.pairs.clone())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(()))
     }
+
     async fn get_pair(
         &self,
         request: tonic::Request<PairRequest>,
     ) -> Result<tonic::Response<proto_kv_service::Pair>, tonic::Status> {
-        todo!()
+        let request = request.get_ref();
+        match self
+            .database
+            .get(&request.project_id, &request.namespace, &request.key)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+        {
+            Some(v) => Ok(Response::new(v)),
+            None => Err(Status::not_found(format!(
+                "'{}' was not found in '{}' namespace.",
+                request.key, request.namespace
+            ))),
+        }
     }
 
-    async fn delete_pair(
+    async fn delete_pairs(
         &self,
-        request: tonic::Request<PairRequest>,
+        request: tonic::Request<DeletePairsRequest>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
-        todo!()
+        let request = request.get_ref();
+        self.database
+            .delete(
+                &request.project_id,
+                &request.namespace,
+                request.keys.clone(),
+            )
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(()))
     }
 }

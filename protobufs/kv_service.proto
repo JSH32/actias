@@ -14,10 +14,10 @@ message Pair {
     required string project_id = 1;
     // Grouped namespace that this belongs to.
     required string namespace = 2;
-    // Time that this value was last updated.
-    required string last_updated = 3;
     // The value is always stored as a string, this metadata helps for parsing.
-    required ValueType type = 4;
+    required ValueType type = 3;
+    // TTL (time to live)
+    optional int32 ttl = 4;
     // Unique key.
     required string key = 5;
     required string value = 6;
@@ -35,7 +35,9 @@ message PairRequest {
 // List pairs belonging to a namespace.
 message ListPairsRequest {
     required int32 page_size = 1;
-    required int32 page = 2;
+    // Used if wanting to paginate.
+    // If not provided will be the first page.
+    optional string token = 2;
     // Project.
     required string project_id = 3;
     // Grouped namespace.
@@ -44,8 +46,9 @@ message ListPairsRequest {
 
 // A list of pairs.
 message ListPairsResponse {
-    required int32 page = 1;
-    required int32 total_pages = 2;
+    required int32 page_size = 1;
+    // Used for finding the next page when paginating.
+    required string token = 2;
     repeated Pair pairs = 3;
 }
 
@@ -67,10 +70,20 @@ message ListNamespacesResponse {
     repeated Namespace namespaces = 1;
 }
 
+message CreatePairsRequest {
+    repeated Pair pairs = 1;
+}
+
+message DeletePairsRequest {
+    required string project_id = 1;
+    required string namespace = 2;
+    repeated string keys = 3;
+}
+
 service KvService {
     rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
     rpc ListPairs(ListPairsRequest) returns (ListPairsResponse);
-    rpc CreatePair(Pair) returns (google.protobuf.Empty);
+    rpc CreatePairs(CreatePairsRequest) returns (google.protobuf.Empty);
     rpc GetPair(PairRequest) returns (Pair);
-    rpc DeletePair(PairRequest) returns (google.protobuf.Empty);
+    rpc DeletePairs(DeletePairsRequest) returns (google.protobuf.Empty);
 }
