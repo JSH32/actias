@@ -1,10 +1,10 @@
 use tonic::{Response, Status};
 
 use crate::{
-    database::{Database, DatabaseError},
+    database::Database,
     proto_kv_service::{
-        self, kv_service_server, CreatePairsRequest, DeletePairsRequest, ListNamespacesRequest,
-        ListNamespacesResponse, ListPairsRequest, ListPairsResponse, PairRequest,
+        self, kv_service_server, DeletePairsRequest, ListNamespacesRequest, ListNamespacesResponse,
+        ListPairsRequest, ListPairsResponse, PairRequest, SetPairsRequest,
     },
 };
 
@@ -24,14 +24,21 @@ impl kv_service_server::KvService for KvService {
         &self,
         request: tonic::Request<ListNamespacesRequest>,
     ) -> Result<tonic::Response<ListNamespacesResponse>, tonic::Status> {
-        todo!();
+        let request = request.get_ref();
+
+        Ok(Response::new(
+            self.database
+                .get_namespaces(&request.project_id)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?,
+        ))
     }
 
     async fn list_pairs(
         &self,
         request: tonic::Request<ListPairsRequest>,
     ) -> Result<tonic::Response<ListPairsResponse>, tonic::Status> {
-        let request: &ListPairsRequest = request.get_ref();
+        let request = request.get_ref();
 
         Ok(Response::new(
             self.database
@@ -46,9 +53,9 @@ impl kv_service_server::KvService for KvService {
         ))
     }
 
-    async fn create_pairs(
+    async fn set_pairs(
         &self,
-        request: tonic::Request<CreatePairsRequest>,
+        request: tonic::Request<SetPairsRequest>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
         let request = request.get_ref();
         self.database

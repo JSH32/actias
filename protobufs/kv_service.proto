@@ -62,7 +62,6 @@ message ListNamespacesRequest {
 message Namespace {
     required string project_id = 1;
     required string name = 2;
-    required string last_updated = 3;
 }
 
 // List of namespaces.
@@ -70,7 +69,9 @@ message ListNamespacesResponse {
     repeated Namespace namespaces = 1;
 }
 
-message CreatePairsRequest {
+// Set pairs in batch.
+// Also use this when setting one key.
+message SetPairsRequest {
     repeated Pair pairs = 1;
 }
 
@@ -83,7 +84,7 @@ message DeletePairsRequest {
 service KvService {
     rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
     rpc ListPairs(ListPairsRequest) returns (ListPairsResponse);
-    rpc CreatePairs(CreatePairsRequest) returns (google.protobuf.Empty);
+    rpc SetPairs(SetPairsRequest) returns (google.protobuf.Empty);
     rpc GetPair(PairRequest) returns (Pair);
     rpc DeletePairs(DeletePairsRequest) returns (google.protobuf.Empty);
 }

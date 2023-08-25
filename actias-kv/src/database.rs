@@ -4,13 +4,16 @@ use base64::{engine::general_purpose, read, write};
 use scylla::{
     batch::{Batch, BatchType},
     cql_to_rust::FromRowError,
+    frame::types::read_uuid,
     prepared_statement::PreparedStatement,
     transport::{errors::QueryError, query_result::FirstRowTypedError},
     Bytes, Session, SessionBuilder,
 };
 use thiserror::Error;
 
-use crate::proto_kv_service::{ListPairsResponse, Pair, ValueType};
+use crate::proto_kv_service::{
+    ListNamespacesResponse, ListPairsResponse, Namespace, Pair, ValueType,
+};
 
 #[derive(Error, Debug)]
 pub enum DatabaseError {
@@ -31,6 +34,7 @@ pub struct Database {
     update_statement: PreparedStatement,
     get_statement: PreparedStatement,
     get_namespace_statement: PreparedStatement,
+    get_namespaces_statement: PreparedStatement,
 }
 
 impl Database {
@@ -55,8 +59,8 @@ impl Database {
             UPDATE kv_service.pairs 
                 USING TTL ? 
                 SET value = ?, 
-                    type = ?, 
-                WHERE project_id = ? 
+                    type = ?
+                WHERE project_id = ?
                     AND namespace = ?
                     AND key = ?"#,
             )
@@ -71,7 +75,7 @@ impl Database {
                 namespace, 
                 key, 
                 value, 
-                type,
+                type
             FROM kv_service.pairs
             WHERE project_id = ? 
                 AND namespace = ?
@@ -88,12 +92,18 @@ impl Database {
                 namespace, 
                 key,
                 value,
-                type,
+                type
             FROM kv_service.pairs
             WHERE project_id = ?
                 AND namespace = ?
-            LIMIT ?"#,
+            LIMIT ?
+            ALLOW FILTERING"#,
             )
+            .await
+            .unwrap();
+
+        let get_namespaces_statement = session
+            .prepare("SELECT project_id, namespace, key FROM kv_service.pairs WHERE project_id = ? ALLOW FILTERING")
             .await
             .unwrap();
 
@@ -103,6 +113,7 @@ impl Database {
             update_statement,
             get_statement,
             get_namespace_statement,
+            get_namespaces_statement,
         }
     }
 
@@ -173,17 +184,26 @@ impl Database {
 
         let mut batch_params = Vec::new();
         for value in pairs {
-            let value_type: String = value
-                .r#type()
-                .try_into()
-                .map_err(|e| DatabaseError::InvalidError(e))?;
+            let value_type: String = value.r#type().into();
+
+            // UPDATE kv_service.pairs
+            //     USING TTL ?
+            //     SET value = ?,
+            //         type = ?
+            //     WHERE project_id = ?
+            //         AND namespace = ?
+            //         AND key = ?"#,
+
+            let mut project_id = value.project_id.as_bytes();
+            let project_id = read_uuid(&mut project_id)
+                .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
 
             batch.append_statement(self.update_statement.clone());
             batch_params.push((
                 value.ttl.unwrap_or(0),
                 value.value,
                 value_type,
-                value.project_id.clone(),
+                project_id,
                 value.namespace.clone(),
                 value.key,
             ));
@@ -191,6 +211,43 @@ impl Database {
 
         self.session.batch(&batch, batch_params).await?;
         Ok(())
+    }
+
+    // TODO: Do this another way instead of runtime deduplication.
+    // Since this is eventual consistency we should spin up an async task to check if any keys remain and delete from namespace table.
+    pub async fn get_namespaces(
+        &self,
+        project_id: &str,
+    ) -> Result<ListNamespacesResponse, DatabaseError> {
+        let mut values = Vec::new();
+
+        let mut project_id: &[u8] = project_id.as_bytes();
+        values.push(
+            read_uuid(&mut project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?,
+        );
+
+        let mut found_names = vec![];
+        let mut namespaces = vec![];
+
+        for row in self
+            .session
+            .execute(&self.get_namespaces_statement, values)
+            .await
+            .unwrap()
+            .rows_or_empty()
+        {
+            let (project_id, namespace) = row.into_typed::<(String, String)>()?;
+
+            if !found_names.contains(&namespace) {
+                found_names.push(namespace.clone());
+                namespaces.push(Namespace {
+                    project_id,
+                    name: namespace,
+                })
+            }
+        }
+
+        Ok(ListNamespacesResponse { namespaces })
     }
 
     pub async fn list(
@@ -214,11 +271,15 @@ impl Database {
             }
         };
 
+        let mut project_id = project_id.as_bytes();
+        let project_id =
+            read_uuid(&mut project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+
         let page = self
             .session
             .execute_paged(
                 &self.get_namespace_statement,
-                (project_id, namespace),
+                (project_id, namespace, page_size),
                 bytes_token,
             )
             .await
@@ -241,49 +302,47 @@ impl Database {
             output
         };
 
-        let pairs: Result<Vec<Pair>, DatabaseError> = page
+        let mut pairs = vec![];
+
+        for row in page
             .rows()
             .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
             .into_iter()
-            .map(|row| {
-                let typed =
-                    row.into_typed::<(Option<i32>, String, String, String, String, String, i64)>()?;
+        {
+            let typed =
+                row.into_typed::<(Option<i32>, String, String, String, String, String, i64)>()?;
 
-                let value_type: ValueType = typed
-                    .5
-                    .try_into()
-                    .map_err(|e| DatabaseError::InvalidError(e))?;
+            let value_type: ValueType = typed
+                .5
+                .try_into()
+                .map_err(|e| DatabaseError::InvalidError(e))?;
 
-                Ok(Pair {
-                    project_id: typed.1,
-                    namespace: typed.2,
-                    r#type: value_type.into(),
-                    ttl: typed.0,
-                    key: typed.3,
-                    value: typed.4,
-                })
+            pairs.push(Pair {
+                project_id: typed.1,
+                namespace: typed.2,
+                r#type: value_type.into(),
+                ttl: typed.0,
+                key: typed.3,
+                value: typed.4,
             })
-            .collect();
+        }
 
         Ok(ListPairsResponse {
             page_size: page_size,
             token,
-            pairs: pairs?,
+            pairs,
         })
     }
 }
 
-impl TryInto<String> for ValueType {
-    type Error = String;
-
-    fn try_into(self) -> Result<String, Self::Error> {
-        Ok(match self {
+impl Into<String> for ValueType {
+    fn into(self) -> String {
+        match self {
             ValueType::String => "string",
             ValueType::Object => "object",
             ValueType::Integer => "integer",
-            _ => return Err("Invalid metadata provided for 'type'".to_owned()),
         }
-        .to_string())
+        .to_string()
     }
 }
 
