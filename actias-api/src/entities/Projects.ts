@@ -5,7 +5,6 @@ import {
   OneToMany,
   Property,
 } from '@mikro-orm/core';
-import { Resources } from './Resources';
 import { ActiasBaseEntity } from './BaseEntity';
 import { Access } from './Access';
 import { BitField } from 'easy-bits';
@@ -28,14 +27,6 @@ export class Projects extends ActiasBaseEntity {
    */
   @ManyToOne({ onDelete: 'cascade' })
   owner!: Users;
-
-  /**
-   * All resources owned by the project.
-   */
-  @OneToMany(() => Resources, (resource) => resource.project, {
-    orphanRemoval: true,
-  })
-  resources = new Collection<Resources>(this);
 
   /**
    * Default permission bitfield when adding members.

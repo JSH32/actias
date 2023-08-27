@@ -14,7 +14,7 @@ use crate::{
     util,
 };
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptConfig {
     #[serde(skip)]

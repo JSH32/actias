@@ -53,7 +53,7 @@ export class ProjectService {
      * @returns ProjectDto
      * @throws ApiError
      */
-    public get(
+    public getProject(
         project: string,
     ): CancelablePromise<ProjectDto> {
         return this.httpRequest.request({
@@ -71,7 +71,7 @@ export class ProjectService {
      * @returns MessageResponseDto
      * @throws ApiError
      */
-    public delete(
+    public deleteProject(
         project: string,
     ): CancelablePromise<MessageResponseDto> {
         return this.httpRequest.request({

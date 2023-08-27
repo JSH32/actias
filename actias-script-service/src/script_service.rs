@@ -137,6 +137,20 @@ impl ScriptService {
 
 #[tonic::async_trait]
 impl script_service_server::ScriptService for ScriptService {
+    async fn delete_project(
+        &self,
+        request: tonic::Request<DeleteProjectRequest>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        let request = request.get_ref();
+        sqlx::query("DELETE FROM scripts WHERE project_id = $1")
+            .bind(&request.project_id)
+            .execute(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(()))
+    }
+
     async fn create_revision(
         &self,
         request: tonic::Request<CreateRevisionRequest>,
@@ -356,7 +370,7 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListScriptResponse>, tonic::Status> {
         let request = request.get_ref();
 
-        if request.page < 0 {
+        if request.page <= 0 {
             return Err(Status::invalid_argument("invalid page number provided!"));
         }
 
@@ -387,6 +401,10 @@ impl script_service_server::ScriptService for ScriptService {
         request: tonic::Request<CreateScriptRequest>,
     ) -> Result<tonic::Response<Script>, tonic::Status> {
         let request = request.get_ref().clone();
+
+        let project_id = Uuid::from_str(&request.project_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
         let script_info = match self
             .get_script_info(find_script_request::Query::PublicName(
                 request.public_identifier.clone(),
@@ -402,9 +420,10 @@ impl script_service_server::ScriptService for ScriptService {
                 tonic::Code::NotFound => {
                     // Create a script.
                     sqlx::query_as::<_, DbScript>(
-                        "INSERT INTO scripts (public_identifier) VALUES ($1) RETURNING *",
+                        "INSERT INTO scripts (public_identifier, project_id) VALUES ($1, $2) RETURNING *",
                     )
                     .bind(request.public_identifier)
+                    .bind(project_id)
                     .fetch_one(&self.database)
                     .await
                     .map_err(|e| Status::internal(e.to_string()))?

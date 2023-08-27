@@ -9,17 +9,29 @@ use crate::{client::types::RevisionFullDto, script::ScriptConfig};
 
 /// Convert an API error to a string which can be used to log.
 pub fn progenitor_error(error: progenitor::progenitor_client::Error) -> String {
+    #[derive(Deserialize)]
+    struct ErrorResponse {
+        message: String,
+    }
+
     match error {
         progenitor::progenitor_client::Error::UnexpectedResponse(e) => {
-            #[derive(Deserialize)]
-            struct ErrorResponse {
-                message: String,
-            }
-
             let json: ErrorResponse = futures::executor::block_on(e.json()).unwrap();
-            json.message
+            format!("Operation returned an error: {}", json.message)
         }
-        // TODO: Document errors so we don't have to do the above hack.
+        progenitor::progenitor_client::Error::CommunicationError(v) => {
+            format!(
+                "Communication error encountered with the server: {}",
+                v.to_string()
+            )
+        }
+        progenitor::progenitor_client::Error::ErrorResponse(v) => {
+            let json: ErrorResponse = serde_json::from_value(v.into_inner().into()).unwrap();
+            format!("Operation returned an error: {}", json.message)
+        }
+        progenitor::progenitor_client::Error::InvalidResponsePayload(v) => {
+            format!("Response payload was invalid: {}", v.to_string())
+        }
         _ => error.to_string(),
     }
 }

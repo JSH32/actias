@@ -7,6 +7,8 @@ import "google/protobuf/empty.proto";
 message ListScriptRequest {
     required int32 page_size = 1;
     required int32 page = 2;
+    // Project ID to query by.
+    required string project_id = 3;
 }
 
 message ListScriptResponse {
@@ -18,12 +20,18 @@ message ListScriptResponse {
 // Create a new script.
 // This will create a new revision if the script already exists.
 message CreateScriptRequest {
+    required string project_id = 1;
     // Public identifier of the script.
-    required string public_identifier = 1;
+    required string public_identifier = 2;
 }
 
 message DeleteScriptRequest {
     required string script_id = 1;
+}
+
+// Delete all scripts belonging to a project.
+message DeleteProjectRequest {
+    required string project_id = 1;
 }
 
 message CreateRevisionRequest {
@@ -92,10 +100,12 @@ message Revision {
 
 message Script {
     required string id = 1;
+    // Project that owns the script.
+    required string project_id = 2;
     // Public identifier of the script.
-    required string public_identifier = 2;
-    required string last_updated = 3;
-    optional string current_revision_id = 4;
+    required string public_identifier = 3;
+    required string last_updated = 4;
+    optional string current_revision_id = 5;
 }
 
 service ScriptService {
@@ -103,6 +113,7 @@ service ScriptService {
     rpc ListScripts(ListScriptRequest) returns (ListScriptResponse);
     rpc CreateScript(CreateScriptRequest) returns (Script);
     rpc DeleteScript(DeleteScriptRequest) returns (google.protobuf.Empty);
+    rpc DeleteProject(DeleteProjectRequest) returns (google.protobuf.Empty);
     rpc SetScriptRevision(SetRevisionRequest) returns (NewRevisionResponse);
 
     rpc GetRevision(GetRevisionRequest) returns (Revision);

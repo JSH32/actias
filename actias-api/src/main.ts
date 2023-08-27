@@ -56,7 +56,7 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config, {
     operationIdFactory: (_, methodKey) => methodKey,
   });
-  SwaggerModule.setup('docs', app, document);
+  SwaggerModule.setup('/docs', app, document);
 
   app
     .getHttpAdapter()

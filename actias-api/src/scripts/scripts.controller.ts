@@ -30,15 +30,10 @@ import {
   ApiOkResponsePaginated,
 } from 'src/shared/dto/paginated';
 import { AuthGuard } from 'src/auth/auth.guard';
-import {
-  AclByProject,
-  AclByResource,
-  AclGuard,
-} from 'src/project/acl/acl.guard';
+import { AclByFinder, AclByProject, AclGuard } from 'src/project/acl/acl.guard';
 import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
 import { ProjectService } from 'src/project/project.service';
-import { ResourceType } from 'src/entities/Resources';
 import { AccessFields } from 'src/project/acl/accessFields';
 import { EntityManager } from '@mikro-orm/postgresql';
 import { MessageResponseDto } from 'src/shared/dto/message';
@@ -75,16 +70,20 @@ export class ProjectScriptController implements OnModuleInit {
     @Query('page')
     page: number,
   ): Promise<PaginatedResponseDto<ScriptDto>> {
-    return await this.projectService.listResources(
-      ResourceType.SCRIPT,
-      project,
+    const scripts = await lastValueFrom(
+      this.scriptService
+        .listScripts({
+          page: page - 1,
+          pageSize: 25,
+          projectId: project.id,
+        })
+        .pipe(toHttpException()),
+    );
+
+    return PaginatedResponseDto.fromArray(
       page,
-      (res) =>
-        lastValueFrom(
-          this.scriptService
-            .queryScript({ id: res.serviceId })
-            .pipe(toHttpException()),
-        ).then((s) => new ScriptDto(res.id, project.id, s)),
+      scripts.totalPages,
+      (scripts.scripts || []).map((script) => new ScriptDto(script)),
     );
   }
 
@@ -99,17 +98,16 @@ export class ProjectScriptController implements OnModuleInit {
     @EntityParam('project', Projects) project: Projects,
     @Body() createScript: CreateScriptDto,
   ): Promise<ScriptDto> {
-    const rpcScript = await lastValueFrom(
-      this.scriptService.createScript(createScript).pipe(toHttpException()),
+    const script = await lastValueFrom(
+      this.scriptService
+        .createScript({
+          publicIdentifier: createScript.publicIdentifier,
+          projectId: project.id,
+        })
+        .pipe(toHttpException()),
     );
 
-    const script = await this.projectService.createResource(
-      project,
-      ResourceType.SCRIPT,
-      rpcScript.id,
-    );
-
-    return new ScriptDto(script.id, project.id, rpcScript);
+    return new ScriptDto(script);
   }
 }
 
@@ -130,25 +128,30 @@ export class ScriptsController implements OnModuleInit {
       this.client.getService<script_service.ScriptService>('ScriptService');
   }
 
+  async projectFinder(request: any, em: EntityManager) {
+    const script = await lastValueFrom(
+      this.scriptService
+        .queryScript({ id: request.params['id'] })
+        .pipe(toHttpException()),
+    );
+
+    return await em.findOneOrFail(Projects, { id: script.projectId });
+  }
+
   /**
    * Get a list of revisions (bundle not included).
    */
   @Get(':id/revisions')
-  @AclByResource(AccessFields.SCRIPT_READ, 'id')
+  @AclByFinder(AccessFields.SCRIPT_READ, 'projectFinder')
   @ApiOkResponsePaginated(RevisionDataDto)
   async revisionList(
     @Param('id') scriptId: string,
     @Query('page') page: number,
   ): Promise<PaginatedResponseDto<RevisionDataDto>> {
-    const resource = await this.projectService.getResource(
-      ResourceType.SCRIPT,
-      scriptId,
-    );
-
     const revisionPage = await lastValueFrom(
       this.scriptService
         .listRevisions({
-          scriptId: resource.serviceId,
+          scriptId,
           pageSize: 10,
           page: page - 1,
         })
@@ -160,7 +163,7 @@ export class ScriptsController implements OnModuleInit {
       page: page,
       items: revisionPage.revisions
         ? revisionPage.revisions.map(
-          (revision) => new RevisionFullDto(scriptId, revision),
+          (revision) => new RevisionFullDto(revision),
         )
         : [],
     };
@@ -170,22 +173,14 @@ export class ScriptsController implements OnModuleInit {
    * Set the current active revision for a script.
    */
   @Patch(':id/revisions')
-  @AclByResource(AccessFields.SCRIPT_WRITE, 'id')
+  @AclByFinder(AccessFields.SCRIPT_WRITE, 'projectFinder')
   async setRevision(
     @Param('id') scriptId: string,
     @Query('revisionId') revisionId: string,
   ): Promise<NewRevisionResponseDto> {
-    const resource = await this.projectService.getResource(
-      ResourceType.SCRIPT,
-      scriptId,
-    );
-
     return (await lastValueFrom(
       this.scriptService
-        .setScriptRevision({
-          scriptId: resource.serviceId,
-          revisionId,
-        })
+        .setScriptRevision({ scriptId, revisionId })
         .pipe(toHttpException()),
     )) as NewRevisionResponseDto;
   }
@@ -194,28 +189,22 @@ export class ScriptsController implements OnModuleInit {
    * Create a new revision.
    */
   @Put(':id/revisions')
-  @AclByResource(AccessFields.SCRIPT_WRITE, 'id')
+  @AclByFinder(AccessFields.SCRIPT_WRITE, 'projectFinder')
   async createRevision(
     @Param('id') scriptId: string,
     @Body()
     request: CreateRevisionDto,
   ): Promise<RevisionDataDto> {
-    const resource = await this.projectService.getResource(
-      ResourceType.SCRIPT,
-      scriptId,
-    );
-
     return new RevisionFullDto(
-      scriptId,
       await lastValueFrom(
         this.scriptService
           .createRevision({
-            scriptId: resource.serviceId,
+            scriptId,
             bundle: request.bundle.toServiceBundle(),
             scriptConfig: JSON.stringify({
               ...request.scriptConfig,
               // Adapt the service ID.
-              id: resource.serviceId,
+              id: scriptId,
             }),
           })
           .pipe(toHttpException()),
@@ -227,33 +216,23 @@ export class ScriptsController implements OnModuleInit {
    * Get a script by ID.
    */
   @Get(':id')
-  @AclByResource(AccessFields.SCRIPT_READ, 'id')
-  async getScript(@Param('id') id: string): Promise<ScriptDto> {
-    const resource = await this.projectService.getResource(
-      ResourceType.SCRIPT,
-      id,
-    );
-
+  @AclByFinder(AccessFields.SCRIPT_READ, 'projectFinder')
+  async getScript(@Param('id') scriptId: string): Promise<ScriptDto> {
     return new ScriptDto(
-      resource.id,
-      resource.project.id,
       await lastValueFrom(
         this.scriptService
-          .queryScript({ id: resource.serviceId })
+          .queryScript({ id: scriptId })
           .pipe(toHttpException()),
       ),
     );
   }
 
   @Delete(':id')
-  @AclByResource(AccessFields.SCRIPT_WRITE, 'id')
+  @AclByFinder(AccessFields.SCRIPT_WRITE, 'projectFinder')
   async deleteScript(@Param('id') scriptId: string) {
-    const resource = await this.projectService.getResource(
-      ResourceType.SCRIPT,
-      scriptId,
+    await lastValueFrom(
+      this.scriptService.deleteScript({ scriptId }).pipe(toHttpException()),
     );
-
-    await this.em.removeAndFlush(resource);
 
     return new MessageResponseDto('Successfully deleted script');
   }

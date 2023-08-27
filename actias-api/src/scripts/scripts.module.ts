@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ClientsModule } from '@nestjs/microservices';
 import { grpcClient, protoBasePath } from 'src/util/grpc';
 import { RevisionsController } from './revisions.controller';
@@ -10,16 +10,14 @@ import { AclModule } from 'src/project/acl/acl.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { Projects } from 'src/entities/Projects';
-import { Resources } from 'src/entities/Resources';
 import { ProjectModule } from 'src/project/project.module';
-import { ScriptSubscriber } from './scripts.subscriber';
 
 @Module({
   imports: [
     AuthModule,
     AclModule,
-    ProjectModule,
-    MikroOrmModule.forFeature([Projects, Resources]),
+    forwardRef(() => ProjectModule),
+    MikroOrmModule.forFeature([Projects]),
     ClientsModule.registerAsync(
       grpcClient(
         'SCRIPT_SERVICE',
@@ -33,7 +31,7 @@ import { ScriptSubscriber } from './scripts.subscriber';
       ),
     ),
   ],
-  providers: [ScriptSubscriber],
+  exports: [ClientsModule],
   controllers: [
     ScriptsController,
     ProjectScriptController,

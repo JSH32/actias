@@ -18,10 +18,11 @@ base64 = "0.21.0"
 prettytable-rs = "^0.10"
 
 # HTTP client things
-progenitor = "0.3.0"
+progenitor = { git = "https://github.com/oxidecomputer/progenitor", rev = "90fae27" }
 reqwest = { version = "0.11", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 bytes = "1.4.0"
 uuid = { version = "1.0.0", features = ["serde", "v4"] }
+schemars = "0.8.12"

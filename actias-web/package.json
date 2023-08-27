@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "generateClient": "find ./src/client ! -name 'README.md' -type f -exec rm -f {} + && openapi --input http://localhost:3006/docs/openapi.json --output ./src/client --client axios --name ActiasClient"
+    "generateClient": "find ./src/client ! -name 'README.md' -type f -exec rm -f {} + && openapi --input http://localhost:3006/api/docs/openapi.json --output ./src/client --client axios --name ActiasClient"
   },
   "dependencies": {
     "@emotion/react": "^11.11.1",

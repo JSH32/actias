@@ -1,0 +1,10 @@
+{
+  "id": "011ce096-c0ca-4152-bdaf-ae81553b82cd",
+  "entryPoint": "main.lua",
+  "includes": [
+    "**/*.lua"
+  ],
+  "ignore": [
+    "definitions/**"
+  ]
+}

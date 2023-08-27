@@ -2,13 +2,13 @@ import { EventSubscriber, EntityManager, EventArgs } from '@mikro-orm/core';
 import { Injectable, OnModuleInit, Inject } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { lastValueFrom } from 'rxjs';
-import { Resources, ResourceType } from 'src/entities/Resources';
+import { Projects } from 'src/entities/Projects';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
 
 @Injectable()
-export class ScriptSubscriber
-  implements EventSubscriber<Resources>, OnModuleInit {
+export class ProjectSubscriber
+  implements EventSubscriber<Projects>, OnModuleInit {
   private scriptService: script_service.ScriptService;
 
   constructor(
@@ -23,15 +23,13 @@ export class ScriptSubscriber
       this.client.getService<script_service.ScriptService>('ScriptService');
   }
 
-  public async afterDelete(args: EventArgs<Resources>) {
-    if (args.entity.resourceType === ResourceType.SCRIPT) {
-      lastValueFrom(
-        await this.scriptService
-          .deleteScript({
-            scriptId: args.entity.serviceId,
-          })
-          .pipe(toHttpException()),
-      );
-    }
+  public async afterDelete(args: EventArgs<Projects>) {
+    lastValueFrom(
+      await this.scriptService
+        .deleteProject({
+          projectId: args.entity.id,
+        })
+        .pipe(toHttpException()),
+    );
   }
 }

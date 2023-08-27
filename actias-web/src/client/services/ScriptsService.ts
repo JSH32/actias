@@ -2,6 +2,7 @@
 /* tslint:disable */
 import type { CreateRevisionDto } from '../models/CreateRevisionDto';
 import type { CreateScriptDto } from '../models/CreateScriptDto';
+import type { MessageResponseDto } from '../models/MessageResponseDto';
 import type { NewRevisionResponseDto } from '../models/NewRevisionResponseDto';
 import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
 import type { RevisionDataDto } from '../models/RevisionDataDto';
@@ -102,12 +103,12 @@ export class ScriptsService {
 
     /**
      * @param id
-     * @returns any
+     * @returns MessageResponseDto
      * @throws ApiError
      */
     public deleteScript(
         id: string,
-    ): CancelablePromise<any> {
+    ): CancelablePromise<MessageResponseDto> {
         return this.httpRequest.request({
             method: 'DELETE',
             url: '/api/script/{id}',

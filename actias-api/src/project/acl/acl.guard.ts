@@ -10,10 +10,6 @@ import { AclService } from './acl.service';
 import { ModuleRef, Reflector } from '@nestjs/core';
 import { EntityManager } from '@mikro-orm/core';
 import { Projects } from 'src/entities/Projects';
-import { Resources } from 'src/entities/Resources';
-
-export const AclByResource = (bitfield: number, resourceParam: string) =>
-  SetMetadata('acl', { bitfield, resourceParam });
 
 export const AclByProject = (bitfield: number) =>
   SetMetadata('acl', { bitfield });
@@ -59,16 +55,6 @@ export class AclGuard implements CanActivate {
         } else {
           project = await aclData.projectFinder(request, this.em);
         }
-      } else if (aclData.resourceParam != null) {
-        // Get the project by the resource ID if resourceParam is provided.
-        const id = request.params[aclData.resourceParam];
-        const resource = await this.em.findOneOrFail(
-          Resources,
-          { id },
-          { populate: ['project'] },
-        );
-
-        project = resource.project;
       } else {
         project = await this.em.findOneOrFail(
           Projects,

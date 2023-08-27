@@ -18,8 +18,8 @@ import { RevisionFullDto } from './dto/revision.dto';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { AclByFinder, AclGuard } from 'src/project/acl/acl.guard';
 import { EntityManager } from '@mikro-orm/core';
-import { ResourceType, Resources } from 'src/entities/Resources';
 import { AccessFields } from 'src/project/acl/accessFields';
+import { Projects } from 'src/entities/Projects';
 
 @UseGuards(AuthGuard, AclGuard)
 @ApiTags('revisions')
@@ -37,7 +37,7 @@ export class RevisionsController implements OnModuleInit {
       this.client.getService<script_service.ScriptService>('ScriptService');
   }
 
-  async checkPermissions(request: any, em: EntityManager) {
+  async projectFinder(request: any, em: EntityManager) {
     const revision = await lastValueFrom(
       this.scriptService
         .getRevision({
@@ -47,22 +47,20 @@ export class RevisionsController implements OnModuleInit {
         .pipe(toHttpException()),
     );
 
-    return (
-      await em.findOneOrFail(
-        Resources,
-        {
-          serviceId: revision.scriptId,
-        },
-        { populate: ['project'] },
-      )
-    ).project;
+    const script = await lastValueFrom(
+      this.scriptService
+        .queryScript({ id: revision.scriptId })
+        .pipe(toHttpException()),
+    );
+
+    return await em.findOneOrFail(Projects, { id: script.projectId });
   }
 
   /**
    * Get a revision by ID.
    */
   @Get(':id')
-  @AclByFinder(AccessFields.SCRIPT_READ, 'checkPermissions')
+  @AclByFinder(AccessFields.SCRIPT_READ, 'projectFinder')
   async getRevision(
     @Param('id') id: string,
     @Query('withBundle') withBundle?: boolean,
@@ -73,19 +71,14 @@ export class RevisionsController implements OnModuleInit {
         .pipe(toHttpException()),
     );
 
-    const script = await this.em.findOneOrFail(Resources, {
-      resourceType: ResourceType.SCRIPT,
-      serviceId: revision.scriptId,
-    });
-
-    return new RevisionFullDto(script.id, revision);
+    return new RevisionFullDto(revision);
   }
 
   /**
    * Delete a revision by ID.
    */
   @Delete(':id')
-  @AclByFinder(AccessFields.SCRIPT_WRITE, 'checkPermissions')
+  @AclByFinder(AccessFields.SCRIPT_WRITE, 'projectFinder')
   async deleteRevision(
     @Param('id') id: string,
   ): Promise<NewRevisionResponseDto> {

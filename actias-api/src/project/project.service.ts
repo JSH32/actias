@@ -2,7 +2,6 @@ import { EntityManager } from '@mikro-orm/core';
 import { Injectable } from '@nestjs/common';
 import { Access } from 'src/entities/Access';
 import { Projects } from 'src/entities/Projects';
-import { ResourceType, Resources } from 'src/entities/Resources';
 import { Users } from 'src/entities/Users';
 import { PaginatedResponseDto } from 'src/shared/dto/paginated';
 import { AccessFields } from './acl/accessFields';
@@ -68,53 +67,5 @@ export class ProjectService {
       Math.ceil(count / pageSize),
       projects,
     );
-  }
-
-  async createResource(
-    project: Projects,
-    type: ResourceType,
-    serviceId: string,
-  ) {
-    const resource = new Resources({
-      serviceId,
-      resourceType: type,
-      project,
-    });
-
-    await this.em.persistAndFlush(resource);
-    return resource;
-  }
-
-  /**
-   * Get a resource by its type/id.
-   */
-  async getResource(type: ResourceType, id: string) {
-    return await this.em.findOneOrFail(Resources, {
-      resourceType: type,
-      id,
-    });
-  }
-
-  async listResources<T>(
-    type: ResourceType,
-    project: Projects,
-    page: number,
-    callback: (serviceId: Resources) => Promise<T>,
-    pageSize = 25,
-  ): Promise<PaginatedResponseDto<T>> {
-    const [resources, count] = await this.em.findAndCount(
-      Resources,
-      {
-        resourceType: type,
-        project,
-      },
-      { limit: pageSize, offset: pageSize * (page - 1) },
-    );
-
-    return new PaginatedResponseDto({
-      page,
-      lastPage: Math.ceil(count / pageSize),
-      items: await Promise.all(resources.map((res) => callback(res))),
-    });
   }
 }

@@ -50,7 +50,7 @@ const Project = () => {
 
   useEffect(() => {
     api.project
-      .get(router.query.id as string)
+      .getProject(router.query.id as string)
       .then((project) => {
         setProject(project);
         api.acl.getAclMe(project.id).then(setPermissions);

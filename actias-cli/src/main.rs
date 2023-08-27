@@ -159,7 +159,10 @@ async fn main() {
 
 async fn list_scripts(client: &Client, project: &str, page: f64) -> Result<(), String> {
     let response = client
-        .list_scripts(project, page)
+        .list_scripts()
+        .project(project)
+        .page(page)
+        .send()
         .await
         .map_err(progenitor_error)?
         .into_inner();
@@ -212,13 +215,17 @@ async fn script_manage_command(
     match command {
         ScriptOperations::Delete => {
             let script = client
-                .get_script(&id)
+                .get_script()
+                .id(id.clone())
+                .send()
                 .await
                 .map_err(progenitor_error)?
                 .into_inner();
 
             client
-                .delete_script(&id)
+                .delete_script()
+                .id(id)
+                .send()
                 .await
                 .map_err(progenitor_error)?
                 .into_inner();
@@ -231,7 +238,9 @@ async fn script_manage_command(
         }
         ScriptOperations::Clone { path } => {
             let script = client
-                .get_script(&id)
+                .get_script()
+                .id(id)
+                .send()
                 .await
                 .map_err(progenitor_error)?
                 .into_inner();
@@ -255,14 +264,18 @@ async fn revision_command(
     command: &RevisionCommands,
 ) -> Result<(), String> {
     let script = client
-        .get_script(&script_id)
+        .get_script()
+        .id(script_id)
+        .send()
         .await
         .map_err(progenitor_error)?;
 
     match command {
         RevisionCommands::Delete { revision_id } => {
             let result = client
-                .delete_revision(&revision_id)
+                .delete_revision()
+                .id(revision_id)
+                .send()
                 .await
                 .map_err(progenitor_error)?;
 
@@ -279,7 +292,10 @@ async fn revision_command(
         }
         RevisionCommands::List { page } => {
             let response = client
-                .revision_list(script_id, page.unwrap_or(1) as f64)
+                .revision_list()
+                .id(script_id)
+                .page(page.unwrap_or(1) as f64)
+                .send()
                 .await
                 .map_err(progenitor_error)?;
 
@@ -311,7 +327,10 @@ async fn revision_command(
         }
         RevisionCommands::Set { revision_id } => {
             let response = client
-                .set_revision(script_id, revision_id)
+                .set_revision()
+                .id(script_id)
+                .revision_id(revision_id)
+                .send()
                 .await
                 .map_err(progenitor_error)?;
 
@@ -341,7 +360,10 @@ async fn clone_revision(
     path: Option<String>,
 ) -> Result<(), String> {
     let revision = client
-        .get_revision(&revision_id, true)
+        .get_revision()
+        .id(revision_id)
+        .with_bundle(true)
+        .send()
         .await
         .map_err(progenitor_error)?;
 
@@ -372,7 +394,12 @@ async fn publish_script(client: &Client, script_dir: &str) -> Result<(), String>
     let mut script_config = ScriptConfig::from_path(&script_path)?;
 
     let script = match &script_config.id {
-        Some(v) => client.get_script(&v).await.map_err(progenitor_error)?,
+        Some(v) => client
+            .get_script()
+            .id(v)
+            .send()
+            .await
+            .map_err(progenitor_error)?,
         None => {
             if !Confirm::new("Script doesn't have an ID, would you like to create a new one?")
                 .with_default(false)
@@ -391,12 +418,10 @@ async fn publish_script(client: &Client, script_dir: &str) -> Result<(), String>
                 .map_err(|e| e.to_string())?;
 
             let script = client
-                .create_script(
-                    &project_select,
-                    &CreateScriptDto {
-                        public_identifier: script_name,
-                    },
-                )
+                .create_script()
+                .project(&project_select)
+                .body(CreateScriptDto::builder().public_identifier(script_name))
+                .send()
                 .await
                 .map_err(progenitor_error)?;
 
@@ -415,15 +440,18 @@ async fn publish_script(client: &Client, script_dir: &str) -> Result<(), String>
         }
     };
 
+    let json_script_config: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_value(serde_json::to_value(script_config.clone()).unwrap()).unwrap();
+
     client
-        .create_revision(
-            &script.id,
-            &CreateRevisionDto {
-                bundle: script_config.to_bundle()?,
-                script_config: serde_json::from_value(serde_json::to_value(script_config).unwrap())
-                    .unwrap(),
-            },
+        .create_revision()
+        .id(&script.id)
+        .body(
+            CreateRevisionDto::builder()
+                .bundle(script_config.to_bundle()?)
+                .script_config(json_script_config),
         )
+        .send()
         .await
         .map_err(|e| format!("failed to upload revision: {}", e.to_string()))?;
 
@@ -444,7 +472,9 @@ async fn create_script(
     // Ensure access
     if let Some(project_id) = &project_id {
         let acl: progenitor::progenitor_client::ResponseValue<client::types::AclListDto> = client
-            .get_acl_me(&project_id)
+            .get_acl_me()
+            .project(project_id)
+            .send()
             .await
             .map_err(|e| e.to_string())?;
 
@@ -471,29 +501,28 @@ async fn create_script(
         let mut script_config = ScriptConfig::from_path(&script_path)?;
 
         let script = client
-            .create_script(
-                &project_id,
-                &CreateScriptDto {
-                    public_identifier: script_name.to_string(),
-                },
-            )
+            .create_script()
+            .project(project_id)
+            .body(CreateScriptDto::builder().public_identifier(script_name))
+            .send()
             .await
             .map_err(progenitor_error)?;
 
         script_config.id = Some(script.id.clone());
         script_config.write_config(&script_path)?;
 
+        let json_script_config: serde_json::Map<std::string::String, serde_json::Value> =
+            serde_json::from_value(serde_json::to_value(script_config.clone()).unwrap()).unwrap();
+
         client
-            .create_revision(
-                &script.id,
-                &CreateRevisionDto {
-                    bundle: script_config.to_bundle()?,
-                    script_config: serde_json::from_value(
-                        serde_json::to_value(script_config).unwrap(),
-                    )
-                    .unwrap(),
-                },
+            .create_revision()
+            .id(&script.id)
+            .body(
+                CreateRevisionDto::builder()
+                    .bundle(script_config.to_bundle()?)
+                    .script_config(json_script_config),
             )
+            .send()
             .await
             .map_err(|e| format!("failed to upload revision: {}", e.to_string()))?;
 

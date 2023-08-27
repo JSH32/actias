@@ -34,6 +34,7 @@ pub struct DbFile {
 #[derive(sqlx::FromRow, Clone, Debug)]
 pub struct DbScript {
     pub id: Uuid,
+    pub project_id: Uuid,
     pub public_identifier: String,
     pub last_updated: DateTime<Utc>,
     pub current_revision: Option<Uuid>,
@@ -43,6 +44,7 @@ impl Into<Script> for DbScript {
     fn into(self) -> Script {
         Script {
             id: self.id.to_string(),
+            project_id: self.project_id.to_string(),
             public_identifier: self.public_identifier,
             last_updated: self.last_updated.to_string(),
             current_revision_id: self.current_revision.map(|v| v.to_string()),

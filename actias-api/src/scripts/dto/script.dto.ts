@@ -25,11 +25,11 @@ export class ScriptDto {
    */
   projectId: string;
 
-  constructor(id: string, projectId: string, bundle: script_service.Script) {
-    this.id = id;
-    this.projectId = projectId;
-    this.currentRevisionId = bundle.currentRevisionId;
-    this.publicIdentifier = bundle.publicIdentifier;
-    this.lastUpdated = new Date(bundle.lastUpdated);
+  constructor(script: script_service.Script) {
+    this.id = script.id;
+    this.projectId = script.projectId;
+    this.currentRevisionId = script.currentRevisionId;
+    this.publicIdentifier = script.publicIdentifier;
+    this.lastUpdated = new Date(script.lastUpdated);
   }
 }

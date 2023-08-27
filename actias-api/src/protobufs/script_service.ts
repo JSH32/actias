@@ -9,6 +9,8 @@ export namespace script_service {
     export interface ListScriptRequest {
         pageSize?: number;
         page?: number;
+        // Project ID to query by.
+        projectId?: string;
     }
     export interface ListScriptResponse {
         page?: number;
@@ -18,11 +20,16 @@ export namespace script_service {
     // Create a new script.
     // This will create a new revision if the script already exists.
     export interface CreateScriptRequest {
+        projectId?: string;
         // Public identifier of the script.
         publicIdentifier?: string;
     }
     export interface DeleteScriptRequest {
         scriptId?: string;
+    }
+    // Delete all scripts belonging to a project.
+    export interface DeleteProjectRequest {
+        projectId?: string;
     }
     export interface CreateRevisionRequest {
         scriptId?: string;
@@ -78,6 +85,8 @@ export namespace script_service {
     }
     export interface Script {
         id?: string;
+        // Project that owns the script.
+        projectId?: string;
         // Public identifier of the script.
         publicIdentifier?: string;
         lastUpdated?: string;
@@ -101,6 +110,11 @@ export namespace script_service {
         ): Observable<Script>;
         deleteScript(
             data: DeleteScriptRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
+        deleteProject(
+            data: DeleteProjectRequest,
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;

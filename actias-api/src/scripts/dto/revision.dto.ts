@@ -33,10 +33,10 @@ export class RevisionFullDto {
    */
   bundle?: BundleDto;
 
-  constructor(scriptId: string, revision: script_service.Revision) {
+  constructor(revision: script_service.Revision) {
     this.id = revision.id;
     this.created = new Date(revision.created);
-    this.scriptId = scriptId;
+    this.scriptId = revision.scriptId;
     // This is fine because script service does validation on JSON.
     this.scriptConfig = JSON.parse(revision.scriptConfig);
     this.bundle =

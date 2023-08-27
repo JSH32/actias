@@ -51,7 +51,7 @@ const Script = () => {
         setScript(script);
 
         api.project
-          .get(script.projectId)
+          .getProject(script.projectId)
           .then(setParentProject)
           .catch(showError);
       })
