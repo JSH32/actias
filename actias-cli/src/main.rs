@@ -3,7 +3,10 @@ mod script;
 mod settings;
 mod util;
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use clap::{Parser, Subcommand};
 use client::{
@@ -249,7 +252,29 @@ async fn script_manage_command(
                 Some(v) => {
                     clone_revision(client, &script, &v, path.clone()).await?;
                 }
-                None => return Err("Script does not have a current revision".to_string()),
+                None => {
+                    println!("Script does not have a current revision");
+                    if Confirm::new("Do you want to create one?")
+                        .with_default(true)
+                        .with_help_message("This will create a sample revision")
+                        .prompt()
+                        .unwrap()
+                    {
+                        let script_path = get_dir(&script.public_identifier, true, true)?;
+
+                        PROJ_TEMPLATE_DIR
+                            .extract(&script_path)
+                            .map_err(|e| e.to_string())?;
+
+                        let mut script_config = ScriptConfig::from_path(&script_path).unwrap();
+                        script_config.id = Some(script.id.clone());
+                        script_config.write_config(&script_path)?;
+
+                        copy_definitions(&script_path)?;
+
+                        publish_script(client, &script_path.to_str().unwrap()).await?;
+                    }
+                }
             };
         }
         ScriptOperations::Revisions { sub } => revision_command(client, &id, sub).await?,
@@ -440,7 +465,7 @@ async fn publish_script(client: &Client, script_dir: &str) -> Result<(), String>
         }
     };
 
-    let json_script_config: serde_json::Map<String, serde_json::Value> =
+    let json_script_config: HashMap<String, serde_json::Value> =
         serde_json::from_value(serde_json::to_value(script_config.clone()).unwrap()).unwrap();
 
     client
@@ -511,7 +536,7 @@ async fn create_script(
         script_config.id = Some(script.id.clone());
         script_config.write_config(&script_path)?;
 
-        let json_script_config: serde_json::Map<std::string::String, serde_json::Value> =
+        let json_script_config: HashMap<std::string::String, serde_json::Value> =
             serde_json::from_value(serde_json::to_value(script_config.clone()).unwrap()).unwrap();
 
         client

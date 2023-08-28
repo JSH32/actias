@@ -44,10 +44,10 @@ export class UsersController {
   @Get()
   @ApiOkResponsePaginated(UserDto)
   async searchUsers(
-    @Query('query') query: string,
+    @Query('name') name: string,
     @Query('page') page: number,
   ): Promise<PaginatedResponseDto<UserDto>> {
-    const paginated = await this.userService.searchByQuery(page, 10, query);
+    const paginated = await this.userService.searchByQuery(page, 10, name);
 
     return {
       page: paginated.page,

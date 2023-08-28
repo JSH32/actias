@@ -5,6 +5,7 @@ import { BundleDto } from './bundle.dto';
 export class ScriptConfigDto {
   id: string;
   entryPoint: string;
+  ignore: string[];
   includes: string[];
 }
 

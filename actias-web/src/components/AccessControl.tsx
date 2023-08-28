@@ -43,9 +43,9 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
     loadAcl();
   }, [project, loadAcl]);
 
-  const searchUsers = useCallback((query: string) => {
+  const searchUsers = useCallback((name: string) => {
     api.users
-      .searchUsers(query, 1)
+      .searchUsers(name, 1)
       .then((res) => setUsers((res as any).items))
       .catch(showError);
   }, []);

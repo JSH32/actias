@@ -29,20 +29,20 @@ export class UsersService {
     }
 
     /**
-     * @param query
+     * @param name
      * @param page
      * @returns any
      * @throws ApiError
      */
     public searchUsers(
-        query: string,
+        name: string,
         page: number,
     ): CancelablePromise<PaginatedResponseDto> {
         return this.httpRequest.request({
             method: 'GET',
             url: '/api/users',
             query: {
-                'query': query,
+                'name': name,
                 'page': page,
             },
         });

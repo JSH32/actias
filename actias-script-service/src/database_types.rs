@@ -12,6 +12,7 @@ pub struct ScriptConfig {
     pub id: Uuid,
     pub entry_point: String,
     pub includes: Vec<String>,
+    pub ignore: Vec<String>,
 }
 
 #[derive(sqlx::FromRow)]

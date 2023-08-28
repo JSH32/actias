@@ -135,7 +135,7 @@ const ProjectCard: React.FC<{
       </Text>
 
       <Link href={`/project/${project.id}`}>
-        <Button variant="light" fullWidth mt="md" radius="md">
+        <Button fullWidth mt="md" radius="md">
           Open
         </Button>
       </Link>

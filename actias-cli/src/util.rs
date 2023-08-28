@@ -100,6 +100,8 @@ pub fn copy_definitions(proj_path: &PathBuf) -> Result<(), String> {
 pub fn write_revision(path: PathBuf, revision: RevisionFullDto) -> Result<(), String> {
     check_clone_dir(&revision.script_id, &path)?;
 
+    std::fs::remove_dir_all(path.clone()).map_err(|e| e.to_string())?;
+
     // Create copy path.
     std::fs::create_dir_all(path.clone()).map_err(|e| e.to_string())?;
 

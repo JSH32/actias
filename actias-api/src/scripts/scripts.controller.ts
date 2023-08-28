@@ -163,8 +163,8 @@ export class ScriptsController implements OnModuleInit {
       page: page,
       items: revisionPage.revisions
         ? revisionPage.revisions.map(
-          (revision) => new RevisionFullDto(revision),
-        )
+            (revision) => new RevisionFullDto(revision),
+          )
         : [],
     };
   }

@@ -1,11 +1,8 @@
 import { EntityManager } from '@mikro-orm/core';
 import { Injectable } from '@nestjs/common';
-import { Access } from 'src/entities/Access';
 import { Projects } from 'src/entities/Projects';
 import { Users } from 'src/entities/Users';
 import { PaginatedResponseDto } from 'src/shared/dto/paginated';
-import { AccessFields } from './acl/accessFields';
-import { BitField } from 'easy-bits';
 
 @Injectable()
 export class ProjectService {
