@@ -142,8 +142,12 @@ impl script_service_server::ScriptService for ScriptService {
         request: tonic::Request<DeleteProjectRequest>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
         let request = request.get_ref();
+
+        let project_id =
+            Uuid::from_str(&request.project_id).map_err(|e| Status::internal(e.to_string()))?;
+
         sqlx::query("DELETE FROM scripts WHERE project_id = $1")
-            .bind(&request.project_id)
+            .bind(&project_id)
             .execute(&self.database)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -370,7 +374,7 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListScriptResponse>, tonic::Status> {
         let request = request.get_ref();
 
-        if request.page <= 0 {
+        if request.page < 0 {
             return Err(Status::invalid_argument("invalid page number provided!"));
         }
 

@@ -115,7 +115,6 @@ const Script = () => {
       </Breadcrumbs>
 
       <Group position="apart">
-        {/* <Json value={script} /> */}
         <Stack>
           <Group>
             <Anchor

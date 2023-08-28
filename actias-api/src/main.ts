@@ -56,11 +56,11 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config, {
     operationIdFactory: (_, methodKey) => methodKey,
   });
-  SwaggerModule.setup('/docs', app, document);
+  SwaggerModule.setup('/api/docs', app, document);
 
   app
     .getHttpAdapter()
-    .get('/docs/openapi.json', (_, res) => res.send(document));
+    .get('/api/docs/openapi.json', (_, res) => res.send(document));
 
   const configService = app.get(ConfigService);
   await app.listen(configService.get<number>('port'));

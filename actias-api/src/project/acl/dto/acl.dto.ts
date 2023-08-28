@@ -1,8 +1,10 @@
+import { UserDto } from 'src/users/dto/user.dto';
+
 export class AclListDto {
   /**
    * User id that the permissions apply to.
    */
-  userId: string;
+  user: UserDto;
   /**
    * List of permissions
    */

@@ -10,6 +10,7 @@ import { AccessFields, getListFromBitfield } from './accessFields';
 import { Access } from 'src/entities/Access';
 import { AclListDto } from './dto/acl.dto';
 import { EntityManager } from '@mikro-orm/core';
+import { UserDto } from 'src/users/dto/user.dto';
 
 @Injectable()
 export class AclService {
@@ -49,11 +50,22 @@ export class AclService {
       bitfield.on(perm);
     }
 
-    const access = await this.em.findOneOrFail(Access, { project, user });
+    let access = await this.em.findOne(Access, { project, user });
 
     if (bitfield.serialize() !== '0') {
+      if (!access) {
+        access = new Access({
+          user,
+          project,
+        });
+      }
+
       access.permissionBitfield = bitfield.serialize();
-      await this.em.persistAndFlush(project);
+      await this.em.persistAndFlush(access);
+    } else {
+      if (access) {
+        await this.em.removeAndFlush(access);
+      }
     }
 
     return bitfield.serialize();
@@ -68,7 +80,7 @@ export class AclService {
       bitfield.on(AccessFields.FULL);
 
       return new AclListDto({
-        userId: user.id,
+        user: new UserDto(user),
         permissions: getListFromBitfield(bitfield.serialize()),
       });
     }
@@ -76,13 +88,13 @@ export class AclService {
     const access = await this.em.findOneOrFail(Access, { project, user });
     if (!access) {
       return new AclListDto({
-        userId: user.id,
+        user: new UserDto(user),
         permissions: getListFromBitfield('0'),
       });
     }
 
     return new AclListDto({
-      userId: user.id,
+      user: new UserDto(user),
       permissions: getListFromBitfield(access.permissionBitfield),
     });
   }

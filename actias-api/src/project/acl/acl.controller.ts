@@ -15,6 +15,7 @@ import { EntityParam } from 'src/util/entitydecorator';
 import { Users } from 'src/entities/Users';
 import { AclListDto } from './dto/acl.dto';
 import { User } from 'src/auth/user.decorator';
+import { UserDto } from 'src/users/dto/user.dto';
 
 @ApiTags('acl')
 @Controller('acl')
@@ -83,11 +84,13 @@ export class AclController {
   })
   @Get()
   @AclByProject(AccessFields.PERMISSIONS_READ)
-  getAcl(@EntityParam('project', Projects) project: Projects): AclListDto[] {
-    return project.access.getItems().map(
+  async getAcl(
+    @EntityParam('project', Projects) project: Projects,
+  ): Promise<AclListDto[]> {
+    return (await project.access.loadItems()).map(
       (a) =>
         new AclListDto({
-          userId: a.user.id,
+          user: new UserDto(a.user),
           permissions: getListFromBitfield(a.permissionBitfield),
         }),
     );
@@ -116,7 +119,7 @@ export class AclController {
     @Body() permissions: string[],
   ) {
     return new AclListDto({
-      userId: user.id,
+      user: new UserDto(user),
       permissions: getListFromBitfield(
         await this.aclService.setPermissions(project, user, permissions),
       ),

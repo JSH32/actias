@@ -6,6 +6,7 @@ import {
   Anchor,
   Button,
   Card,
+  CloseButton,
   Grid,
   Group,
   Modal,
@@ -17,7 +18,6 @@ import {
 import { useDisclosure } from '@mantine/hooks';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
-import { IconTrash } from '@tabler/icons-react';
 import Link from 'next/link';
 
 const User = () => {
@@ -65,7 +65,7 @@ const User = () => {
   const deleteProject = useCallback(
     (project: ProjectDto) => {
       api.project
-        .delete(project.id)
+        .deleteProject(project.id)
         .then(({ message }) => {
           notifications.show({
             title: 'Project deleted!',
@@ -126,7 +126,7 @@ const ProjectCard: React.FC<{
       <Group position="apart" mt="md" mb="xs">
         <Title order={3}>{project.name}</Title>
         <Anchor component="button" onClick={() => onDelete(project)}>
-          <IconTrash />
+          <CloseButton aria-label="Delete project" />
         </Anchor>
       </Group>
 

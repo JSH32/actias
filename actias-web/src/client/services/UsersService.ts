@@ -1,6 +1,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 import type { CreateUserDto } from '../models/CreateUserDto';
+import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
 import type { UserDto } from '../models/UserDto';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -24,6 +25,26 @@ export class UsersService {
             url: '/api/users',
             body: requestBody,
             mediaType: 'application/json',
+        });
+    }
+
+    /**
+     * @param query
+     * @param page
+     * @returns any
+     * @throws ApiError
+     */
+    public searchUsers(
+        query: string,
+        page: number,
+    ): CancelablePromise<PaginatedResponseDto> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/users',
+            query: {
+                'query': query,
+                'page': page,
+            },
         });
     }
 

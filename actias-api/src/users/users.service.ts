@@ -4,6 +4,7 @@ import { Users } from 'src/entities/Users';
 import { CreateUserDto } from './dto/requests.dto';
 import * as argon2 from 'argon2';
 import { UserAuthMethod, AuthMethod } from 'src/entities/UserAuthMethod';
+import { PaginatedResponseDto } from 'src/shared/dto/paginated';
 
 @Injectable()
 export class UsersService {
@@ -22,6 +23,29 @@ export class UsersService {
       },
       { populate: ['authMethods'] },
     );
+  }
+
+  async searchByQuery(
+    page: number,
+    pageSize: number,
+    query: string,
+  ): Promise<PaginatedResponseDto<Users>> {
+    const [users, count] = await this.em.findAndCount(
+      Users,
+      {
+        $or: [
+          { email: { $like: `%${query}%` } },
+          { username: { $like: `%${query}%` } },
+        ],
+      },
+      { limit: pageSize, offset: (page - 1) * pageSize },
+    );
+
+    return {
+      items: users,
+      lastPage: Math.ceil(count / pageSize),
+      page,
+    };
   }
 
   async findById(id: string): Promise<Users> {

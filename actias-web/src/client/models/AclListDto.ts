@@ -1,11 +1,13 @@
 /* istanbul ignore file */
 /* tslint:disable */
 
+import type { UserDto } from './UserDto';
+
 export type AclListDto = {
     /**
      * User id that the permissions apply to.
      */
-    userId: string;
+    user: UserDto;
     /**
      * List of permissions
      */

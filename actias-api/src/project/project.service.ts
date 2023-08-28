@@ -17,15 +17,6 @@ export class ProjectService {
       name,
     });
 
-    const access = new Access({
-      user: owner,
-      project,
-      permissionBitfield: new BitField<AccessFields>()
-        .on(AccessFields.FULL)
-        .serialize(),
-    });
-
-    await this.em.persistAndFlush(access);
     await this.em.persistAndFlush(project);
     return project;
   }

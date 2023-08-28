@@ -1,10 +1,22 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { CreateUserDto } from './dto/requests.dto';
 import { UserDto } from './dto/user.dto';
 import { UsersService } from './users.service';
 import { User } from 'src/auth/user.decorator';
 import { AuthGuard, Public } from 'src/auth/auth.guard';
+import {
+  ApiOkResponsePaginated,
+  PaginatedResponseDto,
+} from 'src/shared/dto/paginated';
 
 @ApiTags('users')
 @Controller('users')
@@ -27,5 +39,20 @@ export class UsersController {
   @Get('@me')
   async me(@User() user): Promise<UserDto> {
     return new UserDto(user);
+  }
+
+  @Get()
+  @ApiOkResponsePaginated(UserDto)
+  async searchUsers(
+    @Query('query') query: string,
+    @Query('page') page: number,
+  ): Promise<PaginatedResponseDto<UserDto>> {
+    const paginated = await this.userService.searchByQuery(page, 10, query);
+
+    return {
+      page: paginated.page,
+      lastPage: paginated.lastPage,
+      items: paginated.items.map((item) => new UserDto(item)),
+    };
   }
 }
