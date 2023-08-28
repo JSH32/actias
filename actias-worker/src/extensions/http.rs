@@ -31,17 +31,17 @@ impl LuaExtension for HttpExtension {
             lua.create_async_function(|lua, request: mlua::Table| async move {
                 // Since we accept userdata, we need to do this hack to allow for conversion.
                 let lua_request: Request =
-                    serde_json::from_str(&serde_json::to_string(&request).to_lua_err()?)
-                        .to_lua_err()?;
+                    serde_json::from_str(&serde_json::to_string(&request).into_lua_err()?)
+                        .into_lua_err()?;
 
                 let request: mlua::Result<hyper::Request<_>> = lua_request.clone().into();
 
                 let hyper_uri: http::Result<hyper::Uri> =
-                    lua_request.uri.to_uri().to_lua_err()?.into();
+                    lua_request.uri.to_uri().into_lua_err()?.into();
 
                 debug!(
                     request = ?lua_request,
-                    "Making request to {}", hyper_uri.to_lua_err()?.to_string()
+                    "Making request to {}", hyper_uri.into_lua_err()?.to_string()
                 );
 
                 let client = match lua.app_data_ref::<Client<HttpsConnector<HttpConnector>, Body>>()
@@ -59,7 +59,8 @@ impl LuaExtension for HttpExtension {
                     }
                 };
 
-                let response = Response::new(client.request(request?).await.to_lua_err()?).await?;
+                let response =
+                    Response::new(client.request(request?).await.into_lua_err()?).await?;
                 Ok(lua.to_value(&response)?)
             })?,
         )?;
@@ -110,7 +111,7 @@ pub enum BodyType {
 
 impl BodyType {
     async fn from_hyper(body: hyper::Body) -> mlua::Result<Self> {
-        let body_bytes = hyper::body::to_bytes(body).await.to_lua_err()?;
+        let body_bytes = hyper::body::to_bytes(body).await.into_lua_err()?;
 
         Ok(match String::from_utf8(body_bytes.to_vec()) {
             Ok(v) => BodyType::Text(v),
@@ -163,10 +164,10 @@ impl UserData for Request {}
 
 impl From<Request> for mlua::Result<hyper::Request<hyper::Body>> {
     fn from(req: Request) -> Self {
-        let hyper_uri: http::Result<hyper::Uri> = req.uri.to_uri().to_lua_err()?.into();
+        let hyper_uri: http::Result<hyper::Uri> = req.uri.to_uri().into_lua_err()?.into();
 
         Ok(hyper::Request::builder()
-            .uri(hyper_uri.to_lua_err()?)
+            .uri(hyper_uri.into_lua_err()?)
             .method(req.method.unwrap_or("GET".to_string()).as_str())
             .version(match req.version {
                 Some(v) => string_to_version(&v)?,
@@ -200,7 +201,7 @@ impl UserData for Uri {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("tostring", |_, this, ()| {
             let uri: http::Result<hyper::Uri> = this.to_owned().into();
-            Ok(uri.to_lua_err()?.to_string())
+            Ok(uri.into_lua_err()?.to_string())
         });
 
         // Static constructors
@@ -210,7 +211,7 @@ impl UserData for Uri {
         });
 
         methods.add_function("parse", |lua, uri: String| {
-            let uri = hyper::Uri::from_str(&uri).to_lua_err()?;
+            let uri = hyper::Uri::from_str(&uri).into_lua_err()?;
             Ok(lua.create_ser_userdata(Uri::from(uri))?)
         });
     }
@@ -294,7 +295,7 @@ impl Response {
             body: Some(
                 BodyType::from_hyper(response.into_body())
                     .await
-                    .to_lua_err()?,
+                    .into_lua_err()?,
             ),
         })
     }

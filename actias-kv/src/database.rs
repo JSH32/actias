@@ -10,6 +10,7 @@ use scylla::{
     Bytes, Session, SessionBuilder,
 };
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::proto_kv_service::{
     ListNamespacesResponse, ListPairsResponse, Namespace, Pair, ValueType,
@@ -125,9 +126,17 @@ impl Database {
         key: &str,
     ) -> Result<Option<Pair>, DatabaseError> {
         let mut values = Vec::new();
-        values.push(project_id.clone());
-        values.push(namespace.clone());
-        values.push(key.clone());
+
+        let project_id = read_uuid(&mut project_id.as_bytes())
+            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+
+        values.push((project_id, namespace.clone(), key.clone()));
+        // TTL(value),
+        //         project_id,
+        //         namespace,
+        //         key,
+        //         value,
+        //         type
 
         Ok(
             match self
@@ -138,9 +147,8 @@ impl Database {
                 .first_row()
             {
                 Ok(row) => {
-                    let typed = row
-                        .into_typed::<(Option<i32>, String, String, String, String, String, i64)>(
-                        )?;
+                    let typed =
+                        row.into_typed::<(Option<i32>, Uuid, String, String, String, String)>()?;
 
                     let value_type: ValueType = typed
                         .5
@@ -148,7 +156,7 @@ impl Database {
                         .map_err(|e| DatabaseError::InvalidError(e))?;
 
                     Some(Pair {
-                        project_id: typed.1,
+                        project_id: typed.1.to_string(),
                         namespace: typed.2,
                         r#type: value_type.into(),
                         ttl: typed.0,
@@ -185,14 +193,6 @@ impl Database {
         let mut batch_params = Vec::new();
         for value in pairs {
             let value_type: String = value.r#type().into();
-
-            // UPDATE kv_service.pairs
-            //     USING TTL ?
-            //     SET value = ?,
-            //         type = ?
-            //     WHERE project_id = ?
-            //         AND namespace = ?
-            //         AND key = ?"#,
 
             let mut project_id = value.project_id.as_bytes();
             let project_id = read_uuid(&mut project_id)
@@ -339,8 +339,10 @@ impl Into<String> for ValueType {
     fn into(self) -> String {
         match self {
             ValueType::String => "string",
-            ValueType::Object => "object",
+            ValueType::Json => "json",
             ValueType::Integer => "integer",
+            ValueType::Number => "number",
+            ValueType::Boolean => "boolean",
         }
         .to_string()
     }
@@ -352,8 +354,10 @@ impl TryFrom<String> for ValueType {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Ok(match value.as_ref() {
             "string" => ValueType::String,
-            "object" => ValueType::Object,
+            "json" => ValueType::Json,
+            "number" => ValueType::Number,
             "integer" => ValueType::Integer,
+            "boolean" => ValueType::Boolean,
             _ => return Err("Invalid metadata existed for 'type".to_owned()),
         })
     }

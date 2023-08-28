@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 actias-common = { workspace = true }
-mlua = { version = "0.8", features = ["luau", "vendored", "serialize", "send", "async"] }
+mlua = { version = "0.9.1", features = ["luau", "vendored", "serialize", "send", "async"] }
 http-body-util = "0.1.0-rc.2"
 serde_json = "1.0.91"
 serde = { version = "1.0.152", features = ["derive"] }

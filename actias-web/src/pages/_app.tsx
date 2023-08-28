@@ -50,7 +50,10 @@ export default function App(props: AppProps & { colorScheme: ColorScheme }) {
           toggleColorScheme={toggleColorScheme}
         >
           <MantineProvider
-            theme={{ colorScheme, primaryColor: 'grape' }}
+            theme={{
+              colorScheme,
+              primaryColor: 'grape',
+            }}
             withGlobalStyles
             withNormalizeCSS
           >

@@ -10,6 +10,7 @@ resolver = "2"
 scylla = "0.9.0"
 base64 = "0.21.2"
 thiserror = "1.0.47"
+uuid = "1.4.1"
 actias-common = { workspace = true }
 prost = { workspace = true }
 tokio = { workspace = true }

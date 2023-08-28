@@ -5,8 +5,10 @@ import "google/protobuf/empty.proto";
 
 enum ValueType {
     VALUE_TYPE_STRING = 0;
-    VALUE_TYPE_INTEGER = 1;
-    VALUE_TYPE_OBJECT = 2;
+    VALUE_TYPE_NUMBER = 1;
+    VALUE_TYPE_INTEGER = 2;
+    VALUE_TYPE_BOOLEAN = 3;
+    VALUE_TYPE_JSON = 4;
 }
 
 message Pair {

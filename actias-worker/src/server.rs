@@ -1,3 +1,4 @@
+use crate::proto::kv_service::kv_service_client::KvServiceClient;
 use crate::proto::script_service::find_script_request::Query;
 use crate::proto::script_service::GetRevisionRequest;
 
@@ -20,6 +21,7 @@ use crate::runtime::ActiasRuntime;
 pub async fn http_handler(
     request: Request<Body>,
     script_client: ScriptServiceClient<tonic::transport::Channel>,
+    kv_client: KvServiceClient<tonic::transport::Channel>,
 ) -> anyhow::Result<Response<Body>> {
     let local = task::LocalSet::new();
 
@@ -31,7 +33,7 @@ pub async fn http_handler(
             local
                 .run_until(async move {
                     task::spawn_local(async move {
-                        match lua_handler(request, script_client).await {
+                        match lua_handler(request, script_client, kv_client).await {
                             Ok(v) => Ok(v),
                             Err(e) => {
                                 trace!(error = e.to_string(), "Error handling request");
@@ -54,12 +56,13 @@ pub async fn http_handler(
 async fn lua_handler(
     request: Request<Body>,
     mut script_client: ScriptServiceClient<tonic::transport::Channel>,
+    kv_client: KvServiceClient<tonic::transport::Channel>,
 ) -> anyhow::Result<Response<Body>> {
     let path_split: Vec<&str> = request.uri().path().split('/').collect();
     let identifier = path_split.get(1);
 
     // No identifier
-    let revision = if let Some(identifier) = identifier {
+    let (script, revision) = if let Some(identifier) = identifier {
         let script = script_client
             .query_script(FindScriptRequest {
                 query: Some(Query::PublicName(identifier.to_string())),
@@ -74,12 +77,15 @@ async fn lua_handler(
                 .unwrap());
         }
 
-        script_client
-            .get_revision(GetRevisionRequest {
-                id: current_revision_id.unwrap(),
-                with_bundle: true,
-            })
-            .await?
+        (
+            script,
+            script_client
+                .get_revision(GetRevisionRequest {
+                    id: current_revision_id.unwrap(),
+                    with_bundle: true,
+                })
+                .await?,
+        )
     } else {
         return Ok(Response::builder()
             .status(404)
@@ -87,7 +93,7 @@ async fn lua_handler(
             .unwrap());
     };
 
-    let lua = ActiasRuntime::new(identifier.map(|s| s.to_string()), revision.into_inner()).await?;
+    let lua = ActiasRuntime::new(script.into_inner(), revision.into_inner(), kv_client).await?;
 
     // Create a context URI without the identifier, used for better routing.
     let old_uri = request.uri().clone();
@@ -115,7 +121,7 @@ async fn lua_handler(
     let lua_request = LuaRequest::new(request, Some(context_uri.build()?)).await;
 
     // Lua runtime uses registry to store handlers.
-    let value = lua.named_registry_value::<str, mlua::Function>("listener_fetch")?;
+    let value = lua.named_registry_value::<mlua::Function>("listener_fetch")?;
 
     let ret: extensions::http::Response =
         lua.from_value(value.call_async(lua.to_value(&lua_request?)?).await?)?;

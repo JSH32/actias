@@ -94,6 +94,11 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
       {write && (
         <Select
           maw="300px"
+          sx={(theme) => ({
+            [`@media (max-width: ${theme.breakpoints.sm})`]: {
+              minWidth: '100%',
+            },
+          })}
           label="Add user"
           placeholder="Search users"
           nothingFound="User not found"

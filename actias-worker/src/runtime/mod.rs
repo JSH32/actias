@@ -1,7 +1,12 @@
 pub mod extension;
 
 use crate::{
-    proto::{bundle::Bundle, script_service::Revision},
+    extensions::kv::KvExtension,
+    proto::{
+        bundle::Bundle,
+        kv_service::kv_service_client::KvServiceClient,
+        script_service::{Revision, Script},
+    },
     runtime::extension::standard_extensions::JsonExtension,
 };
 
@@ -26,7 +31,8 @@ impl Deref for ActiasRuntime {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct ScriptInfo {
     /// Public script identifier
-    identifier: Option<String>,
+    identifier: String,
+    project_id: String,
 }
 
 impl UserData for ScriptInfo {}
@@ -35,9 +41,14 @@ impl ActiasRuntime {
     /// Create a new [`ActiasRuntime`], this will run the main script from the entrypoint defined in the [`Bundle`].
     ///
     /// # Arguments
-    /// - `public_identifier` - Public identifier, this is so the script can identify it's own routing pattern.
+    /// - `script` - Script information, this is so the script can identify it's own routing pattern.
     /// - `revision` - Script revision, ensure that this revision has a [`Bundle`] (use `with_bundle`).
-    pub async fn new(public_identifier: Option<String>, revision: Revision) -> mlua::Result<Self> {
+    /// - `kv_client` - Key value service client, allows the script to access/store persistent data.
+    pub async fn new(
+        script: Script,
+        revision: Revision,
+        kv_client: KvServiceClient<tonic::transport::Channel>,
+    ) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
 
         let lua = Self(Lua::new_with(
@@ -82,7 +93,9 @@ impl ActiasRuntime {
                     let result: mlua::Value = lua
                         .load(&LuaModule {
                             name: file.file_path.clone(),
-                            source: std::str::from_utf8(&file.content).to_lua_err()?.to_string(),
+                            source: std::str::from_utf8(&file.content)
+                                .into_lua_err()?
+                                .to_string(),
                         })
                         .eval_async()
                         .await?;
@@ -95,7 +108,7 @@ impl ActiasRuntime {
                 }
 
                 Ok(lua
-                    .named_registry_value::<_, mlua::Table>("module_registry")?
+                    .named_registry_value::<mlua::Table>("module_registry")?
                     .get::<_, mlua::Value>(module_name)?)
             })?,
         )?;
@@ -115,7 +128,9 @@ impl ActiasRuntime {
                     return Ok(lua
                         .load(&LuaModule {
                             name: file.file_name.clone(),
-                            source: std::str::from_utf8(&file.content).to_lua_err()?.to_string(),
+                            source: std::str::from_utf8(&file.content)
+                                .into_lua_err()?
+                                .to_string(),
                         })
                         .eval_async()
                         .await?);
@@ -141,12 +156,20 @@ impl ActiasRuntime {
         trace!("Initializing module registry");
         lua.set_named_registry_value("module_registry", lua.create_table()?)?;
 
-        lua.register_extensions(&[&JsonExtension, &crate::extensions::http::HttpExtension])?;
+        lua.register_extensions(&[
+            &JsonExtension,
+            &crate::extensions::http::HttpExtension,
+            &KvExtension {
+                kv_client,
+                project_id: script.project_id.clone(),
+            },
+        ])?;
 
         lua.globals().set(
             "script",
             lua.to_value(&ScriptInfo {
-                identifier: public_identifier,
+                identifier: script.public_identifier,
+                project_id: script.project_id,
             })?,
         )?;
 
@@ -160,7 +183,7 @@ impl ActiasRuntime {
             lua.load(&LuaModule {
                 name: entry_point.file_name.clone(),
                 source: std::str::from_utf8(&entry_point.content)
-                    .to_lua_err()?
+                    .into_lua_err()?
                     .to_string(),
             })
             .eval_async()
@@ -220,12 +243,24 @@ pub struct LuaModule {
     pub source: String,
 }
 
-impl AsChunk<'_> for LuaModule {
-    fn source(&self) -> std::io::Result<std::borrow::Cow<[u8]>> {
+impl AsChunk<'_, '_> for &LuaModule {
+    fn source(self) -> std::io::Result<Cow<'static, [u8]>> {
         Ok(Cow::Owned(self.source.as_bytes().to_vec()))
     }
+    // fn source(&self) -> std::io::Result<std::borrow::Cow<[u8]>> {
+    //     Ok(Cow::Owned(self.source.as_bytes().to_vec()))
+    // }
 
     fn name(&self) -> Option<String> {
         Some(self.name.clone())
     }
+
+    // fn environment(&self, lua: &'_ Lua) -> mlua::Result<Option<Table<'_>>> {
+    //     let _lua = lua; // suppress warning
+    //     Ok(None)
+    // }
+
+    // fn mode(&self) -> Option<mlua::ChunkMode> {
+    //     None
+    // }
 }
