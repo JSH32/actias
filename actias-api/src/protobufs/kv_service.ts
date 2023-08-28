@@ -8,8 +8,10 @@ import { Metadata } from '@grpc/grpc-js';
 export namespace kv_service {
     export enum ValueType {
         VALUE_TYPE_STRING = 0,
-        VALUE_TYPE_INTEGER = 1,
-        VALUE_TYPE_OBJECT = 2,
+        VALUE_TYPE_NUMBER = 1,
+        VALUE_TYPE_INTEGER = 2,
+        VALUE_TYPE_BOOLEAN = 3,
+        VALUE_TYPE_JSON = 4,
     }
     export interface Pair {
         // Project that this key belongs to.
@@ -70,9 +72,16 @@ export namespace kv_service {
         pairs?: kv_service.Pair[];
     }
     export interface DeletePairsRequest {
+        pairs?: kv_service.PairRequest[];
+    }
+    // Delete all namespaces belonging to a project.
+    export interface DeleteProjectRequest {
+        projectId?: string;
+    }
+    // Delete an entire namespace with pairs.
+    export interface DeleteNamespaceRequest {
         projectId?: string;
         namespace?: string;
-        keys?: string[];
     }
     export interface KvService {
         listNamespaces(
@@ -97,6 +106,16 @@ export namespace kv_service {
         ): Observable<Pair>;
         deletePairs(
             data: DeletePairsRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
+        deleteProject(
+            data: DeleteProjectRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
+        deleteNamespace(
+            data: DeleteNamespaceRequest,
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;

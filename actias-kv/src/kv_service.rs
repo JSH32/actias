@@ -3,8 +3,9 @@ use tonic::{Response, Status};
 use crate::{
     database::Database,
     proto_kv_service::{
-        self, kv_service_server, DeletePairsRequest, ListNamespacesRequest, ListNamespacesResponse,
-        ListPairsRequest, ListPairsResponse, PairRequest, SetPairsRequest,
+        self, kv_service_server, DeleteNamespaceRequest, DeletePairsRequest, DeleteProjectRequest,
+        ListNamespacesRequest, ListNamespacesResponse, ListPairsRequest, ListPairsResponse,
+        PairRequest, SetPairsRequest,
     },
 };
 
@@ -85,17 +86,44 @@ impl kv_service_server::KvService for KvService {
         }
     }
 
+    async fn delete_project(
+        &self,
+        request: tonic::Request<DeleteProjectRequest>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        let request = request.get_ref();
+        self.database
+            .delete_project(&request.project_id)
+            .await
+            .map_err(|e| {
+                println!("{}", e.to_string());
+                Status::internal(e.to_string())
+            })?;
+
+        Ok(Response::new(()))
+    }
+
+    async fn delete_namespace(
+        &self,
+        request: tonic::Request<DeleteNamespaceRequest>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        let request = request.get_ref();
+
+        self.database
+            .delete_namespace(&request.project_id, &request.namespace)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(()))
+    }
+
     async fn delete_pairs(
         &self,
         request: tonic::Request<DeletePairsRequest>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
         let request = request.get_ref();
+
         self.database
-            .delete(
-                &request.project_id,
-                &request.namespace,
-                request.keys.clone(),
-            )
+            .delete(request.pairs.clone())
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 

@@ -13,7 +13,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
-import { ApiParam, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiParam, ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
 import { script_service } from 'src/protobufs/script_service';
 
@@ -40,6 +40,7 @@ import { MessageResponseDto } from 'src/shared/dto/message';
 
 @UseGuards(AuthGuard, AclGuard)
 @ApiTags('scripts')
+@ApiBearerAuth()
 @Controller('project/:project/scripts')
 export class ProjectScriptController implements OnModuleInit {
   private scriptService: script_service.ScriptService;
@@ -113,6 +114,7 @@ export class ProjectScriptController implements OnModuleInit {
 
 @UseGuards(AuthGuard, AclGuard)
 @ApiTags('scripts')
+@ApiBearerAuth()
 @Controller('script')
 export class ScriptsController implements OnModuleInit {
   private scriptService: script_service.ScriptService;

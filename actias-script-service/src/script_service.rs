@@ -383,12 +383,16 @@ impl script_service_server::ScriptService for ScriptService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        let project_id = Uuid::from_str(&request.project_id)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+
         Ok(Response::new(ListScriptResponse {
             page: request.page,
             total_pages: safe_divide!(count.0 as i32, request.page_size),
             scripts: sqlx::query_as::<_, DbScript>(
-                "SELECT * FROM scripts ORDER BY last_updated DESC LIMIT $1 OFFSET $2",
+                "SELECT * FROM scripts WHERE project_id = $1 ORDER BY last_updated DESC LIMIT $2 OFFSET $3",
             )
+            .bind(project_id)
             .bind(request.page_size)
             .bind(request.page_size * request.page)
             .fetch_all(&self.database)

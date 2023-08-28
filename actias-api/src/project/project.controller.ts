@@ -7,7 +7,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiParam, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiParam, ApiTags } from '@nestjs/swagger';
 import { CreateProjectDto } from './dto/requests.dto';
 import { ProjectService } from './project.service';
 import { ProjectDto } from './dto/project.dto';
@@ -26,6 +26,7 @@ import { MessageResponseDto } from 'src/shared/dto/message';
 @UseGuards(AuthGuard, AclGuard)
 @ApiTags('project')
 @Controller('project')
+@ApiBearerAuth()
 export class ProjectController {
   constructor(private readonly projectService: ProjectService) {}
 

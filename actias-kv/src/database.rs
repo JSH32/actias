@@ -1,10 +1,13 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    str::FromStr,
+};
 
+use actias_common::tracing::debug;
 use base64::{engine::general_purpose, read, write};
 use scylla::{
     batch::{Batch, BatchType},
     cql_to_rust::FromRowError,
-    frame::types::read_uuid,
     prepared_statement::PreparedStatement,
     transport::{errors::QueryError, query_result::FirstRowTypedError},
     Bytes, Session, SessionBuilder,
@@ -13,7 +16,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::proto_kv_service::{
-    ListNamespacesResponse, ListPairsResponse, Namespace, Pair, ValueType,
+    ListNamespacesResponse, ListPairsResponse, Namespace, Pair, PairRequest, ValueType,
 };
 
 #[derive(Error, Debug)]
@@ -32,6 +35,8 @@ pub struct Database {
     session: Session,
 
     delete_statement: PreparedStatement,
+    get_project_statement: PreparedStatement,
+    get_project_namespace_statement: PreparedStatement,
     update_statement: PreparedStatement,
     get_statement: PreparedStatement,
     get_namespace_statement: PreparedStatement,
@@ -53,6 +58,16 @@ impl Database {
             )
             .await
             .unwrap();
+
+        // let delete_project_statement = session
+        //     .prepare("DELETE FROM kv_service.pairs WHERE project_id = ? ALLOW FILTERING")
+        //     .await
+        //     .unwrap();
+
+        // let delete_namespace_statement = session
+        //     .prepare("DELETE FROM kv_service.pairs WHERE project_id = ? AND namespace = ? ALLOW FILTERING")
+        //     .await
+        //     .unwrap();
 
         let update_statement = session
             .prepare(
@@ -103,6 +118,31 @@ impl Database {
             .await
             .unwrap();
 
+        let get_project_statement = session
+            .prepare(
+                r#"
+            SELECT 
+                namespace, 
+                key
+            FROM kv_service.pairs
+            WHERE project_id = ?
+            ALLOW FILTERING"#,
+            )
+            .await
+            .unwrap();
+
+        let get_project_namespace_statement = session
+            .prepare(
+                r#"
+            SELECT key
+            FROM kv_service.pairs
+            WHERE project_id = ?
+                AND namespace = ?
+            ALLOW FILTERING"#,
+            )
+            .await
+            .unwrap();
+
         let get_namespaces_statement = session
             .prepare("SELECT project_id, namespace, key FROM kv_service.pairs WHERE project_id = ? ALLOW FILTERING")
             .await
@@ -111,6 +151,8 @@ impl Database {
         Self {
             session,
             delete_statement,
+            get_project_namespace_statement,
+            get_project_statement,
             update_statement,
             get_statement,
             get_namespace_statement,
@@ -118,7 +160,12 @@ impl Database {
         }
     }
 
-    /// Get the key value pair based on parameters
+    /// Gets a pair from the database
+    ///
+    /// # Arguments
+    /// * project_id - Project ID
+    /// * namespace - Namespace
+    /// * key - Key to get
     pub async fn get(
         &self,
         project_id: &str,
@@ -127,16 +174,10 @@ impl Database {
     ) -> Result<Option<Pair>, DatabaseError> {
         let mut values = Vec::new();
 
-        let project_id = read_uuid(&mut project_id.as_bytes())
-            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+        let project_id =
+            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
 
         values.push((project_id, namespace.clone(), key.clone()));
-        // TTL(value),
-        //         project_id,
-        //         namespace,
-        //         key,
-        //         value,
-        //         type
 
         Ok(
             match self
@@ -169,18 +210,92 @@ impl Database {
         )
     }
 
-    pub async fn delete(
+    /// Deletes an entire namespace from a project.
+    ///
+    /// # Arguments
+    /// * project_id - Project ID
+    /// * namespace - Namespace to delete
+    pub async fn delete_namespace(
         &self,
         project_id: &str,
         namespace: &str,
-        keys: Vec<String>,
     ) -> Result<(), DatabaseError> {
+        let mut pairs = vec![];
+
+        let project_id_uuid =
+            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+
+        for row in self
+            .session
+            .execute(
+                &self.get_project_namespace_statement,
+                vec![(project_id_uuid, namespace.to_owned())],
+            )
+            .await
+            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
+            .rows_or_empty()
+        {
+            let (key,) = row.into_typed::<(String,)>()?;
+            pairs.push(PairRequest {
+                project_id: project_id.to_owned(),
+                namespace: namespace.to_owned(),
+                key,
+            });
+        }
+
+        self.delete(pairs).await?;
+
+        Ok(())
+    }
+
+    /// Deletes an entire project from the database
+    ///
+    /// # Arguments
+    /// * project_id - Project ID
+    pub async fn delete_project(&self, project_id: &str) -> Result<(), DatabaseError> {
+        let mut pairs = vec![];
+
+        let project_id_uuid =
+            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+
+        for row in self
+            .session
+            .execute(&self.get_project_statement, vec![project_id_uuid])
+            .await
+            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
+            .rows_or_empty()
+        {
+            let (namespace, key) = row.into_typed::<(String, String)>()?;
+
+            pairs.push(PairRequest {
+                project_id: project_id.to_owned(),
+                namespace,
+                key,
+            });
+        }
+
+        self.delete(pairs).await?;
+
+        Ok(())
+    }
+
+    /// Deletes a pair from the database
+    ///
+    /// # Arguments
+    /// * project_id - Project ID
+    /// * keys - Keys to delete (namespace, key)
+    pub async fn delete(&self, pairs: Vec<PairRequest>) -> Result<(), DatabaseError> {
         let mut batch = Batch::new(BatchType::Logged);
 
         let mut batch_params = Vec::new();
-        for key in keys {
+        for pair in pairs {
             batch.append_statement(self.delete_statement.clone());
-            batch_params.push((project_id.clone(), namespace.clone(), key));
+            batch_params.push((
+                Uuid::from_str(&pair.project_id)
+                    .map_err(|e| DatabaseError::InvalidError(e.to_string()))?,
+                pair.namespace,
+                pair.key,
+            ));
         }
 
         self.session.batch(&batch, batch_params).await?;
@@ -194,8 +309,7 @@ impl Database {
         for value in pairs {
             let value_type: String = value.r#type().into();
 
-            let mut project_id = value.project_id.as_bytes();
-            let project_id = read_uuid(&mut project_id)
+            let project_id = Uuid::from_str(&value.project_id)
                 .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
 
             batch.append_statement(self.update_statement.clone());
@@ -213,18 +327,20 @@ impl Database {
         Ok(())
     }
 
-    // TODO: Do this another way instead of runtime deduplication.
-    // Since this is eventual consistency we should spin up an async task to check if any keys remain and delete from namespace table.
+    /// Gets namespaces from the database
+    ///
+    /// # Arguments
+    /// * project_id - Project ID
+    ///
+    /// TODO: Do this another way instead of runtime deduplication.
+    /// Since this is eventual consistency we should spin up an async task to check if any keys remain and delete from namespace table.
     pub async fn get_namespaces(
         &self,
         project_id: &str,
     ) -> Result<ListNamespacesResponse, DatabaseError> {
-        let mut values = Vec::new();
-
-        let mut project_id: &[u8] = project_id.as_bytes();
-        values.push(
-            read_uuid(&mut project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?,
-        );
+        let values =
+            vec![Uuid::from_str(&project_id)
+                .map_err(|e| DatabaseError::InvalidError(e.to_string()))?];
 
         let mut found_names = vec![];
         let mut namespaces = vec![];
@@ -233,15 +349,15 @@ impl Database {
             .session
             .execute(&self.get_namespaces_statement, values)
             .await
-            .unwrap()
+            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
             .rows_or_empty()
         {
-            let (project_id, namespace) = row.into_typed::<(String, String)>()?;
+            let (project_id, namespace, _) = row.into_typed::<(Uuid, String, String)>()?;
 
             if !found_names.contains(&namespace) {
                 found_names.push(namespace.clone());
                 namespaces.push(Namespace {
-                    project_id,
+                    project_id: project_id.to_string(),
                     name: namespace,
                 })
             }
@@ -250,6 +366,13 @@ impl Database {
         Ok(ListNamespacesResponse { namespaces })
     }
 
+    /// Lists pairs from the database
+    ///
+    /// # Arguments
+    /// * project_id - Project ID
+    /// * namespace - Namespace
+    /// * page_size - Page size
+    /// * token - Optional paging token
     pub async fn list(
         &self,
         project_id: &str,
@@ -271,9 +394,8 @@ impl Database {
             }
         };
 
-        let mut project_id = project_id.as_bytes();
         let project_id =
-            read_uuid(&mut project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
 
         let page = self
             .session

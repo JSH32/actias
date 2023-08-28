@@ -3,11 +3,10 @@ import { ProjectController } from './project.controller';
 import { AclModule } from './acl/acl.module';
 import { ProjectService } from './project.service';
 import { AuthModule } from 'src/auth/auth.module';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { Projects } from 'src/entities/Projects';
 import { UsersModule } from 'src/users/users.module';
 import { ProjectSubscriber } from './project.subscriber';
 import { ScriptModule } from 'src/scripts/scripts.module';
+import { KvModule } from 'src/kv/kv.module';
 
 @Module({
   controllers: [ProjectController],
@@ -15,8 +14,9 @@ import { ScriptModule } from 'src/scripts/scripts.module';
     AclModule,
     AuthModule,
     UsersModule,
+    // Needed for project subscriber.
     forwardRef(() => ScriptModule),
-    MikroOrmModule.forFeature([Projects]),
+    forwardRef(() => KvModule),
   ],
   exports: [ProjectService],
   providers: [ProjectService, ProjectSubscriber],

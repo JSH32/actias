@@ -51,6 +51,7 @@ async function bootstrap() {
     .setDescription('Public facing API for Actias workers.')
     .setVersion('1.0')
     .addTag('scripts', 'revisions')
+    .addBearerAuth()
     .build();
 
   const document = SwaggerModule.createDocument(app, config, {

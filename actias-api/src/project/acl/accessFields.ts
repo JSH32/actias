@@ -18,9 +18,15 @@ export enum AccessFields {
   PERMISSIONS_WRITE = 1 << 4,
   PERMISSIONS_RESOURCE = PERMISSIONS_READ | PERMISSIONS_WRITE,
   /**
+   * Ability to modify KV namespaces and pairs.
+   */
+  KV_READ = 1 << 5,
+  KV_WRITE = 1 << 6,
+  KV_RESOURCE = KV_READ | KV_WRITE,
+  /**
    * All permissions for all resource types.
    */
-  FULL = SCRIPT_RESOURCE | PERMISSIONS_RESOURCE,
+  FULL = SCRIPT_RESOURCE | PERMISSIONS_RESOURCE | KV_RESOURCE,
 }
 
 export const ACCESS_KEYS = Object.keys(AccessFields).filter(

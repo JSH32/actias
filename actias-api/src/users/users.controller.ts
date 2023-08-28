@@ -1,13 +1,5 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Post,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CreateUserDto } from './dto/requests.dto';
 import { UserDto } from './dto/user.dto';
 import { UsersService } from './users.service';
@@ -37,12 +29,14 @@ export class UsersController {
    * Get the currently logged in user's details.
    */
   @Get('@me')
+  @ApiBearerAuth()
   async me(@User() user): Promise<UserDto> {
     return new UserDto(user);
   }
 
   @Get()
   @ApiOkResponsePaginated(UserDto)
+  @ApiBearerAuth()
   async searchUsers(
     @Query('name') name: string,
     @Query('page') page: number,

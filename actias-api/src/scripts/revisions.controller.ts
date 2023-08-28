@@ -9,7 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
@@ -24,6 +24,7 @@ import { Projects } from 'src/entities/Projects';
 @UseGuards(AuthGuard, AclGuard)
 @ApiTags('revisions')
 @Controller('revisions')
+@ApiBearerAuth()
 export class RevisionsController implements OnModuleInit {
   private scriptService: script_service.ScriptService;
 

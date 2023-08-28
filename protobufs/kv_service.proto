@@ -78,9 +78,18 @@ message SetPairsRequest {
 }
 
 message DeletePairsRequest {
+    repeated PairRequest pairs = 1;
+}
+
+// Delete all namespaces belonging to a project.
+message DeleteProjectRequest {
+    required string project_id = 1;
+}
+
+// Delete an entire namespace with pairs.
+message DeleteNamespaceRequest {
     required string project_id = 1;
     required string namespace = 2;
-    repeated string keys = 3;
 }
 
 service KvService {
@@ -89,4 +98,6 @@ service KvService {
     rpc SetPairs(SetPairsRequest) returns (google.protobuf.Empty);
     rpc GetPair(PairRequest) returns (Pair);
     rpc DeletePairs(DeletePairsRequest) returns (google.protobuf.Empty);
+    rpc DeleteProject(DeleteProjectRequest) returns (google.protobuf.Empty);
+    rpc DeleteNamespace(DeleteNamespaceRequest) returns (google.protobuf.Empty);
 }

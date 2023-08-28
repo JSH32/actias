@@ -105,9 +105,11 @@ impl UserData for KvNamespace {
                         // We delete
                         this.kv_client
                             .delete_pairs(DeletePairsRequest {
-                                project_id: this.project_id.clone(),
-                                namespace: this.namespace.clone(),
-                                keys: vec![key],
+                                pairs: vec![PairRequest {
+                                    project_id: this.project_id.clone(),
+                                    namespace: this.namespace.clone(),
+                                    key,
+                                }],
                             })
                             .await
                             .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;

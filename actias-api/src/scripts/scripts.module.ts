@@ -8,8 +8,6 @@ import {
 } from './scripts.controller';
 import { AclModule } from 'src/project/acl/acl.module';
 import { AuthModule } from 'src/auth/auth.module';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { Projects } from 'src/entities/Projects';
 import { ProjectModule } from 'src/project/project.module';
 
 @Module({
@@ -17,7 +15,6 @@ import { ProjectModule } from 'src/project/project.module';
     AuthModule,
     AclModule,
     forwardRef(() => ProjectModule),
-    MikroOrmModule.forFeature([Projects]),
     ClientsModule.registerAsync(
       grpcClient(
         'SCRIPT_SERVICE',
