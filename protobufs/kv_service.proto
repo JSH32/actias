@@ -50,7 +50,8 @@ message ListPairsRequest {
 message ListPairsResponse {
     required int32 page_size = 1;
     // Used for finding the next page when paginating.
-    required string token = 2;
+    // This is not provided on the last page.
+    optional string token = 2;
     repeated Pair pairs = 3;
 }
 
@@ -64,6 +65,7 @@ message ListNamespacesRequest {
 message Namespace {
     required string project_id = 1;
     required string name = 2;
+    required int32 count = 3;
 }
 
 // List of namespaces.

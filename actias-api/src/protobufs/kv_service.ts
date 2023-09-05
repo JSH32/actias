@@ -49,6 +49,7 @@ export namespace kv_service {
     export interface ListPairsResponse {
         pageSize?: number;
         // Used for finding the next page when paginating.
+    // This is not provided on the last page.
         token?: string;
         pairs?: kv_service.Pair[];
     }
@@ -61,6 +62,7 @@ export namespace kv_service {
     export interface Namespace {
         projectId?: string;
         name?: string;
+        count?: number;
     }
     // List of namespaces.
     export interface ListNamespacesResponse {

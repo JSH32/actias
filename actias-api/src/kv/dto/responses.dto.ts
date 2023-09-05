@@ -6,6 +6,10 @@ export class NamespaceDto {
    * Namespace identifier (project scoped)
    */
   name: string;
+  /**
+   * Amount of pairs in the namespace.
+   */
+  count: number;
 }
 
 export enum PairType {
@@ -41,7 +45,8 @@ export class ListNamespaceDto {
   pageSize: number;
   /**
    * Token used to fetch next page.
+   * Not provided on last page.
    */
-  token: string;
+  token?: string;
   pairs: PairDto[];
 }

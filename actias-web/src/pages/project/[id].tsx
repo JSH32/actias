@@ -7,6 +7,7 @@ import { Breadcrumbs, Loader } from '@mantine/core';
 import { breadcrumbs } from '@/helpers/util';
 import AccessControl from '@/components/AccessControl';
 import ScriptsControl from '@/components/ScriptsControl';
+import KvControl from '@/components/KvControl';
 
 const Project = () => {
   const router = useRouter();
@@ -44,6 +45,13 @@ const Project = () => {
         <AccessControl
           project={project}
           write={permissions?.permissions['PERMISSIONS_WRITE']}
+        />
+      )}
+
+      {permissions?.permissions['KV_READ'] && (
+        <KvControl
+          project={project}
+          write={permissions?.permissions['KV_WRITE']}
         />
       )}
     </>

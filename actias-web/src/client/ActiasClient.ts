@@ -6,6 +6,7 @@ import { AxiosHttpRequest } from './core/AxiosHttpRequest';
 
 import { AclService } from './services/AclService';
 import { AuthService } from './services/AuthService';
+import { KvService } from './services/KvService';
 import { ProjectService } from './services/ProjectService';
 import { RevisionsService } from './services/RevisionsService';
 import { ScriptsService } from './services/ScriptsService';
@@ -17,6 +18,7 @@ export class ActiasClient {
 
     public readonly acl: AclService;
     public readonly auth: AuthService;
+    public readonly kv: KvService;
     public readonly project: ProjectService;
     public readonly revisions: RevisionsService;
     public readonly scripts: ScriptsService;
@@ -39,6 +41,7 @@ export class ActiasClient {
 
         this.acl = new AclService(this.request);
         this.auth = new AuthService(this.request);
+        this.kv = new KvService(this.request);
         this.project = new ProjectService(this.request);
         this.revisions = new RevisionsService(this.request);
         this.scripts = new ScriptsService(this.request);

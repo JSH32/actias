@@ -59,16 +59,6 @@ impl Database {
             .await
             .unwrap();
 
-        // let delete_project_statement = session
-        //     .prepare("DELETE FROM kv_service.pairs WHERE project_id = ? ALLOW FILTERING")
-        //     .await
-        //     .unwrap();
-
-        // let delete_namespace_statement = session
-        //     .prepare("DELETE FROM kv_service.pairs WHERE project_id = ? AND namespace = ? ALLOW FILTERING")
-        //     .await
-        //     .unwrap();
-
         let update_statement = session
             .prepare(
                 r#"
@@ -112,7 +102,6 @@ impl Database {
             FROM kv_service.pairs
             WHERE project_id = ?
                 AND namespace = ?
-            LIMIT ?
             ALLOW FILTERING"#,
             )
             .await
@@ -144,7 +133,7 @@ impl Database {
             .unwrap();
 
         let get_namespaces_statement = session
-            .prepare("SELECT project_id, namespace, key FROM kv_service.pairs WHERE project_id = ? ALLOW FILTERING")
+            .prepare("SELECT COUNT(*), project_id, namespace, key FROM kv_service.pairs WHERE project_id = ? ALLOW FILTERING")
             .await
             .unwrap();
 
@@ -352,13 +341,22 @@ impl Database {
             .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
             .rows_or_empty()
         {
-            let (project_id, namespace, _) = row.into_typed::<(Uuid, String, String)>()?;
+            // If the count is 0, the other columns will return null.
+            if let Some(v) = row.columns.get(0) {
+                if v.as_ref().unwrap().as_bigint().unwrap() == 0 {
+                    continue;
+                }
+            }
+
+            let (count, project_id, namespace, _) =
+                row.into_typed::<(i64, Uuid, String, String)>()?;
 
             if !found_names.contains(&namespace) {
                 found_names.push(namespace.clone());
                 namespaces.push(Namespace {
                     project_id: project_id.to_string(),
                     name: namespace,
+                    count: count as i32,
                 })
             }
         }
@@ -380,6 +378,9 @@ impl Database {
         page_size: i32,
         token: Option<String>,
     ) -> Result<ListPairsResponse, DatabaseError> {
+        let project_id =
+            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+
         let bytes_token = match token.clone() {
             None => None,
             Some(v) => {
@@ -388,40 +389,37 @@ impl Database {
                 let mut decoder =
                     read::DecoderReader::new(v.as_bytes(), &general_purpose::STANDARD_NO_PAD);
 
-                io::copy(&mut decoder, &mut output).unwrap();
+                io::copy(&mut decoder, &mut output).map_err(|_| {
+                    DatabaseError::InvalidError("Invalid token provided".to_string())
+                })?;
 
                 Some(Bytes::from(output))
             }
         };
 
-        let project_id =
-            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+        let mut statement = self.get_namespace_statement.clone();
+        statement.set_page_size(page_size);
 
         let page = self
             .session
-            .execute_paged(
-                &self.get_namespace_statement,
-                (project_id, namespace, page_size),
-                bytes_token,
-            )
+            .execute_paged(&statement, (project_id, namespace), bytes_token)
             .await
             .map_err(DatabaseError::from)?;
 
-        let token = {
-            let mut output = String::new();
+        let token = match page.paging_state.clone() {
+            Some(v) => {
+                let mut output = String::new();
 
-            {
-                let mut encoder = write::EncoderStringWriter::from_consumer(
+                write::EncoderStringWriter::from_consumer(
                     &mut output,
                     &general_purpose::STANDARD_NO_PAD,
-                );
+                )
+                .write_all(&v)
+                .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
 
-                encoder
-                    .write_all(&page.paging_state.clone().unwrap())
-                    .unwrap();
+                Some(output)
             }
-
-            output
+            None => None,
         };
 
         let mut pairs = vec![];
@@ -431,8 +429,7 @@ impl Database {
             .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
             .into_iter()
         {
-            let typed =
-                row.into_typed::<(Option<i32>, String, String, String, String, String, i64)>()?;
+            let typed = row.into_typed::<(Option<i32>, Uuid, String, String, String, String)>()?;
 
             let value_type: ValueType = typed
                 .5
@@ -440,7 +437,7 @@ impl Database {
                 .map_err(|e| DatabaseError::InvalidError(e))?;
 
             pairs.push(Pair {
-                project_id: typed.1,
+                project_id: typed.1.to_string(),
                 namespace: typed.2,
                 r#type: value_type.into(),
                 ttl: typed.0,

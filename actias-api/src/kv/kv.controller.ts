@@ -7,10 +7,11 @@ import {
   Inject,
   Param,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
-import { ApiBearerAuth, ApiParam, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
 import { Projects } from 'src/entities/Projects';
 import { toHttpException } from 'src/exceptions/grpc.exception';
@@ -50,12 +51,14 @@ export class KvController {
   })
   async listNamespaces(
     @EntityParam('project', Projects) project: Projects,
-  ): Promise<NamespaceDto> {
-    return (await lastValueFrom(
-      this.kvService
-        .listNamespaces({ projectId: project.id })
-        .pipe(toHttpException()),
-    )) as NamespaceDto;
+  ): Promise<NamespaceDto[]> {
+    return (
+      await lastValueFrom(
+        this.kvService
+          .listNamespaces({ projectId: project.id })
+          .pipe(toHttpException()),
+      )
+    ).namespaces as NamespaceDto[];
   }
 
   @Delete(':namespace')
@@ -88,14 +91,20 @@ export class KvController {
     schema: { type: 'string' },
     type: 'string',
   })
+  @ApiQuery({
+    name: 'token',
+    description: 'Pagination token',
+    required: false,
+    type: String,
+  })
   async listNamespace(
     @EntityParam('project', Projects) project: Projects,
     @Param('namespace') namespace: string,
-    @Param('token') token?: string,
+    @Query('token') token?: string,
   ): Promise<ListNamespaceDto> {
     const page = await lastValueFrom(
       this.kvService
-        .listPairs({ projectId: project.id, namespace, token })
+        .listPairs({ projectId: project.id, namespace, token, pageSize: 25 })
         .pipe(toHttpException()),
     );
 
