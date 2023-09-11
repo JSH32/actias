@@ -3,7 +3,6 @@ use std::{
     str::FromStr,
 };
 
-use actias_common::tracing::debug;
 use base64::{engine::general_purpose, read, write};
 use scylla::{
     batch::{Batch, BatchType},
@@ -133,7 +132,7 @@ impl Database {
             .unwrap();
 
         let get_namespaces_statement = session
-            .prepare("SELECT COUNT(*), project_id, namespace, key FROM kv_service.pairs WHERE project_id = ? ALLOW FILTERING")
+            .prepare("SELECT namespace FROM kv_service.pairs WHERE project_id = ? ALLOW FILTERING")
             .await
             .unwrap();
 
@@ -218,7 +217,7 @@ impl Database {
             .session
             .execute(
                 &self.get_project_namespace_statement,
-                vec![(project_id_uuid, namespace.to_owned())],
+                (project_id_uuid, namespace.to_owned()),
             )
             .await
             .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
@@ -331,8 +330,7 @@ impl Database {
             vec![Uuid::from_str(&project_id)
                 .map_err(|e| DatabaseError::InvalidError(e.to_string()))?];
 
-        let mut found_names = vec![];
-        let mut namespaces = vec![];
+        let mut found_names: Vec<(String, u32)> = vec![];
 
         for row in self
             .session
@@ -341,24 +339,26 @@ impl Database {
             .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
             .rows_or_empty()
         {
-            // If the count is 0, the other columns will return null.
-            if let Some(v) = row.columns.get(0) {
-                if v.as_ref().unwrap().as_bigint().unwrap() == 0 {
-                    continue;
+            let namespace = row.into_typed::<(String,)>()?;
+
+            if !found_names.iter().any(|(ns, _)| ns == &namespace.0) {
+                found_names.push((namespace.0.clone(), 1));
+            } else {
+                for (ns, count) in &mut found_names {
+                    if ns == &namespace.0 {
+                        *count += 1
+                    }
                 }
             }
+        }
 
-            let (count, project_id, namespace, _) =
-                row.into_typed::<(i64, Uuid, String, String)>()?;
-
-            if !found_names.contains(&namespace) {
-                found_names.push(namespace.clone());
-                namespaces.push(Namespace {
-                    project_id: project_id.to_string(),
-                    name: namespace,
-                    count: count as i32,
-                })
-            }
+        let mut namespaces = vec![];
+        for name in found_names {
+            namespaces.push(Namespace {
+                project_id: project_id.to_string(),
+                name: name.0,
+                count: name.1 as i32,
+            })
         }
 
         Ok(ListNamespacesResponse { namespaces })

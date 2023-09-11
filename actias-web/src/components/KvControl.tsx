@@ -1,5 +1,5 @@
 import { NamespaceDto, ProjectDto } from '@/client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import api, { showError } from '@/helpers/api';
 import {
   Anchor,
@@ -12,8 +12,13 @@ import {
   Stack,
   Title,
   Badge,
+  Modal,
+  TextInput,
 } from '@mantine/core';
 import Link from 'next/link';
+import { useForm } from '@mantine/form';
+import { notifications } from '@mantine/notifications';
+import { useDisclosure } from '@mantine/hooks';
 
 const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   project,
@@ -21,29 +26,105 @@ const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
 }) => {
   const [namespaces, setNamespaces] = useState<NamespaceDto[] | null>(null);
 
-  useEffect(() => {
-    api.kv.listNamespaces(project.id).then(setNamespaces).catch(showError);
+  const loadNamespaces = useCallback(() => {
+    api.kv
+      .listNamespaces(project.id)
+      .then((namespaces) => {
+        setNamespaces(namespaces || []);
+      })
+      .catch(showError);
   }, [project]);
+
+  const [createNamespaceModalOpened, createNamespaceModal] =
+    useDisclosure(false);
+
+  const createNamespaceForm = useForm({
+    initialValues: {
+      namespace: '',
+    },
+  });
+
+  const createNamespace = useCallback(
+    (values: any) => {
+      api.kv
+        .setKey(project.id, values.namespace, 'key', {
+          type: 'string',
+          value: 'value',
+        })
+        .then(() => {
+          notifications.show({
+            title: 'Namespace created!',
+            message: `New namespace named ${values.namespace} was created.`,
+          });
+
+          loadNamespaces();
+          createNamespaceModal.close();
+        })
+        .catch(showError);
+    },
+    [createNamespaceModal, project, loadNamespaces],
+  );
+
+  const deleteNamespace = useCallback(
+    (namespace: string) => {
+      api.kv
+        .deleteNamespace(project.id, namespace)
+        .then(() => {
+          notifications.show({
+            title: 'Namespace deleted!',
+            message: `${namespace} was deleted.`,
+          });
+
+          loadNamespaces();
+          createNamespaceModal.close();
+        })
+        .catch(showError);
+    },
+    [project, loadNamespaces, createNamespaceModal],
+  );
+
+  useEffect(() => {
+    loadNamespaces();
+  }, [loadNamespaces]);
 
   return (
     <Stack>
       <Title>KV Namespaces</Title>
+
+      <Modal
+        opened={createNamespaceModalOpened}
+        onClose={createNamespaceModal.close}
+        title="Create Namespace"
+      >
+        <form onSubmit={createNamespaceForm.onSubmit(createNamespace)}>
+          <TextInput
+            withAsterisk
+            label="Namespace"
+            placeholder="Namespace name to create"
+            {...createNamespaceForm.getInputProps('namespace')}
+          />
+          <Group position="right" mt="md">
+            <Button type="submit">Create Namespace</Button>
+          </Group>
+        </form>
+      </Modal>
+
       {write && (
         <>
-          <Button w={120} onClick={() => {}}>
-            Create Script
+          <Button w={160} onClick={createNamespaceModal.open}>
+            Create Namespace
           </Button>
         </>
       )}
 
-      {namespaces ? (
+      {namespaces !== null ? (
         <Grid gutter="xs">
           {namespaces.map((ns) => (
             <Grid.Col key={ns.name} md={6} lg={3}>
               <NamespaceCard
                 namespace={ns}
                 canDelete={write}
-                onDelete={() => {}}
+                onDelete={() => deleteNamespace(ns.name)}
               />
             </Grid.Col>
           ))}

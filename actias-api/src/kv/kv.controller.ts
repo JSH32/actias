@@ -111,7 +111,7 @@ export class KvController {
     return {
       pageSize: page.pageSize,
       token: page.token,
-      pairs: page.pairs.map(
+      pairs: (page.pairs || []).map(
         (item) =>
           new PairDto({
             ...item,
@@ -180,31 +180,27 @@ export class KvController {
     @Param('key') key: string,
     @Body() body: SetKeyDto,
   ): Promise<MessageResponseDto> {
-    if (!PairType[body.type]) {
-      throw new BadRequestException('Invalid pair type');
-    }
-
     // Validate type provided with value.
-    switch (PairType[body.type]) {
-      case PairType.JSON:
+    switch (body.type) {
+      case 'json':
         try {
           JSON.parse(body.value);
         } catch (e) {
           throw new BadRequestException('Not a JSON value');
         }
         break;
-      case PairType.INTEGER:
+      case 'integer':
         {
           if (!Number.isInteger(body.value))
             throw new BadRequestException('Not an integer value');
         }
         break;
-      case PairType.NUMBER:
+      case 'number':
         if (!Number.isFinite(body.value)) {
           throw new BadRequestException('Not a number value');
         }
         break;
-      case PairType.BOOLEAN:
+      case 'boolean':
         if (!['true', 'false'].includes(body.value)) {
           throw new BadRequestException('Not a boolean value');
         }

@@ -41,17 +41,17 @@ const Project = () => {
         />
       )}
 
-      {permissions?.permissions['PERMISSIONS_READ'] && (
-        <AccessControl
-          project={project}
-          write={permissions?.permissions['PERMISSIONS_WRITE']}
-        />
-      )}
-
       {permissions?.permissions['KV_READ'] && (
         <KvControl
           project={project}
           write={permissions?.permissions['KV_WRITE']}
+        />
+      )}
+
+      {permissions?.permissions['PERMISSIONS_READ'] && (
+        <AccessControl
+          project={project}
+          write={permissions?.permissions['PERMISSIONS_WRITE']}
         />
       )}
     </>

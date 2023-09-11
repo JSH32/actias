@@ -3,10 +3,9 @@ import { useRouter } from 'next/router';
 import React, { useCallback, useEffect, useState } from 'react';
 import api, { showError } from '@/helpers/api';
 import { withAuthentication } from '@/helpers/authenticated';
-import { Json } from '@/components/Json';
 import { ActionIcon, Button, Loader, Select, Table } from '@mantine/core';
 import { IconTrash } from '@tabler/icons-react';
-import { it } from 'node:test';
+import { notifications } from '@mantine/notifications';
 
 const Namespace = () => {
   const router = useRouter();
@@ -15,19 +14,40 @@ const Namespace = () => {
   const [token, setToken] = useState<string | undefined>(undefined);
   const [items, setItems] = useState<PairDto[]>([]);
 
-  const loadNextPage = useCallback(() => {
-    api.kv
-      .listNamespace(
-        router.query.id as string,
-        router.query.namespace as string,
-        token,
-      )
-      .then((res) => {
-        setItems([...items, ...res.pairs]);
-        setToken(res.token);
-      })
-      .catch(showError);
-  }, [items, token, router]);
+  const loadNextPage = useCallback(
+    (reload: boolean = false) => {
+      api.kv
+        .listNamespace(
+          router.query.id as string,
+          router.query.namespace as string,
+          token,
+        )
+        .then((res) => {
+          if (reload) {
+            setItems([]);
+            setToken(undefined);
+          }
+
+          if (res.pairs.length) {
+            setItems([...(items || []), ...res.pairs]);
+            setToken(res.token);
+          } else if (
+            res.pairs.length < 1 &&
+            (reload || (items?.length || 0) < 1)
+          ) {
+            notifications.show({
+              title: 'Namespace is empty!',
+              color: 'red',
+              message: `${router.query.namespace} is empty. Nothing to see here.`,
+            });
+
+            router.push(`/project/${router.query.id}`);
+          }
+        })
+        .catch(showError);
+    },
+    [items, token, router],
+  );
 
   useEffect(() => {
     loadNextPage();
@@ -47,23 +67,46 @@ const Namespace = () => {
         </thead>
         <tbody>
           {items.map((item) => (
-            <Pair key={item.key} pair={item} />
+            <Pair
+              key={item.key}
+              pair={item}
+              onDelete={() => {
+                loadNextPage(true);
+              }}
+            />
           ))}
         </tbody>
       </Table>
-      <Button onClick={loadNextPage}>Load More</Button>
+      <Button onClick={() => loadNextPage()}>Load More</Button>
     </>
   ) : (
     <Loader />
   );
 };
 
-const Pair: React.FC<{ pair: PairDto }> = ({ pair }) => {
+const Pair: React.FC<{ pair: PairDto; onDelete: () => void }> = ({
+  pair,
+  onDelete,
+}) => {
   const [currentType, setCurrentType] = useState<string>(
     pair.type as unknown as string,
   );
 
   const [currentValue, setCurrentValue] = useState<any>(pair.value);
+
+  const deletePair = useCallback(() => {
+    api.kv
+      .deleteKey(pair.projectId, pair.namespace, pair.key)
+      .then(() => {
+        notifications.show({
+          title: 'Key deleted!',
+          message: `Key ${pair.key} was deleted.`,
+        });
+
+        onDelete();
+      })
+      .catch(showError);
+  }, [onDelete, pair]);
 
   return (
     <tr>
@@ -79,7 +122,7 @@ const Pair: React.FC<{ pair: PairDto }> = ({ pair }) => {
       </td>
       <td>{currentValue}</td>
       <td>
-        <ActionIcon variant="default" onClick={() => {}} size={30}>
+        <ActionIcon variant="default" onClick={deletePair} size={30}>
           <IconTrash size="1rem" />
         </ActionIcon>
       </td>
