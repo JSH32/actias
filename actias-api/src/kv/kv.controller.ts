@@ -35,13 +35,15 @@ import { MessageResponseDto } from 'src/shared/dto/message';
 @Controller('project/:project/kv')
 export class KvController {
   private kvService: kv_service.KvService;
-  constructor(
-    @Inject('KV_SERVICE') private readonly client: ClientGrpc, // private readonly projectService: ProjectService, // private readonly em: EntityManager,
-  ) {}
+  constructor(@Inject('KV_SERVICE') private readonly client: ClientGrpc) {}
+
   onModuleInit() {
     this.kvService = this.client.getService<kv_service.KvService>('KvService');
   }
 
+  /**
+   * List all namespaces in a project.
+   */
   @Get()
   @AclByProject(AccessFields.KV_READ)
   @ApiParam({
@@ -61,6 +63,9 @@ export class KvController {
     ).namespaces as NamespaceDto[];
   }
 
+  /**
+   * Delete a namespace and all keys in a project.
+   */
   @Delete(':namespace')
   @AclByProject(AccessFields.KV_READ)
   @ApiParam({
@@ -121,6 +126,9 @@ export class KvController {
     };
   }
 
+  /**
+   * Get a value from a key in a namespace.
+   */
   @Get(':namespace/:key')
   @AclByProject(AccessFields.KV_READ)
   @ApiParam({
@@ -144,6 +152,9 @@ export class KvController {
     };
   }
 
+  /**
+   * Delete a value from a key in a namespace.
+   */
   @Delete(':namespace/:key')
   @AclByProject(AccessFields.KV_WRITE)
   @ApiParam({
@@ -167,6 +178,9 @@ export class KvController {
     );
   }
 
+  /**
+   * Create or update a value from a key in a namespace.
+   */
   @Put(':namespace/:key')
   @AclByProject(AccessFields.KV_WRITE)
   @ApiParam({
@@ -180,8 +194,9 @@ export class KvController {
     @Param('key') key: string,
     @Body() body: SetKeyDto,
   ): Promise<MessageResponseDto> {
+    console.log(body);
     // Validate type provided with value.
-    switch (body.type) {
+    switch (body.type.toLowerCase()) {
       case 'json':
         try {
           JSON.parse(body.value);
@@ -191,12 +206,12 @@ export class KvController {
         break;
       case 'integer':
         {
-          if (!Number.isInteger(body.value))
+          if (Number.isNaN(parseInt(body.value, 10)))
             throw new BadRequestException('Not an integer value');
         }
         break;
       case 'number':
-        if (!Number.isFinite(body.value)) {
+        if (!Number.isFinite(parseFloat(body.value))) {
           throw new BadRequestException('Not a number value');
         }
         break;
@@ -205,12 +220,22 @@ export class KvController {
           throw new BadRequestException('Not a boolean value');
         }
         break;
+      default:
+        throw new BadRequestException('Not a valid type');
     }
 
     await lastValueFrom(
       this.kvService
         .setPairs({
-          pairs: [{ projectId: project.id, namespace, key, value: body.value }],
+          pairs: [
+            {
+              projectId: project.id,
+              namespace,
+              key,
+              value: body.value,
+              type: PairType[body.type],
+            },
+          ],
         })
         .pipe(toHttpException()),
     );

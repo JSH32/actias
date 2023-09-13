@@ -203,6 +203,9 @@ impl Database {
     /// # Arguments
     /// * project_id - Project ID
     /// * namespace - Namespace to delete
+    ///
+    // TODO: Do deletion in a different way instead of looping over all keys (cursed).
+    // This is kind of difficult because of stupid cassandra things.
     pub async fn delete_namespace(
         &self,
         project_id: &str,
@@ -240,6 +243,9 @@ impl Database {
     ///
     /// # Arguments
     /// * project_id - Project ID
+    //
+    // TODO: Do deletion in a different way instead of looping over all keys (cursed).
+    // This is kind of difficult because of stupid cassandra things.
     pub async fn delete_project(&self, project_id: &str) -> Result<(), DatabaseError> {
         let mut pairs = vec![];
 
@@ -290,6 +296,11 @@ impl Database {
         Ok(())
     }
 
+    /// Updates/creates a pair (or list of pairs) in the database.
+    /// This will overwrite and uses a first-write-wins strategy.
+    ///
+    /// # Arguments
+    /// * pairs - List of pairs
     pub async fn set(&self, pairs: Vec<Pair>) -> Result<(), DatabaseError> {
         let mut batch = Batch::new(BatchType::Logged);
 

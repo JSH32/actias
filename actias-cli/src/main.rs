@@ -130,7 +130,7 @@ async fn main() {
         .build()
         .unwrap();
 
-    let client = Client::new_with_client("http://localhost:3006", req_client);
+    let client = Client::new_with_client("http://localhost:3000", req_client);
 
     match cli.command {
         Commands::Init { project_id, name } => {

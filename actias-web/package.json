@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
+    "dev": "dotenv -c -- next dev",
+    "build": "dotenv -c -- next build",
+    "start": "dotenv -c -- next start",
+    "lint": "dotenv -c -- next lint",
     "generateClient": "find ./src/client ! -name 'README.md' -type f -exec rm -f {} + && openapi --input http://localhost:3006/api/docs/openapi.json --output ./src/client --client axios --name ActiasClient"
   },
   "dependencies": {
@@ -17,7 +17,7 @@
     "@mantine/hooks": "^6.0.18",
     "@mantine/next": "^6.0.18",
     "@mantine/notifications": "^6.0.18",
-    "@mantine/prism": "^6.0.19",
+    "@mantine/prism": "^6.0.20",
     "@tabler/icons-react": "^2.30.0",
     "@types/node": "20.4.8",
     "@types/react": "18.2.18",
@@ -26,6 +26,8 @@
     "@uiw/react-json-view": "^1.8.4",
     "axios": "^1.4.0",
     "cookies-next": "^2.1.2",
+    "dotenv": "^16.3.1",
+    "dotenv-cli": "^7.3.0",
     "eslint": "8.46.0",
     "eslint-config-next": "13.4.13",
     "form-data": "^4.0.0",

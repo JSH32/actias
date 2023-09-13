@@ -67,7 +67,7 @@ impl UserData for KvNamespace {
                     let pair = v.into_inner();
                     match pair.r#type() {
                         ValueType::String => pair.value.into_lua(lua),
-                        ValueType::Number => pair.value.parse::<u64>().unwrap().into_lua(lua),
+                        ValueType::Number => pair.value.parse::<f64>().unwrap().into_lua(lua),
                         ValueType::Integer => pair.value.parse::<i64>().unwrap().into_lua(lua),
                         ValueType::Boolean => match pair.value.as_str() {
                             "true" => true,

@@ -110,6 +110,7 @@ const Script = () => {
         {breadcrumbs([
           { title: 'Home', href: '/user' },
           { title: parentProject?.name, href: `/project/${parentProject?.id}` },
+          { title: 'scripts', href: `/project/${parentProject?.id}` },
           { title: script?.publicIdentifier, href: `/script/${script?.id}` },
         ])}
       </Breadcrumbs>
