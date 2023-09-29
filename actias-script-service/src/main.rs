@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_tracing().unwrap();
 
     let config = Config::new();
-    let addr = format!("[::1]:{}", config.port).parse().unwrap();
+    let addr = format!("0.0.0.0:{}", config.port).parse().unwrap();
 
     info!("Script Service listening on {}", addr);
 

@@ -1,0 +1,12 @@
+FROM rust:1.72
+
+RUN cargo install sqlx-cli
+
+WORKDIR /app
+
+COPY ./migrations /app/migrations
+
+# Should provide DATABASE_URL in environment vars
+CMD [ "sqlx", "migrate", "run" ]
+
+LABEL org.opencontainers.image.source="https://github.com/jsh32/actias"

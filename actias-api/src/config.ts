@@ -6,4 +6,5 @@ export default () => ({
   },
   databaseUrl: process.env.DATABASE_URL,
   jwtKey: process.env.JWT_KEY,
+  webOrigin: process.env.WEB_ORIGIN,
 });

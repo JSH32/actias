@@ -1,4 +1,7 @@
-FROM rust:1.66 as chef
+# This single image builds any/all rust services.
+# It is done this way because of Rust workspaces.
+
+FROM rust:1.72 as chef
 RUN cargo install cargo-chef 
 
 WORKDIR /app
@@ -11,6 +14,8 @@ COPY ./protobufs ./protobufs
 COPY ./actias-common ./actias-common
 COPY ./actias-script-service ./actias-script-service
 COPY ./actias-worker ./actias-worker
+COPY ./actias-kv ./actias-kv
+COPY ./actias-cli ./actias-cli
 RUN cargo chef prepare  --recipe-path recipe.json
 
 FROM chef AS builder
@@ -23,13 +28,18 @@ RUN cargo chef cook --release --recipe-path recipe.json
 ARG CRATE_NAME
 
 COPY . .
-RUN cargo build --release --bin ${CRATE_NAME}
+RUN cargo build --release --bin ${CRATE_NAME} \
+    && mkdir -p /output \
+    && cp target/release/${CRATE_NAME} /output/target
 
-FROM gcr.io/distroless/cc as runtime
-ARG CRATE_NAME
+FROM ubuntu:22.04 as runtime
 
 WORKDIR /app
-COPY --from=builder /app/target/release/${CRATE_NAME} /app
-CMD [ "./${CRATE_NAME}" ]
+COPY --from=builder /output/target /app/
+
+# Install runtime dependencies
+RUN apt-get update && apt install -y openssl
+
+CMD [ "/app/target" ]
 
 LABEL org.opencontainers.image.source="https://github.com/jsh32/actias"

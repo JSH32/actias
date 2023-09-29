@@ -1,6 +1,6 @@
 #!/bin/bash
 
-HOSTS=${1:-localhost}
+HOSTS=${CQL_HOSTS:-localhost}
 
 echo "Creating locks (if not exist)"
 cqlsh -f locks.cql $HOSTS

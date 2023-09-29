@@ -1,0 +1,130 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres
+    restart: always
+    volumes:
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+    environment:
+      - POSTGRES_USERNAME=${POSTGRES_USERNAME:-actias}
+      - POSTGRES_PASSWORD=${POSTGRES_USERNAME:-secret}
+
+  scylla:
+    image: scylladb/scylla
+    container_name: scylla
+    healthcheck:
+      test: [ "CMD-SHELL", "[ $$(nodetool statusgossip) = running ]" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  script_service:
+    image: ghcr.io/jsh32/script_service:latest
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-script-service
+    environment:
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
+
+  script_service_migration:
+    image: ghcr.io/jsh32/script_service_migration:latest
+    depends_on:
+      - postgres
+    build:
+      context: ./actias-script-service
+      dockerfile: ./Dockerfile.migration
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
+
+  worker_service:
+    image: ghcr.io/jsh32/worker_service:latest
+    restart: unless-stopped
+    depends_on:
+      - script_service
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-worker
+    environment:
+      - PORT=3000
+      - SCRIPT_SERVICE_URI=http://script_service:3000
+      - KV_SERVICE_URI=http://kv_service:3000
+    ports:
+      - 3002:3000
+
+  kv_migration:
+    image: ghcr.io/jsh32/kv_service_migration:latest
+    depends_on:
+      scylla:
+        condition: service_healthy
+    build:
+      context: ./actias-kv
+      dockerfile: ./Dockerfile.migration
+    environment:
+      - CQL_HOSTS=scylla
+
+  kv_service:
+    image: ghcr.io/jsh32/kv_service:latest
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-kv
+    depends_on:
+      scylla:
+        condition: service_healthy
+    environment:
+      - PORT=3000
+      - SCYLLA_NODES=scylla:9042
+
+  actias_api_migration:
+    image: ghcr.io/jsh32/actias_api_migration:latest
+    depends_on:
+      - postgres
+    build:
+      context: ./actias-api
+      dockerfile: ./Dockerfile.migration
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
+
+  actias_api:
+    image: ghcr.io/jsh32/actias_api:latest
+    restart: unless-stopped
+    ports:
+      - 3001:3000
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.api
+    depends_on:
+      - postgres
+      - kv_service
+      - script_service
+    environment:
+      - SCRIPT_SERVICE_URL=script_service:3000
+      - KV_SERVICE_URL=kv_service:3000
+      - JWT_KEY=testing
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
+
+  actias_web:
+    image: ghcr.io/jsh32/actias_web:latest
+    restart: unless-stopped
+    ports:
+      - 3000:3000
+    build:
+      context: ./actias-web
+    depends_on:
+      - actias_api
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - API_URL=http://localhost:3001
+      - WORKER_BASE=http://localhost:3002/_IDENTIFIER_

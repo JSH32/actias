@@ -1,0 +1,19 @@
+FROM node:20-buster-slim
+
+WORKDIR /app/api
+
+RUN apt update && apt install -y python3 build-essential protobuf-compiler
+
+COPY actias-api/package*.json ./
+RUN npm install
+
+COPY ./actias-api .
+RUN npm run build
+
+# Generate protobufs
+COPY ./protobufs /app/protobufs
+RUN npm run generateProto
+
+CMD [ "node", "dist/main.js" ]
+
+LABEL org.opencontainers.image.source="https://github.com/jsh32/actias"

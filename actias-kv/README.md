@@ -1,2 +1,2 @@
 # KV Service
-Service which manages K/V stores for scripts/projects. This uses Cassandra/Scylla and uses [cqlmigrate](https://github.com/sky-uk/cqlmigrate) for data migrations. To run migrations locally, use `migrate.sh`
+Service which manages K/V stores for scripts/projects. This uses Cassandra/Scylla and uses [cqlmigrate](https://github.com/sky-uk/cqlmigrate) for data migrations. Use `migrate.sh` to run migrations.

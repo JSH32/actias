@@ -64,7 +64,14 @@ async function bootstrap() {
     .get('/api/docs/openapi.json', (_, res) => res.send(document));
 
   const configService = app.get(ConfigService);
-  await app.listen(configService.get<number>('port'));
+
+  app.enableCors({
+    origin: [configService.get<string>('webOrigin')],
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+  });
+
+  await app.listen(configService.get<number>('port'), '0.0.0.0');
 }
 
 bootstrap();

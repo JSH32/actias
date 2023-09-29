@@ -1,0 +1,16 @@
+FROM amazoncorretto:11-alpine3.18
+
+RUN apk add --update --no-cache python3 && ln -sf python3 /usr/bin/python
+RUN python3 -m ensurepip
+RUN pip3 install --no-cache --upgrade pip cqlsh
+
+WORKDIR /app
+
+COPY ./cqlmigrate.jar /app
+COPY ./migrations /app/migrations
+COPY ./locks.cql /app
+COPY ./migrate.sh /app
+
+CMD ["sh", "/app/migrate.sh"]
+
+LABEL org.opencontainers.image.source="https://github.com/jsh32/actias"
