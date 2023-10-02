@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    /// API url.
+    pub api_url: String,
     /// API auth token.
     pub token: String,
 }

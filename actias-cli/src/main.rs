@@ -111,8 +111,8 @@ struct RevisionCommand {
 async fn main() {
     let cli = Cli::parse();
 
-    let auth_header = match Settings::new() {
-        Ok(v) => format!("Bearer {}", v.token),
+    let (api_url, auth_header) = match Settings::new() {
+        Ok(v) => (v.api_url, format!("Bearer {}", v.token)),
         Err(e) => {
             println!("❌ Error while initializing project, {}", e.to_string());
             return;
@@ -130,7 +130,7 @@ async fn main() {
         .build()
         .unwrap();
 
-    let client = Client::new_with_client("http://localhost:3000", req_client);
+    let client = Client::new_with_client(&api_url, req_client);
 
     match cli.command {
         Commands::Init { project_id, name } => {

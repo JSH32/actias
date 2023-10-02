@@ -113,6 +113,7 @@ services:
       - JWT_KEY=testing
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
+      - WEB_ORIGIN=http://localhost:3000
 
   actias_web:
     image: ghcr.io/jsh32/actias_web:latest

@@ -194,7 +194,6 @@ export class KvController {
     @Param('key') key: string,
     @Body() body: SetKeyDto,
   ): Promise<MessageResponseDto> {
-    console.log(body);
     // Validate type provided with value.
     switch (body.type.toLowerCase()) {
       case 'json':
@@ -220,6 +219,9 @@ export class KvController {
           throw new BadRequestException('Not a boolean value');
         }
         break;
+      case 'string':
+        // Anything can be a string.
+        break;
       default:
         throw new BadRequestException('Not a valid type');
     }
@@ -232,7 +234,7 @@ export class KvController {
               projectId: project.id,
               namespace,
               key,
-              value: body.value,
+              value: body.value.toString(),
               type: PairType[body.type],
             },
           ],

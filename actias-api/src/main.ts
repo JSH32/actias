@@ -67,8 +67,9 @@ async function bootstrap() {
 
   app.enableCors({
     origin: [configService.get<string>('webOrigin')],
-    preflightContinue: false,
+    preflightContinue: true,
     optionsSuccessStatus: 204,
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
   });
 
   await app.listen(configService.get<number>('port'), '0.0.0.0');
