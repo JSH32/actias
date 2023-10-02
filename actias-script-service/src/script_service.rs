@@ -235,7 +235,7 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListRevisionResponse>, tonic::Status> {
         let request = request.get_ref();
 
-        if request.page < 0 {
+        if request.page < 1 {
             return Err(Status::invalid_argument("invalid page number provided!"));
         }
 
@@ -251,7 +251,7 @@ impl script_service_server::ScriptService for ScriptService {
             "SELECT * FROM revisions ORDER BY created DESC LIMIT $1 OFFSET $2"
         })
         .bind(request.page_size)
-        .bind(request.page_size * request.page);
+        .bind(request.page_size * (request.page - 1));
 
         if let Some(script_id) = &request.script_id {
             let uuid = Uuid::from_str(&script_id).map_err(|e| Status::internal(e.to_string()))?;
@@ -374,14 +374,14 @@ impl script_service_server::ScriptService for ScriptService {
     ) -> Result<tonic::Response<ListScriptResponse>, tonic::Status> {
         let request = request.get_ref();
 
-        if request.page < 0 {
-            return Err(Status::invalid_argument("invalid page number provided!"));
+        if request.page < 1 {
+            return Err(Status::invalid_argument("Invalid page number provided!"));
         }
 
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) as count FROM scripts")
             .fetch_one(&self.database)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e: sqlx::Error| Status::internal(e.to_string()))?;
 
         let project_id = Uuid::from_str(&request.project_id)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
@@ -394,7 +394,7 @@ impl script_service_server::ScriptService for ScriptService {
             )
             .bind(project_id)
             .bind(request.page_size)
-            .bind(request.page_size * request.page)
+            .bind(request.page_size * (request.page - 1))
             .fetch_all(&self.database)
             .await
             .map_err(|e| Status::internal(e.to_string()))?

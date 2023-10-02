@@ -45,10 +45,7 @@ import { MessageResponseDto } from 'src/shared/dto/message';
 export class ProjectScriptController implements OnModuleInit {
   private scriptService: script_service.ScriptService;
 
-  constructor(
-    @Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc,
-    private readonly projectService: ProjectService,
-  ) {}
+  constructor(@Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc) {}
 
   onModuleInit() {
     this.scriptService =
@@ -74,7 +71,7 @@ export class ProjectScriptController implements OnModuleInit {
     const scripts = await lastValueFrom(
       this.scriptService
         .listScripts({
-          page: page - 1,
+          page,
           pageSize: 25,
           projectId: project.id,
         })
@@ -155,7 +152,7 @@ export class ScriptsController implements OnModuleInit {
         .listRevisions({
           scriptId,
           pageSize: 10,
-          page: page - 1,
+          page: page,
         })
         .pipe(toHttpException()),
     );
