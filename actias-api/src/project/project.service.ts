@@ -47,7 +47,12 @@ export class ProjectService {
       {
         $or: [{ owner: user }, { access: { user } }],
       },
-      { limit: pageSize, offset: page * pageSize, populate: ['access'] },
+      {
+        limit: pageSize,
+        // Pages start at 1
+        offset: (page - 1) * pageSize,
+        populate: ['access'],
+      },
     );
 
     return PaginatedResponseDto.fromArray(

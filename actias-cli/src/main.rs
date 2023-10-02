@@ -41,8 +41,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    // TODO: Implement logins
-    // 🔑 Login to Actias account.
+    /// 🔑 Login to an Actias account.
+    Login,
     /// 📜 Initialize a new sample project
     Init {
         /// Folder name of the new project
@@ -54,6 +54,15 @@ enum Commands {
     Publish {
         /// Directory of project to publish
         directory: String,
+    },
+    /// 📁 List projects
+    Projects { page: Option<i64> },
+    /// 📜 Manage a project
+    Project {
+        /// Project to manage.
+        id: String,
+        #[clap(subcommand)]
+        sub: ProjectOperations,
     },
     /// 📑 List scripts
     Scripts { project: String, page: Option<i64> },
@@ -69,6 +78,12 @@ enum Commands {
         /// Directory of project
         directory: String,
     },
+}
+
+#[derive(Parser, Debug)]
+enum ProjectOperations {
+    /// 🚮 Delete a project and all resources.
+    Delete,
 }
 
 #[derive(Parser, Debug)]
@@ -111,10 +126,18 @@ struct RevisionCommand {
 async fn main() {
     let cli = Cli::parse();
 
-    let (api_url, auth_header) = match Settings::new() {
+    // Parsing settings should trigger a re-auth.
+    let relog = if let Commands::Login = cli.command {
+        let _ = std::fs::remove_file("settings.json");
+        true
+    } else {
+        false
+    };
+
+    let (api_url, auth_header) = match Settings::new(relog).await {
         Ok(v) => (v.api_url, format!("Bearer {}", v.token)),
         Err(e) => {
-            println!("❌ Error while initializing project, {}", e.to_string());
+            println!("❌ Error while authenticating, {}", e.to_string());
             return;
         }
     };
@@ -148,6 +171,16 @@ async fn main() {
                 println!("❌ Error, {}", e.to_string())
             }
         }
+        Commands::Projects { page } => {
+            if let Err(e) = list_projects(&client, page.unwrap_or(1) as f64).await {
+                println!("❌ Error, {}", e.to_string())
+            }
+        }
+        Commands::Project { id, sub } => {
+            if let Err(e) = project_manage_command(&client, &id, &sub).await {
+                println!("❌ Error, {}", e.to_string())
+            }
+        }
         Commands::Script { id, sub } => {
             if let Err(e) = script_manage_command(&client, &id, &sub).await {
                 println!("❌ Error, {}", e.to_string())
@@ -157,7 +190,66 @@ async fn main() {
             Ok(_) => println!("{}", "📜 Project validated!".green()),
             Err(e) => println!("❌ Error, {}", e.to_string()),
         },
+        // This is pretty much only needed because of Commands::Login
+        _ => {}
     };
+}
+
+async fn project_manage_command(
+    client: &Client,
+    id: &str,
+    command: &ProjectOperations,
+) -> Result<(), String> {
+    let project = client
+        .get_project()
+        .project(id.clone())
+        .send()
+        .await
+        .map_err(progenitor_error)?;
+
+    match command {
+        ProjectOperations::Delete => {
+            println!(
+                "🚮 Deleted project {} {}",
+                project.name.purple(),
+                format!("({})", project.id).bright_black()
+            )
+        }
+    }
+
+    Ok(())
+}
+
+/// TODO: List perimssions that the logged in user can do.
+async fn list_projects(client: &Client, page: f64) -> Result<(), String> {
+    let response = client
+        .list_projects()
+        .page(page)
+        .send()
+        .await
+        .map_err(progenitor_error)?
+        .into_inner();
+
+    let mut table = Table::new();
+    table.add_row(row!["ID", "Name", "Created At", "Updated At"]);
+
+    println!(
+        "🔍 Displaying project page {} of {}",
+        response.paginated_response_dto.page.to_string().yellow(),
+        response
+            .paginated_response_dto
+            .last_page
+            .to_string()
+            .yellow()
+    );
+
+    for item in response.items {
+        table.add_row(row![item.id, item.name, item.created_at, item.updated_at]);
+    }
+
+    table.printstd();
+
+    Ok(())
 }
 
 async fn list_scripts(client: &Client, project: &str, page: f64) -> Result<(), String> {
@@ -234,7 +326,7 @@ async fn script_manage_command(
                 .into_inner();
 
             println!(
-                "🚮 Deleted {} {}",
+                "🚮 Deleted script {} {}",
                 script.public_identifier.purple(),
                 format!("({})", script.id).bright_black()
             )

@@ -17,7 +17,7 @@ pub fn progenitor_error(error: progenitor::progenitor_client::Error) -> String {
     match error {
         progenitor::progenitor_client::Error::UnexpectedResponse(e) => {
             let json: ErrorResponse = futures::executor::block_on(e.json()).unwrap();
-            format!("Operation returned an error: {}", json.message)
+            format!("{}", json.message)
         }
         progenitor::progenitor_client::Error::CommunicationError(v) => {
             format!(
@@ -27,7 +27,7 @@ pub fn progenitor_error(error: progenitor::progenitor_client::Error) -> String {
         }
         progenitor::progenitor_client::Error::ErrorResponse(v) => {
             let json: ErrorResponse = serde_json::from_value(v.into_inner().into()).unwrap();
-            format!("Operation returned an error: {}", json.message)
+            format!("{}", json.message)
         }
         progenitor::progenitor_client::Error::InvalidResponsePayload(v) => {
             format!("Response payload was invalid: {}", v.to_string())

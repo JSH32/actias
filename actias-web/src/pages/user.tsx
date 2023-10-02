@@ -24,7 +24,7 @@ const User = () => {
   const [projects, setProjects] = useState<ProjectDto[] | null>(null);
 
   const loadProjects = useCallback(() => {
-    api.project.listProjects(0).then((projects) => {
+    api.project.listProjects(1).then((projects) => {
       setProjects((projects as any).items);
     });
   }, []);
