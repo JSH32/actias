@@ -16,7 +16,7 @@ pub trait LuaExtension {
     fn extension_info(&self) -> ExtensionInfo;
 }
 
-/// Standard extensions that are always included
+/// Standard extensions that are always included.
 pub mod standard_extensions {
     use mlua::LuaSerdeExt;
 

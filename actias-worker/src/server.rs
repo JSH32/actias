@@ -93,7 +93,13 @@ async fn lua_handler(
             .unwrap());
     };
 
-    let lua = ActiasRuntime::new(script.into_inner(), revision.into_inner(), kv_client).await?;
+    let lua = ActiasRuntime::new(
+        script.into_inner(),
+        revision.into_inner(),
+        kv_client,
+        Some(10),
+    )
+    .await?;
 
     // Create a context URI without the identifier, used for better routing.
     let old_uri = request.uri().clone();
@@ -122,6 +128,8 @@ async fn lua_handler(
 
     // Lua runtime uses registry to store handlers.
     let value = lua.named_registry_value::<mlua::Function>("listener_fetch")?;
+
+    lua.start_timer();
 
     let ret: extensions::http::Response =
         lua.from_value(value.call_async(lua.to_value(&lua_request?)?).await?)?;

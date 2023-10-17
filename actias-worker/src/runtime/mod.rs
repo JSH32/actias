@@ -14,16 +14,31 @@ use self::extension::LuaExtension;
 use actias_common::tracing::trace;
 use mlua::{AsChunk, ExternalResult, Lua, LuaSerdeExt, Table, UserData};
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, ops::Deref};
+use std::{
+    borrow::Cow,
+    ops::Deref,
+    sync::{Arc, RwLock},
+    time::Instant,
+};
 
 /// Lua runtime with actias specific methods.
-pub struct ActiasRuntime(Lua);
+pub struct ActiasRuntime {
+    lua: Lua,
+    // Arc to pass to interrupt handler.
+    timer: Arc<RwLock<Timer>>,
+}
+
+#[derive(Clone)]
+struct Timer {
+    start_time: Option<Instant>,
+    time_limit: Option<u64>,
+}
 
 impl Deref for ActiasRuntime {
     type Target = Lua;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.lua
     }
 }
 
@@ -44,22 +59,51 @@ impl ActiasRuntime {
     /// - `script` - Script information, this is so the script can identify it's own routing pattern.
     /// - `revision` - Script revision, ensure that this revision has a [`Bundle`] (use `with_bundle`).
     /// - `kv_client` - Key value service client, allows the script to access/store persistent data.
+    /// - `time_limit` - Total Time limit in seconds, this is based on seconds and will start when [`start_timer`] is called
     pub async fn new(
         script: Script,
         revision: Revision,
         kv_client: KvServiceClient<tonic::transport::Channel>,
+        time_limit: Option<u64>,
     ) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
 
-        let lua = Self(Lua::new_with(
-            mlua::StdLib::ALL_SAFE,
-            mlua::LuaOptions::new().catch_rust_panics(false),
-        )?);
+        let lua = Self {
+            lua: Lua::new_with(
+                mlua::StdLib::ALL_SAFE,
+                mlua::LuaOptions::new().catch_rust_panics(false),
+            )?,
+            timer: Arc::new(RwLock::new(Timer {
+                start_time: None,
+                time_limit,
+            })),
+        };
 
         let bundle = revision.bundle.unwrap();
         lua.set_app_data::<Bundle>(bundle.clone());
 
         lua.sandbox(true)?;
+
+        // 128 MB memory limit.
+        lua.set_memory_limit(128 * 1000000)?;
+
+        let timer = lua.timer.clone();
+
+        // Time limit each worker total runtime.
+        // TODO: Figure out how to make this CPU time based.
+        lua.set_interrupt(move |_| {
+            let timer = timer.read().unwrap();
+            if let (Some(start_time), Some(time_limit)) = (timer.start_time, timer.time_limit) {
+                if Instant::now().duration_since(start_time).as_secs() > time_limit {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Script timed out, limit is {} seconds.",
+                        time_limit
+                    )));
+                }
+            }
+
+            Ok(mlua::VmState::Continue)
+        });
 
         // Function to add listener to registry
         // All added listeners are prefixed with `_listener`
@@ -178,6 +222,14 @@ impl ActiasRuntime {
             .iter()
             .find(|file| file.file_name == bundle.entry_point);
 
+        // We need to set a new timer temporrily when registering.
+        // This should be one second since nothing should be happening in this time.
+        let original_timer = lua.timer.read().unwrap().clone();
+        *lua.timer.write().unwrap() = Timer {
+            start_time: Some(Instant::now()),
+            time_limit: Some(1),
+        };
+
         // Run entry point and register handlers.
         if let Some(entry_point) = entry_point {
             lua.load(&LuaModule {
@@ -190,7 +242,19 @@ impl ActiasRuntime {
             .await?;
         }
 
+        // Set original timer.
+        *lua.timer.write().unwrap() = original_timer;
+
         Ok(lua)
+    }
+
+    /// Start the timer. This only works if `time_limit` is set.
+    /// This will stop the runtime with an error once the time limit has passed since the timer has been started.
+    pub fn start_timer(&self) {
+        let mut timer = self.timer.write().unwrap();
+        if let Some(_) = timer.time_limit {
+            timer.start_time = Some(Instant::now());
+        }
     }
 
     /// Register an extension into the runtime.
@@ -247,20 +311,8 @@ impl AsChunk<'_, '_> for &LuaModule {
     fn source(self) -> std::io::Result<Cow<'static, [u8]>> {
         Ok(Cow::Owned(self.source.as_bytes().to_vec()))
     }
-    // fn source(&self) -> std::io::Result<std::borrow::Cow<[u8]>> {
-    //     Ok(Cow::Owned(self.source.as_bytes().to_vec()))
-    // }
 
     fn name(&self) -> Option<String> {
         Some(self.name.clone())
     }
-
-    // fn environment(&self, lua: &'_ Lua) -> mlua::Result<Option<Table<'_>>> {
-    //     let _lua = lua; // suppress warning
-    //     Ok(None)
-    // }
-
-    // fn mode(&self) -> Option<mlua::ChunkMode> {
-    //     None
-    // }
 }
