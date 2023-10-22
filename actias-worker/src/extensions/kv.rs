@@ -100,8 +100,23 @@ impl UserData for KvNamespace {
         methods.add_async_method_mut(
             "set",
             |_, this, (key, value): (String, mlua::Value)| async {
-                let (val_type, val) = match value {
-                    mlua::Value::Nil => {
+                match value.into_service_value()? {
+                    Some((val_type, val)) => {
+                        this.kv_client
+                            .set_pairs(SetPairsRequest {
+                                pairs: vec![Pair {
+                                    project_id: this.project_id.clone(),
+                                    namespace: this.namespace.clone(),
+                                    r#type: val_type.into(),
+                                    ttl: None,
+                                    key,
+                                    value: val,
+                                }],
+                            })
+                            .await
+                            .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
+                    }
+                    None => {
                         // We delete
                         this.kv_client
                             .delete_pairs(DeletePairsRequest {
@@ -115,43 +130,107 @@ impl UserData for KvNamespace {
                             .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
                         return Ok(());
                     }
-                    mlua::Value::Boolean(v) => (ValueType::Boolean, v.to_string()),
-                    mlua::Value::Integer(v) => (ValueType::Integer, v.to_string()),
-                    mlua::Value::Number(v) => (ValueType::Number, v.to_string()),
-                    mlua::Value::String(v) => (ValueType::String, v.to_str().unwrap().to_owned()),
-                    mlua::Value::Table(v) => (
-                        ValueType::Json,
-                        serde_json::to_string(&v)
-                            .map_err(|e| mlua::Error::SerializeError(e.to_string()))?,
-                    ),
-                    mlua::Value::Vector(v) => (
-                        ValueType::Json,
-                        serde_json::to_string(&v)
-                            .map_err(|e| mlua::Error::SerializeError(e.to_string()))?,
-                    ),
-                    _ => {
-                        return Err(mlua::Error::SerializeError(
-                            "Invalid datatype provided".to_owned(),
-                        ))
-                    }
                 };
-
-                this.kv_client
-                    .set_pairs(SetPairsRequest {
-                        pairs: vec![Pair {
-                            project_id: this.project_id.clone(),
-                            namespace: this.namespace.clone(),
-                            r#type: val_type.into(),
-                            ttl: None,
-                            key,
-                            value: val,
-                        }],
-                    })
-                    .await
-                    .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
 
                 Ok(())
             },
-        )
+        );
+
+        methods.add_async_method_mut("set_batch", |_, this, values: mlua::Table| async {
+            let mut to_set = vec![];
+            let mut to_delete = vec![];
+
+            for pair in values.pairs::<String, mlua::Value>() {
+                let (key, value) = pair?;
+
+                match value.into_service_value()? {
+                    Some((val_type, val)) => to_set.push(Pair {
+                        project_id: this.project_id.clone(),
+                        namespace: this.namespace.clone(),
+                        r#type: val_type.into(),
+                        ttl: None,
+                        key,
+                        value: val,
+                    }),
+                    None => to_delete.push(PairRequest {
+                        project_id: this.project_id.clone(),
+                        namespace: this.namespace.clone(),
+                        key,
+                    }),
+                }
+            }
+
+            if !to_set.is_empty() {
+                this.kv_client
+                    .set_pairs(SetPairsRequest { pairs: to_set })
+                    .await
+                    .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
+            }
+
+            if !to_delete.is_empty() {
+                this.kv_client
+                    .delete_pairs(DeletePairsRequest { pairs: to_delete })
+                    .await
+                    .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
+            }
+
+            Ok(())
+        });
+
+        methods.add_async_method_mut("delete", |_, this, keys: mlua::MultiValue| async {
+            let keys: Vec<PairRequest> = keys
+                .into_vec()
+                .into_iter()
+                .map(|key| {
+                    key.to_string().map(|string_key| PairRequest {
+                        project_id: this.project_id.clone(),
+                        namespace: this.namespace.clone(),
+                        key: string_key,
+                    })
+                })
+                .collect::<mlua::Result<Vec<_>>>()?;
+
+            this.kv_client
+                .delete_pairs(DeletePairsRequest { pairs: keys })
+                .await
+                .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
+
+            Ok(())
+        })
+    }
+}
+
+trait KvValue {
+    /// Converts this value into representation of the value with the stringified value.
+    /// If the [`Option`] is [`None`], then the value should be deleted.
+    fn into_service_value(self) -> Result<Option<(ValueType, String)>, mlua::Error>;
+}
+
+impl KvValue for mlua::Value<'_> {
+    fn into_service_value(self) -> Result<Option<(ValueType, String)>, mlua::Error> {
+        Ok(Some(match self {
+            mlua::Value::Nil => {
+                return Ok(None);
+            }
+            mlua::Value::Boolean(v) => (ValueType::Boolean, v.to_string()),
+            mlua::Value::Integer(v) => (ValueType::Integer, v.to_string()),
+            mlua::Value::Number(v) => (ValueType::Number, v.to_string()),
+            mlua::Value::String(v) => (ValueType::String, v.to_str().unwrap().to_owned()),
+            mlua::Value::Table(v) => (
+                ValueType::Json,
+                serde_json::to_string(&v)
+                    .map_err(|e| mlua::Error::SerializeError(e.to_string()))?,
+            ),
+            mlua::Value::Vector(v) => (
+                ValueType::Json,
+                serde_json::to_string(&v)
+                    .map_err(|e| mlua::Error::SerializeError(e.to_string()))?,
+            ),
+            _ => {
+                return Err(mlua::Error::SerializeError(
+                    "Invalid datatype provided".to_owned(),
+                ))
+            }
+        }))
     }
 }
