@@ -6,6 +6,7 @@ import { withAuthentication } from '@/helpers/authenticated';
 import {
   ActionIcon,
   Badge,
+  Box,
   Breadcrumbs,
   Button,
   Code,
@@ -14,12 +15,15 @@ import {
   Modal,
   Select,
   Table,
+  Text,
   TextInput,
 } from '@mantine/core';
-import { IconEdit, IconTrash } from '@tabler/icons-react';
+import { IconCopy, IconEdit, IconTrash } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { breadcrumbs } from '@/helpers/util';
-import { useDisclosure } from '@mantine/hooks';
+import { useClipboard, useDisclosure } from '@mantine/hooks';
+import { JsonInput } from '@mantine/core';
+import { Json } from '@/components/Json';
 
 const Namespace = () => {
   const router = useRouter();
@@ -135,7 +139,7 @@ const Namespace = () => {
           ))}
         </tbody>
       </Table>
-      <Button onClick={() => loadNextPage()}>Load More</Button>
+      {token && <Button onClick={() => loadNextPage()}>Load More</Button>}
     </>
   ) : (
     <Loader />
@@ -181,6 +185,7 @@ const Pair: React.FC<{
   );
 
   const [opened, { open, close }] = useDisclosure(false);
+  const clipboard = useClipboard();
 
   return (
     <>
@@ -196,9 +201,30 @@ const Pair: React.FC<{
         <td>
           <Badge>{pair.type}</Badge>
         </td>
-        <td>{pair.value}</td>
+        <td>
+          {(pair.type as unknown as string) === 'JSON' ? (
+            <Box miw={'200px'}>
+              <Json value={JSON.parse(pair.value)} />
+            </Box>
+          ) : (
+            <Text>{pair.value}</Text>
+          )}
+        </td>
         <td>
           <Group>
+            <ActionIcon
+              variant="default"
+              onClick={() => {
+                clipboard.copy(pair.value);
+                notifications.show({
+                  title: 'Copied',
+                  message: `Copied ${pair.key} to clipboard.`,
+                });
+              }}
+              size={30}
+            >
+              <IconCopy size="1rem" />
+            </ActionIcon>
             <ActionIcon variant="default" onClick={deletePair} size={30}>
               <IconTrash size="1rem" />
             </ActionIcon>
@@ -243,13 +269,27 @@ const EditModal: React.FC<{
         label="Value type"
         value={currentType}
       />
-      <TextInput
-        placeholder="Value"
-        label="Pair value"
-        withAsterisk
-        value={currentValue}
-        onChange={(event) => setCurrentValue(event.currentTarget.value)}
-      />
+      {currentType === 'JSON' ? (
+        <JsonInput
+          placeholder="Value"
+          label="Pair value"
+          validationError="Invalid JSON"
+          formatOnBlur
+          autosize
+          withAsterisk
+          value={currentValue}
+          onChange={(value) => setCurrentValue(value)}
+        />
+      ) : (
+        <TextInput
+          placeholder="Value"
+          label="Pair value"
+          withAsterisk
+          value={currentValue}
+          onChange={(event) => setCurrentValue(event.currentTarget.value)}
+        />
+      )}
+
       <Group position="right" mt="md">
         <Button
           type="submit"
