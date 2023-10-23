@@ -7,7 +7,7 @@ use crate::{
         kv_service::kv_service_client::KvServiceClient,
         script_service::{Revision, Script},
     },
-    runtime::extension::standard_extensions::JsonExtension,
+    runtime::extension::standard_extensions::{JsonExtension, UuidExtension},
 };
 
 use self::extension::LuaExtension;
@@ -202,6 +202,7 @@ impl ActiasRuntime {
 
         lua.register_extensions(&[
             &JsonExtension,
+            &UuidExtension,
             &crate::extensions::http::HttpExtension,
             &KvExtension {
                 kv_client,

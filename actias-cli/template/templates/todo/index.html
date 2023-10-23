@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Todo List</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss/dist/tailwind.min.css" rel="stylesheet">
+</head>
+
+<body class="bg-blue-100">
+    <div class="w-full h-full flex content-center justify-center mt-8">
+        <div class="bg-white shadow-md rounded px-8 pt-6 py-8 mb-4">
+            <h1 class="block text-grey-800 text-md font-bold mb-2">Todo List</h1>
+            <div class="flex">
+                <input id="item-input" type="text" placeholder="New task"
+                    class="shadow appearance-none border rounded w-full py-2 px-3 text-grey-800 leading-tight focus:outline-none focus:shadow-outline">
+                <button onclick="addItem()"
+                    class="bg-blue-500 hover:bg-blue-800 text-white font-bold ml-2 py-2 px-4 rounded focus:outline-none focus:shadow-outline">Add
+                </button>
+            </div>
+            <ul id="todo-list" class="mt-4"></ul>
+        </div>
+    </div>
+    <script>
+        const baseUrl = window.location.pathname;
+
+        async function getTodoList() {
+            const response = await fetch(`${baseUrl}/todo`);
+            return await response.json();
+        }
+
+        async function addItem() {
+            const inputElement = document.getElementById('item-input');
+            const response = await fetch(`${baseUrl}/todo`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item: inputElement.value })
+            });
+            inputElement.value = '';
+            loadTodoList();
+        }
+
+        async function markAsCompleted(id, completed) {
+            await fetch(`${baseUrl}/todo/${id}?completed=${completed}`, { method: 'PUT' });
+            loadTodoList();
+        }
+
+        async function deleteItem(id) {
+            await fetch(`${baseUrl}/todo/${id}`, { method: 'DELETE' });
+            loadTodoList();
+        }
+
+        async function loadTodoList() {
+            const todos = await getTodoList();
+            const listElement = document.getElementById('todo-list');
+            listElement.innerHTML = '';
+            todos.forEach(item => {
+                const listItemElement = document.createElement('li');
+                listItemElement.className = `flex items-center justify-between my-2`;
+
+                const left = document.createElement('span')
+
+                // Inner text content
+                const text = document.createElement('span')
+                text.textContent = item.item
+                text.className = `${item.completed ? 'line-through' : ''}`
+
+                left.append(makeCompleteCheckbox(item.id, item.completed), text)
+
+                listItemElement.append(left);
+
+                listItemElement.append(makeDeleteButton(item.id));
+                listElement.append(listItemElement);
+            });
+        }
+
+        const makeCompleteCheckbox = (id, completed) => {
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = completed;
+            checkbox.classList = 'mr-2';
+            checkbox.addEventListener('click', () => markAsCompleted(id, !completed));
+            return checkbox;
+        }
+
+        const makeDeleteButton = id => {
+            const deleteButton = document.createElement('button');
+            deleteButton.textContent = '🗑️';
+            deleteButton.addEventListener('click', () => deleteItem(id));
+            deleteButton.className = 'bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-2 rounded focus:outline-none focus:shadow-outline';
+            return deleteButton;
+        }
+
+
+        loadTodoList();  // initial load of the todo list
+    </script>
+</body>
+
+</html>

@@ -57,4 +57,27 @@ pub mod standard_extensions {
             }
         }
     }
+
+    pub struct UuidExtension;
+
+    impl LuaExtension for UuidExtension {
+        fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value> {
+            let uuid = lua.create_table()?;
+
+            uuid.set(
+                "v4",
+                lua.create_function(|_lua, _: ()| Ok(uuid::Uuid::new_v4().to_string()))?,
+            )?;
+
+            Ok(mlua::Value::Table(uuid))
+        }
+
+        fn extension_info(&self) -> ExtensionInfo {
+            ExtensionInfo {
+                name: "uuid",
+                description: "UUID module for generating UUIDs.",
+                default: true,
+            }
+        }
+    }
 }

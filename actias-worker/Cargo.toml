@@ -22,3 +22,11 @@ prost = { workspace = true }
 [build-dependencies]
 tonic-build = { workspace = true }
 prost-build = { workspace = true }
+
+[dependencies.uuid]
+version = "1.5.0"
+features = [
+    "v4",
+    "fast-rng",
+    "macro-diagnostics",
+]

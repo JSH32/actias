@@ -1,0 +1,11 @@
+{
+  "id": null,
+  "entryPoint": "main.lua",
+  "includes": [
+    "**/*.lua",
+    "index.html"
+  ],
+  "ignore": [
+    "definitions/**"
+  ]
+}
