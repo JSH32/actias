@@ -73,7 +73,7 @@ local function match_path(request_path, route_path)
 
     local route_segments, route_parameters = parse_path(route_path)
     local request_segments = {}
-    for segment in string.gmatch(request_path, "%w+") do
+    for segment in string.gmatch(request_path, "/([^/]+)") do
         table.insert(request_segments, segment)
     end
 
