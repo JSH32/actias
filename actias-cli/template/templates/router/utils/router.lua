@@ -132,20 +132,26 @@ function Router:setErrorHandler(handler) self.errorHandler = handler end
 ---@return boolean, string[] # true if the request is valid, otherwise false and list of errors.
 function Router:validate_request(request, route)
     local errors = {}
-    local body_params = json.parse(request.body)
+    local body_params = {}
 
-    for paramName, validators in pairs(route.validators) do
-        local value = body_params[paramName]
+    if request.body ~= nil and #request.body ~= 0 then
+        body_params = json.parse(request.body)
+    end
 
-        if value == nil then
-            table.insert(errors, "Field '" .. paramName .. "' is missing.")
-        else
-            for validatorName, validatorFn in pairs(validators) do
-                local isValid, errMsg = validatorFn(value)
-                if not isValid then
-                    errMsg = "Field '" .. paramName .. "': " .. errMsg
-                    table.insert(errors, errMsg)
-                    break
+    if route.validators then
+        for paramName, validators in pairs(route.validators) do
+            local value = body_params[paramName]
+
+            if value == nil then
+                table.insert(errors, "Field '" .. paramName .. "' is missing.")
+            else
+                for validatorName, validatorFn in pairs(validators) do
+                    local isValid, errMsg = validatorFn(value)
+                    if not isValid then
+                        errMsg = "Field '" .. paramName .. "': " .. errMsg
+                        table.insert(errors, errMsg)
+                        break
+                    end
                 end
             end
         end

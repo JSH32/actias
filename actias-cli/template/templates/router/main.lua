@@ -1,4 +1,4 @@
-local Router = require "utils/router"
+local Router = require "utils.router"
 
 local router = Router.new()
 

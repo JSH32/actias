@@ -13,6 +13,7 @@ use client::{
     types::{CreateScriptDto, ScriptDto},
     Client,
 };
+
 use include_dir::{include_dir, Dir};
 use inquire::{Confirm, Text};
 
@@ -28,7 +29,7 @@ use crate::{
     util::{copy_definitions, get_dir, progenitor_error},
 };
 
-static PROJ_TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template/project");
+static PROJ_TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template/templates");
 
 /// Actias CLI for interacting with the actias API.
 #[derive(Parser, Debug)]
@@ -47,6 +48,8 @@ enum Commands {
     Init {
         /// Folder name of the new project
         name: String,
+        /// Template name
+        template: Option<String>,
         /// Id of the project to create the script under.
         project_id: Option<String>,
     },
@@ -156,8 +159,12 @@ async fn main() {
     let client = Client::new_with_client(&api_url, req_client);
 
     match cli.command {
-        Commands::Init { project_id, name } => {
-            if let Err(e) = create_script(&client, &name, project_id).await {
+        Commands::Init {
+            project_id,
+            name,
+            template,
+        } => {
+            if let Err(e) = create_script(&client, &name, project_id, template).await {
                 println!("❌ Error while initializing project, {}", e.to_string())
             }
         }
@@ -354,9 +361,34 @@ async fn script_manage_command(
                     {
                         let script_path = get_dir(&script.public_identifier, true, true)?;
 
-                        PROJ_TEMPLATE_DIR
-                            .extract(&script_path)
-                            .map_err(|e| e.to_string())?;
+                        let template_names: Vec<String> = PROJ_TEMPLATE_DIR
+                            .dirs()
+                            .map(|f| f.path().file_name().unwrap().to_string_lossy().into_owned())
+                            .collect();
+
+                        let template = inquire::Select::new(
+                            "What template would you like to use?",
+                            template_names,
+                        )
+                        .prompt()
+                        .map_err(|e| e.to_string())?;
+
+                        // This is a workaround that creates the template dir and then copies it out and deletes the temp dir.
+                        {
+                            let mut temp_path = script_path.clone();
+                            temp_path.push(&template);
+
+                            std::fs::create_dir_all(temp_path.clone()).unwrap();
+
+                            PROJ_TEMPLATE_DIR
+                                .get_dir(&template)
+                                .unwrap()
+                                .extract(&script_path)
+                                .map_err(|e| e.to_string())?;
+
+                            util::copy_dir_all(&temp_path, &script_path).unwrap();
+                            std::fs::remove_dir_all(temp_path).unwrap();
+                        }
 
                         let mut script_config = ScriptConfig::from_path(&script_path).unwrap();
                         script_config.id = Some(script.id.clone());
@@ -585,6 +617,7 @@ async fn create_script(
     client: &Client,
     script_name: &str,
     project_id: Option<String>,
+    template: Option<String>,
 ) -> Result<(), String> {
     // Ensure access
     if let Some(project_id) = &project_id {
@@ -600,11 +633,48 @@ async fn create_script(
         }
     }
 
+    let names: Vec<String> = PROJ_TEMPLATE_DIR
+        .dirs()
+        .map(|f| f.path().file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+
+    let (template_name, template) = if let Some(template) = template {
+        if !names.contains(&template) {
+            return Err(format!(
+                "Template {} not found, available templates: {:#?}",
+                template, names
+            ));
+        } else {
+            (
+                template.clone(),
+                PROJ_TEMPLATE_DIR.get_dir(&template).unwrap(),
+            )
+        }
+    } else {
+        let template = inquire::Select::new("What template would you like to use?", names)
+            .prompt()
+            .map_err(|e| e.to_string())?;
+
+        (
+            template.clone(),
+            PROJ_TEMPLATE_DIR.get_dir(&template).unwrap(),
+        )
+    };
+
     let script_path = get_dir(script_name, true, true)?;
 
-    PROJ_TEMPLATE_DIR
-        .extract(&script_path)
-        .map_err(|e| e.to_string())?;
+    // This is a workaround that creates the template dir and then copies it out and deletes the temp dir.
+    {
+        let mut temp_path = script_path.clone();
+        temp_path.push(template_name);
+
+        std::fs::create_dir_all(temp_path.clone()).unwrap();
+
+        template.extract(&script_path).map_err(|e| e.to_string())?;
+
+        util::copy_dir_all(&temp_path, &script_path).unwrap();
+        std::fs::remove_dir_all(temp_path).unwrap();
+    }
 
     copy_definitions(&script_path)?;
 
