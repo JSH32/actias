@@ -1,9 +1,15 @@
 ---@meta
 ---@diagnostic disable: lowercase-global, missing-return
-
 ---@alias HttpMethod
----| "GET"|"POST"|"PUT"|"DELETE"|"HEAD"|"OPTIONS"|"CONNECT"|"PATCH"|"TRACE"
-
+---| "GET"
+---| "POST"
+---| "PUT"
+---| "DELETE"
+---| "HEAD"
+---| "OPTIONS"
+---| "CONNECT"
+---| "PATCH"
+---| "TRACE"
 ---@class Uri Parse a URI into parts.
 ---@field scheme string URI scheme.
 ---@field authority string URI authority.
@@ -13,9 +19,11 @@ Uri = {}
 
 ---Parse a lua string into a URI.
 ---@param string string string to parse into URI.
+---@return Uri # Parsed URI from string.
 function Uri.parse(string) end
 
 ---Convert a URI to a string.
+---@return string # URI to string representation.
 function Uri:tostring() end
 
 ---@class Request Represents an HTTP request.

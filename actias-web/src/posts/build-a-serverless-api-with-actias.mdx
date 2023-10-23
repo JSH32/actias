@@ -1,0 +1,144 @@
+---
+title: Building a Todo API with Actias
+tags:
+  - tutorial
+  - actias
+date: 2023-10-29
+excerpt: Diving deeper in creating a serverless API using Actias
+image: /images/example_todos.jpg
+category: Tutorial
+---
+
+Today, we are going to build a ToDo app with Actias. We will use the Actias KV storage system to save and retrieve our todo list data.
+
+Our API will allow us to:
+- Get all todos
+- Add a new todo
+- Update an existing todo
+- Delete an existing todo
+
+Before we start, make sure that you have the Actias CLI installed on your machine and you are familiar with Lua. Let's get started!
+
+### Step 1: Create a new project
+
+Open a terminal and use the Actias CLI to create a new project:
+
+```bash
+actias-cli init todo-api
+```
+
+### Step 2: Modeling our Data 
+
+In this step, we'll define the data structure of our todo items, which will have two properties: `name` and `completed`. We'll store our todos in the Actias KV storage. Our key will be 'data', and the value will be a list of our todos.
+
+```json
+{
+    "name": "Learn Actias",
+    "completed": false
+}
+```
+
+### Step 3: Creating and Storing Todos
+
+Let's write the code to handle a POST request to add a new todo. 
+
+```lua
+add_event_listener("fetch", function(request)
+    if request.method == "POST" then
+        local kv_namespace = kv.get_namespace("todo")
+        local todos = kv_namespace:get("data") or {} -- Pull current todos from KV storage. If none exist, initialize with an empty table.
+
+        local new_todo = request.body -- Extract the new todo from the request body
+        table.insert(todos, new_todo) -- Insert the new todo into our todos table
+
+        kv_namespace:put("data", todos) -- Store our updated todos in KV storage
+
+        -- Return the updated list of todos
+        return {
+            body = json.stringify(todos),
+            headers = {["Content-Type"]="application/json"}
+        }
+    end
+end)
+```
+
+With the above handler, when we receive a POST request, we first retrieve our current todos from KV storage. If there are no todos yet (for example, on the first run), we initialize with an empty table. Next, we insert the new todo from the request body into our table and store the updated todos back into KV storage.
+
+### Step 4: Fetching Todos
+
+We'll need to handle GET requests to retrieve all todos:
+
+```lua
+add_event_listener("fetch", function(request)
+    if request.method == "GET" then
+        local kv_namespace = kv.get_namespace("todo")
+        local todos = kv_namespace:get("data") or {}
+
+        return {
+            body = json.stringify(todos),
+            headers = {["Content-Type"]="application/json"}
+        }
+    end
+end)
+```
+
+Here, we simply retrieve our stored todos from Actias KV and return them in the response.
+
+### Step 5: Updating and Deleting Todos
+
+To update or delete todos based on their index, we modify our code to respect PUT and DELETE requests. This example for updating and deleting is based on an index which means the first todo item in the list will have an index of 1. Note that this is just a basic implementation and in a more robust API, we would use unique identifiers like UUID.
+
+```lua
+add_event_listener("fetch", function(request)
+    -- Get Todos or Create new Todo here
+
+    if request.method == "PUT" then
+        local kv_namespace = kv.get_namespace("todo")
+        local todos = kv_namespace:get("data") or {}
+
+        -- We are assuming the request body contains the index of the todo, and the updated todo
+        local updated_todo = request.body.todo
+        local index = request.body.index
+
+        todos[index] = updated_todo -- Replace the old todo with the updated one
+
+        kv_namespace:put("data", todos) -- Store our updated todos in KV storage
+
+        return {
+            body = json.stringify(todos),
+            headers = {["Content-Type"]="application/json"}
+        }
+    end
+
+    if request.method == "DELETE" then
+        local kv_namespace = kv.get_namespace("todo")
+        local todos = kv_namespace:get("data") or {}
+
+        local index = request.body.index
+
+        table.remove(todos, index) -- Remove the todo at the specified index
+
+        kv_namespace:put("data", todos) -- Store our updated todos in KV storage
+
+        return {
+            body = json.stringify(todos),
+            headers = {["Content-Type"]="application/json"}
+        }
+    end
+end)
+```
+With this setup, we can maintain todos by their place in the list. This approach suits a small app with one user but in a larger application, you might need a more robust method such as using unique identifiers.
+
+### Step 6: Deploy your project
+
+Final step! You've written the Lua code for your serverless todo app, the next step is to push it live with:
+
+```bash
+actias-cli publish
+```
+
+With that, our serverless Todo app is complete! Hopefully, you've gained a good understanding of how you can consume the Actias platform to build your APIs. It's worth noting though that while our example was quite basic, you can create much more complex scenarios harnessing Actias and Lua's power.
+
+*(All screenshots in this tutorial are purely illustrative and for demonstration purposes only.)*
+
+Happy coding!

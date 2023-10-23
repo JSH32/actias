@@ -12,6 +12,10 @@ import { Notifications } from '@mantine/notifications';
 import { Header } from '@/components/Header';
 import { Store, StoreContext } from '@/helpers/state';
 
+import { Prism } from 'prism-react-renderer';
+((typeof global !== 'undefined' ? global : window) as any).Prism = Prism;
+require('prismjs/components/prism-lua');
+
 export default function App(props: AppProps & { colorScheme: ColorScheme }) {
   const { Component, pageProps } = props;
   const [colorScheme, setColorScheme] = useState<ColorScheme>(
