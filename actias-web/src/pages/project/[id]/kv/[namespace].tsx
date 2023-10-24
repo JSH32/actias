@@ -34,6 +34,11 @@ const Namespace = () => {
 
   const loadNextPage = useCallback(
     (reload: boolean = false) => {
+      if (reload) {
+        setItems([]);
+        setToken(undefined);
+      }
+
       api.kv
         .listNamespace(
           router.query.id as string,
@@ -41,21 +46,8 @@ const Namespace = () => {
           token,
         )
         .then((res) => {
-          if (reload) {
-            setItems([]);
-            setToken(undefined);
-          }
-
           if (res.pairs.length) {
-            // Make all items unique (remove duplicate keys using filter)
-            const newItems = [...(items || []), ...res.pairs];
-
-            setItems(
-              newItems.filter(
-                (item, index, self) =>
-                  self.findIndex((t) => t.key === item.key) === index,
-              ),
-            );
+            setItems(res.pairs);
             setToken(res.token);
           } else if (
             res.pairs.length < 1 &&
@@ -89,6 +81,32 @@ const Namespace = () => {
         });
     },
     [items, router],
+  );
+
+  const [addItemOpened, addItemControl] = useDisclosure(false);
+  const addPair = useCallback(
+    (key: string, newPair: SetKeyDto) => {
+      api.kv
+        .setKey(
+          router.query.id as string,
+          router.query.namespace as string,
+          key,
+          {
+            type: newPair.type,
+            value: newPair.value,
+          },
+        )
+        .then(() => {
+          notifications.show({
+            title: 'Key set!',
+            message: `Key ${key} was set.`,
+          });
+
+          loadNextPage(true);
+        })
+        .catch(showError);
+    },
+    [router, loadNextPage],
   );
 
   useEffect(() => {
@@ -139,6 +157,12 @@ const Namespace = () => {
           ))}
         </tbody>
       </Table>
+      <EditModal
+        onSubmit={addPair}
+        onClose={addItemControl.close}
+        opened={addItemOpened}
+      />
+      <Button onClick={() => addItemControl.open()}>Create Item</Button>
       {token && <Button onClick={() => loadNextPage()}>Load More</Button>}
     </>
   ) : (
@@ -166,7 +190,7 @@ const Pair: React.FC<{
   }, [onDelete, pair]);
 
   const editPair = useCallback(
-    (newPair: SetKeyDto) => {
+    (_: string, newPair: SetKeyDto) => {
       api.kv
         .setKey(pair.projectId, pair.namespace, pair.key, {
           type: newPair.type,
@@ -239,27 +263,42 @@ const Pair: React.FC<{
 };
 
 const EditModal: React.FC<{
-  pair: PairDto;
-  onSubmit: (value: SetKeyDto) => void;
+  pair?: PairDto;
+  onSubmit: (key: string, value: SetKeyDto) => void;
   onClose: () => void;
   opened: boolean;
 }> = ({ pair, onSubmit, onClose, opened }) => {
   const [currentType, setCurrentType] = useState<string>(
-    pair.type as unknown as string,
+    (pair?.type as unknown as string) || 'STRING',
   );
 
-  const [currentValue, setCurrentValue] = useState<any>(pair.value);
+  const [currentValue, setCurrentValue] = useState<any>(pair?.value || 'Hello');
+  const [key, setKey] = useState<string>(pair?.key || '');
 
   return (
     <Modal
       opened={opened}
       onClose={onClose}
       title={
-        <>
-          Edit key <Code>{pair.key}</Code>
-        </>
+        pair ? (
+          <>
+            Edit key <Code>{pair.key}</Code>
+          </>
+        ) : (
+          <>Create key</>
+        )
       }
     >
+      {!pair && (
+        <TextInput
+          placeholder="Key"
+          label="Pair key"
+          withAsterisk
+          value={key}
+          onChange={(event) => setKey(event.currentTarget.value)}
+        />
+      )}
+
       <Select
         withinPortal
         data={['JSON', 'NUMBER', 'INTEGER', 'BOOLEAN', 'STRING'].map(
@@ -294,7 +333,7 @@ const EditModal: React.FC<{
         <Button
           type="submit"
           onClick={() => {
-            onSubmit({ type: currentType, value: currentValue });
+            onSubmit(key, { type: currentType, value: currentValue });
             onClose();
           }}
         >
