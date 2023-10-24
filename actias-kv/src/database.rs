@@ -39,6 +39,7 @@ pub struct Database {
     update_statement: PreparedStatement,
     get_statement: PreparedStatement,
     get_namespace_statement: PreparedStatement,
+    get_namespace_count_statement: PreparedStatement,
     get_namespaces_statement: PreparedStatement,
 }
 
@@ -106,6 +107,18 @@ impl Database {
             .await
             .unwrap();
 
+        let get_namespace_count_statement = session
+            .prepare(
+                r#"
+            SELECT COUNT(*)
+            FROM kv_service.pairs
+            WHERE project_id = ?
+                AND namespace = ?
+            ALLOW FILTERING"#,
+            )
+            .await
+            .unwrap();
+
         let get_project_statement = session
             .prepare(
                 r#"
@@ -143,6 +156,7 @@ impl Database {
             get_project_statement,
             update_statement,
             get_statement,
+            get_namespace_count_statement,
             get_namespace_statement,
             get_namespaces_statement,
         }
@@ -419,16 +433,35 @@ impl Database {
 
         let token = match page.paging_state.clone() {
             Some(v) => {
-                let mut output = String::new();
+                // We check the next page count to figure out if we should include a token.
+                // We don't want to send a token if there is no next page.
+                let (next_page_count,) = self
+                    .session
+                    .execute_paged(
+                        &self.get_namespace_count_statement,
+                        (project_id, namespace),
+                        Some(v.clone()),
+                    )
+                    .await
+                    .map_err(DatabaseError::from)?
+                    .first_row()
+                    .unwrap()
+                    .into_typed::<(i64,)>()?;
 
-                write::EncoderStringWriter::from_consumer(
-                    &mut output,
-                    &general_purpose::STANDARD_NO_PAD,
-                )
-                .write_all(&v)
-                .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+                if next_page_count > 0 {
+                    let mut output = String::new();
 
-                Some(output)
+                    write::EncoderStringWriter::from_consumer(
+                        &mut output,
+                        &general_purpose::STANDARD_NO_PAD,
+                    )
+                    .write_all(&v)
+                    .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+
+                    Some(output)
+                } else {
+                    None
+                }
             }
             None => None,
         };
