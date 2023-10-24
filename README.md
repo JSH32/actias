@@ -7,6 +7,15 @@
 # Actias
 Actias is a lua based serverless scripting platform for HTTP workers and jobs.
 
+```lua
+add_event_listener("fetch", function(request)
+    return {
+        body = json.stringify({hello = "world"}),
+        headers = {["Content-Type"] = "application/json"}
+    }
+end)
+```
+
 ## What actually is Actias?
 ```mermaid
 flowchart LR
