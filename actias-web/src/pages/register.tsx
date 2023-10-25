@@ -91,7 +91,7 @@ export default function Register() {
       >
         <TextInput
           label="Username"
-          placeholder="you"
+          placeholder="Username"
           required
           {...form.getInputProps('username')}
         />

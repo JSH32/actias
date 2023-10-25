@@ -20,3 +20,28 @@ export class CreateUserDto {
   @Length(8, 64)
   password: string;
 }
+
+/**
+ * Update user details.
+ */
+export class UpdateUserDto {
+  @Length(6, 36)
+  username!: string;
+
+  @IsEmail()
+  email!: string;
+}
+
+export class UpdatePasswordDto {
+  /**
+   * This is only needed if a password is set.
+   * OAuth only accounts or accounts with alternative methods
+   * do not need this.
+   */
+  currentPassword?: string;
+  /**
+   * Password between 8 and 64 characters.
+   */
+  @Length(8, 64)
+  password: string;
+}

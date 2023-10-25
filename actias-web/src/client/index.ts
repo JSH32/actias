@@ -29,6 +29,8 @@ export type { RevisionFullDto } from './models/RevisionFullDto';
 export type { ScriptConfigDto } from './models/ScriptConfigDto';
 export type { ScriptDto } from './models/ScriptDto';
 export type { SetKeyDto } from './models/SetKeyDto';
+export type { UpdatePasswordDto } from './models/UpdatePasswordDto';
+export type { UpdateUserDto } from './models/UpdateUserDto';
 export type { UserDto } from './models/UserDto';
 
 export { AclService } from './services/AclService';

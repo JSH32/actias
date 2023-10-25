@@ -14,6 +14,7 @@ export class KvService {
     constructor(public readonly httpRequest: BaseHttpRequest) {}
 
     /**
+     * List all namespaces in a project.
      * @param project
      * @returns NamespaceDto
      * @throws ApiError
@@ -31,6 +32,7 @@ export class KvService {
     }
 
     /**
+     * Delete a namespace and all keys in a project.
      * @param project
      * @param namespace
      * @returns MessageResponseDto
@@ -77,6 +79,7 @@ export class KvService {
     }
 
     /**
+     * Get a value from a key in a namespace.
      * @param project
      * @param namespace
      * @param key
@@ -100,6 +103,7 @@ export class KvService {
     }
 
     /**
+     * Delete a value from a key in a namespace.
      * @param project
      * @param namespace
      * @param key
@@ -123,6 +127,7 @@ export class KvService {
     }
 
     /**
+     * Create or update a value from a key in a namespace.
      * @param project
      * @param namespace
      * @param key

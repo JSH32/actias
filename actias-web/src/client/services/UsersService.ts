@@ -1,7 +1,10 @@
 /* istanbul ignore file */
 /* tslint:disable */
 import type { CreateUserDto } from '../models/CreateUserDto';
+import type { MessageResponseDto } from '../models/MessageResponseDto';
 import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
+import type { UpdatePasswordDto } from '../models/UpdatePasswordDto';
+import type { UpdateUserDto } from '../models/UpdateUserDto';
 import type { UserDto } from '../models/UserDto';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -57,6 +60,40 @@ export class UsersService {
         return this.httpRequest.request({
             method: 'GET',
             url: '/api/users/@me',
+        });
+    }
+
+    /**
+     * Update user details.
+     * @param requestBody
+     * @returns UserDto
+     * @throws ApiError
+     */
+    public update(
+        requestBody: UpdateUserDto,
+    ): CancelablePromise<UserDto> {
+        return this.httpRequest.request({
+            method: 'PUT',
+            url: '/api/users/@me',
+            body: requestBody,
+            mediaType: 'application/json',
+        });
+    }
+
+    /**
+     * Update user details.
+     * @param requestBody
+     * @returns MessageResponseDto
+     * @throws ApiError
+     */
+    public updatePassword(
+        requestBody: UpdatePasswordDto,
+    ): CancelablePromise<MessageResponseDto> {
+        return this.httpRequest.request({
+            method: 'PUT',
+            url: '/api/users/@me/password',
+            body: requestBody,
+            mediaType: 'application/json',
         });
     }
 

@@ -10,7 +10,7 @@ const HomePage = observer(() => {
     <>
       {store?.userData ? (
         <>
-          <Link href="/user">
+          <Link href="/projects">
             <Button>Dashboard</Button>
           </Link>
         </>
