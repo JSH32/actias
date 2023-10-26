@@ -123,7 +123,7 @@ const Namespace = () => {
     <>
       <Breadcrumbs>
         {breadcrumbs([
-          { title: 'Home', href: '/user' },
+          { title: 'Home', href: '/projects' },
           {
             title: parentProject?.name as string,
             href: `/project/${parentProject?.id}`,

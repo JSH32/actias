@@ -29,7 +29,7 @@ const Project = () => {
     <>
       <Breadcrumbs>
         {breadcrumbs([
-          { title: 'Home', href: '/user' },
+          { title: 'Home', href: '/projects' },
           { title: project?.name, href: `/project/${project?.id}` },
         ])}
       </Breadcrumbs>

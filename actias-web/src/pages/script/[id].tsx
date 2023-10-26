@@ -108,7 +108,7 @@ const Script = () => {
     <>
       <Breadcrumbs>
         {breadcrumbs([
-          { title: 'Home', href: '/user' },
+          { title: 'Home', href: '/projects' },
           { title: parentProject?.name, href: `/project/${parentProject?.id}` },
           { title: 'scripts', href: `/project/${parentProject?.id}` },
           { title: script?.publicIdentifier, href: `/script/${script?.id}` },

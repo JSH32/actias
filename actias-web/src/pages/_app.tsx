@@ -1,3 +1,4 @@
+import '@/styles/globals.css';
 import { useEffect, useState } from 'react';
 import NextApp, { AppProps, AppContext } from 'next/app';
 import { getCookie, setCookie } from 'cookies-next';
@@ -55,6 +56,7 @@ export default function App(props: AppProps & { colorScheme: ColorScheme }) {
         >
           <MantineProvider
             theme={{
+              fontFamily: 'Greycliff CF, sans-serif',
               colorScheme,
               primaryColor: 'grape',
             }}

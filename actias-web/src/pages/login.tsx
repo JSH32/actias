@@ -27,12 +27,13 @@ export default function Login() {
     initialValues: {
       auth: '',
       password: '',
+      rememberMe: false,
     },
   });
 
   // Go to user info if logged in
   React.useEffect(() => {
-    if (store?.userData) router.push('/user');
+    if (store?.userData) router.push('/projects');
   }, [store, router]);
 
   const login = React.useCallback(
@@ -101,7 +102,10 @@ export default function Login() {
           {...form.getInputProps('password')}
         />
         <Group position="apart" mt="lg">
-          <Checkbox label="Remember me" />
+          <Checkbox
+            label="Remember me"
+            {...form.getInputProps('rememberMe', { type: 'checkbox' })}
+          />
           <Anchor component="button" size="sm">
             Forgot password?
           </Anchor>

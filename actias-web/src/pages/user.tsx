@@ -1,4 +1,3 @@
-import { Json } from '@/components/Json';
 import { withAuthentication } from '@/helpers/authenticated';
 import { useStore } from '@/helpers/state';
 import { Button, Group, PasswordInput, TextInput } from '@mantine/core';
@@ -71,8 +70,6 @@ const User = () => {
 
   return (
     <>
-      {<Json value={store?.userData} />}
-
       <form onSubmit={detailsForm.onSubmit(updateUser)}>
         <TextInput
           withAsterisk
@@ -88,9 +85,9 @@ const User = () => {
           {...detailsForm.getInputProps('email')}
         />
 
-        <Group position="right" mt="md">
-          <Button type="submit">Save</Button>
-        </Group>
+        <Button fullWidth mt="xl" type="submit">
+          Save
+        </Button>
       </form>
 
       <form onSubmit={passwordForm.onSubmit(updatePassword)}>

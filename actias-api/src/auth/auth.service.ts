@@ -32,8 +32,11 @@ export class AuthService {
     return (await argon2.verify(password.value, pass)) ? user : null;
   }
 
-  signJwt(user: Users): string {
-    return this.jwtService.sign({ sub: user.id });
+  signJwt(user: Users, rememberMe = false): string {
+    return this.jwtService.sign(
+      { sub: user.id },
+      { expiresIn: rememberMe ? '60d' : '1d' },
+    );
   }
 
   async getUserFromToken(token: string): Promise<Users> {

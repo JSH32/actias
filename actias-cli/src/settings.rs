@@ -46,7 +46,12 @@ impl Settings {
 
             let auth = client
                 .login()
-                .body(LoginDto::builder().auth(username).password(password))
+                .body(
+                    LoginDto::builder()
+                        .auth(username)
+                        .password(password)
+                        .remember_me(true),
+                )
                 .send()
                 .await
                 .map_err(progenitor_error)?;

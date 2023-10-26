@@ -7,7 +7,7 @@ import {
   Header as MantineHeader,
   Menu,
   useMantineColorScheme,
-  Avatar,
+  Text,
   Button,
 } from '@mantine/core';
 import { useStore } from '@/helpers/state';
@@ -56,13 +56,16 @@ const UserNavigator = observer(() => {
   return store?.userData ? (
     <Menu shadow="md" width={200}>
       <Menu.Target>
-        <Avatar
+        {/* <Avatar
           radius="xl"
           component="button"
           src="avatar.png"
           alt={store.userData.username}
           style={{ cursor: 'pointer' }}
-        />
+        /> */}
+        <Text style={{ cursor: 'pointer' }} fw={700}>
+          {store.userData.username}
+        </Text>
       </Menu.Target>
       <Menu.Dropdown>
         <Menu.Item color="red" onClick={logout} icon={<IconLogout size={14} />}>

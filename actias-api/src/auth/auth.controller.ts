@@ -22,7 +22,7 @@ export class AuthController {
     if (!user) throw new UnauthorizedException('Invalid username/password.');
 
     return {
-      token: this.authService.signJwt(user),
+      token: this.authService.signJwt(user, login.rememberMe),
     };
   }
 }
