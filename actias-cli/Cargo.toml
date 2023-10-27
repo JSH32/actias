@@ -26,3 +26,4 @@ chrono = { version = "0.4", features = ["serde"] }
 bytes = "1.4.0"
 uuid = { version = "1.0.0", features = ["serde", "v4"] }
 schemars = "0.8.12"
+dirs = "5.0"
