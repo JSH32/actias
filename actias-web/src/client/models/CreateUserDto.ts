@@ -11,5 +11,9 @@ export type CreateUserDto = {
      * Password between 8 and 64 characters.
      */
     password: string;
+    /**
+     * Registration code (if needed).
+     */
+    registrationCode?: string;
 };
 

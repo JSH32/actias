@@ -22,6 +22,7 @@ import {
   PaginatedResponseDto,
 } from 'src/shared/dto/paginated';
 import { MessageResponseDto } from 'src/shared/dto/message';
+import { RegistrationConfigDto } from './dto/responses.dto';
 
 @ApiTags('users')
 @Controller('users')
@@ -36,6 +37,14 @@ export class UsersController {
   @Public()
   async createUser(@Body() createUser: CreateUserDto): Promise<UserDto> {
     return new UserDto(await this.userService.createUser(createUser));
+  }
+
+  @Get('/registrationConfig')
+  @Public()
+  registrationConfig(): RegistrationConfigDto {
+    return new RegistrationConfigDto({
+      inviteOnly: this.userService.isInviteOnly(),
+    });
   }
 
   /**

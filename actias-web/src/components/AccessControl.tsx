@@ -16,6 +16,7 @@ import {
   TextInput,
   Combobox,
   useCombobox,
+  Divider,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -105,6 +106,7 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   return (
     <Stack>
       <Title>Access</Title>
+      <Divider />
       {write && (
         <Combobox
           store={combobox}
@@ -214,6 +216,7 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
 };
 
 const SelectItem: React.FC<{ user: UserDto }> = ({ user }) => {
+  console.log(user);
   return (
     <Group wrap="nowrap">
       <div>

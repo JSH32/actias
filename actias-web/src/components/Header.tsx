@@ -6,6 +6,7 @@ import {
   IconSettings,
   IconFolderBolt,
   IconChevronDown,
+  IconSettingsAutomation,
 } from '@tabler/icons-react';
 import {
   ActionIcon,
@@ -128,6 +129,14 @@ const UserNavigator = observer(() => {
         >
           Settings
         </Menu.Item>
+        {store?.userData.admin && (
+          <Menu.Item
+            onClick={() => router.push('/admin')}
+            leftSection={<IconSettingsAutomation size={14} />}
+          >
+            Admin
+          </Menu.Item>
+        )}
         <Menu.Divider />
         <Menu.Item
           color="red"

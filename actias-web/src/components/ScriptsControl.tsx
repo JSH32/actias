@@ -15,6 +15,7 @@ import {
   Pagination,
   Loader,
   Tooltip,
+  Divider,
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { useDisclosure } from '@mantine/hooks';
@@ -88,6 +89,7 @@ const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   return (
     <Stack>
       <Title>Scripts</Title>
+      <Divider />
       {write && (
         <>
           <Button w={120} onClick={scriptModal.open}>

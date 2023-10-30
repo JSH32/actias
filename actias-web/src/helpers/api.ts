@@ -50,5 +50,5 @@ export const showError = (error: { body: Error }) =>
   notifications.show({
     color: 'red',
     title: 'Error',
-    message: error.body.message,
+    message: error?.body?.message || 'Something went wrong',
   });

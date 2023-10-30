@@ -3,7 +3,7 @@ import { withAuthentication } from '@/helpers/authenticated';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import api, { showError } from '@/helpers/api';
-import { Breadcrumbs, Loader } from '@mantine/core';
+import { Breadcrumbs, Loader, Stack } from '@mantine/core';
 import { breadcrumbs } from '@/helpers/util';
 import AccessControl from '@/components/AccessControl';
 import ScriptsControl from '@/components/ScriptsControl';
@@ -34,26 +34,28 @@ const Project = () => {
         ])}
       </Breadcrumbs>
 
-      {permissions?.permissions['SCRIPT_READ'] && (
-        <ScriptsControl
-          project={project}
-          write={permissions?.permissions['SCRIPT_WRITE']}
-        />
-      )}
+      <Stack>
+        {permissions?.permissions['SCRIPT_READ'] && (
+          <ScriptsControl
+            project={project}
+            write={permissions?.permissions['SCRIPT_WRITE']}
+          />
+        )}
 
-      {permissions?.permissions['KV_READ'] && (
-        <KvControl
-          project={project}
-          write={permissions?.permissions['KV_WRITE']}
-        />
-      )}
+        {permissions?.permissions['KV_READ'] && (
+          <KvControl
+            project={project}
+            write={permissions?.permissions['KV_WRITE']}
+          />
+        )}
 
-      {permissions?.permissions['PERMISSIONS_READ'] && (
-        <AccessControl
-          project={project}
-          write={permissions?.permissions['PERMISSIONS_WRITE']}
-        />
-      )}
+        {permissions?.permissions['PERMISSIONS_READ'] && (
+          <AccessControl
+            project={project}
+            write={permissions?.permissions['PERMISSIONS_WRITE']}
+          />
+        )}
+      </Stack>
     </>
   ) : (
     <Loader />

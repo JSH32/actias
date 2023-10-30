@@ -5,10 +5,15 @@ import { CreateUserDto, UpdateUserDto } from './dto/requests.dto';
 import * as argon2 from 'argon2';
 import { UserAuthMethod, AuthMethod } from 'src/entities/UserAuthMethod';
 import { PaginatedResponseDto } from 'src/shared/dto/paginated';
+import { ConfigService } from '@nestjs/config';
+import { RegistrationCodes } from 'src/entities/RegistrationCode';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly em: EntityManager) {}
+  constructor(
+    private readonly em: EntityManager,
+    private readonly config: ConfigService,
+  ) {}
 
   /**
    * Find a user by either their email or username.
@@ -112,6 +117,10 @@ export class UsersService {
     return user;
   }
 
+  isInviteOnly(): boolean {
+    return this.config.getOrThrow<boolean>('inviteOnly');
+  }
+
   async createUser(createUser: CreateUserDto): Promise<Users> {
     // Check if user exists.
     if (
@@ -122,6 +131,23 @@ export class UsersService {
       throw new BadRequestException(
         'User with that username/email already exists.',
       );
+    }
+
+    if (this.isInviteOnly()) {
+      if (!createUser.registrationCode) {
+        throw new BadRequestException('Registration code is required.');
+      }
+
+      const code = await this.em.findOneOrFail(RegistrationCodes, {
+        id: createUser.registrationCode,
+      });
+
+      if (code.uses <= 1) {
+        this.em.removeAndFlush(code);
+      } else {
+        code.uses -= 1;
+        this.em.persistAndFlush(code);
+      }
     }
 
     const user = new Users({

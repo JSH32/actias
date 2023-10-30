@@ -7,6 +7,7 @@ import {
   Button,
   Card,
   CloseButton,
+  Divider,
   Grid,
   Group,
   Loader,
@@ -84,6 +85,7 @@ const Projects = () => {
     <>
       <Stack>
         <Title>Projects</Title>
+        <Divider />
         <Button w={150} onClick={open}>
           Create Project
         </Button>

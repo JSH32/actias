@@ -14,6 +14,7 @@ import {
   Badge,
   Modal,
   TextInput,
+  Divider,
 } from '@mantine/core';
 import Link from 'next/link';
 import { useForm } from '@mantine/form';
@@ -90,6 +91,7 @@ const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   return (
     <Stack>
       <Title>KV Namespaces</Title>
+      <Divider />
 
       <Modal
         opened={createNamespaceModalOpened}

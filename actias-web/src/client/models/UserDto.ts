@@ -13,7 +13,7 @@ export type UserDto = {
     /**
      * If the user is a system admin.
      */
-    admin?: boolean;
+    admin: boolean;
     /**
      * Users email.
      */

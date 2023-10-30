@@ -3,6 +3,7 @@
 import type { CreateUserDto } from '../models/CreateUserDto';
 import type { MessageResponseDto } from '../models/MessageResponseDto';
 import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
+import type { RegistrationConfigDto } from '../models/RegistrationConfigDto';
 import type { UpdatePasswordDto } from '../models/UpdatePasswordDto';
 import type { UpdateUserDto } from '../models/UpdateUserDto';
 import type { UserDto } from '../models/UserDto';
@@ -48,6 +49,17 @@ export class UsersService {
                 'name': name,
                 'page': page,
             },
+        });
+    }
+
+    /**
+     * @returns RegistrationConfigDto
+     * @throws ApiError
+     */
+    public registrationConfig(): CancelablePromise<RegistrationConfigDto> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/users/registrationConfig',
         });
     }
 

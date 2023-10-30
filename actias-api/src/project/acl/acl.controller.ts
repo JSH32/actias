@@ -16,6 +16,8 @@ import { Users } from 'src/entities/Users';
 import { AclListDto } from './dto/acl.dto';
 import { User } from 'src/auth/user.decorator';
 import { UserDto } from 'src/users/dto/user.dto';
+import { EntityManager } from '@mikro-orm/postgresql';
+import { Access } from 'src/entities/Access';
 
 @ApiTags('acl')
 @Controller('acl')
@@ -33,7 +35,10 @@ export class AclInfoController {
 @ApiTags('acl')
 @Controller('project/:project/acl')
 export class AclController {
-  constructor(private readonly aclService: AclService) {}
+  constructor(
+    private readonly aclService: AclService,
+    private readonly em: EntityManager,
+  ) {}
 
   /**
    * Get ACL list for the current authorized user.
@@ -87,7 +92,13 @@ export class AclController {
   async getAcl(
     @EntityParam('project', Projects) project: Projects,
   ): Promise<AclListDto[]> {
-    return (await project.access.loadItems()).map(
+    const access = await this.em.find(
+      Access,
+      { project },
+      { populate: ['user'] },
+    );
+
+    return access.map(
       (a) =>
         new AclListDto({
           user: new UserDto(a.user),

@@ -28,6 +28,14 @@ export class AuthGuard implements CanActivate {
       const user = await this.authService.getUserFromToken(token);
       // Assigning the payload to the request object here
       request['user'] = user;
+
+      // If user isn't admin and it's required then we error here.
+      if (
+        this.reflector.get<boolean>('isAdmin', context.getHandler()) &&
+        !user.admin
+      ) {
+        return false;
+      }
     } catch {
       throw new UnauthorizedException();
     }
@@ -45,3 +53,8 @@ export class AuthGuard implements CanActivate {
  * Set the route to be accessible without authentication on an AuthGuard'ed controller.
  */
 export const Public = () => SetMetadata('isPublic', true);
+
+/**
+ * Set the route to require an admin user.
+ */
+export const Admin = () => SetMetadata('isAdmin', true);

@@ -11,10 +11,11 @@ import {
 } from '@mantine/core';
 import Link from 'next/link';
 import { useForm } from '@mantine/form';
-import api, { errorForm } from '@/helpers/api';
+import api, { errorForm, showError } from '@/helpers/api';
 import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/router';
 import { useStore } from '@/helpers/state';
+import { RegistrationConfigDto } from '@/client';
 
 export default function Register() {
   const router = useRouter();
@@ -26,6 +27,7 @@ export default function Register() {
       email: '',
       password: '',
       confirmPassword: '',
+      registrationCode: '',
     },
 
     validate: {
@@ -34,19 +36,19 @@ export default function Register() {
     },
   });
 
+  const [registrationConfig, setRegistrationConfig] =
+    React.useState<RegistrationConfigDto | null>(null);
+
   // Go to user info if logged in
   React.useEffect(() => {
     if (store?.userData) router.push('/user');
+    api.users.registrationConfig().then(setRegistrationConfig).catch(showError);
   }, [store, router]);
 
   const createAccount = React.useCallback(
     (values: any) => {
       api.users
-        .createUser({
-          username: values.username,
-          password: values.password,
-          email: values.email,
-        })
+        .createUser(values)
         .then(() => {
           notifications.show({
             title: 'Account created!',
@@ -62,16 +64,8 @@ export default function Register() {
 
   return (
     <Container size={420} my={40}>
-      <Title
-        align="center"
-        sx={(theme) => ({
-          fontFamily: `Greycliff CF, ${theme.fontFamily}`,
-          fontWeight: 900,
-        })}
-      >
-        Create an account!
-      </Title>
-      <Text color="dimmed" size="sm" align="center" mt={5}>
+      <Title ta="center">Create an account!</Title>
+      <Text c="dimmed" size="sm" ta="center" mt={5}>
         Have an account already?{' '}
         <Link href="/login" passHref>
           <Anchor size="sm" component="button">
@@ -115,6 +109,15 @@ export default function Register() {
           mt="md"
           {...form.getInputProps('confirmPassword')}
         />
+        {registrationConfig?.inviteOnly && (
+          <TextInput
+            label="Registration code"
+            placeholder="Your registration code"
+            mt="md"
+            required
+            {...form.getInputProps('registrationCode')}
+          />
+        )}
         <Button fullWidth mt="xl" type="submit">
           Sign up
         </Button>

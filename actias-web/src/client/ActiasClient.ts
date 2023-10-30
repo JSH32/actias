@@ -5,6 +5,7 @@ import type { OpenAPIConfig } from './core/OpenAPI';
 import { AxiosHttpRequest } from './core/AxiosHttpRequest';
 
 import { AclService } from './services/AclService';
+import { AdminService } from './services/AdminService';
 import { AuthService } from './services/AuthService';
 import { KvService } from './services/KvService';
 import { ProjectService } from './services/ProjectService';
@@ -17,6 +18,7 @@ type HttpRequestConstructor = new (config: OpenAPIConfig) => BaseHttpRequest;
 export class ActiasClient {
 
     public readonly acl: AclService;
+    public readonly admin: AdminService;
     public readonly auth: AuthService;
     public readonly kv: KvService;
     public readonly project: ProjectService;
@@ -40,6 +42,7 @@ export class ActiasClient {
         });
 
         this.acl = new AclService(this.request);
+        this.admin = new AdminService(this.request);
         this.auth = new AuthService(this.request);
         this.kv = new KvService(this.request);
         this.project = new ProjectService(this.request);

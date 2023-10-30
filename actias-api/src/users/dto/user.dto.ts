@@ -17,7 +17,7 @@ export class UserDto {
   /**
    * If the user is a system admin.
    */
-  admin?: boolean;
+  admin!: boolean;
 
   /**
    * Users email.
@@ -34,6 +34,7 @@ export class UserDto {
       id: entity.id,
       created: entity.createdAt,
       email: entity.email,
+      admin: entity.admin,
       username: entity.username,
     });
   }

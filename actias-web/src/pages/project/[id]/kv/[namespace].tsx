@@ -1,4 +1,4 @@
-import { PairDto, ProjectDto, SetKeyDto } from '@/client';
+import { AclListDto, PairDto, ProjectDto, SetKeyDto } from '@/client';
 import { useRouter } from 'next/router';
 import React, { useCallback, useEffect, useState } from 'react';
 import api, { showError } from '@/helpers/api';
@@ -36,6 +36,8 @@ const Namespace = () => {
   const [token, setToken] = useState<string | undefined>(undefined);
   const [items, setItems] = useState<PairDto[]>([]);
   const [parentProject, setParentProject] = useState<ProjectDto | null>(null);
+
+  const [acl, setAcl] = useState<AclListDto | null>();
 
   const loadNextPage = useCallback(
     (reload: boolean = false) => {
@@ -120,6 +122,11 @@ const Namespace = () => {
       .then(setParentProject)
       .catch(showError);
 
+    api.acl
+      .getAclMe(router.query.id as string)
+      .then(setAcl)
+      .catch(showError);
+
     loadNextPage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -147,12 +154,13 @@ const Namespace = () => {
             <Table.Th>Key</Table.Th>
             <Table.Th>Type</Table.Th>
             <Table.Th>Value</Table.Th>
-            <Table.Th>Actions</Table.Th>
+            {acl?.permissions['KV_WRITE'] && <Table.Th>Actions</Table.Th>}
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
           {items.map((item) => (
             <Pair
+              write={acl?.permissions['KV_WRITE']}
               reload={() => reloadKey(item.key)}
               // This is used in case the value changes.
               key={`${item.key}-${item.type}-${item.value}`}
@@ -167,7 +175,10 @@ const Namespace = () => {
         onClose={addItemControl.close}
         opened={addItemOpened}
       />
-      <Button onClick={() => addItemControl.open()}>Create Item</Button>
+      {acl?.permissions['KV_WRITE'] && (
+        <Button onClick={() => addItemControl.open()}>Create Item</Button>
+      )}
+
       {token && <Button onClick={() => loadNextPage()}>Load More</Button>}
     </>
   ) : (
@@ -177,9 +188,10 @@ const Namespace = () => {
 
 const Pair: React.FC<{
   pair: PairDto;
+  write?: boolean;
   onDelete: () => void;
   reload: () => void;
-}> = ({ pair, onDelete, reload }) => {
+}> = ({ pair, onDelete, reload, write }) => {
   const deletePair = useCallback(() => {
     api.kv
       .deleteKey(pair.projectId, pair.namespace, pair.key)
@@ -239,29 +251,31 @@ const Pair: React.FC<{
             <Text>{pair.value}</Text>
           )}
         </Table.Td>
-        <Table.Td>
-          <Group>
-            <ActionIcon
-              variant="default"
-              onClick={() => {
-                clipboard.copy(pair.value);
-                notifications.show({
-                  title: 'Copied',
-                  message: `Copied ${pair.key} to clipboard.`,
-                });
-              }}
-              size={30}
-            >
-              <IconCopy size="1rem" />
-            </ActionIcon>
-            <ActionIcon variant="default" onClick={deletePair} size={30}>
-              <IconTrash size="1rem" />
-            </ActionIcon>
-            <ActionIcon variant="default" onClick={open} size={30}>
-              <IconEdit size="1rem" />
-            </ActionIcon>
-          </Group>
-        </Table.Td>
+        {write && (
+          <Table.Td>
+            <Group>
+              <ActionIcon
+                variant="default"
+                onClick={() => {
+                  clipboard.copy(pair.value);
+                  notifications.show({
+                    title: 'Copied',
+                    message: `Copied ${pair.key} to clipboard.`,
+                  });
+                }}
+                size={30}
+              >
+                <IconCopy size="1rem" />
+              </ActionIcon>
+              <ActionIcon variant="default" onClick={deletePair} size={30}>
+                <IconTrash size="1rem" />
+              </ActionIcon>
+              <ActionIcon variant="default" onClick={open} size={30}>
+                <IconEdit size="1rem" />
+              </ActionIcon>
+            </Group>
+          </Table.Td>
+        )}
       </Table.Tr>
     </>
   );

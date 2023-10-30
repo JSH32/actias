@@ -9,6 +9,7 @@ import { ScriptModule } from './scripts/scripts.module';
 import { AspectLogger } from './util/aspectlogger';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { KvModule } from './kv/kv.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { KvModule } from './kv/kv.module';
     AuthModule,
     ProjectModule,
     KvModule,
+    AdminModule,
   ],
   controllers: [],
   providers: [
