@@ -3,10 +3,7 @@ mod script;
 mod settings;
 mod util;
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use client::{
@@ -242,12 +239,8 @@ async fn list_projects(client: &Client, page: f64) -> Result<(), String> {
 
     println!(
         "🔍 Displaying project page {} of {}",
-        response.paginated_response_dto.page.to_string().yellow(),
-        response
-            .paginated_response_dto
-            .last_page
-            .to_string()
-            .yellow()
+        response.page.to_string().yellow(),
+        response.last_page.to_string().yellow()
     );
 
     for item in response.items {
@@ -279,12 +272,8 @@ async fn list_scripts(client: &Client, project: &str, page: f64) -> Result<(), S
 
     println!(
         "🔍 Displaying script page {} of {}",
-        response.paginated_response_dto.page.to_string().yellow(),
-        response
-            .paginated_response_dto
-            .last_page
-            .to_string()
-            .yellow()
+        response.page.to_string().yellow(),
+        response.last_page.to_string().yellow()
     );
 
     for item in response.items {
@@ -453,12 +442,8 @@ async fn revision_command(
 
             println!(
                 "🔍 Displaying script page {} of {}",
-                response.paginated_response_dto.page.to_string().yellow(),
-                response
-                    .paginated_response_dto
-                    .last_page
-                    .to_string()
-                    .yellow()
+                response.page.to_string().yellow(),
+                response.last_page.to_string().yellow()
             );
 
             for item in &response.items {
@@ -589,8 +574,11 @@ async fn publish_script(client: &Client, script_dir: &str) -> Result<(), String>
         }
     };
 
-    let json_script_config: HashMap<String, serde_json::Value> =
-        serde_json::from_value(serde_json::to_value(script_config.clone()).unwrap()).unwrap();
+    let json_script_config = serde_json::to_value(script_config.clone())
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .to_owned();
 
     client
         .create_revision()
@@ -698,8 +686,11 @@ async fn create_script(
         script_config.id = Some(script.id.clone());
         script_config.write_config(&script_path)?;
 
-        let json_script_config: HashMap<std::string::String, serde_json::Value> =
-            serde_json::from_value(serde_json::to_value(script_config.clone()).unwrap()).unwrap();
+        let json_script_config = serde_json::to_value(script_config.clone())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .to_owned();
 
         client
             .create_revision()

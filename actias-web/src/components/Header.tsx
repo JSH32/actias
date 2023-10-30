@@ -32,6 +32,7 @@ const links = [
     label: 'Learn',
     links: [{ link: '/blog', label: 'Blog' }],
   },
+  { link: '/download', label: 'Download' },
 ];
 
 export const Header: React.FC = () => {
