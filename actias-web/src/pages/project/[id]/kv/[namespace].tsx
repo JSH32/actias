@@ -18,7 +18,12 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { IconCopy, IconEdit, IconTrash } from '@tabler/icons-react';
+import {
+  IconCopy,
+  IconEdit,
+  IconFilePlus,
+  IconTrash,
+} from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { breadcrumbs } from '@/helpers/util';
 import { useClipboard, useDisclosure } from '@mantine/hooks';
@@ -137,15 +142,15 @@ const Namespace = () => {
       </Breadcrumbs>
 
       <Table>
-        <thead>
-          <tr>
-            <th>Key</th>
-            <th>Type</th>
-            <th>Value</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Key</Table.Th>
+            <Table.Th>Type</Table.Th>
+            <Table.Th>Value</Table.Th>
+            <Table.Th>Actions</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
           {items.map((item) => (
             <Pair
               reload={() => reloadKey(item.key)}
@@ -155,7 +160,7 @@ const Namespace = () => {
               onDelete={() => loadNextPage(true)}
             />
           ))}
-        </tbody>
+        </Table.Tbody>
       </Table>
       <EditModal
         onSubmit={addPair}
@@ -220,12 +225,12 @@ const Pair: React.FC<{
         opened={opened}
       />
 
-      <tr>
-        <td>{pair.key}</td>
-        <td>
+      <Table.Tr>
+        <Table.Td>{pair.key}</Table.Td>
+        <Table.Td>
           <Badge>{pair.type}</Badge>
-        </td>
-        <td>
+        </Table.Td>
+        <Table.Td>
           {(pair.type as unknown as string) === 'JSON' ? (
             <Box miw={'200px'}>
               <Json value={JSON.parse(pair.value)} />
@@ -233,8 +238,8 @@ const Pair: React.FC<{
           ) : (
             <Text>{pair.value}</Text>
           )}
-        </td>
-        <td>
+        </Table.Td>
+        <Table.Td>
           <Group>
             <ActionIcon
               variant="default"
@@ -256,8 +261,8 @@ const Pair: React.FC<{
               <IconEdit size="1rem" />
             </ActionIcon>
           </Group>
-        </td>
-      </tr>
+        </Table.Td>
+      </Table.Tr>
     </>
   );
 };
@@ -281,11 +286,15 @@ const EditModal: React.FC<{
       onClose={onClose}
       title={
         pair ? (
-          <>
+          <Group>
+            <IconEdit size={20} />
             Edit key <Code>{pair.key}</Code>
-          </>
+          </Group>
         ) : (
-          <>Create key</>
+          <Group>
+            <IconFilePlus size={20} />
+            Create key
+          </Group>
         )
       }
     >
@@ -300,7 +309,6 @@ const EditModal: React.FC<{
       )}
 
       <Select
-        withinPortal
         data={['JSON', 'NUMBER', 'INTEGER', 'BOOLEAN', 'STRING'].map(
           (item) => ({ value: item, label: item }),
         )}
@@ -329,7 +337,7 @@ const EditModal: React.FC<{
         />
       )}
 
-      <Group position="right" mt="md">
+      <Group align="right" mt="md">
         <Button
           type="submit"
           onClick={() => {
@@ -337,7 +345,7 @@ const EditModal: React.FC<{
             onClose();
           }}
         >
-          Edit pair
+          {pair ? 'Edit' : 'Create'} pair
         </Button>
       </Group>
     </Modal>

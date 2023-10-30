@@ -9,6 +9,7 @@ import {
   CloseButton,
   Grid,
   Group,
+  Loader,
   Modal,
   Stack,
   Text,
@@ -95,15 +96,16 @@ const Projects = () => {
               placeholder="Project Name"
               {...createProjectForm.getInputProps('name')}
             />
-            <Group position="right" mt="md">
+            <Group align="right" mt="md">
               <Button type="submit">Submit</Button>
             </Group>
           </form>
         </Modal>
 
+        {!projects && <Loader />}
         <Grid gutter="xs">
           {projects?.map((project) => (
-            <Grid.Col key={project.id} md={6} lg={3}>
+            <Grid.Col key={project.id} span={{ md: 6, lg: 3 }}>
               <ProjectCard
                 key={project.id}
                 project={project}
@@ -123,7 +125,7 @@ const ProjectCard: React.FC<{
 }> = ({ project, onDelete }) => {
   return (
     <Card shadow="sm" padding="lg" radius="md" withBorder>
-      <Group position="apart" mt="md" mb="xs">
+      <Group justify="space-between" mt="md" mb="xs">
         <Title order={3}>{project.name}</Title>
         <Anchor component="button" onClick={() => onDelete(project)}>
           <CloseButton aria-label="Delete project" />

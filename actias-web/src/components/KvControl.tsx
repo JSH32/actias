@@ -103,7 +103,7 @@ const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
             placeholder="Namespace name to create"
             {...createNamespaceForm.getInputProps('namespace')}
           />
-          <Group position="right" mt="md">
+          <Group align="right" mt="md">
             <Button type="submit">Create Namespace</Button>
           </Group>
         </form>
@@ -120,7 +120,7 @@ const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
       {namespaces !== null ? (
         <Grid gutter="xs">
           {namespaces.map((ns) => (
-            <Grid.Col key={ns.name} md={6} lg={3}>
+            <Grid.Col key={ns.name} span={{ md: 6, lg: 3 }}>
               <NamespaceCard
                 namespace={ns}
                 canDelete={write}
@@ -143,7 +143,7 @@ const NamespaceCard: React.FC<{
 }> = ({ namespace, canDelete, onDelete }) => {
   return (
     <Card shadow="sm" padding="lg" radius="md" withBorder>
-      <Group position="apart" mt="md" mb="xs">
+      <Group justify="space-between" mt="md" mb="xs">
         <Title
           maw={'80%'}
           order={3}

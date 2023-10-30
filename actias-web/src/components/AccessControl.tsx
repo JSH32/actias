@@ -3,7 +3,6 @@ import {
   Text,
   Group,
   Modal,
-  Select,
   Stack,
   Title,
   MultiSelect,
@@ -14,9 +13,12 @@ import {
   Badge,
   CloseButton,
   Anchor,
+  TextInput,
+  Combobox,
+  useCombobox,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { forwardRef, useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import api, { showError } from '@/helpers/api';
 import { IconUser, IconUserPlus } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
@@ -37,11 +39,6 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   const loadAcl = useCallback(() => {
     api.acl.getAcl(project.id).then(setAccessUsers).catch(showError);
   }, [project]);
-
-  useEffect(() => {
-    api.acl.getPermissions().then(setAllPermissions).catch(showError);
-    loadAcl();
-  }, [project, loadAcl]);
 
   const searchUsers = useCallback((name: string) => {
     api.users
@@ -69,10 +66,17 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
     (user: UserDto) => {
       api.acl
         .putAcl(user.id, project.id, [])
-        .then(() => loadAcl())
+        .then(() => {
+          notifications.show({
+            title: 'Deleted access',
+            message: `${currentUser!.username} access has been unset.`,
+          });
+
+          loadAcl();
+        })
         .catch(showError);
     },
-    [project, loadAcl],
+    [project.id, currentUser, loadAcl],
   );
 
   const userModal = useCallback(
@@ -88,66 +92,94 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
     [addUserModal],
   );
 
+  useEffect(() => {
+    api.acl.getPermissions().then(setAllPermissions).catch(showError);
+    loadAcl();
+    searchUsers('');
+  }, [project, loadAcl, searchUsers]);
+
+  const combobox = useCombobox({
+    onDropdownClose: () => combobox.resetSelectedOption(),
+  });
+
   return (
     <Stack>
       <Title>Access</Title>
       {write && (
-        <Select
-          maw="300px"
-          sx={(theme) => ({
-            [`@media (max-width: ${theme.breakpoints.sm})`]: {
-              minWidth: '100%',
-            },
-          })}
-          label="Add user"
-          placeholder="Search users"
-          nothingFound="User not found"
-          onSearchChange={searchUsers}
-          onChange={(user) => {
+        <Combobox
+          store={combobox}
+          onOptionSubmit={(user) => {
             setCurrentUser(user as any);
             setPermissions([]);
             addUserModal.open();
+            combobox.closeDropdown();
           }}
-          itemComponent={SelectItem}
-          searchable
-          data={users.map((user) => ({
-            user: user,
-            label: user.username,
-            value: user as any,
-          }))}
-        />
+        >
+          <Combobox.Target>
+            <TextInput
+              style={{
+                width: '300px',
+              }}
+              label="Add user"
+              placeholder="Search users"
+              rightSection={<Combobox.Chevron />}
+              onChange={(event) => {
+                combobox.openDropdown();
+                combobox.updateSelectedOptionIndex();
+                searchUsers(event.currentTarget.value);
+              }}
+              onClick={() => combobox.openDropdown()}
+              onFocus={() => combobox.openDropdown()}
+              onBlur={() => combobox.closeDropdown()}
+            />
+          </Combobox.Target>
+
+          <Combobox.Dropdown>
+            <Combobox.Options>
+              {users.map((item) => (
+                <Combobox.Option value={item as any} key={item.id}>
+                  <SelectItem user={item} />
+                </Combobox.Option>
+              ))}
+            </Combobox.Options>
+          </Combobox.Dropdown>
+        </Combobox>
       )}
 
       <Grid gutter="xs">
         {accessUsers.map((user) => (
-          <Grid.Col key={user.user.id} md={6} lg={3}>
+          <Grid.Col key={user.user.id} span={{ md: 6, lg: 3 }}>
             <Card shadow="sm" padding="sm" radius="md" withBorder>
-              <Group position="apart">
-                <Group>
-                  <IconUser />
-                  <SelectItem user={user.user} />
-                </Group>
-                {write && (
-                  <Anchor
-                    component="button"
-                    onClick={() => deleteAcl(user.user)}
-                  >
-                    <CloseButton aria-label="Delete project" />
-                  </Anchor>
-                )}
-              </Group>
               <Stack>
-                <Group spacing="xs">
-                  {Object.entries(user.permissions).map(
-                    ([perm, enabled]: any) =>
-                      enabled && (
-                        <Badge variant="light" key={perm}>
-                          {perm}
-                        </Badge>
-                      ),
+                <Group justify="space-between">
+                  <Group>
+                    <IconUser />
+                    <SelectItem user={user.user} />
+                  </Group>
+                  {write && (
+                    <Anchor
+                      component="button"
+                      onClick={() => deleteAcl(user.user)}
+                    >
+                      <CloseButton aria-label="Delete project" />
+                    </Anchor>
                   )}
                 </Group>
-                {write && <Button onClick={() => userModal(user)}>Edit</Button>}
+                <Stack>
+                  <Group justify="flex-start">
+                    {Object.entries(user.permissions).map(
+                      ([perm, enabled]: any) =>
+                        enabled && (
+                          <Badge variant="light" key={perm}>
+                            {perm}
+                          </Badge>
+                        ),
+                    )}
+                  </Group>
+                  {write && (
+                    <Button onClick={() => userModal(user)}>Edit</Button>
+                  )}
+                </Stack>
               </Stack>
             </Card>
           </Grid.Col>
@@ -157,7 +189,7 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
       <Modal
         opened={addUserModalOpened}
         onClose={addUserModal.close}
-        title="Add User"
+        title="User access"
         scrollAreaComponent={ScrollArea.Autosize}
       >
         <Group>
@@ -166,16 +198,14 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
         </Group>
         <MultiSelect
           clearable
-          withinPortal
-          dropdownPosition="bottom"
           value={permissions}
           data={allPermissions.map((perm) => ({ value: perm, label: perm }))}
           label="Permissions for the user"
           onChange={setPermissions}
         ></MultiSelect>
-        <Group position="right" mt="md">
+        <Group align="right" mt="md">
           <Button type="submit" onClick={() => createAccess()}>
-            Add User
+            Set access
           </Button>
         </Group>
       </Modal>
@@ -183,26 +213,17 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   );
 };
 
-interface UserProps extends React.ComponentPropsWithoutRef<'div'> {
-  user: UserDto;
-}
-
-// eslint-disable-next-line react/display-name
-const SelectItem = forwardRef<HTMLDivElement, UserProps>(
-  ({ user, ...others }, ref) => {
-    return (
-      <div ref={ref} {...others}>
-        <Group noWrap>
-          <div>
-            <Text size="sm">{user.username}</Text>
-            <Text size="xs" opacity={0.65}>
-              {user.email}
-            </Text>
-          </div>
-        </Group>
+const SelectItem: React.FC<{ user: UserDto }> = ({ user }) => {
+  return (
+    <Group wrap="nowrap">
+      <div>
+        <Text size="sm">{user.username}</Text>
+        <Text size="xs" opacity={0.65}>
+          {user.email}
+        </Text>
       </div>
-    );
-  },
-);
+    </Group>
+  );
+};
 
 export default AccessControl;

@@ -5,19 +5,18 @@ import type { GetStaticPaths, GetStaticProps } from 'next';
 import { MDXRemote, MDXRemoteSerializeResult } from 'next-mdx-remote';
 import { serialize } from 'next-mdx-remote/serialize';
 import { NextSeo } from 'next-seo';
-import Image from 'next/image';
 import Link from 'next/link';
 
 import {
   ActionIcon,
   Anchor,
   Code,
+  Divider,
   Group,
   Table as ReactTable,
   Stack,
   Title,
 } from '@mantine/core';
-import { Prism } from '@mantine/prism';
 
 import { IconArrowNarrowLeft } from '@tabler/icons-react';
 
@@ -26,6 +25,7 @@ import rehypeAutolinkHeadings from 'rehype-autolink-headings';
 import rehypeSlug from 'rehype-slug';
 
 import { PostMeta, getPostFromSlug, getSlugs } from '@/helpers/blog';
+import { CodeHighlight } from '@mantine/code-highlight';
 
 interface MDXPost {
   source: MDXRemoteSerializeResult<Record<string, unknown>>;
@@ -33,7 +33,14 @@ interface MDXPost {
 }
 
 const components: MDXComponents = {
-  Image,
+  img: (props: any) => (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      style={{ objectFit: 'cover', maxWidth: '100%' }}
+      src={props.src}
+      alt={props.alt}
+    />
+  ),
   ReactTable,
   code: (props: any) => <Code {...props} />,
   pre: (props: any) => {
@@ -43,15 +50,14 @@ const components: MDXComponents = {
 
     return (
       <Stack>
-        <Prism
+        <CodeHighlight
+          code={props.children.props.children}
           language={
             matches && matches.groups && matches.groups.lang
               ? matches.groups.lang
               : ''
           }
-        >
-          {props.children.props.children}
-        </Prism>
+        />
       </Stack>
     );
   },
@@ -70,12 +76,17 @@ export default function PostPage({ post }: { post: MDXPost }) {
       <NextSeo title={post.meta.title} description={post.meta.excerpt} />
       <Group>
         <Link href={'/blog'} passHref>
-          <ActionIcon aria-label="back to blog list">
+          <ActionIcon
+            mt={'10px'}
+            variant="transparent"
+            aria-label="back to blog list"
+          >
             <IconArrowNarrowLeft size={34} />
           </ActionIcon>
         </Link>
         <Title order={1}>{post.meta.title}</Title>
       </Group>
+      <Divider mt="10px" />
 
       <MDXRemote {...post.source} components={components} />
     </>

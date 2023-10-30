@@ -1,0 +1,5 @@
+.main {
+  @media (min-width: $mantine-breakpoint-md) {
+    padding: 100px;
+  }
+}

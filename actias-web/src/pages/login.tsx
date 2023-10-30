@@ -51,7 +51,7 @@ export default function Login() {
               message: `Welcome ${user.username}`,
             });
 
-            router.push('/user');
+            router.push('/projects');
           });
         })
         .catch(showError);
@@ -62,15 +62,15 @@ export default function Login() {
   return (
     <Container size={420} my={40}>
       <Title
-        align="center"
-        sx={(theme) => ({
-          fontFamily: `Greycliff CF, ${theme.fontFamily}`,
-          fontWeight: 900,
-        })}
+        ta="center"
+        // style={(theme) => ({
+        //   fontFamily: `Greycliff CF, ${theme.fontFamily}`,
+        //   fontWeight: 900,
+        // })}
       >
         Welcome back!
       </Title>
-      <Text color="dimmed" size="sm" align="center" mt={5}>
+      <Text color="dimmed" size="sm" ta="center" mt={5}>
         Don't have an account yet?{' '}
         <Link href="/register" passHref>
           <Anchor size="sm" component="button">
@@ -101,7 +101,7 @@ export default function Login() {
           mt="md"
           {...form.getInputProps('password')}
         />
-        <Group position="apart" mt="lg">
+        <Group justify="space-between" mt="lg">
           <Checkbox
             label="Remember me"
             {...form.getInputProps('rememberMe', { type: 'checkbox' })}

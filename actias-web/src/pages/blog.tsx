@@ -45,12 +45,12 @@ function Blog({ posts }: { posts: PostMeta[] }) {
   return (
     <>
       <NextSeo title="Blog Posts" description="List of blog posts" />
-      <Grid align="stretch">
-        <Grid.Col sm={12}>
+      <Grid align="stretch" gutter="xs">
+        <Grid.Col span={{ sm: 12 }}>
           <TextInput
             placeholder="Search..."
             value={value}
-            icon={<IconSearch size={14} />}
+            leftSection={<IconSearch size={14} />}
             rightSection={
               debounced && (
                 <ActionIcon onClick={clearFilter}>
@@ -65,7 +65,7 @@ function Blog({ posts }: { posts: PostMeta[] }) {
 
         {isHydrated &&
           filtered.map((post) => (
-            <Grid.Col xs={12} sm={6} key={post.slug}>
+            <Grid.Col span={{ md: 6, lg: 3 }} key={post.slug}>
               <ArticleCard
                 link={`/posts/${post.slug}`}
                 title={post.title}

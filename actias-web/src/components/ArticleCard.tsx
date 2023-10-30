@@ -3,9 +3,7 @@ import React from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 
-import { Anchor, Badge, Card, CardSection, Text } from '@mantine/core';
-
-import useStyles from './styles';
+import { Anchor, Badge, Box, Card, CardSection, Text } from '@mantine/core';
 
 export interface ArticleCardProps {
   image?: string;
@@ -16,7 +14,6 @@ export interface ArticleCardProps {
 }
 
 export default function ArticleCard({
-  className,
   image,
   link,
   title,
@@ -24,10 +21,8 @@ export default function ArticleCard({
   category,
 }: ArticleCardProps &
   Omit<React.ComponentPropsWithoutRef<'div'>, keyof ArticleCardProps>) {
-  const { classes, cx } = useStyles();
-
   return (
-    <Card withBorder radius="md" className={cx(classes.card, className)}>
+    <Card withBorder shadow="sm" padding="lg" radius="md">
       {image && (
         <CardSection
           style={{
@@ -38,10 +33,10 @@ export default function ArticleCard({
           <Link href={link} passHref>
             <Anchor component="a">
               <Image
+                objectFit="cover"
                 alt={`${title} cover image`}
                 src={image}
                 layout="fill"
-                objectFit="cover"
                 sizes="50vw"
                 priority
               />
@@ -50,21 +45,24 @@ export default function ArticleCard({
         </CardSection>
       )}
 
-      {category && (
-        <Badge className={classes.category} variant="filled">
-          {category}
-        </Badge>
-      )}
+      <Box mt="10px">
+        {category && (
+          <>
+            <Badge variant="filled">{category}</Badge>
+            <br />
+          </>
+        )}
 
-      <Link href={link} passHref>
-        <Text className={classes.title} weight={500} component="a">
-          {title}
+        <Link href={link} passHref>
+          <Text fw={500} component="a">
+            {title}
+          </Text>
+        </Link>
+
+        <Text size="sm" c="dimmed" lineClamp={4}>
+          {description}
         </Text>
-      </Link>
-
-      <Text size="sm" color="dimmed" lineClamp={4}>
-        {description}
-      </Text>
+      </Box>
     </Card>
   );
 }

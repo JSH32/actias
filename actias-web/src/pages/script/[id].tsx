@@ -22,8 +22,8 @@ import {
 import { breadcrumbs } from '@/helpers/util';
 import { IconCheck, IconLink, IconTrash } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
-import { Prism } from '@mantine/prism';
 import getConfig from 'next/config';
+import { CodeHighlightTabs } from '@mantine/code-highlight';
 
 const { publicRuntimeConfig } = getConfig();
 
@@ -115,7 +115,7 @@ const Script = () => {
         ])}
       </Breadcrumbs>
 
-      <Group position="apart">
+      <Group justify="space-between">
         <Stack>
           <Group>
             <Anchor
@@ -137,20 +137,20 @@ const Script = () => {
         <Stack>
           <Title>Revisions</Title>
           <Table>
-            <thead>
-              <tr>
-                <th>Revision ID</th>
-                <th>Creation Date</th>
-                <th>Delete</th>
-                <th>Active</th>
-              </tr>
-            </thead>
-            <tbody>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Revision ID</Table.Th>
+                <Table.Th>Creation Date</Table.Th>
+                <Table.Th>Delete</Table.Th>
+                <Table.Th>Active</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
               {(revisions as any).items.map((item: RevisionDataDto) => (
-                <tr key={item.id}>
-                  <td>{item.id}</td>
-                  <td>{item.created}</td>
-                  <td>
+                <Table.Tr key={item.id}>
+                  <Table.Td>{item.id}</Table.Td>
+                  <Table.Td>{item.created}</Table.Td>
+                  <Table.Td>
                     <ActionIcon
                       variant="default"
                       onClick={() => deleteRevision(item)}
@@ -158,10 +158,10 @@ const Script = () => {
                     >
                       <IconTrash size="1rem" />
                     </ActionIcon>
-                  </td>
-                  <td>
+                  </Table.Td>
+                  <Table.Td>
                     {item.id === script.currentRevisionId ? (
-                      <ActionIcon variant="filled" color="primary" size={30}>
+                      <ActionIcon variant="filled" size={30}>
                         <IconCheck size="1rem" />
                       </ActionIcon>
                     ) : (
@@ -173,10 +173,10 @@ const Script = () => {
                         <IconCheck size="1rem" />
                       </ActionIcon>
                     )}
-                  </td>
-                </tr>
+                  </Table.Td>
+                </Table.Tr>
               ))}
-            </tbody>
+            </Table.Tbody>
           </Table>
           <Pagination
             value={revisions.page}
@@ -197,19 +197,15 @@ const Details: React.FC<{ script: ScriptDto }> = ({ script }) => {
   return (
     <>
       <Stack>
-        <Prism.Tabs defaultValue="clone">
-          <Prism.TabsList position="right">
-            <Prism.Tab value="clone">Clone</Prism.Tab>
-          </Prism.TabsList>
-
-          <Prism.Panel
-            miw={'500px'}
-            value="clone"
-            language="bash"
-            // eslint-disable-next-line react/no-children-prop
-            children={`actias-cli script ${script.id} clone`}
-          />
-        </Prism.Tabs>
+        <CodeHighlightTabs
+          code={[
+            {
+              fileName: 'Clone',
+              code: `actias-cli script ${script.id} clone`,
+              language: 'bash',
+            },
+          ]}
+        />
       </Stack>
     </>
   );

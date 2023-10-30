@@ -1,36 +1,19 @@
+import '@mantine/core/styles.css';
+import '@mantine/notifications/styles.css';
+import '@mantine/code-highlight/styles.css';
 import '@/styles/globals.css';
 import { useEffect, useState } from 'react';
 import NextApp, { AppProps, AppContext } from 'next/app';
-import { getCookie, setCookie } from 'cookies-next';
+import { getCookie } from 'cookies-next';
 import Head from 'next/head';
-import {
-  MantineProvider,
-  ColorScheme,
-  ColorSchemeProvider,
-  AppShell,
-} from '@mantine/core';
+import { MantineProvider, AppShell } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { Header } from '@/components/Header';
 import { Store, StoreContext } from '@/helpers/state';
+import classes from './App.module.css';
 
-import { Prism } from 'prism-react-renderer';
-((typeof global !== 'undefined' ? global : window) as any).Prism = Prism;
-require('prismjs/components/prism-lua');
-
-export default function App(props: AppProps & { colorScheme: ColorScheme }) {
+export default function App(props: AppProps) {
   const { Component, pageProps } = props;
-  const [colorScheme, setColorScheme] = useState<ColorScheme>(
-    props.colorScheme,
-  );
-
-  const toggleColorScheme = (value?: ColorScheme) => {
-    const nextColorScheme =
-      value || (colorScheme === 'dark' ? 'light' : 'dark');
-    setColorScheme(nextColorScheme);
-    setCookie('mantine-color-scheme', nextColorScheme, {
-      maxAge: 60 * 60 * 24 * 30,
-    });
-  };
 
   const [dataStore, setDataStore] = useState<Store | null>(null);
 
@@ -50,36 +33,22 @@ export default function App(props: AppProps & { colorScheme: ColorScheme }) {
           <link rel="shortcut icon" href="/favicon.ico" />
         </Head>
 
-        <ColorSchemeProvider
-          colorScheme={colorScheme}
-          toggleColorScheme={toggleColorScheme}
+        <MantineProvider
+          defaultColorScheme="dark"
+          theme={{
+            fontFamily: 'Greycliff CF, sans-serif',
+            // colorScheme,
+            primaryColor: 'grape',
+          }}
         >
-          <MantineProvider
-            theme={{
-              fontFamily: 'Greycliff CF, sans-serif',
-              colorScheme,
-              primaryColor: 'grape',
-            }}
-            withGlobalStyles
-            withNormalizeCSS
-          >
-            <Notifications />
-            <AppShell
-              padding="md"
-              header={<Header />}
-              styles={(theme) => ({
-                main: {
-                  backgroundColor:
-                    theme.colorScheme === 'dark'
-                      ? theme.colors.dark[8]
-                      : theme.colors.gray[0],
-                },
-              })}
-            >
+          <Notifications />
+          <AppShell header={{ height: 60 }} padding="md">
+            <Header />
+            <AppShell.Main className={classes.main}>
               <Component {...pageProps} />
-            </AppShell>
-          </MantineProvider>
-        </ColorSchemeProvider>
+            </AppShell.Main>
+          </AppShell>
+        </MantineProvider>
       </StoreContext.Provider>
     </>
   );

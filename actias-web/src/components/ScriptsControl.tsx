@@ -19,9 +19,9 @@ import {
 import { useForm } from '@mantine/form';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { Prism } from '@mantine/prism';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
+import { CodeHighlightTabs } from '@mantine/code-highlight';
 
 const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   project,
@@ -108,23 +108,21 @@ const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
             placeholder="Script identifier, this must be globally unique across other projects."
             {...scriptModalForm.getInputProps('publicIdentifier')}
           />
-          <Prism.Tabs mt={10} defaultValue="create">
-            <Prism.TabsList position="left">
-              <Prism.Tab value="create">Create new script (CLI)</Prism.Tab>
-            </Prism.TabsList>
-
-            <Prism.Panel
-              value="create"
-              language="bash"
-              // eslint-disable-next-line react/no-children-prop
-              children={`actias-cli init ${
-                scriptModalForm.getInputProps('publicIdentifier').value.length
-                  ? scriptModalForm.getInputProps('publicIdentifier').value
-                  : '<name>'
-              } ${project.id}`}
-            />
-          </Prism.Tabs>
-          <Group position="right" mt="md">
+          <CodeHighlightTabs
+            mt={'20px'}
+            code={[
+              {
+                fileName: 'Create new script (CLI)',
+                code: `actias-cli init ${
+                  scriptModalForm.getInputProps('publicIdentifier').value.length
+                    ? scriptModalForm.getInputProps('publicIdentifier').value
+                    : '<name>'
+                } ${project.id}`,
+                language: 'bash',
+              },
+            ]}
+          />
+          <Group align="right" mt="md">
             <Tooltip.Floating label="The script will be created without a revision. It is better to use the CLI.">
               <Button type="submit">Submit</Button>
             </Tooltip.Floating>
@@ -136,7 +134,7 @@ const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
         <>
           <Grid gutter="xs">
             {(scripts as any).items.map((script: ScriptDto) => (
-              <Grid.Col key={script.id} md={6} lg={3}>
+              <Grid.Col key={script.id} span={{ md: 6, lg: 3 }}>
                 <ScriptCard
                   script={script}
                   canDelete={write}
@@ -165,7 +163,7 @@ const ScriptCard: React.FC<{
 }> = ({ script, canDelete, onDelete }) => {
   return (
     <Card shadow="sm" padding="lg" radius="md" withBorder>
-      <Group position="apart" mt="md" mb="xs">
+      <Group align="apart" mt="md" mb="xs">
         <Title
           maw={'80%'}
           order={3}

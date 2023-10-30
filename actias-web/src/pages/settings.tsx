@@ -1,12 +1,12 @@
 import { withAuthentication } from '@/helpers/authenticated';
 import { useStore } from '@/helpers/state';
-import { Button, Group, PasswordInput, TextInput } from '@mantine/core';
+import { Button, PasswordInput, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { useCallback } from 'react';
 import api, { errorForm } from '@/helpers/api';
 import { notifications } from '@mantine/notifications';
 
-const User = () => {
+const Settings = () => {
   const store = useStore();
   const detailsForm = useForm({
     initialValues: {
@@ -120,4 +120,4 @@ const User = () => {
   );
 };
 
-export default withAuthentication(User);
+export default withAuthentication(Settings);
