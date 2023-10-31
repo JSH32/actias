@@ -18,10 +18,13 @@ export default function App(props: AppProps) {
   const [dataStore, setDataStore] = useState<Store | null>(null);
 
   useEffect(() => {
-    const store = new Store();
-    store.fetchUserInfo();
+    if (typeof window !== 'undefined') {
+      const store = new Store();
 
-    setDataStore(store);
+      store.fetchUserInfo().then(() => {
+        setDataStore(store);
+      });
+    }
   }, []);
 
   return (
@@ -40,7 +43,6 @@ export default function App(props: AppProps) {
           defaultColorScheme="dark"
           theme={{
             fontFamily: 'Greycliff CF, sans-serif',
-            // colorScheme,
             primaryColor: 'grape',
           }}
         >

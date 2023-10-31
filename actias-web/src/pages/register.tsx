@@ -47,13 +47,18 @@ export default function Register() {
 
   const createAccount = React.useCallback(
     (values: any) => {
+      const body: any = {
+        username: values.username,
+        email: values.email,
+        password: values.password,
+      };
+
+      if (registrationConfig?.inviteOnly) {
+        body.registrationCode = values.registrationCode;
+      }
+
       api.users
-        .createUser({
-          username: values.username,
-          email: values.email,
-          password: values.password,
-          registrationCode: values.registrationCode,
-        })
+        .createUser(body)
         .then(() => {
           notifications.show({
             title: 'Account created!',
@@ -64,7 +69,7 @@ export default function Register() {
         })
         .catch((err) => errorForm(err, form));
     },
-    [form, router],
+    [form, registrationConfig, router],
   );
 
   return (
