@@ -41,7 +41,7 @@ export default function Register() {
 
   // Go to user info if logged in
   React.useEffect(() => {
-    if (store?.userData) router.push('/user');
+    if (store?.userData) router.push('/projects');
     api.users.registrationConfig().then(setRegistrationConfig).catch(showError);
   }, [store, router]);
 
