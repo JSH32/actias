@@ -48,7 +48,12 @@ export default function Register() {
   const createAccount = React.useCallback(
     (values: any) => {
       api.users
-        .createUser(values)
+        .createUser({
+          username: values.username,
+          email: values.email,
+          password: values.password,
+          registrationCode: values.registrationCode,
+        })
         .then(() => {
           notifications.show({
             title: 'Account created!',

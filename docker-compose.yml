@@ -111,9 +111,10 @@ services:
       - kv_service
       - script_service
     environment:
+      - INVITE_ONLY=${INVITE_ONLY:-false}
       - SCRIPT_SERVICE_URL=script_service:3000
       - KV_SERVICE_URL=kv_service:3000
-      - JWT_KEY=testing
+      - JWT_KEY=${JWT_KEY:-secret}
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:3000}

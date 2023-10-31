@@ -1,4 +1,4 @@
-import { IsEmail, IsUUID, Length } from 'class-validator';
+import { IsEmail, IsOptional, IsUUID, Length } from 'class-validator';
 
 /**
  * Create a user through normal (non oauth) sign up.
@@ -23,6 +23,7 @@ export class CreateUserDto {
   /**
    * Registration code (if needed).
    */
+  @IsOptional()
   @IsUUID()
   registrationCode?: string;
 }

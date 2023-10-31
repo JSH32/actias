@@ -35,3 +35,5 @@ EXPOSE 3000
 ENV PORT 3000
 
 CMD ["npm", "start"]
+
+LABEL org.opencontainers.image.source="https://github.com/jsh32/actias"

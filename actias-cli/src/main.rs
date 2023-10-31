@@ -11,6 +11,7 @@ use client::{
     Client,
 };
 
+use dirs::config_dir;
 use include_dir::{include_dir, Dir};
 use inquire::{Confirm, Text};
 
@@ -128,7 +129,12 @@ async fn main() {
 
     // Parsing settings should trigger a re-auth.
     let relog = if let Commands::Login = cli.command {
-        let _ = std::fs::remove_file("settings.json");
+        let _ = std::fs::remove_file(
+            config_dir()
+                .unwrap()
+                .join("actias-cli")
+                .join("settings.json"),
+        );
         true
     } else {
         false
