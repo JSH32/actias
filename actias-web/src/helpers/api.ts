@@ -1,12 +1,10 @@
 import { ActiasClient } from '@/client';
 import { UseFormReturnType } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
-import getConfig from 'next/config';
-
-const { publicRuntimeConfig } = getConfig();
+import { getPublicConfig } from '@/pages/api/config';
 
 const client = new ActiasClient({
-  BASE: publicRuntimeConfig.apiRoot,
+  BASE: getPublicConfig('apiRoot'),
   TOKEN: async () =>
     localStorage.getItem('token') || (undefined as unknown as string),
 });

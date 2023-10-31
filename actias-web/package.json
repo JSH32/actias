@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "dotenv -c -- next dev",
-    "build": "dotenv -c -- next build",
-    "start": "dotenv -c -- next start",
+    "build": "next build",
+    "start": "next start",
     "lint": "dotenv -c -- next lint",
     "generateClient": "find ./src/client ! -name 'README.md' -type f -exec rm -f {} + && openapi --input http://localhost:3006/api/docs/openapi.json --output ./src/client --client axios --name ActiasClient"
   },
