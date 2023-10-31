@@ -26,7 +26,7 @@ const DownloadPage = () => {
             <IconDownload />
             <Title size="h1">Download Actias CLI</Title>
           </Group>
-          <Text size="md">Have rustup, cargo, and git installed</Text>
+          <Text size="md">Have git installed</Text>
           <Text size="md">
             <b>API URL</b> for login is{' '}
             <Code>{publicRuntimeConfig.apiRoot}</Code>
