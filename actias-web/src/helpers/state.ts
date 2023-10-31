@@ -11,8 +11,6 @@ export class Store {
 
   constructor() {
     makeAutoObservable(this);
-
-    this.fetchUserInfo();
   }
 
   @action fetchUserInfo = () => {

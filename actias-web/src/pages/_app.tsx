@@ -18,7 +18,10 @@ export default function App(props: AppProps) {
   const [dataStore, setDataStore] = useState<Store | null>(null);
 
   useEffect(() => {
-    setDataStore(new Store());
+    const store = new Store();
+    store.fetchUserInfo();
+
+    setDataStore(store);
   }, []);
 
   return (

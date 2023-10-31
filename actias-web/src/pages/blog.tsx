@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import type { GetServerSideProps, GetStaticProps } from 'next';
+import type { GetStaticProps } from 'next';
 import { NextSeo } from 'next-seo';
 
 import { ActionIcon, Grid, TextInput } from '@mantine/core';
@@ -80,7 +80,7 @@ function Blog({ posts }: { posts: PostMeta[] }) {
   );
 }
 
-export const getServerSideProps: GetServerSideProps = async () => {
+export const getStaticProps: GetStaticProps = async () => {
   const posts = getAllPosts().map((post) => post.meta);
 
   return {
