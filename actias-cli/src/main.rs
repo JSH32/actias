@@ -212,7 +212,7 @@ async fn project_manage_command(
 ) -> Result<(), String> {
     let project = client
         .get_project()
-        .project(id.clone())
+        .project(id)
         .send()
         .await
         .map_err(progenitor_error)?;
