@@ -205,8 +205,11 @@ export class KvController {
         break;
       case 'integer':
         {
-          if (Number.isNaN(parseInt(body.value, 10)))
+          if (Number.isNaN(parseInt(body.value, 10))) {
             throw new BadRequestException('Not an integer value');
+          } else {
+            (body as any).value = parseInt(body.value, 10);
+          }
         }
         break;
       case 'number':
