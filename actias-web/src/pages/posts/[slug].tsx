@@ -1,7 +1,7 @@
 /* eslint-disable react/jsx-props-no-spreading */
 import React from 'react';
 
-import type { GetStaticPaths, GetStaticProps } from 'next';
+import type { GetServerSideProps } from 'next';
 import { MDXRemote, MDXRemoteSerializeResult } from 'next-mdx-remote';
 import { serialize } from 'next-mdx-remote/serialize';
 import { NextSeo } from 'next-seo';
@@ -24,7 +24,7 @@ import type { MDXComponents } from 'mdx/types';
 import rehypeAutolinkHeadings from 'rehype-autolink-headings';
 import rehypeSlug from 'rehype-slug';
 
-import { PostMeta, getPostFromSlug, getSlugs } from '@/helpers/blog';
+import { PostMeta, getPostFromSlug } from '@/helpers/blog';
 import { CodeHighlight } from '@mantine/code-highlight';
 
 interface MDXPost {
@@ -93,27 +93,24 @@ export default function PostPage({ post }: { post: MDXPost }) {
   );
 }
 
-export const getStaticProps: GetStaticProps = async ({ params }) => {
+export const getServerSideProps: GetServerSideProps = async ({ params }) => {
   const { slug } = params as { slug: string };
-  const { content, meta } = getPostFromSlug(slug);
-  const mdxSource = await serialize(content, {
-    mdxOptions: {
-      rehypePlugins: [
-        // rehypeHighlight,
-        rehypeSlug,
-        [rehypeAutolinkHeadings, { behavior: 'wrap' }],
-      ],
-    },
-  });
+  try {
+    const { content, meta } = getPostFromSlug(slug);
 
-  return { props: { post: { source: mdxSource, meta } } };
-};
+    const mdxSource = await serialize(content, {
+      mdxOptions: {
+        rehypePlugins: [
+          rehypeSlug,
+          [rehypeAutolinkHeadings, { behavior: 'wrap' }],
+        ],
+      },
+    });
 
-export const getStaticPaths: GetStaticPaths = async () => {
-  const paths = getSlugs().map((slug) => ({ params: { slug } }));
-
-  return {
-    paths,
-    fallback: false,
-  };
+    return { props: { post: { source: mdxSource, meta } } };
+  } catch (e) {
+    return {
+      notFound: true,
+    };
+  }
 };

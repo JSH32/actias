@@ -119,7 +119,7 @@ const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
                   scriptModalForm.getInputProps('publicIdentifier').value.length
                     ? scriptModalForm.getInputProps('publicIdentifier').value
                     : '<name>'
-                } ${project.id}`,
+                } basic ${project.id}`,
                 language: 'bash',
               },
             ]}
