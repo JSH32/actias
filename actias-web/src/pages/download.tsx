@@ -9,6 +9,7 @@ import {
   Code,
 } from '@mantine/core';
 import {
+  IconBrandApple,
   IconBrandUbuntu,
   IconBrandWindows,
   IconDownload,
@@ -36,17 +37,24 @@ const DownloadPage = () => {
         <Stack align="center">
           <Group>
             <IconBrandUbuntu />
-            <Title size="h4">Linux & Mac</Title>
+            <Title size="h4">Linux</Title>
           </Group>
           <CodeHighlight
             language="bash"
-            code="curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/JSH32/actias/master/scripts/cli-unix.sh | sh"
+            code="curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/JSH32/actias/master/scripts/cli-unix.sh | bash"
           />
         </Stack>
         <Stack align="center">
           <Group>
             <IconBrandWindows />
             <Title size="h4">Windows</Title>
+          </Group>
+          <Text>Coming Soon</Text>
+        </Stack>
+        <Stack align="center">
+          <Group>
+            <IconBrandApple />
+            <Title size="h4">Mac</Title>
           </Group>
           <Text>Coming Soon</Text>
         </Stack>
