@@ -6,7 +6,11 @@ import { useEffect, useState } from 'react';
 import NextApp, { AppProps, AppContext } from 'next/app';
 import { getCookie } from 'cookies-next';
 import Head from 'next/head';
-import { MantineProvider, AppShell } from '@mantine/core';
+import {
+  MantineProvider,
+  AppShell,
+  useMantineColorScheme,
+} from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { Header } from '@/components/Header';
 import { Store, StoreContext } from '@/helpers/state';
@@ -16,6 +20,7 @@ export default function App(props: AppProps) {
   const { Component, pageProps } = props;
 
   const [dataStore, setDataStore] = useState<Store | null>(null);
+  const { colorScheme } = useMantineColorScheme();
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -48,7 +53,18 @@ export default function App(props: AppProps) {
           }}
         >
           <Notifications />
-          <AppShell header={{ height: 60 }} padding="md">
+          <AppShell
+            header={{ height: 60 }}
+            padding="md"
+            styles={(theme) => ({
+              main: {
+                backgroundColor:
+                  colorScheme === 'dark'
+                    ? theme.colors.dark[8]
+                    : theme.colors.gray[0],
+              },
+            })}
+          >
             <Header />
             <AppShell.Main className={classes.main}>
               <Component {...pageProps} />
