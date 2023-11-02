@@ -1,6 +1,5 @@
 ---@meta
 ---@diagnostic disable: lowercase-global
-
 ---Get a file from the bundle by its path.
 ---@param path string path of the file in the bundle.
 ---@return number[]

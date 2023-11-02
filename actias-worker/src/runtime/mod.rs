@@ -1,7 +1,7 @@
 pub mod extension;
 
 use crate::{
-    extensions::{jwt::JwtExtension, kv::KvExtension},
+    extensions::{crypto::CryptoExtension, jwt::JwtExtension, kv::KvExtension},
     proto::{
         bundle::Bundle,
         kv_service::kv_service_client::KvServiceClient,
@@ -209,6 +209,7 @@ impl ActiasRuntime {
                 project_id: script.project_id.clone(),
             },
             &JwtExtension,
+            &CryptoExtension,
         ])?;
 
         lua.globals().set(

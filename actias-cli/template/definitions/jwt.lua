@@ -1,6 +1,10 @@
 ---@meta
 ---@diagnostic disable: lowercase-global, missing-return
----
+---@class JwtHeader Table object that contains typ and alg fields.
+---@field typ "JWT" Header type.
+---@field alg JwtAlgorithm Algorithm type.
+local JwtHeader = {}
+
 ---@alias JwtAlgorithm
 ---| '"HS256"' # HMAC using SHA-256 hash algorithm
 ---| '"HS384"' # HMAC using SHA-384 hash algorithm
@@ -14,17 +18,12 @@
 ---| '"ES256"' # ECDSA using P-256 curve and SHA-256 hash algorithm
 ---| '"ES384"' # ECDSA using P-384 curve and SHA-384 hash algorithm
 ---| '"EdDSA"' # ECDSA using P-521 curve and SHA-512 hash algorithm
----
----@class Header Table object that contains typ and alg fields.
----@field typ "JWT" Header type.
----@field alg JwtAlgorithm Algorithm type.
-local Header = {}
 
 ---@class Jwt A JSON Web Token generator and verifier.
 Jwt = {}
 
 ---Create a new Jwt signer object.
----@param header Header Token header.
+---@param header JwtHeader Token header.
 ---@param secret string Secret string to encode/decode the jwt.
 ---@return Jwt
 function Jwt.new(header, secret) end

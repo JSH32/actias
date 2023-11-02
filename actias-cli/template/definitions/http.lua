@@ -1,5 +1,12 @@
 ---@meta
 ---@diagnostic disable: lowercase-global, missing-return
+---@class Uri Parse a URI into parts.
+---@field scheme string URI scheme.
+---@field authority string URI authority.
+---@field path string URI path.
+---@field query string Query parameters.
+Uri = {}
+
 ---@alias HttpMethod
 ---| "GET"
 ---| "POST"
@@ -10,12 +17,6 @@
 ---| "CONNECT"
 ---| "PATCH"
 ---| "TRACE"
----@class Uri Parse a URI into parts.
----@field scheme string URI scheme.
----@field authority string URI authority.
----@field path string URI path.
----@field query string Query parameters.
-Uri = {}
 
 ---Parse a lua string into a URI.
 ---@param string string string to parse into URI.
@@ -33,11 +34,13 @@ function Uri:tostring() end
 ---@field headers table<string, string> HTTP headers.
 ---@field body string request body.
 ---@field version string request version.
+local Request = {}
 
 ---@class Response Represents an HTTP response.
 ---@field status_code integer HTTP status code, otherwise 200.
 ---@field headers table<string, string> HTTP headers.
 ---@field body string request body.
+local Response = {}
 
 ---Exposed HTTP module.
 http = {}
