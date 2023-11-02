@@ -58,6 +58,7 @@ function RsaPrivateKey:to_pem(type) end
 function RsaPrivateKey:decrypt(data) end
 
 ---Generate a public key from the private key.
+---@return RsaPublicKey # public key
 function RsaPrivateKey:public_key() end
 
 ---@class RsaPublicKey Rsa public key.
@@ -90,3 +91,4 @@ function Argon2:hash(password) end
 function Argon2:verify(hash, password) end
 
 crypto.Argon2 = Argon2
+crypto.RsaPrivateKey = RsaPrivateKey
