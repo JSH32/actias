@@ -8,7 +8,7 @@ crypto = {}
 ---Password Hashing Competition in July 2015.
 local Argon2 = {}
 
----Create a new Jwt signer object.
+---Create a new Argon password hasher.
 ---@param algorithm "Argon2d" | "Argon2i" | "Argon2id" Algorithmic variant of argon2.
 ---@return Argon2
 function Argon2.new(algorithm) end
