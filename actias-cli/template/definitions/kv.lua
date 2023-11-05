@@ -17,8 +17,7 @@ function KvNamespace:set(key, value) end
 ---@param values table<string, any> table of values to set. If the value is nil this will delete the value.
 function KvNamespace:set_batch(values) end
 
----Set a value in a namespace.
----If the namespace doesn't exist it will be created.
+---Delete a value in a namespace.
 ---@param ... string keys to delete.
 function KvNamespace:delete(...) end
 
