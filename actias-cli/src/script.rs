@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use wax::Glob;
 
 use crate::{
-    client::types::{BundleDto, FileDto},
+    client::types::{BundleDto, FileDto, ScriptConfigDto},
     util,
 };
 
@@ -30,6 +30,17 @@ pub struct ScriptConfig {
     pub includes: Vec<String>,
     /// Patterns to ignore. This will be cross referenced with `includes`.
     pub ignore: Vec<String>,
+}
+
+impl Into<ScriptConfigDto> for ScriptConfig {
+    fn into(self) -> ScriptConfigDto {
+        ScriptConfigDto {
+            id: self.id.unwrap(),
+            entry_point: self.entry_point,
+            includes: self.includes,
+            ignore: self.ignore,
+        }
+    }
 }
 
 impl ScriptConfig {

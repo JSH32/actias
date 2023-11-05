@@ -31,9 +31,15 @@ export namespace script_service {
     export interface DeleteProjectRequest {
         projectId?: string;
     }
+    export interface ScriptConfig {
+        id?: string;
+        entryPoint?: string;
+        includes?: string[];
+        ignore?: string[];
+    }
     export interface CreateRevisionRequest {
         scriptId?: string;
-        scriptConfig?: string;
+        scriptConfig?: script_service.ScriptConfig;
         bundle?: bundle.Bundle;
     }
     export interface GetRevisionRequest {
@@ -79,9 +85,21 @@ export namespace script_service {
         id?: string;
         created?: string;
         scriptId?: string;
-        scriptConfig?: string;
+        scriptConfig?: script_service.ScriptConfig;
         // Content bundle.
         bundle?: bundle.Bundle;
+    }
+    // A live development script. This is temporary.
+    export interface LiveScript {
+        // If this is provided then it will override past bundle/config.
+        sessionId?: string;
+        scriptId?: string;
+        scriptConfig?: script_service.ScriptConfig;
+        bundle?: bundle.Bundle;
+    }
+    export interface LiveScriptSession {
+        // A session ID, this can be used to get the session bundle.
+        sessionId?: string;
     }
     export interface Script {
         id?: string;
@@ -143,6 +161,21 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<NewRevisionResponse>;
+        putLiveSession(
+            data: LiveScript,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<LiveScriptSession>;
+        getLiveSession(
+            data: LiveScriptSession,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<LiveScript>;
+        deleteLiveSession(
+            data: LiveScriptSession,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
     }
 }
 export namespace bundle {

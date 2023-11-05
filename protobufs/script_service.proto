@@ -34,9 +34,16 @@ message DeleteProjectRequest {
     required string project_id = 1;
 }
 
+message ScriptConfig {
+    required string id = 1;
+    required string entry_point = 2;
+    repeated string includes = 3;
+    repeated string ignore = 4;
+}
+
 message CreateRevisionRequest {
     required string script_id = 1;
-    required string script_config = 2;
+    required ScriptConfig script_config = 2;
     required bundle.Bundle bundle = 3;
 }
 
@@ -92,10 +99,26 @@ message Revision {
     required string id = 1;
     required string created = 2;
     required string script_id = 3;
-    required string script_config = 4;
+    required ScriptConfig script_config = 4;
 
     // Content bundle.
     optional bundle.Bundle bundle = 5;
+}
+
+// A live development script. This is temporary.
+message LiveScript {
+    // If this is provided then it will override past bundle/config.
+    optional string session_id = 1;
+    required string script_id = 2;
+    required ScriptConfig script_config = 3;
+    required bundle.Bundle bundle = 4;
+}
+
+message LiveScriptSession {
+    // Script to look for session in.
+    required string script_id = 1;
+    // A session ID, this can be used to get the session bundle.
+    required string session_id = 2;
 }
 
 message Script {
@@ -120,4 +143,8 @@ service ScriptService {
     rpc CreateRevision(CreateRevisionRequest) returns (Revision);
     rpc ListRevisions(ListRevisionsRequest) returns (ListRevisionResponse);
     rpc DeleteRevision(DeleteRevisionRequest) returns (NewRevisionResponse);
+
+    rpc PutLiveSession(LiveScript) returns (LiveScriptSession);
+    rpc GetLiveSession(LiveScriptSession) returns (LiveScript);
+    rpc DeleteLiveSession(LiveScriptSession) returns (google.protobuf.Empty);
 }

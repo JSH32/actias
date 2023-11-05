@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import { IsAlphanumeric, Length, ValidateNested } from 'class-validator';
 import { BundleDto } from './bundle.dto';
+import { ScriptConfigDto } from './revision.dto';
 
 export class CreateScriptDto {
   /**
@@ -32,5 +33,5 @@ export class CreateRevisionDto {
   /**
    * A valid project configuration.
    */
-  scriptConfig: object;
+  scriptConfig: ScriptConfigDto;
 }

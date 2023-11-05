@@ -200,11 +200,11 @@ export class ScriptsController implements OnModuleInit {
           .createRevision({
             scriptId,
             bundle: request.bundle.toServiceBundle(),
-            scriptConfig: JSON.stringify({
+            scriptConfig: {
               ...request.scriptConfig,
               // Adapt the service ID.
               id: scriptId,
-            }),
+            },
           })
           .pipe(toHttpException()),
       ),

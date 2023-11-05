@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use sqlx::types::{
     chrono::{DateTime, Utc},
@@ -13,6 +15,43 @@ pub struct ScriptConfig {
     pub entry_point: String,
     pub includes: Vec<String>,
     pub ignore: Vec<String>,
+}
+
+// impl TryFrom<crate::proto_script_service::ScriptConfig> for ScriptConfig {
+//     type Error = uuid::Error;
+
+//     fn try_from(value: crate::proto_script_service::ScriptConfig) -> Result<Self, Self::Error> {
+//         Ok(Self {
+//             id: Uuid::from_str(&value.id)?,
+//             entry_point: value.entry_point,
+//             includes: value.includes,
+//             ignore: value.ignore,
+//         })
+//     }
+// }
+
+impl TryInto<ScriptConfig> for crate::proto_script_service::ScriptConfig {
+    type Error = uuid::Error;
+
+    fn try_into(self) -> Result<ScriptConfig, Self::Error> {
+        Ok(ScriptConfig {
+            id: Uuid::from_str(&self.id)?,
+            entry_point: self.entry_point,
+            includes: self.includes,
+            ignore: self.ignore,
+        })
+    }
+}
+
+impl Into<crate::proto_script_service::ScriptConfig> for ScriptConfig {
+    fn into(self) -> crate::proto_script_service::ScriptConfig {
+        crate::proto_script_service::ScriptConfig {
+            id: self.id.to_string(),
+            entry_point: self.entry_point,
+            includes: self.includes,
+            ignore: self.ignore,
+        }
+    }
 }
 
 #[derive(sqlx::FromRow)]

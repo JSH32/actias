@@ -1,3 +1,4 @@
+use crate::live_script::LiveScriptManager;
 use crate::proto_script_service::script_service_server::ScriptServiceServer;
 use crate::{config::Config, script_service::ScriptService};
 use actias_common::setup_tracing;
@@ -7,6 +8,7 @@ use tonic::transport::Server;
 
 mod config;
 mod database_types;
+mod live_script;
 mod script_service;
 mod util;
 
@@ -28,9 +30,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Script Service listening on {}", addr);
 
     let pool = PgPoolOptions::new().connect(&config.database_url).await?;
+    let live_script_manager = LiveScriptManager::new(&config.redis_url);
 
     Server::builder()
-        .add_service(ScriptServiceServer::new(ScriptService::new(pool)))
+        .add_service(ScriptServiceServer::new(ScriptService::new(
+            pool,
+            live_script_manager,
+        )))
         .serve(addr)
         .await?;
 

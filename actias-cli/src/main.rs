@@ -580,19 +580,13 @@ async fn publish_script(client: &Client, script_dir: &str) -> Result<(), String>
         }
     };
 
-    let json_script_config = serde_json::to_value(script_config.clone())
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .to_owned();
-
     client
         .create_revision()
         .id(&script.id)
         .body(
             CreateRevisionDto::builder()
                 .bundle(script_config.to_bundle()?)
-                .script_config(json_script_config),
+                .script_config(script_config),
         )
         .send()
         .await
@@ -692,19 +686,13 @@ async fn create_script(
         script_config.id = Some(script.id.clone());
         script_config.write_config(&script_path)?;
 
-        let json_script_config = serde_json::to_value(script_config.clone())
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .to_owned();
-
         client
             .create_revision()
             .id(&script.id)
             .body(
                 CreateRevisionDto::builder()
                     .bundle(script_config.to_bundle()?)
-                    .script_config(json_script_config),
+                    .script_config(script_config),
             )
             .send()
             .await

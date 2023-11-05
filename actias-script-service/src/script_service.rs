@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use futures::future::join_all;
 use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 use sqlx::types::Uuid;
 use sqlx::{Pool, Postgres};
@@ -7,6 +8,7 @@ use tonic::{Response, Status};
 
 use crate::bundle::{Bundle, File};
 use crate::database_types::{DbFile, DbRevision, DbScript, ScriptConfig};
+use crate::live_script::LiveScriptManager;
 use crate::proto_script_service::find_script_request::{self};
 use crate::proto_script_service::{
     script_service_server, ListRevisionResponse, ListScriptResponse, Revision, Script, *,
@@ -15,13 +17,21 @@ use crate::proto_script_service::{
 use crate::proto_script_service::find_script_request::Query::{Id, PublicName};
 use crate::util::safe_divide;
 
+/// # TODOs
+/// - Split database into it's own module.
+/// - Switch to MySQL for scalability (TiDB).
+/// - Explore light ORM's like [rbatis](https://github.com/rbatis/rbatis).
 pub struct ScriptService {
     database: Pool<Postgres>,
+    live_script_manager: LiveScriptManager,
 }
 
 impl ScriptService {
-    pub fn new(database: Pool<Postgres>) -> Self {
-        Self { database }
+    pub fn new(database: Pool<Postgres>, live_script_manager: LiveScriptManager) -> Self {
+        Self {
+            database,
+            live_script_manager,
+        }
     }
 
     async fn get_script_info(
@@ -130,7 +140,7 @@ impl ScriptService {
             created: revision_info.created.to_string(),
             script_id: revision_info.script_id.to_string(),
             bundle: None,
-            script_config: serde_json::to_string(&revision_info.script_config).unwrap(),
+            script_config: revision_info.script_config.0.into(),
         })
     }
 }
@@ -146,11 +156,38 @@ impl script_service_server::ScriptService for ScriptService {
         let project_id =
             Uuid::from_str(&request.project_id).map_err(|e| Status::internal(e.to_string()))?;
 
-        sqlx::query("DELETE FROM scripts WHERE project_id = $1")
-            .bind(&project_id)
-            .execute(&self.database)
+        let mut tx = self
+            .database
+            .begin()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Get these to delete from live script redis.
+        let script_ids = sqlx::query_as::<_, (String,)>(
+            "SELECT script_id::text FROM scripts WHERE project_id = $1",
+        )
+        .bind(project_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        sqlx::query("DELETE FROM scripts WHERE project_id = $1")
+            .bind(&project_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // We run all the delete queries at once and just make sure they all complete.
+        let _ = join_all(
+            script_ids
+                .iter()
+                .map(|script_id| self.live_script_manager.delete_script(&script_id.0)),
+        )
+        .await;
 
         Ok(Response::new(()))
     }
@@ -168,8 +205,10 @@ impl script_service_server::ScriptService for ScriptService {
         Ok(Response::new(
             self.create_db_revision(
                 &script_info.id,
-                serde_json::from_str(&request.script_config)
-                    .map_err(|_| Status::invalid_argument("Project config is not valid JSON."))?,
+                request
+                    .script_config
+                    .try_into()
+                    .map_err(|e: uuid::Error| Status::invalid_argument(e.to_string()))?,
                 request.bundle,
             )
             .await
@@ -224,7 +263,7 @@ impl script_service_server::ScriptService for ScriptService {
             id: revision_info.id.to_string(),
             created: revision_info.created.to_string(),
             script_id: revision_info.script_id.to_string(),
-            script_config: serde_json::to_string(&revision_info.script_config).unwrap(),
+            script_config: revision_info.script_config.0.into(),
             bundle,
         }))
     }
@@ -277,7 +316,7 @@ impl script_service_server::ScriptService for ScriptService {
                     id: r.id.to_string(),
                     created: r.created.to_string(),
                     script_id: r.script_id.to_string(),
-                    script_config: serde_json::to_string(&r.script_config).unwrap(),
+                    script_config: r.script_config.clone().0.into(),
                     bundle: None,
                 })
                 .collect(),
@@ -455,6 +494,8 @@ impl script_service_server::ScriptService for ScriptService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        let _ = self.live_script_manager.delete_script(script_id).await;
+
         match row {
             // Empty response means success
             Some(_) => Ok(Response::new(())),
@@ -471,5 +512,55 @@ impl script_service_server::ScriptService for ScriptService {
         Ok(Response::new(
             self.get_script_info(request.query.unwrap()).await?.into(),
         ))
+    }
+
+    async fn put_live_session(
+        &self,
+        request: tonic::Request<LiveScript>,
+    ) -> Result<tonic::Response<LiveScriptSession>, tonic::Status> {
+        let request = request.get_ref();
+        let session_id = self
+            .live_script_manager
+            .put_session(request.clone())
+            .await?;
+
+        Ok(Response::new(LiveScriptSession {
+            script_id: request.script_id.clone(),
+            session_id: session_id.to_string(),
+        }))
+    }
+
+    async fn get_live_session(
+        &self,
+        request: tonic::Request<LiveScriptSession>,
+    ) -> Result<tonic::Response<LiveScript>, tonic::Status> {
+        let request = request.get_ref();
+
+        match self
+            .live_script_manager
+            .get_session(&request.script_id, &request.session_id)
+            .await?
+        {
+            Some(v) => Ok(Response::new(LiveScript {
+                session_id: Some(request.session_id.clone()),
+                script_id: request.script_id.clone(),
+                script_config: v.script_config,
+                bundle: v.bundle,
+            })),
+            None => Err(tonic::Status::not_found("Live script session not found.")),
+        }
+    }
+
+    async fn delete_live_session(
+        &self,
+        request: tonic::Request<LiveScriptSession>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        let request = request.get_ref();
+
+        self.live_script_manager
+            .delete_session(&request.script_id, &request.session_id)
+            .await?;
+
+        Ok(Response::new(()))
     }
 }

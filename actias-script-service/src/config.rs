@@ -3,6 +3,7 @@ use actias_common::config::{dotenv, get_env, get_env_or};
 pub struct Config {
     pub port: u16,
     pub database_url: String,
+    pub redis_url: String,
 }
 
 impl Config {
@@ -12,6 +13,7 @@ impl Config {
         Config {
             port: get_env_or("PORT", 3000),
             database_url: get_env("DATABASE_URL"),
+            redis_url: get_env("REDIS_URL"),
         }
     }
 }

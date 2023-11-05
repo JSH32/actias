@@ -39,7 +39,7 @@ export class RevisionFullDto {
     this.created = new Date(revision.created);
     this.scriptId = revision.scriptId;
     // This is fine because script service does validation on JSON.
-    this.scriptConfig = JSON.parse(revision.scriptConfig);
+    this.scriptConfig = revision.scriptConfig as ScriptConfigDto;
     this.bundle =
       revision.bundle && BundleDto.fromServiceBundle(revision.bundle);
   }
