@@ -59,3 +59,9 @@ Things that should be added but are incomplete or not added.
 - [ ] Split `worker` into `worker_core` and `worker_service`
   - Worker should be split in a way that it can be embedded in the CLI and used to locally develop.
     - KV and other services that depend on actias will be stored locally in a JSON (`dev.json`)
+- [ ] Repository
+  - Lua repository for Actias specific dependencies, interacted with through the CLI
+  - Should have ability to control package versions, have descriptions, publishers, etc
+  - Dependencies and versions should be stored in the `project.json`
+  - Router module should be moved from templates and added to the repo
+  - Additional packages that could exist: `postgrest`
