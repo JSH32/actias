@@ -9,6 +9,7 @@ import {
 import { AclModule } from 'src/project/acl/acl.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { ProjectModule } from 'src/project/project.module';
+import { ScriptsGateway } from './scripts.gateway';
 
 @Module({
   imports: [
@@ -34,5 +35,6 @@ import { ProjectModule } from 'src/project/project.module';
     ProjectScriptController,
     RevisionsController,
   ],
+  providers: [ScriptsGateway],
 })
 export class ScriptModule {}

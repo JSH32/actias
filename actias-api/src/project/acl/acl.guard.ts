@@ -10,6 +10,7 @@ import { AclService } from './acl.service';
 import { ModuleRef, Reflector } from '@nestjs/core';
 import { EntityManager } from '@mikro-orm/core';
 import { Projects } from 'src/entities/Projects';
+import { WsException } from '@nestjs/websockets';
 
 export const AclByProject = (bitfield: number) =>
   SetMetadata('acl', { bitfield });
@@ -35,6 +36,12 @@ export class AclGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
 
     const aclData = this.reflector.get<any>('acl', context.getHandler());
+    const isWs = this.reflector.get<boolean>(
+      'websocketAuth',
+      context.getHandler(),
+    );
+
+    const ExceptionClass = isWs ? WsException : ForbiddenException;
 
     if (aclData?.bitfield) {
       // Should be provided by AuthGuard
@@ -67,7 +74,7 @@ export class AclGuard implements CanActivate {
       const access = await this.aclService.getProjectAccess(user, project);
 
       if (!access.test(aclData.bitfield)) {
-        throw new ForbiddenException({
+        throw new ExceptionClass({
           message: 'You do not have enough permissions to perform this action',
         });
       }

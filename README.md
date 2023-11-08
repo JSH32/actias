@@ -49,3 +49,13 @@ In the background, Actias consists of a myriad of distributed services that shar
 `docker-compose` is an expirementing/local node option. It is not meant for production deployments but it will be relatively stable for deployments. This is the only option for now as this is still heavily in development. This is an AIO solution and deployment is as easy as `docker-compose up -d`, however you should run scylla and postgres seperately for anything important.
 ### Kubernetes
 **TODO**
+
+## Todos
+Things that should be added but are incomplete or not added.
+- [ ] Live Development
+  - Websocket based way to develop Actias through the CLI without constantly publishing or polluting revisions.
+- [ ] Vault
+  - Service for storing secrets, should also be subject to ACL controls
+- [ ] Split `worker` into `worker_core` and `worker_service`
+  - Worker should be split in a way that it can be embedded in the CLI and used to locally develop.
+    - KV and other services that depend on actias will be stored locally in a JSON (`dev.json`)

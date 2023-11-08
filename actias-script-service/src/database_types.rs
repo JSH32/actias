@@ -17,19 +17,6 @@ pub struct ScriptConfig {
     pub ignore: Vec<String>,
 }
 
-// impl TryFrom<crate::proto_script_service::ScriptConfig> for ScriptConfig {
-//     type Error = uuid::Error;
-
-//     fn try_from(value: crate::proto_script_service::ScriptConfig) -> Result<Self, Self::Error> {
-//         Ok(Self {
-//             id: Uuid::from_str(&value.id)?,
-//             entry_point: value.entry_point,
-//             includes: value.includes,
-//             ignore: value.ignore,
-//         })
-//     }
-// }
-
 impl TryInto<ScriptConfig> for crate::proto_script_service::ScriptConfig {
     type Error = uuid::Error;
 

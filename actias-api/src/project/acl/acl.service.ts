@@ -11,6 +11,7 @@ import { Access } from 'src/entities/Access';
 import { AclListDto } from './dto/acl.dto';
 import { EntityManager } from '@mikro-orm/core';
 import { UserDto } from 'src/users/dto/user.dto';
+import { WsException } from '@nestjs/websockets';
 
 @Injectable()
 export class AclService {
@@ -23,6 +24,7 @@ export class AclService {
   async getProjectAccess(
     user: Users,
     project: Projects,
+    isWs = false,
   ): Promise<BitSet<AccessFields>> {
     if (project.owner === user) {
       return new BitField(AccessFields.FULL);
@@ -31,7 +33,8 @@ export class AclService {
     const permissions = await this.em.findOne(Access, { project, user });
 
     if (!permissions) {
-      throw new ForbiddenException(`You can't access this project.`);
+      const ExceptionClass = isWs ? WsException : ForbiddenException;
+      throw new ExceptionClass(`You can't access this project.`);
     }
 
     return BitField.deserialize(permissions.permissionBitfield);

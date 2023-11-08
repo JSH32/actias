@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { Reflector } from '@nestjs/core';
+import { WsException } from '@nestjs/websockets';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -20,9 +21,18 @@ export class AuthGuard implements CanActivate {
       return true;
     }
 
+    const isWs = this.reflector.get<boolean>(
+      'websocketAuth',
+      context.getHandler(),
+    );
+
+    const exception = isWs
+      ? new WsException('You are not authorized')
+      : new UnauthorizedException();
+
     const request = context.switchToHttp().getRequest();
     const token = AuthGuard.extractTokenFromHeader(request);
-    if (!token) throw new UnauthorizedException();
+    if (!token) throw exception;
 
     try {
       const user = await this.authService.getUserFromToken(token);
@@ -37,7 +47,7 @@ export class AuthGuard implements CanActivate {
         return false;
       }
     } catch {
-      throw new UnauthorizedException();
+      throw exception;
     }
 
     return true;
@@ -53,6 +63,11 @@ export class AuthGuard implements CanActivate {
  * Set the route to be accessible without authentication on an AuthGuard'ed controller.
  */
 export const Public = () => SetMetadata('isPublic', true);
+
+/**
+ * Set the route to be geared toward WebSockets.
+ */
+export const WsAuth = () => SetMetadata('websocketAuth', true);
 
 /**
  * Set the route to require an admin user.
