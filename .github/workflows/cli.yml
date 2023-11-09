@@ -23,14 +23,14 @@ jobs:
             target: x86_64-pc-windows-msvc
             bin: actias-cli.exe
             name: actias-cli-Windows-x86_64.zip
-            command: both
+            command: build
 
           - release_for: macOS-x86_64
             os: macOS-latest
             target: x86_64-apple-darwin
             bin: actias-cli
             name: actias-cli-Darwin-x86_64.tar.gz
-            command: both
+            command: build
 
             # more release targets here ...
 
@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
       - name: Build binary
         uses: houseabsolute/actions-rust-cross@v0
         with:
