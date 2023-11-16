@@ -64,20 +64,20 @@ jobs:
             tar czvf ../../../${{ matrix.platform.name }} ${{ matrix.platform.bin }}
           fi
           cd -
-        if: |
-          matrix.toolchain == 'stable' &&
-          ( startsWith( github.ref, 'refs/tags/v' ) ||
-            github.ref == 'refs/tags/test-release' )
+        # if: |
+        #   matrix.toolchain == 'stable' &&
+        #   ( startsWith( github.ref, 'refs/tags/v' ) ||
+        #     github.ref == 'refs/tags/test-release' )
       - name: Publish release artifacts
         uses: actions/upload-artifact@v3
         with:
           name: precious-${{ matrix.platform.os_name }}
           path: "precious-*"
-        if: matrix.toolchain == 'stable' && github.ref == 'refs/tags/test-release'
-      - name: Generate SHA-256
-        run: shasum -a 256 ${{ matrix.platform.name }}
-        if: |
-          matrix.toolchain == 'stable' &&
-          matrix.platform.os == 'macOS-latest' &&
-          ( startsWith( github.ref, 'refs/tags/v' ) ||
-            github.ref == 'refs/tags/test-release' )
+        # if: matrix.toolchain == 'stable' && github.ref == 'refs/tags/test-release'
+      # - name: Generate SHA-256
+      #   run: shasum -a 256 ${{ matrix.platform.name }}
+      #   if: |
+      #     matrix.toolchain == 'stable' &&
+      #     matrix.platform.os == 'macOS-latest' &&
+      #     ( startsWith( github.ref, 'refs/tags/v' ) ||
+      #       github.ref == 'refs/tags/test-release' )
