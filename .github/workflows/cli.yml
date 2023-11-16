@@ -71,8 +71,8 @@ jobs:
       - name: Publish release artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: precious-${{ matrix.platform.os_name }}
-          path: "precious-*"
+          name: actias-cli-${{ matrix.platform.os_name }}
+          path: "actias-cli-*"
         # if: matrix.toolchain == 'stable' && github.ref == 'refs/tags/test-release'
       # - name: Generate SHA-256
       #   run: shasum -a 256 ${{ matrix.platform.name }}
