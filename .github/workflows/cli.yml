@@ -72,7 +72,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: actias-cli-${{ matrix.platform.os_name }}
-          path: "actias-cli-*"
+          path: ${{ matrix.platform.name }} 
         # if: matrix.toolchain == 'stable' && github.ref == 'refs/tags/test-release'
       # - name: Generate SHA-256
       #   run: shasum -a 256 ${{ matrix.platform.name }}
