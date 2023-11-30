@@ -28,6 +28,9 @@ interface SocketData {
   user: Users;
 }
 
+/**
+ * Gateway for live scripts.
+ */
 @UseGuards(AuthGuard, AclGuard)
 @WebSocketGateway({ namespace: 'liveScript' })
 export class ScriptsGateway
