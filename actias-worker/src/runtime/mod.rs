@@ -91,6 +91,9 @@ impl ActiasRuntime {
 
         // Time limit each worker total runtime.
         // TODO: Figure out how to make this CPU time based.
+        // Next best thing is setting a hook trigger for every nth instruction.
+        // With https://docs.rs/mlua/latest/mlua/struct.HookTriggers.html#structfield.every_nth_instruction
+        // Or https://docs.rs/mlua/latest/mlua/struct.Lua.html#method.set_hook
         lua.set_interrupt(move |_| {
             let timer = timer.read().unwrap();
             if let (Some(start_time), Some(time_limit)) = (timer.start_time, timer.time_limit) {

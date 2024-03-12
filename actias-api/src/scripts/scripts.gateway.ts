@@ -34,8 +34,7 @@ interface SocketData {
 @UseGuards(AuthGuard, AclGuard)
 @WebSocketGateway({ namespace: 'liveScript' })
 export class ScriptsGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+  implements OnGatewayConnection, OnGatewayDisconnect {
   private scriptService: script_service.ScriptService;
 
   constructor(@Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc) {}

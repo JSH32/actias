@@ -71,7 +71,7 @@ impl UserData for JwtClass {
                 match decode::<serde_json::Value>(
                     &token,
                     &this.decoding_key,
-                    &Validation::default(),
+                    &Validation::new(this.header.alg),
                 ) {
                     Ok(v) => lua.to_value(&v.claims)?,
                     Err(_) => mlua::Value::Nil,
