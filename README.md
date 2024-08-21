@@ -54,6 +54,9 @@ In the background, Actias consists of a myriad of distributed services that shar
 Things that should be added but are incomplete or not added.
 - [ ] Live Development (in-progress)
   - Websocket based way to develop Actias through the CLI without constantly publishing or polluting revisions.
+- [ ] Metric Service
+  - Store metrics and logs of all requests/resources used per request
+  - This should have some regexes and ML algorithm for determining sensitive data in the request body and redacting it
 - [ ] Vault
   - Service for storing secrets, should also be subject to ACL controls
 - [ ] Split `worker` into `worker_core` and `worker_service` (backlog)
