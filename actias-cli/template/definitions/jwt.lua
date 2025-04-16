@@ -1,9 +1,5 @@
 ---@meta
 ---@diagnostic disable: lowercase-global, missing-return
----@class JwtHeader Table object that contains typ and alg fields.
----@field typ "JWT" Header type.
----@field alg JwtAlgorithm Algorithm type.
-local JwtHeader = {}
 
 ---@alias JwtAlgorithm
 ---| '"HS256"' # HMAC using SHA-256 hash algorithm
@@ -23,10 +19,10 @@ local JwtHeader = {}
 Jwt = {}
 
 ---Create a new Jwt signer object.
----@param header JwtHeader Token header.
+---@param algorithm JwtAlgorithm Token header.
 ---@param secret string Secret string to encode/decode the jwt.
 ---@return Jwt
-function Jwt.new(header, secret) end
+function Jwt.new(algorithm, secret) end
 
 ---Encode a table into a jwt string.
 ---@param table table table to encode into a jwt string.
