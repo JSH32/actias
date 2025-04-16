@@ -16,6 +16,13 @@ add_event_listener("fetch", function(request)
 end)
 ```
 
+## Who is it for?
+Actias was designed with multiple goals in mind, but at its core, it exists to make coding and deploying applications easier for everyone. One of the biggest roadblocks for beginners is infrastructure, getting started often means dependency management, installing databases, choosing frameworks, handling threading issues, and more. Even after building an app, newcomers often try to share it by sending "localhost:80" to friends, only to realize that making an app accessible to others involves purchasing a VPS, learning Linux, deploying and hosting, managing updates, buying a domain, and setting up SSL certificates. While these are valuable skills that developers should eventually learn, the reality is that platforms like AWS and GCP exist precisely because people want to avoid these complexities. Yet those platforms have their own set of issues.
+
+Actias is for students, educators, and programmers who want to deploy server-side code without getting overwhelmed by the details of infrastructure. The idea for Actias came from my own experiences and over years of iteration and especially during my time at Indiana University, I saw firsthand how the barrier to entry stops people from applying their coding skills. Actias is primarily developed as an educational tool, but it’s also adaptable for real businesses. It’s meant for both beginners and professionals, and for enthusiastic programmers who want to contribute new features. That’s why Actias is open source, to empower anyone to use, learn from, and improve the platform.
+
+While Actias is still in heavy development, it aims to provide documentation and a built-in blog. These resources are designed to teach you how Actias works and how you can use it and how it differs from traditional development approaches (while teaching the traditional approaches too). The blog and documentation will cover a range of general concepts relevant to web and service development. Actias is a development environment, and a learning platform for anyone interested in modern application development.
+
 ## What actually is Actias?
 ```mermaid
 flowchart LR
@@ -46,7 +53,7 @@ In the background, Actias consists of many distributed services which allow the 
 
 ## Deployment
 ### Docker Compose
-`docker-compose` is an expirementing/local node option. It is not meant for production deployments but it will be relatively stable for deployments. This is the only option for now as this is still heavily in development. This is an AIO solution and deployment is as easy as `docker-compose up -d`, however you should run scylla and postgres seperately for anything important.
+`docker-compose` is an expirementing/local node option. It is not meant for production deployments but it will be relatively stable for deployments. This is the only option for now as this is still heavily in development. This is an AIO solution and deployment is as easy as `docker-compose up -d`.
 ### Kubernetes
 **TODO**
 
@@ -54,6 +61,11 @@ In the background, Actias consists of many distributed services which allow the 
 Things that should be added but are incomplete or not added.
 - [ ] Live Development (in-progress)
   - Websocket based way to develop Actias through the CLI without constantly publishing or polluting revisions.
+- [ ] Replace postgres in `script-service` and `actias-api` with MySQL
+  - Allows us to use TiDB or Vitess for distributed SQL
+- [ ] Actias SQL service
+  - Use [mvsqlite](https://github.com/losfair/mvsqlite) or [litefs](https://github.com/superfly/litefs/blob/main/docs/ARCHITECTURE.md)
+  - The idea is to offer SQL by manipulating the layer which Sqlite uses to read/write to be distributed.
 - [ ] Metric Service
   - Store metrics and logs of all requests/resources used per request
   - This should have some regexes and ML algorithm for determining sensitive data in the request body and redacting it
