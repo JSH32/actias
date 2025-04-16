@@ -5,12 +5,12 @@
 </p>
 
 # Actias
-Actias is a cutting-edge, open-source, serverless computing platform that revolutionizes how developers deploy and run their code effortlessly across the globe. Inspired by the simplicity and scalability of Cloudflare Workers, Actias stands out by integrating the power and flexibility of Lua, a lightweight, high-level programming language known for its speed and embeddability. Developers write their Lua scripts and entrust them to Actias, which then handles the runtime, scaling seamlessly across countless servers without manual intervention. It's not just about running code; Actias enriches the development experience with built-in Key/Value storage and database access, simplifying state management and data persistence. All it takes to unleash this potential is to upload your Lua script to Actias, and watch as it seamlessly manages the complexities of deployment, execution, and scaling. This platform is designed to cater to developers seeking an efficient and straightforward way to bring their ideas to life, with the peace of mind that comes from knowing their applications can scale infinitely without the intricacies of server management.
+Actias is an open-source, serverless platform designed for running stateless functions written in Lua. It provides everything you need to build and deploy applications without worrying about scaling, databases, or state management. With Actias, you simply upload your Lua script, and the platform takes care of running it reliably and efficiently across the globe. Built-in services like Key/Value storage and database access make it easy to manage data and persist state, so you can focus on your code instead of infrastructure. Actias is designed to be accessible for everyone, whether you're learning to code or building professional applications. Actias offers a simple, powerful suite of tools to bring your ideas to life without the complexity of server management.
 
 ```lua
 add_event_listener("fetch", function(request)
     return {
-        body = json.stringify({hello = "world"}),
+        body = json.stringify({hello = "actias"}),
         headers = {["Content-Type"] = "application/json"}
     }
 end)
@@ -38,11 +38,11 @@ flowchart LR
 
 Actias, bearing resemblance to Cloudflare Workers, operates as a fully distributed system that includes Key-Value (K/V) storage combined with a bunch of other services. In this sense, it decentralizes the management of services which boosts scalability and efficiency. 
 
-Upon uploading your lua file, the script is independently managed and run by the Actias worker, evolving into a server-side computational resource. This bears the substantial advantage of maintaining a web operation that is consistently multi-threaded, thus enhancing performance and availability due to high-level parallelism. Essentially operating as a layer that handles request-response cycle in between your users’ HTTP interactions and your server. 
+Upon uploading your lua file, the script is independently managed and run by the Actias worker on an as-needed basis. This has the advantage of maintaining operations that are consistently multi-threaded, each script execution runs in it's own context which enhances performance and availability due to high-level parallelism. Essentially operating as a layer that handles request-response cycle in between your users’ HTTP interactions and your server. 
 
-Your code enables a script instance per request, with every one of them being short-lived. These scripts run server-side, guaranteeing real-time responses to the user's queries and interactions. This design ensures that Actias is exceptionally robust and flexible, neither buckling under high demand nor wasting resources during quieter periods.
+Your code has a script instance per request, with every runtime having an almost instant startup and execution cost while being short-lived. These scripts run server-side, guaranteeing real-time responses to the user's queries and interactions. This design ensures that Actias is exceptionally robust and flexible, it will not buckle under high demand nor waste resources during quieter periods.
 
-In the background, Actias consists of a myriad of distributed services that share a conversation, allowing the entire program to run smoothly and cohesively. It's a network of interconnected and interdependent components that make up your backend. Despite this complexity, Actias is extraordinarily user-friendly – hand it your script, and we'll take care of the execution and management.
+In the background, Actias consists of many distributed services which allow the entire program to run smoothly. It's a network of interconnected and interdependent components that make up your backend that you never have to deal with outside of the high level APIs. Despite this complexity, Actias is extraordinarily user-friendly, hand it your script, and it will take care of the rest.
 
 ## Deployment
 ### Docker Compose

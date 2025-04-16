@@ -7,7 +7,13 @@ edition = "2021"
 
 [dependencies]
 actias-common = { workspace = true }
-mlua = { version = "0.9.1", features = ["luau-jit", "vendored", "serialize", "send", "async"] }
+mlua = { version = "0.9.1", features = [
+    "luau-jit",
+    "vendored",
+    "serialize",
+    "send",
+    "async",
+] }
 http-body-util = "0.1.0-rc.3"
 serde_json = "1.0.91"
 serde = { version = "1.0.152", features = ["derive"] }
@@ -18,10 +24,14 @@ hyper = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
-jsonwebtoken = "9"
+jsonwebtoken = "9.3.1"
 argon2 = "0.5.2"
 sha2 = "0.10.8"
 rsa = { version = "0.9.3" }
+
+# TODO: replace jsonwebtoken
+[patch.crates-io]
+time = "0.3.35"
 
 [build-dependencies]
 tonic-build = { workspace = true }
@@ -29,8 +39,4 @@ prost-build = { workspace = true }
 
 [dependencies.uuid]
 version = "1.5.0"
-features = [
-    "v4",
-    "fast-rng",
-    "macro-diagnostics",
-]
+features = ["v4", "fast-rng", "macro-diagnostics"]

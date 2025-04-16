@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "bundle.Bundle",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
-        .compile(
+        .compile_protos(
             &[
                 "../protobufs/shared/bundle.proto",
                 "../protobufs/script_service.proto",
