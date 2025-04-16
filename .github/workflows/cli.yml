@@ -67,5 +67,5 @@ jobs:
       - name: Publish release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: actias-cli-${{ matrix.platform.os_name }}
+          name: actias-cli-${{ matrix.platform.release_for }}
           path: ${{ matrix.platform.name }}
