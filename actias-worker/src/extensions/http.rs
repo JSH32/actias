@@ -23,7 +23,7 @@ impl LuaExtension for HttpExtension {
         }
     }
 
-    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value> {
+    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
         // Http request method
         let http = lua.create_table()?;
         http.set(

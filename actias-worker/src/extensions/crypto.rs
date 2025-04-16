@@ -17,7 +17,7 @@ use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 pub struct CryptoExtension;
 
 impl LuaExtension for CryptoExtension {
-    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value> {
+    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
         let crypto = lua.create_table()?;
 
         let argon2_class = lua.create_proxy::<Argon2Class>()?;

@@ -238,14 +238,15 @@ impl ActiasRuntime {
 
         // Run entry point and register handlers.
         if let Some(entry_point) = entry_point {
-            lua.load(&LuaModule {
-                name: entry_point.file_name.clone(),
-                source: std::str::from_utf8(&entry_point.content)
-                    .into_lua_err()?
-                    .to_string(),
-            })
-            .eval_async()
-            .await?;
+            let _: () = lua
+                .load(&LuaModule {
+                    name: entry_point.file_name.clone(),
+                    source: std::str::from_utf8(&entry_point.content)
+                        .into_lua_err()?
+                        .to_string(),
+                })
+                .eval_async()
+                .await?;
         }
 
         // Set original timer.

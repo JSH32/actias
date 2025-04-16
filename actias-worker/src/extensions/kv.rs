@@ -15,7 +15,7 @@ pub struct KvExtension {
 }
 
 impl LuaExtension for KvExtension {
-    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value> {
+    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
         let kv = lua.create_table()?;
 
         let kv_client = self.kv_client.clone();

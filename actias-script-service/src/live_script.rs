@@ -75,12 +75,13 @@ impl LiveScriptManager {
 
         let mut con = self.pool.get().await?;
 
-        con.hset(
-            &script.script_id,
-            &session_id.to_string(),
-            serde_json::to_string(&script_instance).unwrap(),
-        )
-        .await?;
+        let _: () = con
+            .hset(
+                &script.script_id,
+                &session_id.to_string(),
+                serde_json::to_string(&script_instance).unwrap(),
+            )
+            .await?;
 
         Ok(session_id)
     }
@@ -93,7 +94,7 @@ impl LiveScriptManager {
     ) -> Result<(), LiveScriptError> {
         let mut con = self.pool.get().await?;
 
-        con.hdel(script_id, session_id).await?;
+        let _: () = con.hdel(script_id, session_id).await?;
 
         Ok(())
     }
@@ -102,7 +103,7 @@ impl LiveScriptManager {
     pub async fn delete_script(&self, script_id: &str) -> Result<(), LiveScriptError> {
         let mut con = self.pool.get().await?;
 
-        con.del(script_id).await?;
+        let _: () = con.del(script_id).await?;
 
         Ok(())
     }

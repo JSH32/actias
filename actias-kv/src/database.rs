@@ -179,7 +179,7 @@ impl Database {
         let project_id =
             Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
 
-        values.push((project_id, namespace.clone(), key.clone()));
+        values.push((project_id, namespace, key));
 
         Ok(
             match self
