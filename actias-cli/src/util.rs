@@ -6,7 +6,7 @@ use std::{
 
 use base64::Engine;
 use colored::Colorize;
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use serde::Deserialize;
 
 use crate::{client::types::RevisionFullDto, script::ScriptConfig};

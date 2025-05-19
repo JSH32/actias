@@ -9,7 +9,7 @@ use inquire::{Password, Text};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    client::{types::LoginDto, Client},
+    client::{Client, types::LoginDto},
     util::progenitor_error,
 };
 
@@ -30,17 +30,21 @@ impl Settings {
 
         let settings_file = auth_dir.join("settings.json");
 
-        if !settings_file.as_path().exists() {
+        // If no settings file or relog requested, create new settings
+        if !settings_file.as_path().exists() || relog {
             if !relog {
                 println!("🔑 You are not logged in!");
             }
 
+            // Get server URL
             let server_url = Text::new("What is the server URL?")
                 .prompt()
                 .map_err(|e| e.to_string())?;
 
+            // Create client for authentication
             let client = Client::new(&server_url);
 
+            // Prompt for credentials
             let username = Text::new("What is your username/email?")
                 .prompt()
                 .map_err(|e| e.to_string())?;
@@ -50,6 +54,7 @@ impl Settings {
                 .prompt()
                 .map_err(|e| e.to_string())?;
 
+            // Perform login
             let auth = client
                 .login()
                 .body(
@@ -62,20 +67,22 @@ impl Settings {
                 .await
                 .map_err(progenitor_error)?;
 
+            // Create settings
             let settings = Settings {
                 api_url: server_url,
                 token: auth.token.clone(),
             };
 
+            // Save settings to file
             let mut writer = BufWriter::new(File::create(settings_file).unwrap());
             serde_json::to_writer(&mut writer, &settings).map_err(|e| e.to_string())?;
             writer.flush().map_err(|e| e.to_string())?;
 
             println!("{}", "🔑 Logged in successfully!".green());
-
             return Ok(settings);
         }
 
+        // Load existing settings
         let reader: BufReader<File> = BufReader::new(File::open(settings_file).unwrap());
         let settings: Settings = serde_json::from_reader(reader).map_err(|e| {
             format!(
