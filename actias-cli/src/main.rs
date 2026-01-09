@@ -27,13 +27,15 @@ async fn run() -> errors::Result<()> {
 
     // Parsing settings should trigger a re-auth.
     let relog = if let Commands::Login = cli.command {
-        std::fs::remove_file(
-            config_dir()
-                .unwrap()
-                .join("actias-cli")
-                .join("settings.json"),
-        )
-        .map_err(|e| Error::Io(format!("Failed to remove settings file: {}", e)))?;
+        let setting_path = config_dir()
+            .unwrap()
+            .join("actias-cli")
+            .join("settings.json");
+
+        if std::fs::exists(&setting_path)? {
+            std::fs::remove_file(setting_path)
+                .map_err(|e| Error::Io(format!("Failed to remove settings file: {}", e)))?;
+        }
         true
     } else {
         false
