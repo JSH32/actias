@@ -1,0 +1,4 @@
+# Context for actias-web/Dockerfile.
+node_modules/
+.next/
+.env*

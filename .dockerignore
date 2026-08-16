@@ -1,0 +1,19 @@
+# Build context for the root-context images (docker/Dockerfile.rust, Dockerfile.api).
+# Without this, `COPY . .` ships multi-GB of host build output to the daemon and bakes
+# it into the image, where it is at best dead weight and at worst stale artifacts from a
+# different toolchain.
+target/
+**/node_modules/
+**/dist/
+**/.next/
+
+.git/
+.direnv/
+scratch/
+result
+result-*
+
+# Not needed to build anything.
+docs/
+.github/
+*.md

@@ -1,0 +1,4 @@
+# Context for actias-api/Dockerfile.migration.
+node_modules/
+dist/
+.env*

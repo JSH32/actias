@@ -1,8 +1,13 @@
 # This single image builds any/all rust services.
 # It is done this way because of Rust workspaces.
+#
+# Keep the toolchain in step with flake.nix: the workspace is edition 2024 with
+# resolver 3, so anything older than 1.85 cannot build it at all. Builder and
+# runtime share a debian bookworm base so the binary finds the glibc it linked
+# against.
 
-FROM rust:1.72 as chef
-RUN cargo install cargo-chef 
+FROM rust:1.97-bookworm AS chef
+RUN cargo install cargo-chef
 
 WORKDIR /app
 
@@ -16,12 +21,16 @@ COPY ./actias-script-service ./actias-script-service
 COPY ./actias-worker ./actias-worker
 COPY ./actias-kv ./actias-kv
 COPY ./actias-cli ./actias-cli
-RUN cargo chef prepare  --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 
-# Install protobuf compiler.
-RUN apt update && apt install -y protobuf-compiler
+# protobuf-compiler is only the protoc binary. The well-known types that
+# kv_service.proto imports (google/protobuf/empty.proto) live in libprotobuf-dev,
+# and without it every build.rs fails at "File not found".
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        protobuf-compiler libprotobuf-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
@@ -32,13 +41,15 @@ RUN cargo build --release --bin ${CRATE_NAME} \
     && mkdir -p /output \
     && cp target/release/${CRATE_NAME} /output/target
 
-FROM ubuntu:22.04 as runtime
+FROM debian:bookworm-slim AS runtime
 
 WORKDIR /app
 COPY --from=builder /output/target /app/
 
-# Install runtime dependencies
-RUN apt-get update && apt install -y openssl
+# openssl for the tls stack, ca-certificates so outbound https from scripts can
+# actually verify a chain.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 CMD [ "/app/target" ]
 
