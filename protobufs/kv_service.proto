@@ -94,8 +94,17 @@ message DeleteNamespaceRequest {
     required string namespace = 2;
 }
 
+// Create an empty namespace.
+// Namespaces are also created implicitly by the first write into them; this
+// exists so a namespace can be made ahead of any data, without a junk pair.
+message CreateNamespaceRequest {
+    required string project_id = 1;
+    required string namespace = 2;
+}
+
 service KvService {
     rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+    rpc CreateNamespace(CreateNamespaceRequest) returns (Namespace);
     rpc ListPairs(ListPairsRequest) returns (ListPairsResponse);
     rpc SetPairs(SetPairsRequest) returns (google.protobuf.Empty);
     rpc GetPair(PairRequest) returns (Pair);

@@ -1,11 +1,12 @@
+use actias_common::tracing::error;
 use tonic::{Response, Status};
 
 use crate::{
-    database::Database,
+    database::{Database, DatabaseError},
     proto_kv_service::{
-        self, DeleteNamespaceRequest, DeletePairsRequest, DeleteProjectRequest,
-        ListNamespacesRequest, ListNamespacesResponse, ListPairsRequest, ListPairsResponse,
-        PairRequest, SetPairsRequest, kv_service_server,
+        self, CreateNamespaceRequest, DeleteNamespaceRequest, DeletePairsRequest,
+        DeleteProjectRequest, ListNamespacesRequest, ListNamespacesResponse, ListPairsRequest,
+        ListPairsResponse, Namespace, PairRequest, SetPairsRequest, kv_service_server,
     },
 };
 
@@ -19,6 +20,23 @@ impl KvService {
     }
 }
 
+/// The one place a [`DatabaseError`] becomes a wire status.
+///
+/// Invalid input is the caller's to see; everything else is logged here and
+/// leaves as a bare internal error, because driver messages quote hosts and
+/// queries.
+impl From<DatabaseError> for Status {
+    fn from(err: DatabaseError) -> Self {
+        match err {
+            DatabaseError::Invalid(e) => Status::invalid_argument(e),
+            other => {
+                error!(error = %other, "kv database error");
+                Status::internal("Storage error.")
+            }
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl kv_service_server::KvService for KvService {
     async fn list_namespaces(
@@ -28,11 +46,25 @@ impl kv_service_server::KvService for KvService {
         let request = request.get_ref();
 
         Ok(Response::new(
-            self.database
-                .get_namespaces(&request.project_id)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?,
+            self.database.get_namespaces(&request.project_id).await?,
         ))
+    }
+
+    async fn create_namespace(
+        &self,
+        request: tonic::Request<CreateNamespaceRequest>,
+    ) -> Result<tonic::Response<Namespace>, tonic::Status> {
+        let request = request.get_ref();
+
+        self.database
+            .create_namespace(&request.project_id, &request.namespace)
+            .await?;
+
+        Ok(Response::new(Namespace {
+            project_id: request.project_id.clone(),
+            name: request.namespace.clone(),
+            count: 0,
+        }))
     }
 
     async fn list_pairs(
@@ -49,8 +81,7 @@ impl kv_service_server::KvService for KvService {
                     request.page_size,
                     request.token.clone(),
                 )
-                .await
-                .map_err(|e| Status::invalid_argument(e.to_string()))?,
+                .await?,
         ))
     }
 
@@ -59,10 +90,7 @@ impl kv_service_server::KvService for KvService {
         request: tonic::Request<SetPairsRequest>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
         let request = request.get_ref();
-        self.database
-            .set(request.pairs.clone())
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        self.database.set(request.pairs.clone()).await?;
 
         Ok(Response::new(()))
     }
@@ -75,8 +103,7 @@ impl kv_service_server::KvService for KvService {
         match self
             .database
             .get(&request.project_id, &request.namespace, &request.key)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
+            .await?
         {
             Some(v) => Ok(Response::new(v)),
             None => Err(Status::not_found(format!(
@@ -91,13 +118,7 @@ impl kv_service_server::KvService for KvService {
         request: tonic::Request<DeleteProjectRequest>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
         let request = request.get_ref();
-        self.database
-            .delete_project(&request.project_id)
-            .await
-            .map_err(|e| {
-                println!("{}", e);
-                Status::internal(e.to_string())
-            })?;
+        self.database.delete_project(&request.project_id).await?;
 
         Ok(Response::new(()))
     }
@@ -110,8 +131,7 @@ impl kv_service_server::KvService for KvService {
 
         self.database
             .delete_namespace(&request.project_id, &request.namespace)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .await?;
 
         Ok(Response::new(()))
     }
@@ -122,10 +142,7 @@ impl kv_service_server::KvService for KvService {
     ) -> Result<tonic::Response<()>, tonic::Status> {
         let request = request.get_ref();
 
-        self.database
-            .delete(request.pairs.clone())
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        self.database.delete(request.pairs.clone()).await?;
 
         Ok(Response::new(()))
     }
