@@ -163,13 +163,12 @@ impl script_service_server::ScriptService for ScriptService {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         // Get these to delete from live script redis.
-        let script_ids = sqlx::query_as::<_, (String,)>(
-            "SELECT script_id::text FROM scripts WHERE project_id = $1",
-        )
-        .bind(project_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+        let script_ids =
+            sqlx::query_as::<_, (String,)>("SELECT id::text FROM scripts WHERE project_id = $1")
+                .bind(project_id)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
 
         sqlx::query("DELETE FROM scripts WHERE project_id = $1")
             .bind(project_id)
@@ -245,17 +244,28 @@ impl script_service_server::ScriptService for ScriptService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+            let mut bundle_files = Vec::with_capacity(files.len());
+            for file in &files {
+                // A file that will not decompress is a corrupt row, not a reason
+                // to take the request thread down with it.
+                let content = decompress_size_prepended(&file.content).map_err(|e| {
+                    Status::internal(format!(
+                        "stored file '{}' could not be decompressed: {e}",
+                        file.file_path
+                    ))
+                })?;
+
+                bundle_files.push(File {
+                    content,
+                    file_name: file.file_name.clone(),
+                    file_path: file.file_path.clone(),
+                    revision_id: file.revision_id.to_string(),
+                });
+            }
+
             bundle = Some(Bundle {
                 entry_point: revision_info.entry_point,
-                files: files
-                    .iter()
-                    .map(|f| File {
-                        content: decompress_size_prepended(&f.content).unwrap(),
-                        file_name: f.file_name.clone(),
-                        file_path: f.file_path.clone(),
-                        revision_id: f.revision_id.to_string(),
-                    })
-                    .collect(),
+                files: bundle_files,
             })
         };
 
@@ -562,5 +572,173 @@ impl script_service_server::ScriptService for ScriptService {
             .await?;
 
         Ok(Response::new(()))
+    }
+}
+
+/// Container-backed tests driving the service against real stores.
+///
+/// These live here rather than in `tests/` because this crate is a binary and
+/// has no library target for an integration test to import.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+    use testcontainers_modules::postgres::Postgres as PostgresImage;
+    use testcontainers_modules::redis::Redis;
+    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+
+    // The generated trait shares its name with the struct implementing it, and
+    // calling delete_project needs the trait in scope.
+    #[allow(unused_imports)]
+    use crate::proto_script_service::script_service_server::ScriptService as ScriptServiceRpc;
+
+    /// A service wired to a migrated postgres and a redis.
+    ///
+    /// The containers ride along because dropping them stops the stores.
+    struct TestService {
+        _postgres: ContainerAsync<PostgresImage>,
+        _redis: ContainerAsync<Redis>,
+        database: Pool<Postgres>,
+        service: ScriptService,
+    }
+
+    async fn service() -> TestService {
+        let postgres = PostgresImage::default()
+            .with_tag("17-alpine")
+            .start()
+            .await
+            .expect("postgres starts");
+        let postgres_port = postgres
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("postgres port is published");
+
+        let redis = Redis::default().start().await.expect("redis starts");
+        let redis_port = redis
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("redis port is published");
+
+        let database = PgPoolOptions::new()
+            .connect(&format!(
+                "postgresql://postgres:postgres@127.0.0.1:{postgres_port}/postgres"
+            ))
+            .await
+            .expect("postgres accepts connections");
+
+        sqlx::migrate!("./migrations")
+            .run(&database)
+            .await
+            .expect("migrations apply");
+
+        let service = ScriptService::new(
+            database.clone(),
+            LiveScriptManager::new(&format!("redis://127.0.0.1:{redis_port}")),
+        );
+
+        TestService {
+            _postgres: postgres,
+            _redis: redis,
+            database,
+            service,
+        }
+    }
+
+    async fn insert_script(database: &Pool<Postgres>, identifier: &str, project_id: Uuid) -> Uuid {
+        let (id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO scripts (public_identifier, project_id) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(identifier)
+        .bind(project_id)
+        .fetch_one(database)
+        .await
+        .expect("script inserts");
+
+        id
+    }
+
+    #[tokio::test]
+    async fn deleting_a_project_removes_its_scripts_and_their_live_sessions() {
+        let harness = service().await;
+        let project_id = Uuid::new_v4();
+
+        let script_id = insert_script(&harness.database, "doomed", project_id).await;
+
+        let session_id = harness
+            .service
+            .live_script_manager
+            .put_session(LiveScript {
+                session_id: None,
+                script_id: script_id.to_string(),
+                script_config: crate::proto_script_service::ScriptConfig {
+                    id: script_id.to_string(),
+                    entry_point: "main.lua".to_owned(),
+                    includes: vec![],
+                    ignore: vec![],
+                },
+                bundle: Bundle {
+                    entry_point: "main.lua".to_owned(),
+                    files: vec![],
+                },
+            })
+            .await
+            .expect("session is created");
+
+        harness
+            .service
+            .delete_project(tonic::Request::new(DeleteProjectRequest {
+                project_id: project_id.to_string(),
+            }))
+            .await
+            .expect("project deletes");
+
+        let remaining: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM scripts WHERE project_id = $1")
+                .bind(project_id)
+                .fetch_one(&harness.database)
+                .await
+                .expect("count runs");
+        assert_eq!(remaining.0, 0, "scripts outlived their project");
+
+        // Finding the scripts to clean up is a separate query from deleting
+        // them, and it naming a column that does not exist is invisible unless
+        // the sessions are checked.
+        assert!(
+            harness
+                .service
+                .live_script_manager
+                .get_session(&script_id.to_string(), &session_id.to_string())
+                .await
+                .expect("session lookup runs")
+                .is_none(),
+            "live session outlived the project"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_project_leaves_other_projects_alone() {
+        let harness = service().await;
+
+        let doomed = Uuid::new_v4();
+        let survivor = Uuid::new_v4();
+        insert_script(&harness.database, "doomed", doomed).await;
+        insert_script(&harness.database, "survivor", survivor).await;
+
+        harness
+            .service
+            .delete_project(tonic::Request::new(DeleteProjectRequest {
+                project_id: doomed.to_string(),
+            }))
+            .await
+            .expect("project deletes");
+
+        let remaining: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM scripts WHERE project_id = $1")
+                .bind(survivor)
+                .fetch_one(&harness.database)
+                .await
+                .expect("count runs");
+        assert_eq!(remaining.0, 1);
     }
 }
