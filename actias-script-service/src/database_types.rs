@@ -2,8 +2,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use sqlx::types::{
-    chrono::{DateTime, Utc},
     Uuid,
+    chrono::{DateTime, Utc},
 };
 
 use crate::proto_script_service::Script;
@@ -30,13 +30,13 @@ impl TryInto<ScriptConfig> for crate::proto_script_service::ScriptConfig {
     }
 }
 
-impl Into<crate::proto_script_service::ScriptConfig> for ScriptConfig {
-    fn into(self) -> crate::proto_script_service::ScriptConfig {
+impl From<ScriptConfig> for crate::proto_script_service::ScriptConfig {
+    fn from(val: ScriptConfig) -> Self {
         crate::proto_script_service::ScriptConfig {
-            id: self.id.to_string(),
-            entry_point: self.entry_point,
-            includes: self.includes,
-            ignore: self.ignore,
+            id: val.id.to_string(),
+            entry_point: val.entry_point,
+            includes: val.includes,
+            ignore: val.ignore,
         }
     }
 }
@@ -67,14 +67,14 @@ pub struct DbScript {
     pub current_revision: Option<Uuid>,
 }
 
-impl Into<Script> for DbScript {
-    fn into(self) -> Script {
+impl From<DbScript> for Script {
+    fn from(val: DbScript) -> Self {
         Script {
-            id: self.id.to_string(),
-            project_id: self.project_id.to_string(),
-            public_identifier: self.public_identifier,
-            last_updated: self.last_updated.to_string(),
-            current_revision_id: self.current_revision.map(|v| v.to_string()),
+            id: val.id.to_string(),
+            project_id: val.project_id.to_string(),
+            public_identifier: val.public_identifier,
+            last_updated: val.last_updated.to_string(),
+            current_revision_id: val.current_revision.map(|v| v.to_string()),
         }
     }
 }

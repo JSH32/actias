@@ -14,9 +14,9 @@ use crate::{
 
 /// Handle publish command
 pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
-    let script_path = get_dir(script_dir, false, false).map_err(|e| Error::Io(e))?;
+    let script_path = get_dir(script_dir, false, false).map_err(Error::Io)?;
 
-    let mut script_config = ScriptConfig::from_path(&script_path).map_err(|e| Error::Script(e))?;
+    let mut script_config = ScriptConfig::from_path(&script_path).map_err(Error::Script)?;
 
     // Get or create script
     let script = match &script_config.id {
@@ -36,7 +36,7 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         .id(&script.id)
         .body(
             CreateRevisionDto::builder()
-                .bundle(script_config.to_bundle().map_err(|e| Error::Script(e))?)
+                .bundle(script_config.to_bundle().map_err(Error::Script)?)
                 .script_config(script_config),
         )
         .send()
@@ -93,9 +93,7 @@ async fn create_new_script(
     script_config.id = Some(script.id.clone());
 
     // Write the new ID to the config.
-    script_config
-        .write_config(&script_path.to_path_buf())
-        .map_err(|e| Error::Io(e))?;
+    script_config.write_config(script_path).map_err(Error::Io)?;
 
     Ok(script.into_inner())
 }

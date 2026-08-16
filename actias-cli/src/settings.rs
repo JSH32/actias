@@ -84,13 +84,8 @@ impl Settings {
 
         // Load existing settings
         let reader: BufReader<File> = BufReader::new(File::open(settings_file).unwrap());
-        let settings: Settings = serde_json::from_reader(reader).map_err(|e| {
-            format!(
-                "Problem parsing {}, error: {}",
-                "settings.json".yellow(),
-                e.to_string()
-            )
-        })?;
+        let settings: Settings = serde_json::from_reader(reader)
+            .map_err(|e| format!("Problem parsing {}, error: {}", "settings.json".yellow(), e))?;
 
         Ok(settings)
     }

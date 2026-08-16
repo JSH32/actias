@@ -1,6 +1,6 @@
 use actias_common::thiserror;
 use deadpool_redis::redis::AsyncCommands;
-use deadpool_redis::{redis, Config, Runtime};
+use deadpool_redis::{Config, Runtime, redis};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -27,19 +27,19 @@ pub struct LiveScriptInstance {
 #[derive(thiserror::Error, Debug)]
 pub enum LiveScriptError {
     #[error("Livescript error: {0}")]
-    LiveScriptError(String),
+    Invalid(String),
     #[error("Redis error: {0}")]
-    RedisError(#[from] redis::RedisError),
+    Redis(#[from] redis::RedisError),
     #[error("Pool error: {0}")]
-    PoolError(#[from] deadpool_redis::PoolError),
+    Pool(#[from] deadpool_redis::PoolError),
 }
 
 impl From<LiveScriptError> for tonic::Status {
     fn from(err: LiveScriptError) -> Self {
         match err {
-            LiveScriptError::LiveScriptError(e) => tonic::Status::invalid_argument(e),
-            LiveScriptError::RedisError(e) => tonic::Status::internal(e.to_string()),
-            LiveScriptError::PoolError(e) => tonic::Status::internal(e.to_string()),
+            LiveScriptError::Invalid(e) => tonic::Status::invalid_argument(e),
+            LiveScriptError::Redis(e) => tonic::Status::internal(e.to_string()),
+            LiveScriptError::Pool(e) => tonic::Status::internal(e.to_string()),
         }
     }
 }
@@ -62,7 +62,7 @@ impl LiveScriptManager {
     /// Session ID which can be used to get the session bundle.
     pub async fn put_session(&self, script: LiveScript) -> Result<Uuid, LiveScriptError> {
         if script.script_id != script.script_config.id {
-            return Err(LiveScriptError::LiveScriptError(
+            return Err(LiveScriptError::Invalid(
                 "Script ID does not match script config".to_string(),
             ));
         }
@@ -78,7 +78,7 @@ impl LiveScriptManager {
         let _: () = con
             .hset(
                 &script.script_id,
-                &session_id.to_string(),
+                session_id.to_string(),
                 serde_json::to_string(&script_instance).unwrap(),
             )
             .await?;

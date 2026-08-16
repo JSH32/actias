@@ -21,20 +21,21 @@ pub fn progenitor_error(error: progenitor::progenitor_client::Error) -> String {
     match error {
         progenitor::progenitor_client::Error::UnexpectedResponse(e) => {
             let json: ErrorResponse = futures::executor::block_on(e.json()).unwrap();
-            format!("{}", json.message)
+            json.message.to_string()
         }
         progenitor::progenitor_client::Error::CommunicationError(v) => {
-            format!(
-                "Communication error encountered with the server: {}",
-                v.to_string()
-            )
+            format!("Communication error encountered with the server: {}", v)
         }
         progenitor::progenitor_client::Error::ErrorResponse(v) => {
-            let json: ErrorResponse = serde_json::from_value(v.into_inner().into()).unwrap();
-            format!("{}", json.message)
+            let json: ErrorResponse = serde_json::from_value({
+                let _: () = v.into_inner();
+                ().into()
+            })
+            .unwrap();
+            json.message.to_string()
         }
         progenitor::progenitor_client::Error::InvalidResponsePayload(v) => {
-            format!("Response payload was invalid: {}", v.to_string())
+            format!("Response payload was invalid: {}", v)
         }
         _ => error.to_string(),
     }
@@ -71,8 +72,7 @@ pub fn get_dir(
             ));
         }
     } else if create_dir {
-        fs::create_dir(&dir)
-            .map_err(|e| format!("couldn't create directory: {}", e.to_string()))?;
+        fs::create_dir(&dir).map_err(|e| format!("couldn't create directory: {}", e))?;
     } else {
         return Err(format!(
             "directory {} doesn't exist",
@@ -83,10 +83,10 @@ pub fn get_dir(
     Ok(dir)
 }
 
-pub fn copy_definitions(proj_path: &PathBuf) -> Result<(), String> {
+pub fn copy_definitions(proj_path: &Path) -> Result<(), String> {
     static DEFINITION_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template/definitions");
 
-    let mut def_path = proj_path.clone();
+    let mut def_path = proj_path.to_path_buf();
     def_path.push("definitions");
 
     // Recreate definitions
@@ -134,11 +134,11 @@ pub fn write_revision(path: PathBuf, revision: RevisionFullDto) -> Result<(), St
 }
 
 /// Check if revision can be cloned to this directory.
-fn check_clone_dir(script_id: &str, path: &PathBuf) -> Result<(), String> {
+fn check_clone_dir(script_id: &str, path: &Path) -> Result<(), String> {
     // Things exist here
     if path.exists() && path.read_dir().unwrap().next().is_some() {
-        let config = ScriptConfig::from_path(path.as_path())
-            .map_err(|_| "Directory not empty and not a project")?;
+        let config =
+            ScriptConfig::from_path(path).map_err(|_| "Directory not empty and not a project")?;
 
         if config.id.unwrap_or("".to_string()) != script_id {
             return Err(
@@ -154,9 +154,12 @@ fn check_clone_dir(script_id: &str, path: &PathBuf) -> Result<(), String> {
 pub fn overwrite_file(path: PathBuf, content: Vec<u8>) {
     let prefix_parent = path.parent().unwrap();
     std::fs::create_dir_all(prefix_parent).unwrap();
+    // Truncate, otherwise overwriting with shorter content leaves the tail of
+    // the previous file behind.
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
+        .truncate(true)
         .open(path)
         .unwrap();
     f.write_all(&content).unwrap();

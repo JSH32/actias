@@ -11,7 +11,7 @@ use crate::database_types::{DbFile, DbRevision, DbScript, ScriptConfig};
 use crate::live_script::LiveScriptManager;
 use crate::proto_script_service::find_script_request::{self};
 use crate::proto_script_service::{
-    script_service_server, ListRevisionResponse, ListScriptResponse, Revision, Script, *,
+    ListRevisionResponse, ListScriptResponse, Revision, Script, script_service_server, *,
 };
 
 use crate::proto_script_service::find_script_request::Query::{Id, PublicName};
@@ -50,7 +50,7 @@ impl ScriptService {
 
         let query = match &script_query {
             Id(v) => qb.bind(
-                Uuid::parse_str(&v)
+                Uuid::parse_str(v)
                     .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?,
             ),
             PublicName(v) => qb.bind(v.clone()),
@@ -72,7 +72,7 @@ impl ScriptService {
     async fn get_db_revision(&self, revision_id: &str) -> Result<DbRevision, tonic::Status> {
         sqlx::query_as::<_, DbRevision>("SELECT * FROM revisions WHERE id = $1")
             .bind(
-                Uuid::parse_str(&revision_id)
+                Uuid::parse_str(revision_id)
                     .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?,
             )
             .fetch_optional(&self.database)
@@ -172,7 +172,7 @@ impl script_service_server::ScriptService for ScriptService {
         .map_err(|e| Status::internal(e.to_string()))?;
 
         sqlx::query("DELETE FROM scripts WHERE project_id = $1")
-            .bind(&project_id)
+            .bind(project_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -240,7 +240,7 @@ impl script_service_server::ScriptService for ScriptService {
                 WHERE revision_id = $1 AND r.id = f.revision_id
                 "#,
             )
-            .bind(&revision_info.id)
+            .bind(revision_info.id)
             .fetch_all(&self.database)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -293,9 +293,9 @@ impl script_service_server::ScriptService for ScriptService {
         .bind(request.page_size * (request.page - 1));
 
         if let Some(script_id) = &request.script_id {
-            let uuid = Uuid::from_str(&script_id).map_err(|e| Status::internal(e.to_string()))?;
+            let uuid = Uuid::from_str(script_id).map_err(|e| Status::internal(e.to_string()))?;
 
-            count_query = count_query.bind(uuid.clone());
+            count_query = count_query.bind(uuid);
             query = query.bind(uuid)
         }
 
@@ -343,7 +343,7 @@ impl script_service_server::ScriptService for ScriptService {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         sqlx::query("DELETE FROM revisions WHERE id = $1")
-            .bind(&revision.id)
+            .bind(revision.id)
             .execute(&mut *tx)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -461,7 +461,7 @@ impl script_service_server::ScriptService for ScriptService {
             Ok(_) => {
                 return Err(Status::already_exists(
                     "Script with that identifier already exists",
-                ))
+                ));
             }
             Err(e) => match e.code() {
                 tonic::Code::NotFound => {

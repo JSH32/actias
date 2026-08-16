@@ -13,7 +13,7 @@ pub trait LuaExtension {
     fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>>;
 
     /// Returns the name of the extension
-    fn extension_info(&self) -> ExtensionInfo;
+    fn extension_info(&self) -> ExtensionInfo<'_>;
 }
 
 /// Standard extensions that are always included.
@@ -31,25 +31,25 @@ pub mod standard_extensions {
             json.set(
                 "stringify",
                 lua.create_function(|_lua, value: mlua::Value| {
-                    Ok(serde_json::to_string(&value)
-                        .map_err(|e| mlua::Error::SerializeError(e.to_string()))?)
+                    serde_json::to_string(&value)
+                        .map_err(|e| mlua::Error::SerializeError(e.to_string()))
                 })?,
             )?;
 
             json.set(
                 "parse",
                 lua.create_function(|lua, string: mlua::String| {
-                    Ok(lua.to_value(
+                    lua.to_value(
                         &serde_json::from_str::<serde_json::Value>(string.to_str()?)
                             .map_err(|e| mlua::Error::DeserializeError(e.to_string()))?,
-                    )?)
+                    )
                 })?,
             )?;
 
             Ok(mlua::Value::Table(json))
         }
 
-        fn extension_info(&self) -> ExtensionInfo {
+        fn extension_info(&self) -> ExtensionInfo<'_> {
             ExtensionInfo {
                 name: "json",
                 description: "Operations for creating/parsing JSON data.",
@@ -72,7 +72,7 @@ pub mod standard_extensions {
             Ok(mlua::Value::Table(uuid))
         }
 
-        fn extension_info(&self) -> ExtensionInfo {
+        fn extension_info(&self) -> ExtensionInfo<'_> {
             ExtensionInfo {
                 name: "uuid",
                 description: "UUID module for generating UUIDs.",

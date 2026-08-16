@@ -9,11 +9,9 @@ where
     <T as FromStr>::Err: Debug,
 {
     match env::var(var) {
-        Ok(v) => v.parse::<T>().expect(&format!(
-            "Unable to parse {} as {}",
-            var,
-            std::any::type_name::<T>()
-        )),
+        Ok(v) => v.parse::<T>().unwrap_or_else(|_| {
+            panic!("Unable to parse {} as {}", var, std::any::type_name::<T>())
+        }),
         Err(_) => default,
     }
 }
@@ -25,11 +23,7 @@ where
     <T as FromStr>::Err: Debug,
 {
     env::var(var)
-        .expect(&format!("Missing environment variable {}", var))
+        .unwrap_or_else(|_| panic!("Missing environment variable {}", var))
         .parse::<T>()
-        .expect(&format!(
-            "Unable to parse {} as {}",
-            var,
-            std::any::type_name::<T>()
-        ))
+        .unwrap_or_else(|_| panic!("Unable to parse {} as {}", var, std::any::type_name::<T>()))
 }

@@ -1,4 +1,4 @@
-use tracing::{subscriber::SetGlobalDefaultError, Level};
+use tracing::{Level, subscriber::SetGlobalDefaultError};
 use tracing_subscriber::FmtSubscriber;
 
 pub mod config;

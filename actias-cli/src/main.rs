@@ -42,9 +42,7 @@ async fn run() -> errors::Result<()> {
     };
 
     // Set up client
-    let settings = Settings::new(relog)
-        .await
-        .map_err(|e| Error::Authentication(e))?;
+    let settings = Settings::new(relog).await.map_err(Error::Authentication)?;
 
     let auth_header = format!("Bearer {}", settings.token);
 

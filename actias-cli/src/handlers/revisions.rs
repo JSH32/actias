@@ -122,14 +122,14 @@ pub async fn handle_clone(
         .await
         .map_err(progenitor_error)?;
 
-    let mut script_path = PathBuf::from(std::env::current_dir().unwrap());
+    let mut script_path = std::env::current_dir().unwrap();
     script_path.push(script.public_identifier.clone());
 
     let path = path.map(PathBuf::from).unwrap_or(script_path);
 
-    write_revision(path.clone(), revision.clone()).map_err(|e| Error::Io(e))?;
+    write_revision(path.clone(), revision.clone()).map_err(Error::Io)?;
 
-    copy_definitions(&path).map_err(|e| Error::Script(e))?;
+    copy_definitions(&path).map_err(Error::Script)?;
 
     println!(
         "📥 Cloned revision {} for {} {}",
@@ -153,7 +153,7 @@ pub async fn handle_create_sample(client: &Client, script: &ScriptDto) -> Result
         return Ok(());
     }
 
-    let script_path = get_dir(&script.public_identifier, true, true).map_err(|e| Error::Io(e))?;
+    let script_path = get_dir(&script.public_identifier, true, true).map_err(Error::Io)?;
 
     let template_names: Vec<String> = PROJ_TEMPLATE_DIR
         .dirs()
@@ -185,14 +185,14 @@ pub async fn handle_create_sample(client: &Client, script: &ScriptDto) -> Result
             .map_err(|e| Error::Io(format!("Failed to clean up: {}", e)))?;
     }
 
-    let mut script_config = ScriptConfig::from_path(&script_path).map_err(|e| Error::Script(e))?;
+    let mut script_config = ScriptConfig::from_path(&script_path).map_err(Error::Script)?;
 
     script_config.id = Some(script.id.clone());
     script_config
         .write_config(&script_path)
-        .map_err(|e| Error::Io(e))?;
+        .map_err(Error::Io)?;
 
-    copy_definitions(&script_path).map_err(|e| Error::Script(e))?;
+    copy_definitions(&script_path).map_err(Error::Script)?;
 
     publish::handle(client, script_path.to_str().unwrap()).await
 }

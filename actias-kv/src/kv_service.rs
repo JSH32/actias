@@ -3,9 +3,9 @@ use tonic::{Response, Status};
 use crate::{
     database::Database,
     proto_kv_service::{
-        self, kv_service_server, DeleteNamespaceRequest, DeletePairsRequest, DeleteProjectRequest,
+        self, DeleteNamespaceRequest, DeletePairsRequest, DeleteProjectRequest,
         ListNamespacesRequest, ListNamespacesResponse, ListPairsRequest, ListPairsResponse,
-        PairRequest, SetPairsRequest,
+        PairRequest, SetPairsRequest, kv_service_server,
     },
 };
 
@@ -95,7 +95,7 @@ impl kv_service_server::KvService for KvService {
             .delete_project(&request.project_id)
             .await
             .map_err(|e| {
-                println!("{}", e.to_string());
+                println!("{}", e);
                 Status::internal(e.to_string())
             })?;
 

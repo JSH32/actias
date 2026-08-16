@@ -3,8 +3,8 @@ use tonic::Code;
 
 use crate::{
     proto::kv_service::{
-        kv_service_client::KvServiceClient, DeletePairsRequest, Pair, PairRequest, SetPairsRequest,
-        ValueType,
+        DeletePairsRequest, Pair, PairRequest, SetPairsRequest, ValueType,
+        kv_service_client::KvServiceClient,
     },
     runtime::extension::{ExtensionInfo, LuaExtension},
 };
@@ -24,18 +24,18 @@ impl LuaExtension for KvExtension {
         kv.set(
             "get_namespace",
             lua.create_function(move |lua, namespace: String| {
-                Ok(lua.create_userdata(KvNamespace {
+                lua.create_userdata(KvNamespace {
                     kv_client: kv_client.clone(),
                     project_id: project_id.clone(),
-                    namespace: namespace,
-                })?)
+                    namespace,
+                })
             })?,
         )?;
 
         Ok(mlua::Value::Table(kv))
     }
 
-    fn extension_info(&self) -> ExtensionInfo {
+    fn extension_info(&self) -> ExtensionInfo<'_> {
         ExtensionInfo {
             name: "kv",
             description: "Key Value store for persistent data",
@@ -75,7 +75,7 @@ impl UserData for KvNamespace {
                             _ => {
                                 return Err(mlua::Error::RuntimeError(
                                     "Boolean value was not a boolean".into(),
-                                ))
+                                ));
                             }
                         }
                         .into_lua(lua),
@@ -229,7 +229,7 @@ impl KvValue for mlua::Value<'_> {
             _ => {
                 return Err(mlua::Error::SerializeError(
                     "Invalid datatype provided".to_owned(),
-                ))
+                ));
             }
         }))
     }

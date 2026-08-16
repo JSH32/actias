@@ -29,13 +29,13 @@ pub async fn handle(
     let (template_name, template_dir) = select_template(template)?;
 
     // Create script directory
-    let script_path = get_dir(script_name, true, true).map_err(|e| Error::Io(e))?;
+    let script_path = get_dir(script_name, true, true).map_err(Error::Io)?;
 
     // Extract template to script directory
     extract_template(&script_path, &template_name, template_dir)?;
 
     // Generate TypeScript definitions
-    copy_definitions(&script_path).map_err(|e| Error::Script(e))?;
+    copy_definitions(&script_path).map_err(Error::Script)?;
 
     println!(
         "📜 Script {} was created!",
@@ -130,7 +130,7 @@ async fn publish_new_script(
     script_name: &str,
     project_id: &str,
 ) -> Result<()> {
-    let mut script_config = ScriptConfig::from_path(script_path).map_err(|e| Error::Script(e))?;
+    let mut script_config = ScriptConfig::from_path(script_path).map_err(Error::Script)?;
 
     let script = client
         .create_script()
@@ -141,16 +141,14 @@ async fn publish_new_script(
         .map_err(progenitor_error)?;
 
     script_config.id = Some(script.id.clone());
-    script_config
-        .write_config(&script_path.to_path_buf())
-        .map_err(|e| Error::Io(e))?;
+    script_config.write_config(script_path).map_err(Error::Io)?;
 
     client
         .create_revision()
         .id(&script.id)
         .body(
             CreateRevisionDto::builder()
-                .bundle(script_config.to_bundle().map_err(|e| Error::Script(e))?)
+                .bundle(script_config.to_bundle().map_err(Error::Script)?)
                 .script_config(script_config),
         )
         .send()

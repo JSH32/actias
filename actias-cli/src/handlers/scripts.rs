@@ -60,7 +60,7 @@ pub async fn handle_operation(
     let path = Path::new(script_id);
 
     // Resolve script ID - either from config or use directly
-    let id = match ScriptConfig::from_path(&path) {
+    let id = match ScriptConfig::from_path(path) {
         Ok(v) => v.id.unwrap_or(script_id.to_string()),
         Err(_) => script_id.to_string(),
     };

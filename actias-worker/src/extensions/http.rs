@@ -1,10 +1,10 @@
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 use actias_common::tracing::debug;
 use hyper::{
+    Body, Client, Version,
     client::HttpConnector,
     header::HeaderName,
     http::{self, uri::InvalidUri},
-    Body, Client, Version,
 };
 use hyper_tls::HttpsConnector;
 use mlua::{ExternalResult, LuaSerdeExt, UserData};
@@ -15,7 +15,7 @@ use std::{collections::HashMap, str::FromStr};
 pub struct HttpExtension;
 
 impl LuaExtension for HttpExtension {
-    fn extension_info(&self) -> ExtensionInfo {
+    fn extension_info(&self) -> ExtensionInfo<'_> {
         ExtensionInfo {
             name: "http",
             description: "HTTP operations",
@@ -61,7 +61,7 @@ impl LuaExtension for HttpExtension {
 
                 let response =
                     Response::new(client.request(request?).await.into_lua_err()?).await?;
-                Ok(lua.to_value(&response)?)
+                lua.to_value(&response)
             })?,
         )?;
 
@@ -84,7 +84,7 @@ impl UriType {
     pub fn to_uri(&self) -> Result<Uri, InvalidUri> {
         Ok(match self {
             UriType::Uri(uri) => uri.clone(),
-            UriType::String(v) => Uri::from(hyper::Uri::from_str(&v)?),
+            UriType::String(v) => Uri::from(hyper::Uri::from_str(v)?),
         })
     }
 }
@@ -121,9 +121,9 @@ impl BodyType {
     }
 }
 
-impl Into<hyper::Body> for BodyType {
-    fn into(self) -> hyper::Body {
-        match self {
+impl From<BodyType> for hyper::Body {
+    fn from(val: BodyType) -> Self {
+        match val {
             BodyType::Binary(v) => hyper::Body::from(v),
             BodyType::Text(v) => hyper::Body::from(v),
         }
@@ -207,12 +207,12 @@ impl UserData for Uri {
         // Static constructors
         methods.add_function("new", |lua, uri: mlua::Value| {
             let lua_uri: Uri = lua.from_value(uri)?;
-            Ok(lua.create_ser_userdata(lua_uri)?)
+            lua.create_ser_userdata(lua_uri)
         });
 
         methods.add_function("parse", |lua, uri: String| {
             let uri = hyper::Uri::from_str(&uri).into_lua_err()?;
-            Ok(lua.create_ser_userdata(Uri::from(uri))?)
+            lua.create_ser_userdata(Uri::from(uri))
         });
     }
 
@@ -228,13 +228,10 @@ impl From<hyper::Uri> for Uri {
     fn from(uri: hyper::Uri) -> Self {
         Self {
             scheme: uri.scheme_str().map(str::to_string),
-            authority: match uri.authority() {
-                Some(v) => Some(Authority {
-                    host: v.host().to_string(),
-                    port: v.port_u16(),
-                }),
-                None => None,
-            },
+            authority: uri.authority().map(|v| Authority {
+                host: v.host().to_string(),
+                port: v.port_u16(),
+            }),
             path: uri.path().to_string(),
             query: uri.query().map(str::to_string),
         }
@@ -338,7 +335,7 @@ fn string_to_version(str: &str) -> mlua::Result<Version> {
             return Err(mlua::Error::DeserializeError(format!(
                 "'{}' was not a valid HTTP version.",
                 str
-            )))
+            )));
         }
     })
 }

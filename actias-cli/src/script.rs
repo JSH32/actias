@@ -32,13 +32,13 @@ pub struct ScriptConfig {
     pub ignore: Vec<String>,
 }
 
-impl Into<ScriptConfigDto> for ScriptConfig {
-    fn into(self) -> ScriptConfigDto {
+impl From<ScriptConfig> for ScriptConfigDto {
+    fn from(val: ScriptConfig) -> Self {
         ScriptConfigDto {
-            id: self.id.unwrap(),
-            entry_point: self.entry_point,
-            includes: self.includes,
-            ignore: self.ignore,
+            id: val.id.unwrap(),
+            entry_point: val.entry_point,
+            includes: val.includes,
+            ignore: val.ignore,
         }
     }
 }
@@ -57,15 +57,10 @@ impl ScriptConfig {
         }
 
         let reader: BufReader<File> = BufReader::new(File::open(config_path).unwrap());
-        let mut config: ScriptConfig = serde_json::from_reader(reader).map_err(|e| {
-            format!(
-                "Problem parsing {}, error: {}",
-                "script.json".yellow(),
-                e.to_string()
-            )
-        })?;
+        let mut config: ScriptConfig = serde_json::from_reader(reader)
+            .map_err(|e| format!("Problem parsing {}, error: {}", "script.json".yellow(), e))?;
 
-        util::copy_definitions(&project_path.to_path_buf())?;
+        util::copy_definitions(project_path)?;
 
         config.project_path = Some(project_path.to_path_buf());
         Ok(config)
@@ -93,17 +88,17 @@ impl ScriptConfig {
 
         Ok(BundleDto {
             entry_point: self.entry_point.clone(),
-            files: files,
+            files,
         })
     }
 
-    pub fn write_config(&self, script_path: &PathBuf) -> Result<(), String> {
+    pub fn write_config(&self, script_path: &Path) -> Result<(), String> {
         // Write the new ID to the config.
         let mut config = std::fs::OpenOptions::new()
             .write(true)
             .truncate(true)
             .open({
-                let mut script_config = script_path.clone();
+                let mut script_config = script_path.to_path_buf();
                 script_config.push("script.json");
                 script_config
             })
@@ -122,22 +117,18 @@ impl ScriptConfig {
         let mut ignores = vec![];
         for ignore in &self.ignore {
             let glob = Glob::new(ignore).map_err(|_| "Failed to read glob pattern".to_owned())?;
-            for entry in glob.walk(self.project_path.clone().unwrap()) {
-                if let Ok(entry) = entry {
-                    ignores.push(entry.into_path());
-                }
+            for entry in glob.walk(self.project_path.clone().unwrap()).flatten() {
+                ignores.push(entry.into_path());
             }
         }
 
         let mut includes = vec![];
         for include in &self.includes {
             let glob = Glob::new(include).map_err(|_| "Failed to read glob pattern".to_owned())?;
-            for entry in glob.walk(self.project_path.clone().unwrap()) {
-                if let Ok(entry) = entry {
-                    let path = entry.into_path();
-                    if path.is_file() && path.file_name().unwrap() != "project.json" {
-                        includes.push(path)
-                    }
+            for entry in glob.walk(self.project_path.clone().unwrap()).flatten() {
+                let path = entry.into_path();
+                if path.is_file() && path.file_name().unwrap() != "project.json" {
+                    includes.push(path)
                 }
             }
         }

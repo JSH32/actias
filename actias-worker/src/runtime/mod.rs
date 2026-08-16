@@ -96,13 +96,13 @@ impl ActiasRuntime {
         // Or https://docs.rs/mlua/latest/mlua/struct.Lua.html#method.set_hook
         lua.set_interrupt(move |_| {
             let timer = timer.read().unwrap();
-            if let (Some(start_time), Some(time_limit)) = (timer.start_time, timer.time_limit) {
-                if Instant::now().duration_since(start_time).as_secs() > time_limit {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "Script timed out, limit is {} seconds.",
-                        time_limit
-                    )));
-                }
+            if let (Some(start_time), Some(time_limit)) = (timer.start_time, timer.time_limit)
+                && Instant::now().duration_since(start_time).as_secs() > time_limit
+            {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Script timed out, limit is {} seconds.",
+                    time_limit
+                )));
             }
 
             Ok(mlua::VmState::Continue)
@@ -154,9 +154,8 @@ impl ActiasRuntime {
                     return Ok(result);
                 }
 
-                Ok(lua
-                    .named_registry_value::<mlua::Table>("module_registry")?
-                    .get::<_, mlua::Value>(module_name)?)
+                lua.named_registry_value::<mlua::Table>("module_registry")?
+                    .get::<_, mlua::Value>(module_name)
             })?,
         )?;
 
@@ -172,7 +171,7 @@ impl ActiasRuntime {
                     .find(|file| file.file_path == module_name);
 
                 if let Some(file) = file {
-                    return Ok(lua
+                    return lua
                         .load(&LuaModule {
                             name: file.file_name.clone(),
                             source: std::str::from_utf8(&file.content)
@@ -180,7 +179,7 @@ impl ActiasRuntime {
                                 .to_string(),
                         })
                         .eval_async()
-                        .await?);
+                        .await;
                 }
 
                 Ok(mlua::Value::Nil)
@@ -259,7 +258,7 @@ impl ActiasRuntime {
     /// This will stop the runtime with an error once the time limit has passed since the timer has been started.
     pub fn start_timer(&self) {
         let mut timer = self.timer.write().unwrap();
-        if let Some(_) = timer.time_limit {
+        if timer.time_limit.is_some() {
             timer.start_time = Some(Instant::now());
         }
     }
@@ -275,8 +274,8 @@ impl ActiasRuntime {
                 "Registering extension"
             );
 
-            let extension = extension.create_extension(&self)?;
-            self.set_module(&info.name, extension.clone())?;
+            let extension = extension.create_extension(self)?;
+            self.set_module(info.name, extension.clone())?;
 
             // Register extension as a global
             if info.default {

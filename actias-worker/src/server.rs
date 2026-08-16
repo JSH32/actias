@@ -1,13 +1,13 @@
 use crate::proto::kv_service::kv_service_client::KvServiceClient;
-use crate::proto::script_service::find_script_request::Query;
 use crate::proto::script_service::GetRevisionRequest;
+use crate::proto::script_service::find_script_request::Query;
 
-use crate::{proto::script_service::FindScriptRequest, ScriptServiceClient};
+use crate::{ScriptServiceClient, proto::script_service::FindScriptRequest};
 use actias_common::tracing::Level;
 use actias_common::tracing::{span, trace};
 use core::result::Result::Ok;
 use hyper::Uri;
-use hyper::{http, Body, Request, Response};
+use hyper::{Body, Request, Response, http};
 use mlua::LuaSerdeExt;
 use std::path;
 use tokio::runtime::Handle;
@@ -37,10 +37,9 @@ pub async fn http_handler(
                             Ok(v) => Ok(v),
                             Err(e) => {
                                 trace!(error = e.to_string(), "Error handling request");
-                                Ok(Response::builder().status(500).body(Body::from(format!(
-                                    "Error handling request: {}",
-                                    e.to_string()
-                                )))?)
+                                Ok(Response::builder()
+                                    .status(500)
+                                    .body(Body::from(format!("Error handling request: {}", e)))?)
                             }
                         }
                     })

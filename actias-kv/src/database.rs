@@ -5,11 +5,11 @@ use std::{
 
 use base64::{engine::general_purpose, read, write};
 use scylla::{
+    Bytes, Session, SessionBuilder,
     batch::{Batch, BatchType},
     cql_to_rust::FromRowError,
     prepared_statement::PreparedStatement,
     transport::{errors::QueryError, query_result::FirstRowTypedError},
-    Bytes, Session, SessionBuilder,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -21,13 +21,13 @@ use crate::proto_kv_service::{
 #[derive(Error, Debug)]
 pub enum DatabaseError {
     #[error("{0}")]
-    QueryError(#[from] QueryError),
+    Query(#[from] QueryError),
     #[error("{0}")]
-    FirstRowTypedError(#[from] FirstRowTypedError),
+    FirstRowTyped(#[from] FirstRowTypedError),
     #[error("{0}")]
-    FromRowError(#[from] FromRowError),
+    FromRow(#[from] FromRowError),
     #[error("Invalid data provided: {0}")]
-    InvalidError(String),
+    Invalid(String),
 }
 
 pub struct Database {
@@ -177,7 +177,7 @@ impl Database {
         let mut values = Vec::new();
 
         let project_id =
-            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+            Uuid::from_str(project_id).map_err(|e| DatabaseError::Invalid(e.to_string()))?;
 
         values.push((project_id, namespace, key));
 
@@ -193,10 +193,8 @@ impl Database {
                     let typed =
                         row.into_typed::<(Option<i32>, Uuid, String, String, String, String)>()?;
 
-                    let value_type: ValueType = typed
-                        .5
-                        .try_into()
-                        .map_err(|e| DatabaseError::InvalidError(e))?;
+                    let value_type: ValueType =
+                        typed.5.try_into().map_err(DatabaseError::Invalid)?;
 
                     Some(Pair {
                         project_id: typed.1.to_string(),
@@ -228,7 +226,7 @@ impl Database {
         let mut pairs = vec![];
 
         let project_id_uuid =
-            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+            Uuid::from_str(project_id).map_err(|e| DatabaseError::Invalid(e.to_string()))?;
 
         for row in self
             .session
@@ -237,7 +235,7 @@ impl Database {
                 (project_id_uuid, namespace.to_owned()),
             )
             .await
-            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
+            .map_err(|e| DatabaseError::Invalid(e.to_string()))?
             .rows_or_empty()
         {
             let (key,) = row.into_typed::<(String,)>()?;
@@ -264,13 +262,13 @@ impl Database {
         let mut pairs = vec![];
 
         let project_id_uuid =
-            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+            Uuid::from_str(project_id).map_err(|e| DatabaseError::Invalid(e.to_string()))?;
 
         for row in self
             .session
             .execute(&self.get_project_statement, vec![project_id_uuid])
             .await
-            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
+            .map_err(|e| DatabaseError::Invalid(e.to_string()))?
             .rows_or_empty()
         {
             let (namespace, key) = row.into_typed::<(String, String)>()?;
@@ -300,7 +298,7 @@ impl Database {
             batch.append_statement(self.delete_statement.clone());
             batch_params.push((
                 Uuid::from_str(&pair.project_id)
-                    .map_err(|e| DatabaseError::InvalidError(e.to_string()))?,
+                    .map_err(|e| DatabaseError::Invalid(e.to_string()))?,
                 pair.namespace,
                 pair.key,
             ));
@@ -323,7 +321,7 @@ impl Database {
             let value_type: String = value.r#type().into();
 
             let project_id = Uuid::from_str(&value.project_id)
-                .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+                .map_err(|e| DatabaseError::Invalid(e.to_string()))?;
 
             batch.append_statement(self.update_statement.clone());
             batch_params.push((
@@ -352,8 +350,7 @@ impl Database {
         project_id: &str,
     ) -> Result<ListNamespacesResponse, DatabaseError> {
         let values =
-            vec![Uuid::from_str(&project_id)
-                .map_err(|e| DatabaseError::InvalidError(e.to_string()))?];
+            vec![Uuid::from_str(project_id).map_err(|e| DatabaseError::Invalid(e.to_string()))?];
 
         let mut found_names: Vec<(String, u32)> = vec![];
 
@@ -361,7 +358,7 @@ impl Database {
             .session
             .execute(&self.get_namespaces_statement, values)
             .await
-            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
+            .map_err(|e| DatabaseError::Invalid(e.to_string()))?
             .rows_or_empty()
         {
             let namespace = row.into_typed::<(String,)>()?;
@@ -404,7 +401,7 @@ impl Database {
         token: Option<String>,
     ) -> Result<ListPairsResponse, DatabaseError> {
         let project_id =
-            Uuid::from_str(&project_id).map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+            Uuid::from_str(project_id).map_err(|e| DatabaseError::Invalid(e.to_string()))?;
 
         let bytes_token = match token.clone() {
             None => None,
@@ -414,9 +411,8 @@ impl Database {
                 let mut decoder =
                     read::DecoderReader::new(v.as_bytes(), &general_purpose::STANDARD_NO_PAD);
 
-                io::copy(&mut decoder, &mut output).map_err(|_| {
-                    DatabaseError::InvalidError("Invalid token provided".to_string())
-                })?;
+                io::copy(&mut decoder, &mut output)
+                    .map_err(|_| DatabaseError::Invalid("Invalid token provided".to_string()))?;
 
                 Some(Bytes::from(output))
             }
@@ -456,7 +452,7 @@ impl Database {
                         &general_purpose::STANDARD_NO_PAD,
                     )
                     .write_all(&v)
-                    .map_err(|e| DatabaseError::InvalidError(e.to_string()))?;
+                    .map_err(|e| DatabaseError::Invalid(e.to_string()))?;
 
                     Some(output)
                 } else {
@@ -470,15 +466,12 @@ impl Database {
 
         for row in page
             .rows()
-            .map_err(|e| DatabaseError::InvalidError(e.to_string()))?
+            .map_err(|e| DatabaseError::Invalid(e.to_string()))?
             .into_iter()
         {
             let typed = row.into_typed::<(Option<i32>, Uuid, String, String, String, String)>()?;
 
-            let value_type: ValueType = typed
-                .5
-                .try_into()
-                .map_err(|e| DatabaseError::InvalidError(e))?;
+            let value_type: ValueType = typed.5.try_into().map_err(DatabaseError::Invalid)?;
 
             pairs.push(Pair {
                 project_id: typed.1.to_string(),
@@ -491,16 +484,16 @@ impl Database {
         }
 
         Ok(ListPairsResponse {
-            page_size: page_size,
+            page_size,
             token,
             pairs,
         })
     }
 }
 
-impl Into<String> for ValueType {
-    fn into(self) -> String {
-        match self {
+impl From<ValueType> for String {
+    fn from(val: ValueType) -> Self {
+        match val {
             ValueType::String => "string",
             ValueType::Json => "json",
             ValueType::Integer => "integer",

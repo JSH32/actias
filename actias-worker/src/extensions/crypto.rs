@@ -1,12 +1,12 @@
 use argon2::{
-    password_hash::{rand_core::OsRng, SaltString},
     Algorithm, Argon2, PasswordHash, PasswordHasher, PasswordVerifier, Version,
+    password_hash::{SaltString, rand_core::OsRng},
 };
 use mlua::{ExternalResult, IntoLua, UserData};
 use rsa::{
+    Pkcs1v15Encrypt,
     pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey},
     pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding},
-    Pkcs1v15Encrypt,
 };
 use sha2::{Digest, Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
 
@@ -59,7 +59,7 @@ impl LuaExtension for CryptoExtension {
         Ok(mlua::Value::Table(crypto))
     }
 
-    fn extension_info(&self) -> crate::runtime::extension::ExtensionInfo {
+    fn extension_info(&self) -> crate::runtime::extension::ExtensionInfo<'_> {
         ExtensionInfo {
             name: "crypto",
             description: "Crypto extension containing various cryptograpic algorithms",
@@ -97,7 +97,7 @@ impl UserData for RsaPrivateKey {
                     _ => {
                         return Err(mlua::Error::RuntimeError(
                             "Unsupported PEM type, supported types: [pkcs8, pkcs1]".to_string(),
-                        ))
+                        ));
                     }
                 },
             ))
@@ -114,7 +114,7 @@ impl UserData for RsaPrivateKey {
                 _ => {
                     return Err(mlua::Error::RuntimeError(
                         "Unsupported PEM type, supported types: [pkcs8, pkcs1]".to_string(),
-                    ))
+                    ));
                 }
             }
             .to_string())
@@ -139,10 +139,9 @@ struct RsaPublicKey(rsa::RsaPublicKey);
 impl UserData for RsaPublicKey {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("encrypt", |_, this, data: Vec<u8>| {
-            Ok(this
-                .0
+            this.0
                 .encrypt(&mut OsRng, Pkcs1v15Encrypt, &data[..])
-                .into_lua_err()?)
+                .into_lua_err()
         });
     }
 }
@@ -161,15 +160,15 @@ impl UserData for Argon2Class {
                     return Err(mlua::Error::RuntimeError(format!(
                         "Unsupported algorithm: {}, , valid types: [Argon2i, Argon2d, Argon2id]",
                         algorithm
-                    )))
+                    )));
                 }
             };
 
-            Ok(lua.create_userdata(Self(Argon2::new(
+            lua.create_userdata(Self(Argon2::new(
                 algorithm,
                 Version::V0x13,
                 argon2::Params::default(),
-            )))?)
+            )))
         });
 
         methods.add_method("hash", |_, this, password: String| {

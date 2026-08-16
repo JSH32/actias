@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use mlua::{ExternalResult, LuaSerdeExt, UserData};
 
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
@@ -19,7 +19,7 @@ impl LuaExtension for JwtExtension {
         Ok(mlua::Value::Table(jwt))
     }
 
-    fn extension_info(&self) -> ExtensionInfo {
+    fn extension_info(&self) -> ExtensionInfo<'_> {
         ExtensionInfo {
             name: "jwt",
             description: "JWT extension for signing/verifying JWTs",
@@ -39,14 +39,14 @@ impl UserData for JwtClass {
         // Static constructor
         methods.add_function("new", |lua, (algorithm, secret): (String, String)| {
             let algorithm: Algorithm = Algorithm::from_str(&algorithm).map_err(|e| {
-                mlua::Error::runtime(format!("Invalid JWT Algorithm provided: {}", e.to_string()))
+                mlua::Error::runtime(format!("Invalid JWT Algorithm provided: {}", e))
             })?;
 
-            Ok(lua.create_userdata(JwtClass {
+            lua.create_userdata(JwtClass {
                 encoding_key: EncodingKey::from_secret(secret.as_ref()),
                 decoding_key: DecodingKey::from_secret(secret.as_ref()),
                 header: Header::new(algorithm),
-            })?)
+            })
         });
 
         methods.add_method("encode", |lua, this, payload: mlua::Value| {

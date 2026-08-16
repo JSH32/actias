@@ -10,8 +10,8 @@ use actias_common::{
     tracing::{error, info},
 };
 use hyper::{
-    service::{make_service_fn, service_fn},
     Server,
+    service::{make_service_fn, service_fn},
 };
 
 use server::http_handler;
@@ -58,7 +58,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     info!("Serving on {}", addr.to_string());
 
-    Ok(if let Err(e) = server.await {
+    let _: () = if let Err(e) = server.await {
         error!("Server error: {}", e);
-    })
+    };
+    Ok(())
 }
