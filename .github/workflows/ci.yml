@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "master"
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Lint, test, build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The devshell is the canonical toolchain, so CI runs the same `just`
+      # verbs a contributor runs locally.
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('actias-api/package-lock.json', 'actias-web/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      # fmt, clippy, cargo test, api and web lint/build, codegen drift check.
+      - name: Run CI pipeline
+        run: nix develop -c just ci
