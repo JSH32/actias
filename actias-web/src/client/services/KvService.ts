@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 import type { ListNamespaceDto } from '../models/ListNamespaceDto';
 import type { MessageResponseDto } from '../models/MessageResponseDto';
 import type { NamespaceDto } from '../models/NamespaceDto';
@@ -27,6 +28,30 @@ export class KvService {
             url: '/api/project/{project}/kv',
             path: {
                 'project': project,
+            },
+        });
+    }
+
+    /**
+     * Create an empty namespace.
+     *
+     * Namespaces also come into being on their first write; this exists so one
+     * can be made from the dashboard without writing a junk pair into it.
+     * @param project
+     * @param namespace
+     * @returns NamespaceDto
+     * @throws ApiError
+     */
+    public createNamespace(
+        project: string,
+        namespace: string,
+    ): CancelablePromise<NamespaceDto> {
+        return this.httpRequest.request({
+            method: 'PUT',
+            url: '/api/project/{project}/kv/{namespace}',
+            path: {
+                'project': project,
+                'namespace': namespace,
             },
         });
     }

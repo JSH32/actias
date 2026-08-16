@@ -85,12 +85,24 @@ export namespace kv_service {
         projectId?: string;
         namespace?: string;
     }
+    // Create an empty namespace.
+    // Namespaces are also created implicitly by the first write into them; this
+    // exists so a namespace can be made ahead of any data, without a junk pair.
+    export interface CreateNamespaceRequest {
+        projectId?: string;
+        namespace?: string;
+    }
     export interface KvService {
         listNamespaces(
             data: ListNamespacesRequest,
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ListNamespacesResponse>;
+        createNamespace(
+            data: CreateNamespaceRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Namespace>;
         listPairs(
             data: ListPairsRequest,
             metadata?: Metadata,

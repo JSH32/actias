@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 import type { NewRevisionResponseDto } from '../models/NewRevisionResponseDto';
 import type { RevisionFullDto } from '../models/RevisionFullDto';
 

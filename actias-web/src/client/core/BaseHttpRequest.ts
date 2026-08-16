@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 import type { ApiRequestOptions } from './ApiRequestOptions';
 import type { CancelablePromise } from './CancelablePromise';
 import type { OpenAPIConfig } from './OpenAPI';

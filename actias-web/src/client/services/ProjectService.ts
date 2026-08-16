@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 import type { CreateProjectDto } from '../models/CreateProjectDto';
 import type { MessageResponseDto } from '../models/MessageResponseDto';
 import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';

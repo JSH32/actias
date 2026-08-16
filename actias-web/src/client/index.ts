@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 export { ActiasClient } from './ActiasClient';
 
 export { ApiError } from './core/ApiError';

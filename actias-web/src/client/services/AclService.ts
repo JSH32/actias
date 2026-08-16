@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 import type { AclListDto } from '../models/AclListDto';
 
 import type { CancelablePromise } from '../core/CancelablePromise';

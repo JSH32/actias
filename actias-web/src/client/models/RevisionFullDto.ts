@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 
 import type { BundleDto } from './BundleDto';
 import type { ScriptConfigDto } from './ScriptConfigDto';

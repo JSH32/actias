@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 import type { AuthTokenDto } from '../models/AuthTokenDto';
 import type { LoginDto } from '../models/LoginDto';
 

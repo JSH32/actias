@@ -55,11 +55,11 @@
     "typescript": "5.2.2"
   },
   "devDependencies": {
-    "@backpack-app/openapi-typescript-codegen": "^0.23.5",
     "@typescript-eslint/eslint-plugin": "^6.9.0",
     "@typescript-eslint/parser": "^6.9.0",
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.1",
+    "openapi-typescript-codegen": "0.23.0",
     "prettier": "3.0.3"
   }
 }

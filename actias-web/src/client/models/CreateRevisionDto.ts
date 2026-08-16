@@ -1,7 +1,9 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 
 import type { BundleDto } from './BundleDto';
+import type { ScriptConfigDto } from './ScriptConfigDto';
 
 export type CreateRevisionDto = {
     /**
@@ -11,6 +13,6 @@ export type CreateRevisionDto = {
     /**
      * A valid project configuration.
      */
-    scriptConfig: any;
+    scriptConfig: ScriptConfigDto;
 };
 

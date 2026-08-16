@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 import type { CreateRevisionDto } from '../models/CreateRevisionDto';
 import type { CreateScriptDto } from '../models/CreateScriptDto';
 import type { MessageResponseDto } from '../models/MessageResponseDto';

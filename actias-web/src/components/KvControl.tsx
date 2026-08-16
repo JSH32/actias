@@ -48,10 +48,7 @@ const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   const createNamespace = useCallback(
     (values: any) => {
       api.kv
-        .setKey(project.id, values.namespace, 'key', {
-          type: 'string',
-          value: 'value',
-        })
+        .createNamespace(project.id, values.namespace)
         .then(() => {
           notifications.show({
             title: 'Namespace created!',

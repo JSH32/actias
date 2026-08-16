@@ -64,6 +64,30 @@ export class KvController {
   }
 
   /**
+   * Create an empty namespace.
+   *
+   * Namespaces also come into being on their first write; this exists so one
+   * can be made from the dashboard without writing a junk pair into it.
+   */
+  @Put(':namespace')
+  @AclByProject(AccessFields.KV_WRITE)
+  @ApiParam({
+    name: 'project',
+    schema: { type: 'string' },
+    type: 'string',
+  })
+  async createNamespace(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('namespace') namespace: string,
+  ): Promise<NamespaceDto> {
+    return (await lastValueFrom(
+      this.kvService
+        .createNamespace({ projectId: project.id, namespace })
+        .pipe(toHttpException()),
+    )) as NamespaceDto;
+  }
+
+  /**
    * Delete a namespace and all keys in a project.
    */
   @Delete(':namespace')

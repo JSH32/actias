@@ -1,5 +1,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
+/* eslint-disable */
 import type { CreateUserDto } from '../models/CreateUserDto';
 import type { MessageResponseDto } from '../models/MessageResponseDto';
 import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
