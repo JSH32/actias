@@ -30,3 +30,6 @@ tonic = { workspace = true }
 [build-dependencies]
 tonic-build = { workspace = true }
 prost-build = { workspace = true }
+
+[dev-dependencies]
+testcontainers-modules = { version = "0.15.0", features = ["redis", "postgres"] }
