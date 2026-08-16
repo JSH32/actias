@@ -18,3 +18,6 @@ tonic = { workspace = true }
 [build-dependencies]
 tonic-build = { workspace = true }
 prost-build = { workspace = true }
+
+[dev-dependencies]
+testcontainers = "0.27"

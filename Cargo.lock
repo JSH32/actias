@@ -48,6 +48,7 @@ dependencies = [
  "prost 0.13.5",
  "prost-build",
  "scylla",
+ "testcontainers",
  "thiserror 1.0.69",
  "tokio",
  "tonic 0.13.0",
