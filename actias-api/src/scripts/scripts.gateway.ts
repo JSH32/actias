@@ -10,7 +10,7 @@ import {
 import { LiveScriptDto } from './dto/livescript.dto';
 import WebSocket from 'ws';
 import { ClientGrpc } from '@nestjs/microservices';
-import { Inject, UseGuards } from '@nestjs/common';
+import { Inject, Logger, UseGuards } from '@nestjs/common';
 import { script_service } from 'src/protobufs/script_service';
 import { lastValueFrom } from 'rxjs';
 import { AuthGuard, WsAuth } from 'src/auth/auth.guard';
@@ -31,12 +31,15 @@ interface SocketData {
 /**
  * Gateway for live scripts.
  */
+// `path`, not `namespace`: namespaces are a socket.io concept, and this app
+// runs the plain ws adapter, which refuses them at boot.
 @UseGuards(AuthGuard, AclGuard)
-@WebSocketGateway({ namespace: 'liveScript' })
+@WebSocketGateway({ path: '/liveScript' })
 export class ScriptsGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
   private scriptService: script_service.ScriptService;
+  private readonly logger = new Logger(ScriptsGateway.name);
 
   constructor(@Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc) {}
 
@@ -48,7 +51,15 @@ export class ScriptsGateway
   private connectedSockets = new Map<WebSocket, SocketData>();
 
   handleDisconnect(@ConnectedSocket() client: WebSocket) {
-    // Remove from list.
+    const data = this.connectedSockets.get(client);
+    if (data) {
+      // The session itself is left to expire on its ttl rather than deleted
+      // here, so a reconnect within the window resumes it.
+      this.logger.log(
+        `live session ${data.sessionId} disconnected from script ${data.scriptId}`,
+      );
+    }
+
     this.connectedSockets.delete(client);
   }
 
@@ -71,6 +82,9 @@ export class ScriptsGateway
   ) {
     // Initial connection shouldn't have sessionId.
     if (data.sessionId) {
+      this.logger.warn(
+        `rejecting connection for script ${data.scriptId}: sessionId sent on initial connect`,
+      );
       client.close(4001, "Shouldn't have a sessionId on initial connect");
       return;
     }
@@ -105,14 +119,16 @@ export class ScriptsGateway
       throw new WsException('No session initialized');
     }
 
-    if (
-      data.sessionId !== update.sessionId &&
-      data.scriptId !== update.revision.scriptConfig.id
-    ) {
+    // Both have to match. Asserting each separately keeps the socket from
+    // updating a session or a script it does not own.
+    const sameSession = data.sessionId === update.sessionId;
+    const sameScript = data.scriptId === update.revision.scriptConfig.id;
+
+    if (!sameSession || !sameScript) {
       throw new WsException('Invalid session or script ID passed on update');
     }
 
-    const session = await lastValueFrom(
+    await lastValueFrom(
       this.scriptService.putLiveSession({
         sessionId: data.sessionId,
         scriptId: data.scriptId,

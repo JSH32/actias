@@ -29,9 +29,16 @@ build-api:
 build-web:
     cd actias-web && npm run build
 
-# Run all tests.
-test:
+# Run all tests. The rust suites need docker for testcontainers.
+test: test-rust test-api
+
+# Run the rust workspace tests.
+test-rust:
     cargo test --workspace
+
+# Run the api's jest suite.
+test-api:
+    cd actias-api && npm test
 
 # Check formatting and lint everything. Never rewrites files.
 lint: lint-rust lint-api lint-web
@@ -91,4 +98,4 @@ logs service="":
     docker compose logs -f {{ service }}
 
 # Everything CI gates on.
-ci: deps lint-rust test build-rust lint-api build-api lint-web build-web check-generated
+ci: deps lint-rust test-rust build-rust lint-api test-api build-api lint-web build-web check-generated
