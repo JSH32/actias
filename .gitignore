@@ -1,3 +1,15 @@
 **target
 test
 **/.env
+
+# nix / direnv
+.direnv/
+result
+result-*
+
+# Local-only working layer: planning, analysis, rules and session scratch.
+# These stay on the machine and are never pushed; see docs/rules/60-git-ci.md.
+scratch/
+docs/
+TODO.md
+CLAUDE.md
