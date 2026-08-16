@@ -51,6 +51,45 @@ pub struct KvNamespace {
     project_id: String,
 }
 
+/// Converts a stored pair into the lua value its declared type describes.
+///
+/// # Arguments
+/// * `value_type` - Type the pair was stored as.
+/// * `value` - Stored text, which the service keeps for every type.
+///
+/// # Errors
+/// Returns [`mlua::Error::RuntimeError`] when the text does not parse as the
+/// declared type. That means the row disagrees with its own metadata, so it is
+/// reported to the script rather than being allowed to abort the request.
+fn pair_into_lua<'lua>(
+    lua: &'lua mlua::Lua,
+    value_type: ValueType,
+    value: &str,
+) -> mlua::Result<mlua::Value<'lua>> {
+    let mismatch = |expected: &str| {
+        mlua::Error::RuntimeError(format!("Stored value is not a valid {expected}."))
+    };
+
+    match value_type {
+        ValueType::String => value.to_owned().into_lua(lua),
+        ValueType::Number => value
+            .parse::<f64>()
+            .map_err(|_| mismatch("number"))?
+            .into_lua(lua),
+        ValueType::Integer => value
+            .parse::<i64>()
+            .map_err(|_| mismatch("integer"))?
+            .into_lua(lua),
+        ValueType::Boolean => value
+            .parse::<bool>()
+            .map_err(|_| mismatch("boolean"))?
+            .into_lua(lua),
+        ValueType::Json => lua.to_value(
+            &serde_json::from_str::<serde_json::Value>(value).map_err(|_| mismatch("json"))?,
+        ),
+    }
+}
+
 impl UserData for KvNamespace {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_async_method_mut("get", |lua, this, key: String| async {
@@ -65,25 +104,9 @@ impl UserData for KvNamespace {
             {
                 Ok(v) => {
                     let pair = v.into_inner();
-                    match pair.r#type() {
-                        ValueType::String => pair.value.into_lua(lua),
-                        ValueType::Number => pair.value.parse::<f64>().unwrap().into_lua(lua),
-                        ValueType::Integer => pair.value.parse::<i64>().unwrap().into_lua(lua),
-                        ValueType::Boolean => match pair.value.as_str() {
-                            "true" => true,
-                            "false" => false,
-                            _ => {
-                                return Err(mlua::Error::RuntimeError(
-                                    "Boolean value was not a boolean".into(),
-                                ));
-                            }
-                        }
-                        .into_lua(lua),
-                        ValueType::Json => lua.to_value(
-                            &serde_json::from_str::<serde_json::Value>(&pair.value)
-                                .map_err(|e| mlua::Error::DeserializeError(e.to_string()))?,
-                        ),
-                    }?
+                    let value_type = pair.r#type();
+
+                    pair_into_lua(lua, value_type, &pair.value)?
                 }
                 Err(e) => {
                     if e.code() == Code::NotFound {
@@ -232,5 +255,56 @@ impl KvValue for mlua::Value<'_> {
                 ));
             }
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_type_converts_to_its_lua_counterpart() {
+        let lua = mlua::Lua::new();
+
+        match pair_into_lua(&lua, ValueType::String, "hello").unwrap() {
+            mlua::Value::String(v) => assert_eq!(v.to_str().unwrap(), "hello"),
+            other => panic!("expected a string, got {other:?}"),
+        }
+        match pair_into_lua(&lua, ValueType::Integer, "42").unwrap() {
+            mlua::Value::Integer(v) => assert_eq!(v, 42),
+            other => panic!("expected an integer, got {other:?}"),
+        }
+        match pair_into_lua(&lua, ValueType::Number, "1.5").unwrap() {
+            mlua::Value::Number(v) => assert_eq!(v, 1.5),
+            other => panic!("expected a number, got {other:?}"),
+        }
+        match pair_into_lua(&lua, ValueType::Boolean, "true").unwrap() {
+            mlua::Value::Boolean(v) => assert!(v),
+            other => panic!("expected a boolean, got {other:?}"),
+        }
+        match pair_into_lua(&lua, ValueType::Json, r#"{"a":1}"#).unwrap() {
+            mlua::Value::Table(_) => {}
+            other => panic!("expected a table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_value_disagreeing_with_its_type_errors_instead_of_panicking() {
+        let lua = mlua::Lua::new();
+
+        // A row whose text does not match its stored type is corrupt data, and
+        // corrupt data is an expected input on the request path.
+        for (value_type, value) in [
+            (ValueType::Number, "not a number"),
+            (ValueType::Integer, "1.5"),
+            (ValueType::Boolean, "yes"),
+            (ValueType::Json, "{unclosed"),
+        ] {
+            let result = pair_into_lua(&lua, value_type, value);
+            assert!(
+                result.is_err(),
+                "{value_type:?} with {value:?} should be an error"
+            );
+        }
     }
 }
