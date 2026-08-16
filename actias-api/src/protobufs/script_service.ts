@@ -98,6 +98,8 @@ export namespace script_service {
         bundle?: bundle.Bundle;
     }
     export interface LiveScriptSession {
+        // Script to look for session in.
+        scriptId?: string;
         // A session ID, this can be used to get the session bundle.
         sessionId?: string;
     }
