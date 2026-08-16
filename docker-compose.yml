@@ -1,14 +1,35 @@
-version: '3.8'
 services:
   postgres:
-    image: postgres
+    # The major version and the volume mount are coupled. Up to 17 the data
+    # directory is /var/lib/postgresql/data; from 18 it is
+    # /var/lib/postgresql/<major>/ and the server refuses to start against a
+    # volume mounted at the old path. Change both together or neither.
+    image: postgres:17
     restart: always
     volumes:
       - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
       - postgres_data:/var/lib/postgresql/data
     environment:
-      - POSTGRES_USERNAME=${POSTGRES_USERNAME:-actias}
-      - POSTGRES_PASSWORD=${POSTGRES_USERNAME:-secret}
+      # These are the variable names the official image reads. The superuser is
+      # created from them; init.sql only adds the per-service databases.
+      - POSTGRES_USER=${POSTGRES_USER:-actias}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secret}
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-actias}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   scylla:
     image: scylladb/scylla
@@ -25,7 +46,12 @@ services:
     image: ghcr.io/jsh32/actias_script_service:latest
     restart: unless-stopped
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      script_service_migration:
+        condition: service_completed_successfully
     build:
       context: .
       dockerfile: ./docker/Dockerfile.rust
@@ -33,23 +59,26 @@ services:
         CRATE_NAME: actias-script-service
     environment:
       - PORT=3000
-      - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
+      - REDIS_URL=redis://redis:6379
 
   script_service_migration:
     image: ghcr.io/jsh32/actias_script_service_migration:latest
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     build:
       context: ./actias-script-service
       dockerfile: ./Dockerfile.migration
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
 
   worker_service:
     image: ghcr.io/jsh32/actias_worker_service:latest
     restart: unless-stopped
     depends_on:
       - script_service
+      - kv_service
     build:
       context: .
       dockerfile: ./docker/Dockerfile.rust
@@ -84,6 +113,8 @@ services:
     depends_on:
       scylla:
         condition: service_healthy
+      kv_migration:
+        condition: service_completed_successfully
     environment:
       - PORT=3000
       - SCYLLA_NODES=scylla:9042
@@ -91,12 +122,13 @@ services:
   actias_api_migration:
     image: ghcr.io/jsh32/actias_api_migration:latest
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     build:
       context: ./actias-api
       dockerfile: ./Dockerfile.migration
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
 
   actias_api:
     image: ghcr.io/jsh32/actias_api:latest
@@ -107,16 +139,21 @@ services:
       context: .
       dockerfile: ./docker/Dockerfile.api
     depends_on:
-      - postgres
-      - kv_service
-      - script_service
+      postgres:
+        condition: service_healthy
+      actias_api_migration:
+        condition: service_completed_successfully
+      kv_service:
+        condition: service_started
+      script_service:
+        condition: service_started
     environment:
       - INVITE_ONLY=${INVITE_ONLY:-false}
       - SCRIPT_SERVICE_URL=script_service:3000
       - KV_SERVICE_URL=kv_service:3000
       - JWT_KEY=${JWT_KEY:-secret}
       - PORT=3000
-      - DATABASE_URL=postgresql://${POSTGRES_USERNAME:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:3000}
 
   actias_web:
@@ -137,3 +174,4 @@ services:
 volumes:
   scylla_data:
   postgres_data:
+  redis_data:
