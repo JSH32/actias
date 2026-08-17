@@ -126,7 +126,14 @@ impl LiveScriptManager {
     /// Returns [`LiveScriptError::Invalid`] if the script id disagrees with the
     /// config, or if a supplied `session_id` is not a uuid.
     pub async fn put_session(&self, script: LiveScript) -> Result<Uuid, LiveScriptError> {
-        if script.script_id != script.script_config.id {
+        let script_config = script
+            .script_config
+            .ok_or_else(|| LiveScriptError::Invalid("Live script has no config".to_string()))?;
+        let bundle = script
+            .bundle
+            .ok_or_else(|| LiveScriptError::Invalid("Live script has no bundle".to_string()))?;
+
+        if script.script_id != script_config.id {
             return Err(LiveScriptError::Invalid(
                 "Script ID does not match script config".to_string(),
             ));
@@ -141,8 +148,8 @@ impl LiveScriptManager {
         };
 
         let script_instance = LiveScriptInstance {
-            script_config: script.script_config,
-            bundle: script.bundle,
+            script_config,
+            bundle,
         };
 
         let session_key = Self::session_key(&script.script_id, &session_id.to_string());
@@ -246,17 +253,17 @@ mod tests {
         LiveScript {
             session_id: session_id.map(|id| id.to_string()),
             script_id: script_id.to_owned(),
-            script_config: ScriptConfig {
+            script_config: Some(ScriptConfig {
                 id: script_id.to_owned(),
                 entry_point: entry_point.to_owned(),
                 includes: vec![],
                 ignore: vec![],
                 capabilities: None,
-            },
-            bundle: Bundle {
+            }),
+            bundle: Some(Bundle {
                 entry_point: entry_point.to_owned(),
                 files: vec![],
-            },
+            }),
         }
     }
 

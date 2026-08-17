@@ -1,4 +1,4 @@
-syntax = "proto2";
+syntax = "proto3";
 package kv_service;
 
 import "google/protobuf/empty.proto";
@@ -13,42 +13,42 @@ enum ValueType {
 
 message Pair {
     // Project that this key belongs to.
-    required string project_id = 1;
+    string project_id = 1;
     // Grouped namespace that this belongs to.
-    required string namespace = 2;
+    string namespace = 2;
     // The value is always stored as a string, this metadata helps for parsing.
-    required ValueType type = 3;
+    ValueType type = 3;
     // TTL (time to live)
     optional int32 ttl = 4;
     // Unique key.
-    required string key = 5;
-    required string value = 6;
+    string key = 5;
+    string value = 6;
 }
 
 message PairRequest {
     // Project that this key belongs to.
-    required string project_id = 1;
+    string project_id = 1;
     // Grouped namespace that this belongs to.
-    required string namespace = 2;
+    string namespace = 2;
     // Unique key.
-    required string key = 4;
+    string key = 4;
 }
 
 // List pairs belonging to a namespace.
 message ListPairsRequest {
-    required int32 page_size = 1;
+    int32 page_size = 1;
     // Used if wanting to paginate.
     // If not provided will be the first page.
     optional string token = 2;
     // Project.
-    required string project_id = 3;
+    string project_id = 3;
     // Grouped namespace.
-    required string namespace = 4;
+    string namespace = 4;
 }
 
 // A list of pairs.
 message ListPairsResponse {
-    required int32 page_size = 1;
+    int32 page_size = 1;
     // Used for finding the next page when paginating.
     // This is not provided on the last page.
     optional string token = 2;
@@ -58,14 +58,14 @@ message ListPairsResponse {
 // List all namespaces belonging to a project.
 message ListNamespacesRequest {
     // Project to find all namespaces within.
-    required string project_id = 1;
+    string project_id = 1;
 }
 
 // Information about a namespace.
 message Namespace {
-    required string project_id = 1;
-    required string name = 2;
-    required int32 count = 3;
+    string project_id = 1;
+    string name = 2;
+    int32 count = 3;
 }
 
 // List of namespaces.
@@ -85,21 +85,21 @@ message DeletePairsRequest {
 
 // Delete all namespaces belonging to a project.
 message DeleteProjectRequest {
-    required string project_id = 1;
+    string project_id = 1;
 }
 
 // Delete an entire namespace with pairs.
 message DeleteNamespaceRequest {
-    required string project_id = 1;
-    required string namespace = 2;
+    string project_id = 1;
+    string namespace = 2;
 }
 
 // Create an empty namespace.
 // Namespaces are also created implicitly by the first write into them; this
 // exists so a namespace can be made ahead of any data, without a junk pair.
 message CreateNamespaceRequest {
-    required string project_id = 1;
-    required string namespace = 2;
+    string project_id = 1;
+    string namespace = 2;
 }
 
 service KvService {

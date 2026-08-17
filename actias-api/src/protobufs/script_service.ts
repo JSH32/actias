@@ -79,7 +79,7 @@ export namespace script_service {
     export interface SetRevisionRequest {
         scriptId?: string;
         // New revision ID.
-    // This must be owned by the &#x60;scriptId&#x60;
+    // This must be owned by the &#x60;script_id&#x60;
         revisionId?: string;
     }
     // Response sent when revision of a script is changed.
@@ -218,11 +218,12 @@ export namespace script_service {
     }
 }
 export namespace bundle {
+    // A revision&#x27;s content: the entry point plus every file in the bundle.
     export interface Bundle {
         entryPoint?: string;
-        // File path name and file content
         files?: bundle.File[];
     }
+    // One file in a bundle.
     export interface File {
         revisionId?: string;
         fileName?: string;

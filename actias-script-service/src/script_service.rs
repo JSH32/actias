@@ -142,7 +142,7 @@ impl ScriptService {
             created: revision_info.created.to_string(),
             script_id: revision_info.script_id.to_string(),
             bundle: None,
-            script_config: revision_info.script_config.0.into(),
+            script_config: Some(revision_info.script_config.0.into()),
         })
     }
 }
@@ -208,9 +208,12 @@ impl script_service_server::ScriptService for ScriptService {
                 &script_info.id,
                 request
                     .script_config
+                    .ok_or_else(|| Status::invalid_argument("script_config is required"))?
                     .try_into()
                     .map_err(|e: uuid::Error| Status::invalid_argument(e.to_string()))?,
-                request.bundle,
+                request
+                    .bundle
+                    .ok_or_else(|| Status::invalid_argument("bundle is required"))?,
             )
             .await
             .map_err(|e| Status::internal(e.to_string()))?,
@@ -275,7 +278,7 @@ impl script_service_server::ScriptService for ScriptService {
             id: revision_info.id.to_string(),
             created: revision_info.created.to_string(),
             script_id: revision_info.script_id.to_string(),
-            script_config: revision_info.script_config.0.into(),
+            script_config: Some(revision_info.script_config.0.into()),
             bundle,
         }))
     }
@@ -328,7 +331,7 @@ impl script_service_server::ScriptService for ScriptService {
                     id: r.id.to_string(),
                     created: r.created.to_string(),
                     script_id: r.script_id.to_string(),
-                    script_config: r.script_config.clone().0.into(),
+                    script_config: Some(r.script_config.clone().0.into()),
                     bundle: None,
                 })
                 .collect(),
@@ -556,8 +559,8 @@ impl script_service_server::ScriptService for ScriptService {
             Some(v) => Ok(Response::new(LiveScript {
                 session_id: Some(request.session_id.clone()),
                 script_id: request.script_id.clone(),
-                script_config: v.script_config,
-                bundle: v.bundle,
+                script_config: Some(v.script_config),
+                bundle: Some(v.bundle),
             })),
             None => Err(tonic::Status::not_found("Live script session not found.")),
         }
@@ -709,17 +712,17 @@ mod tests {
             .put_session(LiveScript {
                 session_id: None,
                 script_id: script_id.to_string(),
-                script_config: crate::proto_script_service::ScriptConfig {
+                script_config: Some(crate::proto_script_service::ScriptConfig {
                     id: script_id.to_string(),
                     entry_point: "main.lua".to_owned(),
                     includes: vec![],
                     ignore: vec![],
                     capabilities: None,
-                },
-                bundle: Bundle {
+                }),
+                bundle: Some(Bundle {
                     entry_point: "main.lua".to_owned(),
                     files: vec![],
-                },
+                }),
             })
             .await
             .expect("session is created");
