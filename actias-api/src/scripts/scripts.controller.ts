@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Inject,
   OnModuleInit,
@@ -30,7 +31,10 @@ import {
   ApiOkResponsePaginated,
 } from 'src/shared/dto/paginated';
 import { AuthGuard } from 'src/auth/auth.guard';
+import { User } from 'src/auth/user.decorator';
+import { Users } from 'src/entities/Users';
 import { AclByFinder, AclByProject, AclGuard } from 'src/project/acl/acl.guard';
+import { AclService } from 'src/project/acl/acl.service';
 import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
 import { ProjectService } from 'src/project/project.service';
@@ -120,6 +124,7 @@ export class ScriptsController implements OnModuleInit {
     @Inject('SCRIPT_SERVICE') private readonly client: ClientGrpc,
     private readonly projectService: ProjectService,
     private readonly em: EntityManager,
+    private readonly aclService: AclService,
   ) {}
 
   onModuleInit() {
@@ -193,7 +198,28 @@ export class ScriptsController implements OnModuleInit {
     @Param('id') scriptId: string,
     @Body()
     request: CreateRevisionDto,
+    @User() user: Users,
   ): Promise<RevisionDataDto> {
+    // The declared capability contract is checked here, at publish: a script
+    // declaring kv namespaces needs its publisher to hold kv access.
+    if (request.scriptConfig.capabilities?.kv?.length) {
+      const script = await lastValueFrom(
+        this.scriptService
+          .queryScript({ id: scriptId })
+          .pipe(toHttpException()),
+      );
+      const project = await this.em.findOneOrFail(Projects, {
+        id: script.projectId,
+      });
+
+      const access = await this.aclService.getProjectAccess(user, project);
+      if (!access.test(AccessFields.KV_WRITE)) {
+        throw new ForbiddenException(
+          'This script declares kv namespaces, which needs kv access on the project.',
+        );
+      }
+    }
+
     return new RevisionFullDto(
       await lastValueFrom(
         this.scriptService

@@ -10,6 +10,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
         .type_attribute(
+            "script_service.Capabilities",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
             "bundle.Bundle",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )

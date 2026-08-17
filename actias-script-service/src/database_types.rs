@@ -15,6 +15,35 @@ pub struct ScriptConfig {
     pub entry_point: String,
     pub includes: Vec<String>,
     pub ignore: Vec<String>,
+    /// The script's declared capability contract, derived from its code at
+    /// publish; absent on revisions stored before extraction existed.
+    #[serde(default)]
+    pub capabilities: Option<Capabilities>,
+}
+
+/// What a script declared at its top level (docs/SURFACE.md).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Capabilities {
+    pub kv: Vec<String>,
+    pub events: Vec<String>,
+}
+
+impl From<crate::proto_script_service::Capabilities> for Capabilities {
+    fn from(val: crate::proto_script_service::Capabilities) -> Self {
+        Capabilities {
+            kv: val.kv,
+            events: val.events,
+        }
+    }
+}
+
+impl From<Capabilities> for crate::proto_script_service::Capabilities {
+    fn from(val: Capabilities) -> Self {
+        crate::proto_script_service::Capabilities {
+            kv: val.kv,
+            events: val.events,
+        }
+    }
 }
 
 impl TryInto<ScriptConfig> for crate::proto_script_service::ScriptConfig {
@@ -26,6 +55,7 @@ impl TryInto<ScriptConfig> for crate::proto_script_service::ScriptConfig {
             entry_point: self.entry_point,
             includes: self.includes,
             ignore: self.ignore,
+            capabilities: self.capabilities.map(Into::into),
         })
     }
 }
@@ -37,6 +67,7 @@ impl From<ScriptConfig> for crate::proto_script_service::ScriptConfig {
             entry_point: val.entry_point,
             includes: val.includes,
             ignore: val.ignore,
+            capabilities: val.capabilities.map(Into::into),
         }
     }
 }

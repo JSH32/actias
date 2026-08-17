@@ -31,11 +31,21 @@ export namespace script_service {
     export interface DeleteProjectRequest {
         projectId?: string;
     }
+    // What a script declared at its top level, extracted from the code at
+    // publish; the code is the manifest (docs/SURFACE.md governs the shape).
+    export interface Capabilities {
+        // Namespaces declared with &#x60;kv &quot;name&quot;&#x60;.
+        kv?: string[];
+        // Events declared with &#x60;on &quot;event&quot;&#x60;.
+        events?: string[];
+    }
     export interface ScriptConfig {
         id?: string;
         entryPoint?: string;
         includes?: string[];
         ignore?: string[];
+        // Derived from the code by &#x60;actias publish&#x60;, never hand-written.
+        capabilities?: script_service.Capabilities;
     }
     export interface CreateRevisionRequest {
         scriptId?: string;

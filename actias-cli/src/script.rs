@@ -39,6 +39,9 @@ impl From<ScriptConfig> for ScriptConfigDto {
             entry_point: val.entry_point,
             includes: val.includes,
             ignore: val.ignore,
+            // Filled by the publish path from the declaration pass; other
+            // callers (live sessions) carry no contract.
+            capabilities: None,
         }
     }
 }

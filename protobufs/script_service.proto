@@ -34,11 +34,22 @@ message DeleteProjectRequest {
     required string project_id = 1;
 }
 
+// What a script declared at its top level, extracted from the code at
+// publish; the code is the manifest (docs/SURFACE.md governs the shape).
+message Capabilities {
+    // Namespaces declared with `kv "name"`.
+    repeated string kv = 1;
+    // Events declared with `on "event"`.
+    repeated string events = 2;
+}
+
 message ScriptConfig {
     required string id = 1;
     required string entry_point = 2;
     repeated string includes = 3;
     repeated string ignore = 4;
+    // Derived from the code by `actias publish`, never hand-written.
+    optional Capabilities capabilities = 5;
 }
 
 message CreateRevisionRequest {

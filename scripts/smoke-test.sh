@@ -60,12 +60,27 @@ IDENT="smoke$SUFFIX"
 SCRIPT_ID=$(curl -sf -X POST "$API/project/$PROJECT_ID/scripts" -H "$AUTH" -H 'Content-Type: application/json' \
     -d "{\"publicIdentifier\":\"$IDENT\"}" | jq -r .id)
 
-echo "== publishing a revision"
+echo "== publishing a revision (actias publish)"
 # The handler writes to kv and reads it back, so the response proves the
-# worker, script-service, kv-service and scylla all cooperated.
-MAIN_LUA=$(base64 -w0 <<'LUA'
-add_event_listener("fetch", function(request)
-    local ns = kv.get_namespace("smoke")
+# worker, script-service, kv-service and scylla all cooperated. Publishing
+# through the CLI also runs the declaration pass, so the revision carries
+# the capability contract derived from this code.
+REPO=$PWD
+cargo build -p actias-cli --quiet
+
+DEVDIR=$(mktemp -d)
+export XDG_CONFIG_HOME="$DEVDIR/config"
+mkdir -p "$XDG_CONFIG_HOME/actias-cli" "$DEVDIR/published" "$DEVDIR/project"
+printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$TOKEN" \
+    > "$XDG_CONFIG_HOME/actias-cli/settings.json"
+
+cat > "$DEVDIR/published/script.json" <<EOF
+{"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua"],"ignore":[]}
+EOF
+cat > "$DEVDIR/published/main.lua" <<'LUA'
+local ns = kv "smoke"
+
+on "fetch" (function(request)
     ns:set("visited", true)
     log.info("hello from production")
     return {
@@ -74,17 +89,14 @@ add_event_listener("fetch", function(request)
     }
 end)
 LUA
-)
 
-curl -sf -X PUT "$API/script/$SCRIPT_ID/revisions" -H "$AUTH" -H 'Content-Type: application/json' -d @- >/dev/null <<EOF
-{
-    "bundle": {
-        "entryPoint": "main.lua",
-        "files": [{"fileName": "main.lua", "filePath": "main.lua", "content": "$MAIN_LUA"}]
-    },
-    "scriptConfig": {"id": "$SCRIPT_ID", "entryPoint": "main.lua", "includes": ["**/*.lua"], "ignore": []}
-}
-EOF
+"$REPO/target/debug/actias-cli" publish "$DEVDIR/published"
+
+echo "== checking the stored capability contract"
+REV_ID=$(curl -sf "$API/script/$SCRIPT_ID" -H "$AUTH" | jq -r .currentRevisionId)
+DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.kv[0]')
+[ "$DECLARED" = "smoke" ] || { echo "the capability contract was not stored (got '$DECLARED')"; exit 1; }
+echo "revision declares kv: $DECLARED"
 
 echo "== requesting the script through the worker"
 BODY=""
@@ -103,20 +115,11 @@ echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket
 # gateway, the worker serves the working tree at the live URL, and a file
 # save is visible there within seconds.
-REPO=$PWD
-cargo build -p actias-cli --quiet
-
-DEVDIR=$(mktemp -d)
-export XDG_CONFIG_HOME="$DEVDIR/config"
-mkdir -p "$XDG_CONFIG_HOME/actias-cli" "$DEVDIR/project"
-printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$TOKEN" \
-    > "$XDG_CONFIG_HOME/actias-cli/settings.json"
-
 cat > "$DEVDIR/project/script.json" <<EOF
 {"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua"],"ignore":[]}
 EOF
 cat > "$DEVDIR/project/main.lua" <<'LUA'
-add_event_listener("fetch", function(request)
+on "fetch" (function(request)
     log.info("hello from the live session")
     return { body = "live version one" }
 end)

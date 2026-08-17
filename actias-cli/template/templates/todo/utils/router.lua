@@ -20,8 +20,7 @@ function Router.new()
 end
 
 function Router:use()
-    add_event_listener("fetch",
-                       function(request) return self:route_request(request) end)
+    on "fetch" (function(request) return self:route_request(request) end)
 end
 
 local function make_validator(schema)
