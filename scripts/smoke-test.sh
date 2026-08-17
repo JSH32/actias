@@ -21,7 +21,10 @@ cleanup() {
     if [ "$FAILED" = 1 ]; then
         echo "== last service logs"
         compose logs --tail 25 actias_api worker_service kv_service script_service 2>/dev/null || true
+        [ -f "${DEV_LOG:-}" ] && { echo "== actias dev log"; cat "$DEV_LOG"; }
     fi
+    [ -n "${DEV_PID:-}" ] && kill "$DEV_PID" 2>/dev/null || true
+    rm -rf "${DEVDIR:-}"
     compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -94,6 +97,56 @@ done
 echo "worker responded: $BODY"
 echo "$BODY" | jq -e '.ok == true and .visited == true' >/dev/null \
     || { echo "response did not round-trip through kv"; exit 1; }
+
+echo "== live development loop (actias dev)"
+# The whole flagship path: the CLI opens a session over the websocket
+# gateway, the worker serves the working tree at the live URL, and a file
+# save is visible there within seconds.
+REPO=$PWD
+cargo build -p actias-cli --quiet
+
+DEVDIR=$(mktemp -d)
+export XDG_CONFIG_HOME="$DEVDIR/config"
+mkdir -p "$XDG_CONFIG_HOME/actias-cli" "$DEVDIR/project"
+printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$TOKEN" \
+    > "$XDG_CONFIG_HOME/actias-cli/settings.json"
+
+cat > "$DEVDIR/project/script.json" <<EOF
+{"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua"],"ignore":[]}
+EOF
+cat > "$DEVDIR/project/main.lua" <<'LUA'
+add_event_listener("fetch", function(request)
+    return { body = "live version one" }
+end)
+LUA
+
+DEV_LOG="$DEVDIR/dev.log"
+(cd "$DEVDIR" && exec "$REPO/target/debug/actias-cli" dev project --worker-url "$WORKER" > "$DEV_LOG" 2>&1) &
+DEV_PID=$!
+
+LIVE_URL=""
+for _ in $(seq 1 30); do
+    LIVE_URL=$(grep -oE "$WORKER/_live/[^ ]+/" "$DEV_LOG" | head -1 || true)
+    [ -n "$LIVE_URL" ] && break
+    sleep 1
+done
+[ -n "$LIVE_URL" ] || { echo "actias dev never printed a live URL"; exit 1; }
+
+LIVE_BODY=$(curl -sf "$LIVE_URL")
+echo "live session responded: $LIVE_BODY"
+[ "$LIVE_BODY" = "live version one" ] || { echo "live URL did not serve the working tree"; exit 1; }
+
+sed -i 's/live version one/live version two/' "$DEVDIR/project/main.lua"
+for _ in $(seq 1 20); do
+    sleep 1
+    LIVE_BODY=$(curl -sf "$LIVE_URL" || true)
+    [ "$LIVE_BODY" = "live version two" ] && break
+done
+echo "after save: $LIVE_BODY"
+[ "$LIVE_BODY" = "live version two" ] || { echo "the save never reached the live URL"; exit 1; }
+
+kill "$DEV_PID" 2>/dev/null || true
+DEV_PID=""
 
 echo "== regenerating clients against the live api (drift coverage)"
 ( cd actias-web && npm run generateClient >/dev/null 2>&1 )
