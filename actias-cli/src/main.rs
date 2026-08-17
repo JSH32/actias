@@ -1,3 +1,4 @@
+mod capabilities;
 mod client;
 mod commands;
 mod errors;
@@ -20,6 +21,9 @@ use settings::Settings;
 async fn main() {
     if let Err(err) = run().await {
         print_error(&err);
+        // Scripts and CI branch on the exit code, so a printed error must
+        // also be a nonzero exit.
+        std::process::exit(1);
     }
 }
 
