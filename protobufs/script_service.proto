@@ -121,6 +121,21 @@ message LiveScriptSession {
     required string session_id = 2;
 }
 
+// One log line a running script emitted.
+message LogMessage {
+    // Level name: debug, info, warn or error.
+    required string level = 1;
+    // The rendered line.
+    required string message = 2;
+    // Milliseconds since the unix epoch, stamped by the worker.
+    required int64 timestamp_ms = 3;
+}
+
+// Names the script whose production log stream to follow.
+message StreamScriptLogsRequest {
+    required string script_id = 1;
+}
+
 message Script {
     required string id = 1;
     // Project that owns the script.
@@ -147,4 +162,9 @@ service ScriptService {
     rpc PutLiveSession(LiveScript) returns (LiveScriptSession);
     rpc GetLiveSession(LiveScriptSession) returns (LiveScript);
     rpc DeleteLiveSession(LiveScriptSession) returns (google.protobuf.Empty);
+
+    // Follow one live session's log lines as they happen.
+    rpc StreamLiveLogs(LiveScriptSession) returns (stream LogMessage);
+    // Follow a script's production log lines as they happen.
+    rpc StreamScriptLogs(StreamScriptLogsRequest) returns (stream LogMessage);
 }

@@ -116,6 +116,7 @@ cat > "$DEVDIR/project/script.json" <<EOF
 EOF
 cat > "$DEVDIR/project/main.lua" <<'LUA'
 add_event_listener("fetch", function(request)
+    log.info("hello from the live session")
     return { body = "live version one" }
 end)
 LUA
@@ -144,6 +145,19 @@ for _ in $(seq 1 20); do
 done
 echo "after save: $LIVE_BODY"
 [ "$LIVE_BODY" = "live version two" ] || { echo "the save never reached the live URL"; exit 1; }
+
+# The requests above ran log.info, so the line must have crossed
+# worker -> redis -> script-service stream -> gateway -> CLI by now.
+LOGGED=0
+for _ in $(seq 1 15); do
+    if grep -q "hello from the live session" "$DEV_LOG"; then
+        LOGGED=1
+        break
+    fi
+    sleep 1
+done
+[ "$LOGGED" = 1 ] || { echo "the log line never reached the CLI"; exit 1; }
+echo "log line reached the CLI"
 
 kill "$DEV_PID" 2>/dev/null || true
 DEV_PID=""

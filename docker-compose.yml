@@ -79,6 +79,7 @@ services:
     depends_on:
       - script_service
       - kv_service
+      - redis
     build:
       context: .
       dockerfile: ./docker/Dockerfile.rust
@@ -88,6 +89,8 @@ services:
       - PORT=3000
       - SCRIPT_SERVICE_URI=http://script_service:3000
       - KV_SERVICE_URI=http://kv_service:3000
+      # Carries script log lines to the live tail subscribers.
+      - REDIS_URL=redis://redis:6379
     ports:
       - 3002:3000
 

@@ -16,6 +16,7 @@ use tonic::transport::Channel;
 use crate::egress::EgressClient;
 use crate::extensions;
 use crate::extensions::http::Request as LuaRequest;
+use crate::extensions::log::LogPublisher;
 use crate::proto::kv_service::kv_service_client::KvServiceClient;
 use crate::proto::script_service::FindScriptRequest;
 use crate::proto::script_service::GetRevisionRequest;
@@ -25,6 +26,7 @@ use crate::proto::script_service::Script;
 use crate::proto::script_service::find_script_request::Query;
 use crate::proto::script_service::script_service_client::ScriptServiceClient;
 use crate::runtime::{ActiasRuntime, PreparedRevision};
+use actias_common::logging::{live_log_channel, script_log_channel};
 
 /// The service clients every request handler needs.
 #[derive(Clone)]
@@ -69,6 +71,7 @@ pub fn router(
     clients: Clients,
     caches: WorkerCaches,
     egress: EgressClient,
+    redis: Option<redis::aio::ConnectionManager>,
     max_body_bytes: usize,
     request_timeout: Duration,
 ) -> Router {
@@ -79,6 +82,7 @@ pub fn router(
             clients,
             caches,
             egress,
+            redis,
             request_timeout,
         })
 }
@@ -88,6 +92,8 @@ struct AppState {
     clients: Clients,
     caches: WorkerCaches,
     egress: EgressClient,
+    /// Carries script log lines out; without it they stay in worker tracing.
+    redis: Option<redis::aio::ConnectionManager>,
     request_timeout: Duration,
 }
 
@@ -269,6 +275,17 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
 
     let script = resolve_script(&state.caches, &state.clients.script, identifier).await?;
 
+    // Live output goes to the session's channel where `actias dev` tails it;
+    // published scripts log to a per-script channel for `actias tail`.
+    let log_channel = match &live_session {
+        Some(session_id) => live_log_channel(session_id),
+        None => script_log_channel(&script.id),
+    };
+    let logs = state
+        .redis
+        .clone()
+        .map(|connection| LogPublisher::new(connection, log_channel));
+
     let prepared = match live_session {
         // A live session is the developer's working tree, updated on every
         // save; serving it stale defeats its purpose, so nothing about it is
@@ -373,7 +390,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // died with mlua 0.9.
     let kv_client = state.clients.kv.clone();
 
-    let lua = ActiasRuntime::new(prepared, kv_client, state.egress.clone(), Some(10)).await?;
+    let lua = ActiasRuntime::new(prepared, kv_client, state.egress.clone(), logs, Some(10)).await?;
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
@@ -477,6 +494,7 @@ mod tests {
             lazy_clients(),
             empty_caches(),
             test_egress(),
+            None,
             1024,
             Duration::from_secs(5),
         );
@@ -498,6 +516,7 @@ mod tests {
             lazy_clients(),
             empty_caches(),
             test_egress(),
+            None,
             1024,
             Duration::from_secs(5),
         );
@@ -567,6 +586,7 @@ mod tests {
             lazy_clients(),
             caches_with_cached_script().await,
             test_egress(),
+            None,
             1024,
             Duration::from_secs(5),
         );
@@ -594,6 +614,7 @@ mod tests {
             lazy_clients(),
             caches_with_cached_script().await,
             test_egress(),
+            None,
             1024,
             Duration::from_secs(5),
         );

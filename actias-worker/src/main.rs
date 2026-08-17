@@ -77,6 +77,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let script_client = ScriptServiceClient::connect(config.script_service_uri).await?;
     let kv_client = KvServiceClient::connect(config.kv_service_uri).await?;
 
+    let redis = redis::aio::ConnectionManager::new(
+        redis::Client::open(config.redis_url).expect("REDIS_URL is not a valid redis url"),
+    )
+    .await?;
+
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let app = server::router(
         server::Clients {
@@ -88,6 +93,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.revision_cache_bytes,
         ),
         egress,
+        Some(redis),
         config.max_body_bytes,
         std::time::Duration::from_secs(config.request_timeout_secs),
     );

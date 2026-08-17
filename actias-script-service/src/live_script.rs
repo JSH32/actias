@@ -1,15 +1,20 @@
+use actias_common::logging::LogLine;
 use actias_common::thiserror;
 use deadpool_redis::redis::AsyncCommands;
 use deadpool_redis::{Config, Runtime, redis};
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::proto_script_service::ScriptConfig;
+use crate::proto_script_service::{LogMessage, ScriptConfig};
 use crate::{bundle::Bundle, proto_script_service::LiveScript};
 
 /// Used to manage live script sessions.
 pub struct LiveScriptManager {
     pool: deadpool_redis::Pool,
+    /// Dedicated client for pub/sub subscriptions, which take over a whole
+    /// connection and therefore cannot come from the pool.
+    client: redis::Client,
 }
 
 /// Live script instance stored in Redis.
@@ -63,7 +68,38 @@ impl LiveScriptManager {
             pool: cfg
                 .create_pool(Some(Runtime::Tokio1))
                 .expect("redis pool could not be created from REDIS_URL"),
+            client: redis::Client::open(redis_url)
+                .expect("redis client could not be created from REDIS_URL"),
         }
+    }
+
+    /// Follows a log channel, yielding each line published to it.
+    ///
+    /// Lines that are not valid [`LogLine`] json are dropped rather than
+    /// ending the stream, because one malformed publisher must not silence a
+    /// tail.
+    ///
+    /// # Errors
+    /// Returns [`LiveScriptError::Redis`] when the subscription cannot be
+    /// established.
+    pub async fn log_stream(
+        &self,
+        channel: &str,
+    ) -> Result<impl Stream<Item = LogMessage> + Send + use<>, LiveScriptError> {
+        let connection = self.client.get_async_connection().await?;
+        let mut pubsub = connection.into_pubsub();
+        pubsub.subscribe(channel).await?;
+
+        Ok(pubsub.into_on_message().filter_map(|message| async move {
+            let payload: String = message.get_payload().ok()?;
+            let line: LogLine = serde_json::from_str(&payload).ok()?;
+
+            Some(LogMessage {
+                level: line.level,
+                message: line.message,
+                timestamp_ms: line.timestamp_ms,
+            })
+        }))
     }
 
     /// Key holding one session's bundle.

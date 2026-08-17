@@ -2,6 +2,7 @@ use tracing::{Level, subscriber::SetGlobalDefaultError};
 use tracing_subscriber::FmtSubscriber;
 
 pub mod config;
+pub mod logging;
 pub use thiserror;
 pub use tracing;
 

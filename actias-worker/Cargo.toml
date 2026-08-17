@@ -28,6 +28,7 @@ moka = { version = "0.12.16", features = ["future"] }
 reqwest = "0.13.4"
 http = "1.5.0"
 url = "2.5.8"
+redis = { version = "0.23", features = ["tokio-comp", "connection-manager"] }
 
 [build-dependencies]
 tonic-build = { workspace = true }

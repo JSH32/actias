@@ -1,5 +1,5 @@
 import { WsException } from '@nestjs/websockets';
-import { of } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { ScriptsGateway } from './scripts.gateway';
 
 const SCRIPT_ID = 'script-1';
@@ -37,9 +37,14 @@ function gateway(options: { aclAllows?: boolean } = {}) {
   const queryScript = jest.fn((request: unknown) =>
     of({ id: SCRIPT_ID, projectId: 'project-1', request }),
   );
+  // A live stream that emits what the test pushes into it.
+  const logLines = new Subject<any>();
+  const streamLiveLogs = jest.fn(() => logLines.asObservable());
 
   const subject = new ScriptsGateway(
-    { getService: () => ({ putLiveSession, queryScript }) } as any,
+    {
+      getService: () => ({ putLiveSession, queryScript, streamLiveLogs }),
+    } as any,
     {
       getUserFromToken: jest.fn(async (token: string) => {
         if (token !== TOKEN) throw new Error('bad token');
@@ -60,7 +65,7 @@ function gateway(options: { aclAllows?: boolean } = {}) {
   );
   subject.onModuleInit();
 
-  return { subject, putLiveSession };
+  return { subject, putLiveSession, logLines };
 }
 
 /** Authenticates a socket and starts a session on it. */
@@ -178,6 +183,27 @@ describe('ScriptsGateway', () => {
     await expect(
       subject.handleUpdate(client, payload({ sessionId: SESSION_ID })),
     ).rejects.toBeInstanceOf(WsException);
+  });
+
+  it('forwards the session log stream over the socket', async () => {
+    const { subject, putLiveSession, logLines } = gateway();
+    const client = socket();
+
+    await subject.handleConnection(client, upgrade(`Bearer ${TOKEN}`));
+    await subject.handleStart(client, payload());
+    putLiveSession.mockClear();
+    client.send.mockClear();
+
+    logLines.next({ level: 'info', message: 'hello logs', timestampMs: 5 });
+
+    expect(client.send).toHaveBeenCalledWith(
+      JSON.stringify({
+        status: 'log',
+        level: 'info',
+        message: 'hello logs',
+        timestampMs: 5,
+      }),
+    );
   });
 
   it('ping re-stores the last payload so the session ttl moves', async () => {

@@ -21,7 +21,7 @@ import {
   WsExceptionFilter,
 } from '@nestjs/common';
 import { script_service } from 'src/protobufs/script_service';
-import { lastValueFrom } from 'rxjs';
+import { Subscription, lastValueFrom } from 'rxjs';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { AuthService } from 'src/auth/auth.service';
 import { Users } from 'src/entities/Users';
@@ -42,6 +42,8 @@ interface SocketData {
      * and push the session's ttl out without the client resending files.
      */
     last: script_service.LiveScript;
+    /** The session's log stream, forwarded to the socket until it closes. */
+    logs: Subscription;
   };
 }
 
@@ -107,6 +109,8 @@ export class ScriptsGateway
   handleDisconnect(@ConnectedSocket() client: WebSocket) {
     const data = this.connectedSockets.get(client);
     if (data?.session) {
+      data.session.logs.unsubscribe();
+
       // The session itself is left to expire on its ttl rather than deleted
       // here, so a reconnect within the window resumes it.
       this.logger.log(
@@ -183,10 +187,34 @@ export class ScriptsGateway
       this.scriptService.putLiveSession(payload),
     );
 
+    // Everything the session logs goes straight out over the socket; the
+    // stream dying must not kill the session, since logs are best-effort.
+    const logs = this.scriptService
+      .streamLiveLogs({
+        scriptId: data.scriptId,
+        sessionId: session.sessionId,
+      })
+      .subscribe({
+        next: (line) =>
+          client.send(
+            JSON.stringify({
+              status: 'log',
+              level: line.level,
+              message: line.message,
+              timestampMs: line.timestampMs,
+            }),
+          ),
+        error: (error) =>
+          this.logger.warn(
+            `log stream for session ${session.sessionId} failed: ${error}`,
+          ),
+      });
+
     state.session = {
       sessionId: session.sessionId,
       scriptId: data.scriptId,
       last: { ...payload, sessionId: session.sessionId },
+      logs,
     };
 
     client.send(

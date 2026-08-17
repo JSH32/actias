@@ -1,5 +1,7 @@
 use std::str::FromStr;
 
+use actias_common::logging::{live_log_channel, script_log_channel};
+use futures::StreamExt;
 use futures::future::join_all;
 use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 use sqlx::types::Uuid;
@@ -573,7 +575,43 @@ impl script_service_server::ScriptService for ScriptService {
 
         Ok(Response::new(()))
     }
+
+    type StreamLiveLogsStream = LogMessageStream;
+
+    async fn stream_live_logs(
+        &self,
+        request: tonic::Request<LiveScriptSession>,
+    ) -> Result<tonic::Response<Self::StreamLiveLogsStream>, tonic::Status> {
+        let request = request.get_ref();
+
+        let stream = self
+            .live_script_manager
+            .log_stream(&live_log_channel(&request.session_id))
+            .await?;
+
+        Ok(Response::new(Box::pin(stream.map(Ok))))
+    }
+
+    type StreamScriptLogsStream = LogMessageStream;
+
+    async fn stream_script_logs(
+        &self,
+        request: tonic::Request<StreamScriptLogsRequest>,
+    ) -> Result<tonic::Response<Self::StreamScriptLogsStream>, tonic::Status> {
+        let request = request.get_ref();
+
+        let stream = self
+            .live_script_manager
+            .log_stream(&script_log_channel(&request.script_id))
+            .await?;
+
+        Ok(Response::new(Box::pin(stream.map(Ok))))
+    }
 }
+
+/// The boxed stream both log rpcs return.
+type LogMessageStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = Result<LogMessage, Status>> + Send>>;
 
 /// Container-backed tests driving the service against real stores.
 ///
@@ -600,6 +638,7 @@ mod tests {
         _postgres: ContainerAsync<PostgresImage>,
         _redis: ContainerAsync<Redis>,
         database: Pool<Postgres>,
+        redis_url: String,
         service: ScriptService,
     }
 
@@ -632,15 +671,14 @@ mod tests {
             .await
             .expect("migrations apply");
 
-        let service = ScriptService::new(
-            database.clone(),
-            LiveScriptManager::new(&format!("redis://127.0.0.1:{redis_port}")),
-        );
+        let redis_url = format!("redis://127.0.0.1:{redis_port}");
+        let service = ScriptService::new(database.clone(), LiveScriptManager::new(&redis_url));
 
         TestService {
             _postgres: postgres,
             _redis: redis,
             database,
+            redis_url,
             service,
         }
     }
@@ -740,5 +778,58 @@ mod tests {
                 .await
                 .expect("count runs");
         assert_eq!(remaining.0, 1);
+    }
+
+    #[tokio::test]
+    async fn a_published_log_line_reaches_the_live_log_stream() {
+        use deadpool_redis::redis::AsyncCommands;
+
+        let harness = service().await;
+
+        let mut stream = harness
+            .service
+            .stream_live_logs(tonic::Request::new(LiveScriptSession {
+                script_id: "unused-by-the-channel".to_owned(),
+                session_id: "session-log-test".to_owned(),
+            }))
+            .await
+            .expect("stream opens")
+            .into_inner();
+
+        // Publishing happens after subscribing because pub/sub has no replay.
+        // The garbage line first proves a malformed publisher cannot end the
+        // stream before the real line arrives.
+        let client = deadpool_redis::redis::Client::open(harness.redis_url.as_str())
+            .expect("redis client builds");
+        let mut connection = client
+            .get_async_connection()
+            .await
+            .expect("redis accepts connections");
+
+        let channel = live_log_channel("session-log-test");
+        let line = actias_common::logging::LogLine {
+            level: "info".to_owned(),
+            message: "hello logs".to_owned(),
+            timestamp_ms: 123,
+        };
+
+        let _: () = connection
+            .publish(&channel, "this is not json")
+            .await
+            .expect("garbage publishes");
+        let _: () = connection
+            .publish(&channel, serde_json::to_string(&line).expect("serializes"))
+            .await
+            .expect("line publishes");
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("a line arrives in time")
+            .expect("the stream stays open")
+            .expect("the line is ok");
+
+        assert_eq!(received.level, "info");
+        assert_eq!(received.message, "hello logs");
+        assert_eq!(received.timestamp_ms, 123);
     }
 }

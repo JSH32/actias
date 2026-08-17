@@ -30,14 +30,17 @@ const HEARTBEAT: Duration = Duration::from_secs(30);
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// What the gateway answers to `start`, `update` and `ping`.
+/// What the gateway answers to `start`, `update` and `ping`, and the shape
+/// of the log frames it pushes.
 #[derive(Deserialize)]
 struct GatewayReply {
     status: String,
     #[serde(rename = "sessionId")]
     session_id: Option<String>,
-    /// Set when `status` is `error`.
+    /// Set when `status` is `error` or `log`.
     message: Option<String>,
+    /// Set when `status` is `log`.
+    level: Option<String>,
 }
 
 /// How one connected session ended, deciding whether to reconnect.
@@ -238,11 +241,10 @@ async fn run_session(
             message = socket.next() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(reply) = serde_json::from_str::<GatewayReply>(&text)
-                            && reply.status != "updated"
-                            && reply.status != "alive"
-                        {
-                            println!("{} gateway: {text}", "⚠️".yellow());
+                        match serde_json::from_str::<GatewayReply>(&text) {
+                            Ok(reply) if reply.status == "log" => print_log_line(&reply),
+                            Ok(reply) if reply.status == "updated" || reply.status == "alive" => {}
+                            _ => println!("{} gateway: {text}", "⚠️".yellow()),
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => return Ok(SessionEnd::Disconnected),
@@ -274,6 +276,19 @@ async fn read_reply(socket: &mut WsStream) -> Result<GatewayReply> {
     }
 
     Err(Error::Api("The gateway closed the connection".to_owned()))
+}
+
+/// Prints one script log line, level colored by severity.
+fn print_log_line(reply: &GatewayReply) {
+    let level = reply.level.as_deref().unwrap_or("info");
+    let label = match level {
+        "error" => level.red(),
+        "warn" => level.yellow(),
+        "debug" => level.bright_black(),
+        _ => level.cyan(),
+    };
+
+    println!("{:>5} {}", label, reply.message.as_deref().unwrap_or(""));
 }
 
 /// Wraps a payload in the `{event, data}` envelope the gateway routes on.

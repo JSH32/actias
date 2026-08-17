@@ -349,6 +349,7 @@ mod tests {
             KvServiceClient::new(channel),
             EgressClient::new(policy).expect("client builds"),
             None,
+            None,
         )
         .await
         .expect("runtime builds")

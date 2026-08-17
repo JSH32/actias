@@ -103,6 +103,19 @@ export namespace script_service {
         // A session ID, this can be used to get the session bundle.
         sessionId?: string;
     }
+    // One log line a running script emitted.
+    export interface LogMessage {
+        // Level name: debug, info, warn or error.
+        level?: string;
+        // The rendered line.
+        message?: string;
+        // Milliseconds since the unix epoch, stamped by the worker.
+        timestampMs?: number;
+    }
+    // Names the script whose production log stream to follow.
+    export interface StreamScriptLogsRequest {
+        scriptId?: string;
+    }
     export interface Script {
         id?: string;
         // Project that owns the script.
@@ -178,6 +191,18 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;
+        // Follow one live session&#x27;s log lines as they happen.
+        streamLiveLogs(
+            data: LiveScriptSession,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<LogMessage>;
+        // Follow a script&#x27;s production log lines as they happen.
+        streamScriptLogs(
+            data: StreamScriptLogsRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<LogMessage>;
     }
 }
 export namespace bundle {
