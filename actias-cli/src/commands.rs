@@ -27,6 +27,14 @@ pub enum Commands {
         /// Directory of project to publish
         directory: String,
     },
+    /// 🔁 Run a live development session: every save updates a live URL
+    Dev {
+        /// Directory of the project to develop
+        directory: String,
+        /// Base URL of the worker serving live sessions
+        #[clap(long, default_value = "http://127.0.0.1:3002")]
+        worker_url: String,
+    },
     /// 📁 List projects
     Projects { page: Option<i64> },
     /// 📜 Manage a project

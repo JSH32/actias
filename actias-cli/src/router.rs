@@ -3,17 +3,19 @@ use crate::{
     commands::{Commands, ProjectOperations, ScriptOperations},
     errors::Result,
     handlers,
+    settings::Settings,
 };
 
 /// Router for dispatching commands to their handlers
 pub struct Router {
     client: Client,
+    settings: Settings,
 }
 
 impl Router {
     /// Create a new router with the given client
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: Client, settings: Settings) -> Self {
+        Self { client, settings }
     }
 
     /// Route command to appropriate handler
@@ -26,6 +28,10 @@ impl Router {
                 project_id,
             } => self.handle_init(name, template, project_id).await,
             Commands::Publish { directory } => self.handle_publish(directory).await,
+            Commands::Dev {
+                directory,
+                worker_url,
+            } => handlers::dev::handle(&self.client, &self.settings, &directory, &worker_url).await,
             Commands::Scripts { project, page } => self.handle_list_scripts(project, page).await,
             Commands::Projects { page } => self.handle_list_projects(page).await,
             Commands::Project { id, sub } => self.handle_project(id, sub).await,

@@ -61,7 +61,7 @@ async fn run() -> errors::Result<()> {
     let client = client::Client::new_with_client(&settings.api_url, req_client);
 
     // Route command to appropriate handler
-    let router = Router::new(client);
+    let router = Router::new(client, settings);
     router.route(cli.command).await?;
 
     Ok(())
