@@ -317,7 +317,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             Arc::new(PreparedRevision::prepare(
                 script,
                 Revision {
-                    bundle: Some(live.bundle),
+                    bundle: live.bundle,
                     ..Default::default()
                 },
             )?)

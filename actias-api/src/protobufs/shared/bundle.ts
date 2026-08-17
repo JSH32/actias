@@ -6,11 +6,12 @@ import { Observable } from 'rxjs';
 import { Metadata } from '@grpc/grpc-js';
 
 export namespace bundle {
+    // A revision&#x27;s content: the entry point plus every file in the bundle.
     export interface Bundle {
         entryPoint?: string;
-        // File path name and file content
         files?: bundle.File[];
     }
+    // One file in a bundle.
     export interface File {
         revisionId?: string;
         fileName?: string;

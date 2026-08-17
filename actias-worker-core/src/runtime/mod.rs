@@ -163,7 +163,7 @@ impl PreparedRevision {
 
         let contract = revision
             .script_config
-            .capabilities
+            .and_then(|config| config.capabilities)
             .map(|capabilities| Contract {
                 kv: capabilities.kv.into_iter().collect(),
                 secrets: capabilities.secrets.into_iter().collect(),
@@ -895,14 +895,14 @@ mod tests {
         let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
 
         let revision = Revision {
-            script_config: crate::proto::script_service::ScriptConfig {
+            script_config: Some(crate::proto::script_service::ScriptConfig {
                 capabilities: Some(crate::proto::script_service::Capabilities {
                     kv: kv.iter().map(|s| s.to_string()).collect(),
                     events: vec!["fetch".to_owned()],
                     secrets: secrets.iter().map(|s| s.to_string()).collect(),
                 }),
                 ..Default::default()
-            },
+            }),
             bundle: Some(Bundle {
                 entry_point: "main.lua".to_owned(),
                 files: vec![lua_file("main.lua", source)],

@@ -1,15 +1,16 @@
-syntax = "proto2";
+syntax = "proto3";
 package bundle;
 
+// A revision's content: the entry point plus every file in the bundle.
 message Bundle {
-    required string entry_point = 1;
-    // File path name and file content 
+    string entry_point = 1;
     repeated File files = 2;
 }
 
+// One file in a bundle.
 message File {
-    required string revision_id = 1;
-    required string file_name = 2;
-    required string file_path = 3;
-    required bytes content = 5;
+    string revision_id = 1;
+    string file_name = 2;
+    string file_path = 3;
+    bytes content = 5;
 }
