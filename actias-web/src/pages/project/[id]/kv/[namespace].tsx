@@ -2,7 +2,7 @@ import { AclListDto, PairDto, ProjectDto, SetKeyDto } from '@/client';
 import { useRouter } from 'next/router';
 import React, { useCallback, useEffect, useState } from 'react';
 import api, { showError } from '@/helpers/api';
-import { withAuthentication } from '@/helpers/authenticated';
+import { AuthGuard } from '@/helpers/auth';
 import {
   ActionIcon,
   Badge,
@@ -366,4 +366,10 @@ const EditModal: React.FC<{
   );
 };
 
-export default withAuthentication(Namespace);
+export default function NamespacePage() {
+  return (
+    <AuthGuard>
+      <Namespace />
+    </AuthGuard>
+  );
+}

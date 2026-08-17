@@ -19,7 +19,8 @@ import {
   Divider,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { showError } from '@/helpers/api';
 import { IconUser, IconUserPlus } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
@@ -32,14 +33,22 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
 
   const [users, setUsers] = useState<UserDto[]>([]);
   const [currentUser, setCurrentUser] = useState<UserDto | null>(null);
-  const [allPermissions, setAllPermissions] = useState<string[]>([]);
   const [permissions, setPermissions] = useState<string[]>([]);
 
-  const [accessUsers, setAccessUsers] = useState<AclListDto[]>([]);
+  const queryClient = useQueryClient();
+  const { data: accessUsers } = useQuery<AclListDto[]>({
+    queryKey: ['acl', project.id],
+    queryFn: () => api.acl.getAcl(project.id),
+  });
+  const { data: allPermissions } = useQuery<string[]>({
+    queryKey: ['acl-permissions'],
+    queryFn: () => api.acl.getPermissions(),
+  });
 
-  const loadAcl = useCallback(() => {
-    api.acl.getAcl(project.id).then(setAccessUsers).catch(showError);
-  }, [project]);
+  const loadAcl = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ['acl', project.id] }),
+    [queryClient, project.id],
+  );
 
   const searchUsers = useCallback((name: string) => {
     api.users
@@ -80,6 +89,10 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
     [project.id, currentUser, loadAcl],
   );
 
+  React.useEffect(() => {
+    searchUsers('');
+  }, [searchUsers]);
+
   const userModal = useCallback(
     (data: AclListDto) => {
       setCurrentUser(data.user);
@@ -92,12 +105,6 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
     },
     [addUserModal],
   );
-
-  useEffect(() => {
-    api.acl.getPermissions().then(setAllPermissions).catch(showError);
-    loadAcl();
-    searchUsers('');
-  }, [project, loadAcl, searchUsers]);
 
   const combobox = useCombobox({
     onDropdownClose: () => combobox.resetSelectedOption(),
@@ -149,7 +156,7 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
       )}
 
       <Grid gutter="xs">
-        {accessUsers.map((user) => (
+        {(accessUsers ?? []).map((user: AclListDto) => (
           <Grid.Col key={user.user.id} span={{ md: 6, lg: 3 }}>
             <Card shadow="sm" padding="sm" radius="md" withBorder>
               <Stack>
@@ -201,7 +208,10 @@ const AccessControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
         <MultiSelect
           clearable
           value={permissions}
-          data={allPermissions.map((perm) => ({ value: perm, label: perm }))}
+          data={(allPermissions ?? []).map((perm: string) => ({
+            value: perm,
+            label: perm,
+          }))}
           label="Permissions for the user"
           onChange={setPermissions}
         ></MultiSelect>

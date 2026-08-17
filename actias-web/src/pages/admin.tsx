@@ -1,5 +1,6 @@
 import { PaginatedResponseDto, RegistrationCodeDto } from '@/client';
-import { withAuthentication } from '@/helpers/authenticated';
+import { AuthGuard } from '@/helpers/auth';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ActionIcon,
   Button,
@@ -12,18 +13,25 @@ import {
   Table,
   Title,
 } from '@mantine/core';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import api, { showError } from '@/helpers/api';
 import { IconCopy, IconTrash } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useClipboard, useDisclosure } from '@mantine/hooks';
 
 const Admin = () => {
-  const [codes, setCodes] = useState<PaginatedResponseDto | null>(null);
+  const [page, setPage] = useState(1);
+  const queryClient = useQueryClient();
 
-  const codePage = useCallback((page: number) => {
-    api.admin.listRegistrationCodes(page).then(setCodes).catch(showError);
-  }, []);
+  const { data: codes } = useQuery<PaginatedResponseDto>({
+    queryKey: ['registration-codes', page],
+    queryFn: () => api.admin.listRegistrationCodes(page),
+  });
+
+  const reloadCodes = useCallback(() => {
+    setPage(1);
+    queryClient.invalidateQueries({ queryKey: ['registration-codes'] });
+  }, [queryClient]);
 
   const deleteCode = useCallback(
     (code: string) => {
@@ -35,16 +43,12 @@ const Admin = () => {
             message: `Deleted code: ${code}`,
           });
 
-          codePage(1);
+          reloadCodes();
         })
         .catch(showError);
     },
-    [codePage],
+    [reloadCodes],
   );
-
-  useEffect(() => {
-    codePage(1);
-  }, [codePage]);
 
   const [codeModalOpened, codeModalControl] = useDisclosure(false);
 
@@ -59,11 +63,11 @@ const Admin = () => {
           });
 
           codeModalControl.close();
-          codePage(1);
+          reloadCodes();
         })
         .catch(showError);
     },
-    [codeModalControl, codePage],
+    [codeModalControl, reloadCodes],
   );
 
   const clipboard = useClipboard();
@@ -119,7 +123,7 @@ const Admin = () => {
         </Table>
         <Pagination
           value={codes?.page}
-          onChange={codePage}
+          onChange={setPage}
           total={codes?.lastPage || 1}
         />
         <CreateRegistrationModal
@@ -167,4 +171,10 @@ const CreateRegistrationModal: React.FC<{
   );
 };
 
-export default withAuthentication(Admin);
+export default function AdminPage() {
+  return (
+    <AuthGuard>
+      <Admin />
+    </AuthGuard>
+  );
+}

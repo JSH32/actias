@@ -43,6 +43,14 @@ for _ in $(seq 1 120); do
 done
 [ "$ready" = 1 ] || { echo "api never became ready"; exit 1; }
 
+echo "== web pages render"
+# Server-side rendering runs the react tree, so a crash in the state layer
+# turns these into 500s.
+for page in / /login /projects; do
+    curl -sf "http://127.0.0.1:3000$page" -o /dev/null \
+        || { echo "web page $page did not render"; exit 1; }
+done
+
 echo "== registering and logging in"
 SUFFIX=$RANDOM
 curl -sf -X POST "$API/users" -H 'Content-Type: application/json' \

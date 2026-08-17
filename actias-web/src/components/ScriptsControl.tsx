@@ -21,14 +21,25 @@ import { useForm } from '@mantine/form';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CodeHighlightTabs } from '@mantine/code-highlight';
 
 const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   project,
   write,
 }) => {
-  const [scripts, setScripts] = useState<PaginatedResponseDto | null>(null);
+  const [page, setPage] = useState(1);
+  const queryClient = useQueryClient();
+  const { data: scripts } = useQuery<PaginatedResponseDto>({
+    queryKey: ['scripts', project.id, page],
+    queryFn: () => api.scripts.listScripts(project.id, page),
+  });
+
+  const reloadScripts = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ['scripts', project.id] }),
+    [queryClient, project.id],
+  );
 
   const [scriptModalOpened, scriptModal] = useDisclosure(false);
   const scriptModalForm = useForm({
@@ -36,16 +47,6 @@ const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
       publicIdentifier: '',
     },
   });
-
-  const scriptPage = useCallback(
-    (page: number) => {
-      api.scripts
-        .listScripts(project!.id, page)
-        .then(setScripts)
-        .catch(showError);
-    },
-    [project],
-  );
 
   const createScript = useCallback(
     (values: any) => {
@@ -57,12 +58,12 @@ const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
             message: `New script named ${res.publicIdentifier} was created.`,
           });
 
-          scriptPage(scripts!.page);
+          reloadScripts();
           scriptModal.close();
         })
         .catch((err) => errorForm(err, scriptModalForm));
     },
-    [project, scriptModal, scriptModalForm, scriptPage, scripts],
+    [project, scriptModal, scriptModalForm, reloadScripts],
   );
 
   const deleteScript = useCallback(
@@ -75,16 +76,12 @@ const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
             message: `Script with ID ${script.id} was deleted.`,
           });
 
-          scriptPage(scripts!.page);
+          reloadScripts();
         })
         .catch(showError);
     },
-    [scriptPage, scripts],
+    [reloadScripts],
   );
-
-  useEffect(() => {
-    scriptPage(1);
-  }, [scriptPage]);
 
   return (
     <Stack>
@@ -147,7 +144,7 @@ const ScriptsControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
           </Grid>
           <Pagination
             value={scripts.page}
-            onChange={scriptPage}
+            onChange={setPage}
             total={scripts.lastPage}
           />
         </>

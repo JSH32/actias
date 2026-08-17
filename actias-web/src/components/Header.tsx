@@ -19,8 +19,7 @@ import {
   AppShell,
   Center,
 } from '@mantine/core';
-import { useStore } from '@/helpers/state';
-import { observer } from 'mobx-react-lite';
+import { useLogout, useUser } from '@/helpers/auth';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import classes from './Header.module.css';
@@ -101,20 +100,16 @@ export const Header: React.FC = () => {
   );
 };
 
-const UserNavigator = observer(() => {
-  const store = useStore();
+const UserNavigator = () => {
+  const { data: user } = useUser();
   const router = useRouter();
+  const logout = useLogout();
 
-  const logout = React.useCallback(() => {
-    localStorage.removeItem('token');
-    store?.setUserInfo(undefined);
-  }, [store]);
-
-  return store?.userData ? (
+  return user ? (
     <Menu shadow="md" width={200}>
       <Menu.Target>
         <Text style={{ cursor: 'pointer' }} fw={700}>
-          {store.userData.username}
+          {user.username}
         </Text>
       </Menu.Target>
       <Menu.Dropdown>
@@ -130,7 +125,7 @@ const UserNavigator = observer(() => {
         >
           Settings
         </Menu.Item>
-        {store?.userData.admin && (
+        {user.admin && (
           <Menu.Item
             onClick={() => router.push('/admin')}
             leftSection={<IconSettingsAutomation size={14} />}
@@ -153,4 +148,4 @@ const UserNavigator = observer(() => {
       <Button>Login</Button>
     </Link>
   );
-});
+};

@@ -1,4 +1,4 @@
-import { useStore } from '@/helpers/state';
+import { useUser } from '@/helpers/auth';
 import {
   Button,
   Container,
@@ -13,11 +13,10 @@ import {
   IconFolderBolt,
   IconLogin,
 } from '@tabler/icons-react';
-import { observer } from 'mobx-react-lite';
 import Link from 'next/link';
 
-const HomePage = observer(() => {
-  const store = useStore();
+const HomePage = () => {
+  const { data: user } = useUser();
 
   return (
     <Container size={700} my={40}>
@@ -41,7 +40,7 @@ const HomePage = observer(() => {
         </Text>
 
         <Group>
-          {store?.userData ? (
+          {user ? (
             <Button
               leftSection={<IconFolderBolt size={20} />}
               component={Link}
@@ -75,6 +74,6 @@ const HomePage = observer(() => {
       </Stack>
     </Container>
   );
-});
+};
 
 export default HomePage;
