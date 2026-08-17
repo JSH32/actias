@@ -3,18 +3,9 @@ mod extensions;
 mod runtime;
 mod server;
 
-use std::{convert::Infallible, net::SocketAddr};
+use std::net::SocketAddr;
 
-use actias_common::{
-    setup_tracing,
-    tracing::{error, info},
-};
-use hyper::{
-    Server,
-    service::{make_service_fn, service_fn},
-};
-
-use server::http_handler;
+use actias_common::{setup_tracing, tracing::info};
 
 use crate::proto::script_service::script_service_client::ScriptServiceClient;
 use crate::{config::Config, proto::kv_service::kv_service_client::KvServiceClient};
@@ -33,33 +24,58 @@ pub mod proto {
     }
 }
 
+/// Resolves when the process is asked to stop, so in-flight scripts finish
+/// instead of dying mid-request on deploy.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("ctrl-c handler could not be installed");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("sigterm handler could not be installed")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("Shutting down");
+}
+
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Setup tracing.
-    setup_tracing().unwrap();
+    setup_tracing().expect("tracing subscriber could not be installed");
 
     let config = Config::new();
     let script_client = ScriptServiceClient::connect(config.script_service_uri).await?;
     let kv_client = KvServiceClient::connect(config.kv_service_uri).await?;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    let make_svc = make_service_fn(|_conn| {
-        let script_client = script_client.clone();
-        let kv_client = kv_client.clone();
+    let app = server::router(
+        server::Clients {
+            script: script_client,
+            kv: kv_client,
+        },
+        config.max_body_bytes,
+        std::time::Duration::from_secs(config.request_timeout_secs),
+    );
 
-        async {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                http_handler(req, script_client.clone(), kv_client.clone())
-            }))
-        }
-    });
+    info!("Serving on {}", addr);
 
-    let server = Server::bind(&addr).serve(make_svc);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
-    info!("Serving on {}", addr.to_string());
-
-    let _: () = if let Err(e) = server.await {
-        error!("Server error: {}", e);
-    };
     Ok(())
 }

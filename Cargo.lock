@@ -84,8 +84,7 @@ dependencies = [
  "actias-common",
  "anyhow",
  "argon2",
- "futures-util",
- "http-body-util",
+ "axum",
  "hyper 0.14.32",
  "hyper-tls",
  "jsonwebtoken",
@@ -99,6 +98,7 @@ dependencies = [
  "tokio",
  "tonic 0.13.0",
  "tonic-build",
+ "tower",
  "uuid",
 ]
 
@@ -297,10 +297,13 @@ checksum = "de45108900e1f9b9242f7f2e254aa3e2c029c921c258fe9e6b4217eeebd54288"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http 1.3.1",
  "http-body 1.0.1",
  "http-body-util",
+ "hyper 1.6.0",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -309,10 +312,15 @@ dependencies = [
  "pin-project-lite",
  "rustversion",
  "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper 1.0.2",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -332,6 +340,7 @@ dependencies = [
  "sync_wrapper 1.0.2",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -3558,6 +3567,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

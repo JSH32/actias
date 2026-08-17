@@ -3,7 +3,6 @@ use actias_common::tracing::debug;
 use hyper::{
     Body, Client, Version,
     client::HttpConnector,
-    header::HeaderName,
     http::{self, uri::InvalidUri},
 };
 use hyper_tls::HttpsConnector;
@@ -112,12 +111,23 @@ pub enum BodyType {
 impl BodyType {
     async fn from_hyper(body: hyper::Body) -> mlua::Result<Self> {
         let body_bytes = hyper::body::to_bytes(body).await.into_lua_err()?;
+        Ok(Self::from_bytes(body_bytes.to_vec()))
+    }
 
-        Ok(match String::from_utf8(body_bytes.to_vec()) {
+    /// Wraps raw bytes, as text when they are valid utf-8.
+    fn from_bytes(bytes: Vec<u8>) -> Self {
+        match String::from_utf8(bytes) {
             Ok(v) => BodyType::Text(v),
-            // Not a string
-            Err(_) => BodyType::Binary(body_bytes.to_vec()),
-        })
+            Err(e) => BodyType::Binary(e.into_bytes()),
+        }
+    }
+
+    /// Converts into the body type the server's wire response uses.
+    pub fn into_axum_body(self) -> axum::body::Body {
+        match self {
+            BodyType::Binary(v) => axum::body::Body::from(v),
+            BodyType::Text(v) => axum::body::Body::from(v),
+        }
     }
 }
 
@@ -131,32 +141,35 @@ impl From<BodyType> for hyper::Body {
 }
 
 impl Request {
-    /// Create a new Lua Request object.
+    /// Builds the request table a script's fetch listener receives.
+    ///
+    /// Takes plain values rather than a server request type, so the surface
+    /// works the same whatever http stack the server runs.
     ///
     /// # Arguments
-    ///
-    /// * `request` - Hyper request to convert from.
-    /// * `context_uri` - URI which is stripped from worker identifier (if relevant).
-    pub async fn new(
-        request: hyper::Request<hyper::Body>,
-        context_uri: Option<hyper::Uri>,
-    ) -> mlua::Result<Self> {
-        Ok(Self {
-            uri: UriType::String(request.uri().to_string()),
-            method: Some(request.method().to_string()),
-            context_uri: Some(UriType::String(
-                context_uri.unwrap_or(request.uri().clone()).to_string(),
-            )),
-            headers: {
-                request
-                    .headers()
-                    .iter()
-                    .map(|h| (h.0.to_string(), h.1.to_str().unwrap_or("").to_string()))
-                    .collect()
-            },
-            version: Some(format!("{:?}", request.version())),
-            body: Some(BodyType::from_hyper(request.into_body()).await?),
-        })
+    /// * `method` - Http method name.
+    /// * `uri` - The uri as requested.
+    /// * `context_uri` - The uri with the worker identifier stripped, for
+    ///   routing inside the script; falls back to `uri`.
+    /// * `headers` - Header names to values.
+    /// * `version` - Http version, in `HTTP/1.1` form.
+    /// * `body` - Raw body bytes; exposed to lua as text when valid utf-8.
+    pub fn from_parts(
+        method: String,
+        uri: String,
+        context_uri: Option<String>,
+        headers: HashMap<String, String>,
+        version: String,
+        body: Vec<u8>,
+    ) -> Self {
+        Self {
+            context_uri: Some(UriType::String(context_uri.unwrap_or_else(|| uri.clone()))),
+            uri: UriType::String(uri),
+            method: Some(method),
+            headers,
+            version: Some(version),
+            body: Some(BodyType::from_bytes(body)),
+        }
     }
 }
 
@@ -295,32 +308,6 @@ impl Response {
                     .into_lua_err()?,
             ),
         })
-    }
-}
-
-impl From<Response> for http::Result<hyper::Response<hyper::Body>> {
-    fn from(res: Response) -> Self {
-        // Build the response based on the returned json from lua.
-        let mut response = hyper::Response::builder()
-            .status(res.status_code.unwrap_or(200))
-            .body(match res.body {
-                Some(v) => v.into(),
-                None => hyper::Body::empty(),
-            })?;
-
-        let headers_mut = response.headers_mut();
-
-        // Copy all headers from lua response.
-        if let Some(headers) = res.headers {
-            for (key, value) in headers.iter() {
-                headers_mut.insert(
-                    HeaderName::from_str(key)?,
-                    value.parse().unwrap_or("".parse()?),
-                );
-            }
-        }
-
-        Ok(response)
     }
 }
 
