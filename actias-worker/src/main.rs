@@ -1,29 +1,13 @@
 mod config;
-mod egress;
-mod extensions;
-mod runtime;
 mod server;
 
 use std::net::SocketAddr;
 
 use actias_common::{setup_tracing, tracing::info};
 
-use crate::proto::script_service::script_service_client::ScriptServiceClient;
-use crate::{config::Config, proto::kv_service::kv_service_client::KvServiceClient};
-
-pub mod proto {
-    pub mod bundle {
-        tonic::include_proto!("bundle");
-    }
-
-    pub mod script_service {
-        tonic::include_proto!("script_service");
-    }
-
-    pub mod kv_service {
-        tonic::include_proto!("kv_service");
-    }
-}
+use crate::config::Config;
+use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
+use actias_worker_core::proto::script_service::script_service_client::ScriptServiceClient;
 
 /// Resolves when the process is asked to stop, so in-flight scripts finish
 /// instead of dying mid-request on deploy.
@@ -69,10 +53,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             denied_hosts.push(host.to_owned());
         }
     }
-    let egress = egress::EgressClient::new(egress::EgressPolicy::new(
-        denied_hosts,
-        config.egress_allow_private,
-    ))?;
+    let egress = actias_worker_core::egress::EgressClient::new(
+        actias_worker_core::egress::EgressPolicy::new(denied_hosts, config.egress_allow_private),
+    )?;
 
     let script_client = ScriptServiceClient::connect(config.script_service_uri).await?;
     let kv_client = KvServiceClient::connect(config.kv_service_uri).await?;
@@ -87,7 +70,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .expect("SECRET_ENCRYPTION_KEY is not valid base64");
-        let key: [u8; extensions::secrets::KEY_LEN] = bytes
+        let key: [u8; actias_worker_core::extensions::secrets::KEY_LEN] = bytes
             .try_into()
             .expect("SECRET_ENCRYPTION_KEY must decode to exactly 32 bytes");
         std::sync::Arc::new(key)
