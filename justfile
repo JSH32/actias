@@ -56,6 +56,15 @@ lint-api:
 lint-web:
     cd actias-web && npx next lint
 
+# Compiler-grade typecheck of the api, spec files included; `nest build` uses
+# tsconfig.build.json, which excludes them.
+typecheck-api:
+    cd actias-api && npx tsc --noEmit
+
+# Compiler-grade typecheck of the web app, everything the tsconfig includes.
+typecheck-web:
+    cd actias-web && npx tsc --noEmit
+
 # Apply formatters in place.
 fmt:
     cargo fmt --all
@@ -103,4 +112,4 @@ logs service="":
     docker compose logs -f {{ service }}
 
 # Everything CI gates on.
-ci: deps lint-rust test-rust build-rust lint-api test-api build-api lint-web build-web check-generated
+ci: deps lint-rust test-rust build-rust lint-api typecheck-api test-api build-api lint-web typecheck-web build-web check-generated
