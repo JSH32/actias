@@ -17,7 +17,7 @@ use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 pub struct CryptoExtension;
 
 impl LuaExtension for CryptoExtension {
-    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
+    fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
         let crypto = lua.create_table()?;
 
         let argon2_class = lua.create_proxy::<Argon2Class>()?;
@@ -72,7 +72,7 @@ impl LuaExtension for CryptoExtension {
 struct RsaPrivateKey(rsa::RsaPrivateKey);
 
 impl UserData for RsaPrivateKey {
-    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_function("new", |_, bits: usize| {
             if bits > 4096 {
                 return Err(mlua::Error::RuntimeError(
@@ -137,7 +137,7 @@ impl UserData for RsaPrivateKey {
 struct RsaPublicKey(rsa::RsaPublicKey);
 
 impl UserData for RsaPublicKey {
-    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("encrypt", |_, this, data: Vec<u8>| {
             this.0
                 .encrypt(&mut OsRng, Pkcs1v15Encrypt, &data[..])
@@ -150,7 +150,7 @@ impl UserData for RsaPublicKey {
 struct Argon2Class(Argon2<'static>);
 
 impl UserData for Argon2Class {
-    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_function("new", move |lua, algorithm: String| {
             let algorithm = match algorithm.as_str() {
                 "Argon2i" => Algorithm::Argon2i,

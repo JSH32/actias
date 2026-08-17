@@ -22,7 +22,7 @@ impl LuaExtension for HttpExtension {
         }
     }
 
-    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
+    fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
         // Http request method
         let http = lua.create_table()?;
         http.set(
@@ -43,18 +43,18 @@ impl LuaExtension for HttpExtension {
                     "Making request to {}", hyper_uri.into_lua_err()?.to_string()
                 );
 
+                // Cloned out of app data so no guard is held across the await;
+                // hyper clients are cheap handles over a shared pool.
                 let client = match lua.app_data_ref::<Client<HttpsConnector<HttpConnector>, Body>>()
                 {
-                    // Find if exist.
-                    Some(v) => v,
+                    Some(v) => v.clone(),
                     // Create on first use.
                     None => {
+                        let client = Client::builder().build(HttpsConnector::new());
                         lua.set_app_data::<Client<HttpsConnector<HttpConnector>, Body>>(
-                            Client::builder().build(HttpsConnector::new()),
+                            client.clone(),
                         );
-
-                        lua.app_data_ref::<Client<HttpsConnector<HttpConnector>, Body>>()
-                            .unwrap()
+                        client
                     }
                 };
 
@@ -211,7 +211,7 @@ pub struct Uri {
 }
 
 impl UserData for Uri {
-    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("tostring", |_, this, ()| {
             let uri: http::Result<hyper::Uri> = this.to_owned().into();
             Ok(uri.into_lua_err()?.to_string())
@@ -229,7 +229,7 @@ impl UserData for Uri {
         });
     }
 
-    fn add_fields<'lua, F: mlua::UserDataFields<'lua, Self>>(fields: &mut F) {
+    fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
         fields.add_field_method_get("scheme", |_, this| Ok(this.scheme.clone()));
         fields.add_field_method_get("authority", |_, this| Ok(this.authority.clone()));
         fields.add_field_method_get("path", |_, this| Ok(this.path.clone()));

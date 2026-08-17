@@ -10,8 +10,6 @@ use axum::response::Response;
 use core::result::Result::Ok;
 use mlua::LuaSerdeExt;
 use std::path;
-use tokio::runtime::Handle;
-use tokio::task;
 use tonic::transport::Channel;
 
 use crate::extensions;
@@ -207,30 +205,21 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         body.to_vec(),
     );
 
-    // The LocalSet dance exists because lua futures are not Send; it is
-    // replaced wholesale by the runtime thread pool in P1.3.
+    // Lua futures are Send under mlua's send feature, so the runtime runs
+    // directly on the async executor; the old block_in_place/LocalSet dance
+    // died with mlua 0.9.
     let kv_client = state.clients.kv.clone();
     let script = script.into_inner();
     let revision = revision.into_inner();
 
-    let lua_response: extensions::http::Response = task::block_in_place(move || {
-        Handle::current().block_on(async move {
-            let local = task::LocalSet::new();
-            local
-                .run_until(async move {
-                    let lua = ActiasRuntime::new(script, revision, kv_client, Some(10)).await?;
+    let lua = ActiasRuntime::new(script, revision, kv_client, Some(10)).await?;
 
-                    let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
+    let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
-                    lua.start_timer();
+    lua.start_timer();
 
-                    let value: mlua::Value =
-                        listener.call_async(lua.to_value(&lua_request)?).await?;
-                    Ok::<_, anyhow::Error>(lua.from_value(value)?)
-                })
-                .await
-        })
-    })?;
+    let value: mlua::Value = listener.call_async(lua.to_value(&lua_request)?).await?;
+    let lua_response: extensions::http::Response = lua.from_value(value)?;
 
     lua_response_into_response(lua_response)
 }

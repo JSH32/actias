@@ -93,7 +93,7 @@ impl ActiasRuntime {
     ///
     /// # Errors
     /// Returns [`mlua::Error`] when the script registered no listener for it.
-    pub fn listener(&self, event: &str) -> mlua::Result<mlua::Function<'_>> {
+    pub fn listener(&self, event: &str) -> mlua::Result<mlua::Function> {
         self.lua.named_registry_value(&Self::listener_key(event))
     }
 
@@ -102,7 +102,7 @@ impl ActiasRuntime {
     /// # Errors
     /// Returns [`mlua::Error`] if the registry was never initialised by
     /// [`ActiasRuntime::set_module_loaders`].
-    fn module_registry(lua: &Lua) -> mlua::Result<Table<'_>> {
+    fn module_registry(lua: &Lua) -> mlua::Result<Table> {
         lua.named_registry_value(Self::MODULE_REGISTRY)
     }
 
@@ -126,7 +126,7 @@ impl ActiasRuntime {
 
                 // A module body runs once per runtime; every later require of the
                 // same module answers from the registry.
-                let registry = Self::module_registry(lua)?;
+                let registry = Self::module_registry(&lua)?;
                 let cached: mlua::Value = registry.get(key.as_str())?;
                 if !cached.is_nil() {
                     return Ok(cached);
@@ -385,9 +385,12 @@ impl LuaModule {
     }
 }
 
-impl AsChunk<'_, '_> for &LuaModule {
-    fn source(self) -> std::io::Result<Cow<'static, [u8]>> {
-        Ok(Cow::Owned(self.source.as_bytes().to_vec()))
+impl AsChunk for &LuaModule {
+    fn source<'a>(&self) -> std::io::Result<Cow<'a, [u8]>>
+    where
+        Self: 'a,
+    {
+        Ok(Cow::Borrowed(self.source.as_bytes()))
     }
 
     fn name(&self) -> Option<String> {

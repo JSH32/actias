@@ -10,7 +10,7 @@ pub struct ExtensionInfo<'a> {
 
 pub trait LuaExtension {
     /// Create the extension and return a corresponding value.
-    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>>;
+    fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value>;
 
     /// Returns the name of the extension
     fn extension_info(&self) -> ExtensionInfo<'_>;
@@ -25,7 +25,7 @@ pub mod standard_extensions {
     pub struct JsonExtension;
 
     impl LuaExtension for JsonExtension {
-        fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
+        fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
             let json = lua.create_table()?;
 
             json.set(
@@ -40,7 +40,7 @@ pub mod standard_extensions {
                 "parse",
                 lua.create_function(|lua, string: mlua::String| {
                     lua.to_value(
-                        &serde_json::from_str::<serde_json::Value>(string.to_str()?)
+                        &serde_json::from_str::<serde_json::Value>(&string.to_str()?)
                             .map_err(|e| mlua::Error::DeserializeError(e.to_string()))?,
                     )
                 })?,
@@ -61,7 +61,7 @@ pub mod standard_extensions {
     pub struct UuidExtension;
 
     impl LuaExtension for UuidExtension {
-        fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
+        fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
             let uuid = lua.create_table()?;
 
             uuid.set(

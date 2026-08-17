@@ -9,7 +9,7 @@ use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 pub struct JwtExtension;
 
 impl LuaExtension for JwtExtension {
-    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
+    fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
         let jwt = lua.create_table()?;
 
         let jwt_class = lua.create_proxy::<JwtClass>()?;
@@ -35,7 +35,7 @@ struct JwtClass {
 }
 
 impl UserData for JwtClass {
-    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         // Static constructor
         methods.add_function("new", |lua, (algorithm, secret): (String, String)| {
             let algorithm: Algorithm = Algorithm::from_str(&algorithm).map_err(|e| {

@@ -15,7 +15,7 @@ pub struct KvExtension {
 }
 
 impl LuaExtension for KvExtension {
-    fn create_extension<'a>(&'a self, lua: &'a mlua::Lua) -> mlua::Result<mlua::Value<'a>> {
+    fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
         let kv = lua.create_table()?;
 
         let kv_client = self.kv_client.clone();
@@ -61,11 +61,7 @@ pub struct KvNamespace {
 /// Returns [`mlua::Error::RuntimeError`] when the text does not parse as the
 /// declared type. That means the row disagrees with its own metadata, so it is
 /// reported to the script rather than being allowed to abort the request.
-fn pair_into_lua<'lua>(
-    lua: &'lua mlua::Lua,
-    value_type: ValueType,
-    value: &str,
-) -> mlua::Result<mlua::Value<'lua>> {
+fn pair_into_lua(lua: &mlua::Lua, value_type: ValueType, value: &str) -> mlua::Result<mlua::Value> {
     let mismatch = |expected: &str| {
         mlua::Error::RuntimeError(format!("Stored value is not a valid {expected}."))
     };
@@ -91,22 +87,20 @@ fn pair_into_lua<'lua>(
 }
 
 impl UserData for KvNamespace {
-    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_async_method_mut("get", |lua, this, key: String| async {
-            let pair = match this
-                .kv_client
-                .get_pair(PairRequest {
-                    project_id: this.project_id.clone(),
-                    namespace: this.namespace.clone(),
-                    key,
-                })
-                .await
-            {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_async_method_mut("get", |lua, mut this, key: String| async move {
+            let request = PairRequest {
+                project_id: this.project_id.clone(),
+                namespace: this.namespace.clone(),
+                key,
+            };
+
+            let pair = match this.kv_client.get_pair(request).await {
                 Ok(v) => {
                     let pair = v.into_inner();
                     let value_type = pair.r#type();
 
-                    pair_into_lua(lua, value_type, &pair.value)?
+                    pair_into_lua(&lua, value_type, &pair.value)?
                 }
                 Err(e) => {
                     if e.code() == Code::NotFound {
@@ -122,36 +116,39 @@ impl UserData for KvNamespace {
 
         methods.add_async_method_mut(
             "set",
-            |_, this, (key, value): (String, mlua::Value)| async {
+            |_, mut this, (key, value): (String, mlua::Value)| async move {
                 match value.into_service_value()? {
                     Some((val_type, val)) => {
+                        let request = SetPairsRequest {
+                            pairs: vec![Pair {
+                                project_id: this.project_id.clone(),
+                                namespace: this.namespace.clone(),
+                                r#type: val_type.into(),
+                                ttl: None,
+                                key,
+                                value: val,
+                            }],
+                        };
+
                         this.kv_client
-                            .set_pairs(SetPairsRequest {
-                                pairs: vec![Pair {
-                                    project_id: this.project_id.clone(),
-                                    namespace: this.namespace.clone(),
-                                    r#type: val_type.into(),
-                                    ttl: None,
-                                    key,
-                                    value: val,
-                                }],
-                            })
+                            .set_pairs(request)
                             .await
                             .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
                     }
                     None => {
-                        // We delete
+                        // Setting nil deletes.
+                        let request = DeletePairsRequest {
+                            pairs: vec![PairRequest {
+                                project_id: this.project_id.clone(),
+                                namespace: this.namespace.clone(),
+                                key,
+                            }],
+                        };
+
                         this.kv_client
-                            .delete_pairs(DeletePairsRequest {
-                                pairs: vec![PairRequest {
-                                    project_id: this.project_id.clone(),
-                                    namespace: this.namespace.clone(),
-                                    key,
-                                }],
-                            })
+                            .delete_pairs(request)
                             .await
                             .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
-                        return Ok(());
                     }
                 };
 
@@ -159,7 +156,7 @@ impl UserData for KvNamespace {
             },
         );
 
-        methods.add_async_method_mut("set_batch", |_, this, values: mlua::Table| async {
+        methods.add_async_method_mut("set_batch", |_, mut this, values: mlua::Table| async move {
             let mut to_set = vec![];
             let mut to_delete = vec![];
 
@@ -200,7 +197,7 @@ impl UserData for KvNamespace {
             Ok(())
         });
 
-        methods.add_async_method_mut("delete", |_, this, keys: mlua::MultiValue| async {
+        methods.add_async_method_mut("delete", |_, mut this, keys: mlua::MultiValue| async move {
             let keys: Vec<PairRequest> = keys
                 .into_vec()
                 .into_iter()
@@ -229,7 +226,7 @@ trait KvValue {
     fn into_service_value(self) -> Result<Option<(ValueType, String)>, mlua::Error>;
 }
 
-impl KvValue for mlua::Value<'_> {
+impl KvValue for mlua::Value {
     fn into_service_value(self) -> Result<Option<(ValueType, String)>, mlua::Error> {
         Ok(Some(match self {
             mlua::Value::Nil => {
