@@ -1,6 +1,6 @@
 //! Declaration-mode extraction: boots the entry point in a stub vm and
 //! records what it declares, which becomes the revision's capability
-//! contract (docs/SURFACE.md: the code is the manifest).
+//! contract: the code is the manifest.
 //!
 //! Handlers are registered but never invoked, so no capability is exercised;
 //! platform globals are inert stubs that absorb any call or index, and only

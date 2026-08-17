@@ -35,7 +35,7 @@ message DeleteProjectRequest {
 }
 
 // What a script declared at its top level, extracted from the code at
-// publish; the code is the manifest (docs/SURFACE.md governs the shape).
+// publish; the code is the manifest.
 message Capabilities {
     // Namespaces declared with `kv "name"`.
     repeated string kv = 1;
