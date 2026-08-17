@@ -91,16 +91,21 @@ services:
     ports:
       - 3002:3000
 
+  # The service image is its own migrator, so the schema can never drift from
+  # the binary that applies it.
   kv_migration:
-    image: ghcr.io/jsh32/actias_kv_service_migration:latest
+    image: ghcr.io/jsh32/actias_kv_service:latest
     depends_on:
       scylla:
         condition: service_healthy
     build:
-      context: ./actias-kv
-      dockerfile: ./Dockerfile.migration
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-kv
+    command: ["/app/target", "--migrate"]
     environment:
-      - CQL_HOSTS=scylla
+      - SCYLLA_NODES=scylla:9042
 
   kv_service:
     image: ghcr.io/jsh32/actias_kv_service:latest

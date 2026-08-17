@@ -10,6 +10,7 @@ use crate::config::Config;
 mod config;
 mod database;
 mod kv_service;
+mod migrate;
 
 pub mod proto_kv_service {
     tonic::include_proto!("kv_service");
@@ -17,11 +18,20 @@ pub mod proto_kv_service {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    setup_tracing().unwrap();
+    setup_tracing().expect("tracing subscriber could not be installed");
 
     let config = Config::new();
-    let addr = format!("0.0.0.0:{}", config.port).parse().unwrap();
 
+    // The same image is both the service and its migrator, so deployments
+    // never carry a second binary that can drift from the schema it applies.
+    if std::env::args().any(|arg| arg == "--migrate") {
+        info!("Applying kv migrations");
+        migrate::run(config.scylla_nodes).await?;
+        info!("Migrations applied");
+        return Ok(());
+    }
+
+    let addr = format!("0.0.0.0:{}", config.port).parse()?;
     let database = Database::new(config.scylla_nodes).await;
 
     info!("KV Service listening on {}", addr);

@@ -515,29 +515,15 @@ mod tests {
         }
         let session = session.expect("scylla accepts connections");
 
-        // The same files the migration runner applies, statement by statement.
-        // Comment lines go first, because a ';' inside a comment would split
-        // the statement apart.
-        for source in [
-            include_str!("../migrations/bootstrap.cql"),
-            include_str!("../migrations/0001-create-tables.cql"),
-        ] {
-            let without_comments: String = source
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("--"))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            for statement in without_comments.split(';') {
-                let statement = statement.trim();
-                if !statement.is_empty() {
-                    session
-                        .query(statement, ())
-                        .await
-                        .unwrap_or_else(|e| panic!("migration statement failed: {e}"));
-                }
-            }
-        }
+        // The real migrator, twice: the second run must find everything
+        // recorded and change nothing, or a restarting migration container
+        // would corrupt a live deployment.
+        crate::migrate::apply(&session)
+            .await
+            .expect("migrations apply");
+        crate::migrate::apply(&session)
+            .await
+            .expect("migrations are re-runnable");
 
         (container, Database::new(vec![node]).await)
     }

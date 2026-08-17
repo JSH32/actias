@@ -45,6 +45,7 @@ version = "0.1.0"
 dependencies = [
  "actias-common",
  "base64 0.21.7",
+ "include_dir",
  "prost 0.13.5",
  "prost-build",
  "scylla",
