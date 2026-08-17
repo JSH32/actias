@@ -79,16 +79,20 @@ cat > "$DEVDIR/published/script.json" <<EOF
 EOF
 cat > "$DEVDIR/published/main.lua" <<'LUA'
 local ns = kv "smoke"
+local token = secret "smoke-token"
 
 on "fetch" (function(request)
     ns:set("visited", true)
     log.info("hello from production")
     return {
-        body = json.stringify({ ok = true, visited = ns:get("visited") }),
+        body = json.stringify({ ok = true, visited = ns:get("visited"), secret = token }),
         headers = { ["Content-Type"] = "application/json" },
     }
 end)
 LUA
+
+echo "== setting a secret (actias secret put)"
+"$REPO/target/debug/actias-cli" secret "$PROJECT_ID" put smoke-token hunter2-from-secrets
 
 "$REPO/target/debug/actias-cli" publish "$DEVDIR/published"
 
@@ -110,6 +114,14 @@ done
 echo "worker responded: $BODY"
 echo "$BODY" | jq -e '.ok == true and .visited == true' >/dev/null \
     || { echo "response did not round-trip through kv"; exit 1; }
+echo "$BODY" | jq -e '.secret == "hunter2-from-secrets"' >/dev/null \
+    || { echo "the secret did not decrypt through the worker"; exit 1; }
+
+# The encrypted store is platform-internal: the kv api must not list it.
+if curl -sf "$API/project/$PROJECT_ID/kv" -H "$AUTH" | jq -e '.[] | select(.name == "__secrets")' >/dev/null 2>&1; then
+    echo "the reserved secrets namespace leaked through the kv api"
+    exit 1
+fi
 
 echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket

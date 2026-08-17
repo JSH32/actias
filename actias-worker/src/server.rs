@@ -72,6 +72,7 @@ pub fn router(
     caches: WorkerCaches,
     egress: EgressClient,
     redis: Option<redis::aio::ConnectionManager>,
+    secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
     max_body_bytes: usize,
     request_timeout: Duration,
 ) -> Router {
@@ -83,6 +84,7 @@ pub fn router(
             caches,
             egress,
             redis,
+            secrets_key,
             request_timeout,
         })
 }
@@ -94,6 +96,8 @@ struct AppState {
     egress: EgressClient,
     /// Carries script log lines out; without it they stay in worker tracing.
     redis: Option<redis::aio::ConnectionManager>,
+    /// Decrypts stored secrets; without it `secret` declarations error.
+    secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
     request_timeout: Duration,
 }
 
@@ -390,7 +394,15 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // died with mlua 0.9.
     let kv_client = state.clients.kv.clone();
 
-    let lua = ActiasRuntime::new(prepared, kv_client, state.egress.clone(), logs, Some(10)).await?;
+    let lua = ActiasRuntime::new(
+        prepared,
+        kv_client,
+        state.egress.clone(),
+        logs,
+        state.secrets_key.clone(),
+        Some(10),
+    )
+    .await?;
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
@@ -495,6 +507,7 @@ mod tests {
             empty_caches(),
             test_egress(),
             None,
+            None,
             1024,
             Duration::from_secs(5),
         );
@@ -516,6 +529,7 @@ mod tests {
             lazy_clients(),
             empty_caches(),
             test_egress(),
+            None,
             None,
             1024,
             Duration::from_secs(5),
@@ -587,6 +601,7 @@ mod tests {
             caches_with_cached_script().await,
             test_egress(),
             None,
+            None,
             1024,
             Duration::from_secs(5),
         );
@@ -614,6 +629,7 @@ mod tests {
             lazy_clients(),
             caches_with_cached_script().await,
             test_egress(),
+            None,
             None,
             1024,
             Duration::from_secs(5),

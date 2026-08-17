@@ -6,6 +6,8 @@ pub struct Config {
     pub kv_service_uri: String,
     /// Redis carrying script log lines to their subscribers.
     pub redis_url: String,
+    /// Base64 AES-256 key decrypting stored secrets; unset disables secrets.
+    pub secret_encryption_key: Option<String>,
     /// Largest request body a script can be handed, in bytes.
     pub max_body_bytes: usize,
     /// Whole-request deadline, covering script lookup and execution.
@@ -32,6 +34,7 @@ impl Config {
             script_service_uri: get_env("SCRIPT_SERVICE_URI"),
             kv_service_uri: get_env("KV_SERVICE_URI"),
             redis_url: get_env("REDIS_URL"),
+            secret_encryption_key: std::env::var("SECRET_ENCRYPTION_KEY").ok(),
             max_body_bytes: get_env_or("MAX_BODY_BYTES", 10 * 1024 * 1024),
             request_timeout_secs: get_env_or("REQUEST_TIMEOUT_SECS", 30),
             pointer_ttl_secs: get_env_or("POINTER_TTL_SECS", 5),

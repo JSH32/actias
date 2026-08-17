@@ -25,6 +25,8 @@ pub struct Capabilities {
     pub kv: Vec<String>,
     /// Events declared with `on "event"`.
     pub events: Vec<String>,
+    /// Secrets declared with `secret "name"`.
+    pub secrets: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -97,6 +99,21 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Capabilities>>) -> mlua:
                 .kv
                 .push(namespace);
             stub(lua)
+        })?,
+    )?;
+
+    let secret_recorded = recorded.clone();
+    lua.globals().set(
+        "secret",
+        lua.create_function(move |_, name: String| {
+            secret_recorded
+                .lock()
+                .expect("no other holder")
+                .secrets
+                .push(name);
+            // The real handle is the plaintext; extraction has no values, so
+            // scripts get an empty string that behaves like one.
+            Ok(String::new())
         })?,
     )?;
 
@@ -232,6 +249,7 @@ mod tests {
             r#"
             local visits = kv "visits"
             local sessions = kv "sessions"
+            local token = secret "stripe" .. ""
 
             on "fetch" (function(request)
                 error("handlers must never run during extraction")
@@ -243,6 +261,7 @@ mod tests {
 
         assert_eq!(capabilities.kv, vec!["visits", "sessions"]);
         assert_eq!(capabilities.events, vec!["fetch"]);
+        assert_eq!(capabilities.secrets, vec!["stripe"]);
     }
 
     #[test]

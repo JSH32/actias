@@ -350,6 +350,7 @@ mod tests {
             EgressClient::new(policy).expect("client builds"),
             None,
             None,
+            None,
         )
         .await
         .expect("runtime builds")

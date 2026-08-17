@@ -1,5 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { KvController } from './kv.controller';
+import { SecretsController } from './secrets.controller';
+import { SecretsService } from './secrets.service';
 import { ClientsModule } from '@nestjs/microservices';
 import { grpcClient, protoBasePath } from 'src/util/grpc';
 import { AuthModule } from 'src/auth/auth.module';
@@ -21,6 +23,7 @@ import { ProjectModule } from 'src/project/project.module';
     ),
   ],
   exports: [ClientsModule],
-  controllers: [KvController],
+  controllers: [KvController, SecretsController],
+  providers: [SecretsService],
 })
 export class KvModule {}

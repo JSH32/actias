@@ -38,6 +38,8 @@ export namespace script_service {
         kv?: string[];
         // Events declared with &#x60;on &quot;event&quot;&#x60;.
         events?: string[];
+        // Secrets declared with &#x60;secret &quot;name&quot;&#x60;.
+        secrets?: string[];
     }
     export interface ScriptConfig {
         id?: string;

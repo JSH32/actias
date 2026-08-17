@@ -11,5 +11,9 @@ export type CapabilitiesDto = {
      * Events declared with `on "event"`.
      */
     events: Array<string>;
+    /**
+     * Secrets declared with `secret "name"`.
+     */
+    secrets: Array<string>;
 };
 
