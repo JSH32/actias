@@ -19,6 +19,8 @@ use crate::extensions::http::Request as LuaRequest;
 use crate::proto::kv_service::kv_service_client::KvServiceClient;
 use crate::proto::script_service::FindScriptRequest;
 use crate::proto::script_service::GetRevisionRequest;
+use crate::proto::script_service::LiveScriptSession;
+use crate::proto::script_service::Revision;
 use crate::proto::script_service::Script;
 use crate::proto::script_service::find_script_request::Query;
 use crate::proto::script_service::script_service_client::ScriptServiceClient;
@@ -89,13 +91,45 @@ struct AppState {
     request_timeout: Duration,
 }
 
-/// Extracts the script identifier from a request path.
+/// Where a request path points.
+#[derive(Debug, PartialEq)]
+enum Route<'a> {
+    /// The current published revision of a script.
+    Published { identifier: &'a str },
+    /// One live development session's working tree.
+    Live {
+        identifier: &'a str,
+        session: &'a str,
+    },
+}
+
+impl Route<'_> {
+    /// Path segments the route consumed, which the script never sees.
+    fn consumed_segments(&self) -> usize {
+        match self {
+            Route::Published { .. } => 1,
+            Route::Live { .. } => 3,
+        }
+    }
+}
+
+/// Extracts the target a request path addresses.
 ///
-/// The first path segment selects the script, so `/my-script/users` runs
-/// `my-script` and hands it `/users`. A path with no first segment, such as
-/// `/`, addresses no script at all.
-fn script_identifier(path: &str) -> Option<&str> {
-    path.split('/').nth(1).filter(|segment| !segment.is_empty())
+/// The first segment selects the script, so `/my-script/users` runs the
+/// published `my-script` and hands it `/users`. The `_live` prefix is
+/// reserved: `/_live/my-script/<session>/users` runs that script's live
+/// session instead, so no published script named `_live` is reachable.
+/// A path missing any needed segment, such as `/`, addresses nothing.
+fn route(path: &str) -> Option<Route<'_>> {
+    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+
+    match segments.next()? {
+        "_live" => Some(Route::Live {
+            identifier: segments.next()?,
+            session: segments.next()?,
+        }),
+        identifier => Some(Route::Published { identifier }),
+    }
 }
 
 /// Builds a response whose body is exactly `body`.
@@ -131,6 +165,33 @@ fn internal_error_response(error: &anyhow::Error) -> Response {
 /// same miss, so it arrives in an [`Arc`] and only its rendering survives.
 fn cache_load_error(error: Arc<anyhow::Error>) -> anyhow::Error {
     anyhow::anyhow!("{error:#}")
+}
+
+/// Resolves a public identifier to its script row through the pointer cache.
+///
+/// Cache misses resolve through the loader; moka deduplicates concurrent
+/// misses of one key into a single backend call. Failed loads are not
+/// cached, so an unknown identifier costs a lookup every time.
+async fn resolve_script(
+    caches: &WorkerCaches,
+    client: &ScriptServiceClient<Channel>,
+    identifier: String,
+) -> anyhow::Result<Script> {
+    caches
+        .pointers
+        .try_get_with(identifier.clone(), {
+            let mut client = client.clone();
+            async move {
+                let script = client
+                    .query_script(FindScriptRequest {
+                        query: Some(Query::PublicName(identifier)),
+                    })
+                    .await?;
+                Ok::<_, anyhow::Error>(script.into_inner())
+            }
+        })
+        .await
+        .map_err(cache_load_error)
 }
 
 /// Converts a lua response table into the wire response.
@@ -182,10 +243,17 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
 
     let (parts, body) = request.into_parts();
 
-    let Some(identifier) = script_identifier(parts.uri.path()) else {
+    let Some(route) = route(parts.uri.path()) else {
         return Ok(text_response(StatusCode::NOT_FOUND, "Invalid script."));
     };
-    let identifier = identifier.to_owned();
+    let consumed_segments = route.consumed_segments();
+    let (identifier, live_session) = match route {
+        Route::Published { identifier } => (identifier.to_owned(), None),
+        Route::Live {
+            identifier,
+            session,
+        } => (identifier.to_owned(), Some(session.to_owned())),
+    };
 
     // The body is read before anything else so the size cap rejects oversized
     // requests without spending gRPC calls on them.
@@ -199,57 +267,77 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         }
     };
 
-    // Cache misses resolve through the loaders below; moka deduplicates
-    // concurrent misses of one key into a single backend call. Failed loads
-    // are not cached, so an unknown identifier costs a lookup every time.
-    let script = state
-        .caches
-        .pointers
-        .try_get_with(identifier.clone(), {
-            let mut client = state.clients.script.clone();
-            async move {
-                let script = client
-                    .query_script(FindScriptRequest {
-                        query: Some(Query::PublicName(identifier)),
-                    })
-                    .await?;
-                Ok::<_, anyhow::Error>(script.into_inner())
-            }
-        })
-        .await
-        .map_err(cache_load_error)?;
+    let script = resolve_script(&state.caches, &state.clients.script, identifier).await?;
 
-    let Some(revision_id) = script.current_revision_id.clone() else {
-        return Ok(text_response(
-            StatusCode::NOT_FOUND,
-            "Script did not have a revision.",
-        ));
+    let prepared = match live_session {
+        // A live session is the developer's working tree, updated on every
+        // save; serving it stale defeats its purpose, so nothing about it is
+        // cached and every request fetches the session's current bundle.
+        Some(session_id) => {
+            let mut client = state.clients.script.clone();
+
+            let live = match client
+                .get_live_session(LiveScriptSession {
+                    script_id: script.id.clone(),
+                    session_id,
+                })
+                .await
+            {
+                Ok(live) => live.into_inner(),
+                Err(status) if status.code() == tonic::Code::NotFound => {
+                    return Ok(text_response(
+                        StatusCode::NOT_FOUND,
+                        "No live session with that id.",
+                    ));
+                }
+                Err(status) => return Err(status.into()),
+            };
+
+            Arc::new(PreparedRevision::prepare(
+                script,
+                Revision {
+                    bundle: Some(live.bundle),
+                    ..Default::default()
+                },
+            )?)
+        }
+        None => {
+            let Some(revision_id) = script.current_revision_id.clone() else {
+                return Ok(text_response(
+                    StatusCode::NOT_FOUND,
+                    "Script did not have a revision.",
+                ));
+            };
+
+            state
+                .caches
+                .revisions
+                .try_get_with(revision_id.clone(), {
+                    let mut client = state.clients.script.clone();
+                    async move {
+                        let revision = client
+                            .get_revision(GetRevisionRequest {
+                                id: revision_id,
+                                with_bundle: true,
+                            })
+                            .await?
+                            .into_inner();
+
+                        Ok::<_, anyhow::Error>(Arc::new(PreparedRevision::prepare(
+                            script, revision,
+                        )?))
+                    }
+                })
+                .await
+                .map_err(cache_load_error)?
+        }
     };
 
-    let prepared = state
-        .caches
-        .revisions
-        .try_get_with(revision_id.clone(), {
-            let mut client = state.clients.script.clone();
-            async move {
-                let revision = client
-                    .get_revision(GetRevisionRequest {
-                        id: revision_id,
-                        with_bundle: true,
-                    })
-                    .await?
-                    .into_inner();
-
-                Ok::<_, anyhow::Error>(Arc::new(PreparedRevision::prepare(script, revision)?))
-            }
-        })
-        .await
-        .map_err(cache_load_error)?;
-
-    // Create a context URI without the identifier, used for better routing.
+    // Create a context URI without the routing segments, used for better
+    // routing inside the script. The +1 skips the leading "/" component.
     let old_uri = &parts.uri;
     let path = path::Path::new(old_uri.path());
-    let without_identifier: path::PathBuf = path.iter().skip(2).collect();
+    let without_identifier: path::PathBuf = path.iter().skip(1 + consumed_segments).collect();
     let mut context_uri = Uri::builder().path_and_query(format!(
         "/{}{}",
         without_identifier.as_path().to_str().unwrap_or(""),
@@ -324,19 +412,44 @@ mod tests {
     }
 
     #[test]
-    fn script_identifier_is_the_first_path_segment() {
-        assert_eq!(script_identifier("/my-script"), Some("my-script"));
-        assert_eq!(script_identifier("/my-script/users/1"), Some("my-script"));
-        assert_eq!(script_identifier("/my-script/"), Some("my-script"));
+    fn route_reads_the_first_path_segment_as_the_published_script() {
+        for path in ["/my-script", "/my-script/users/1", "/my-script/"] {
+            assert_eq!(
+                route(path),
+                Some(Route::Published {
+                    identifier: "my-script"
+                }),
+                "path {path:?}"
+            );
+        }
     }
 
     #[test]
-    fn script_identifier_is_absent_when_the_path_names_nothing() {
+    fn route_is_absent_when_the_path_names_nothing() {
         // A bare root addresses the worker itself, not a script, so it must not
         // reach the script service with an empty name.
-        assert_eq!(script_identifier("/"), None);
-        assert_eq!(script_identifier(""), None);
-        assert_eq!(script_identifier("//"), None);
+        assert_eq!(route("/"), None);
+        assert_eq!(route(""), None);
+        assert_eq!(route("//"), None);
+    }
+
+    #[test]
+    fn route_reads_the_live_prefix_as_a_session() {
+        assert_eq!(
+            route("/_live/my-script/sess-1/users"),
+            Some(Route::Live {
+                identifier: "my-script",
+                session: "sess-1"
+            })
+        );
+    }
+
+    #[test]
+    fn route_rejects_a_live_path_missing_its_session() {
+        // Half a live address must not fall through and run something else.
+        assert_eq!(route("/_live"), None);
+        assert_eq!(route("/_live/my-script"), None);
+        assert_eq!(route("/_live/my-script/"), None);
     }
 
     #[tokio::test]
@@ -399,13 +512,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_cached_revision_serves_without_any_backend_call() {
+    /// Caches holding `cached-script` fully resolved: pointer and prepared
+    /// revision both warm, so the published path needs no backend at all.
+    async fn caches_with_cached_script() -> WorkerCaches {
         use crate::proto::bundle::{Bundle, File};
-        use crate::proto::script_service::Revision;
 
-        // Both caches are seeded by hand and the clients are unconnectable,
-        // so this 200 proves a warm request spends zero grpc calls.
         let caches = empty_caches();
 
         let script = Script {
@@ -445,9 +556,16 @@ mod tests {
             )
             .await;
 
+        caches
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cached_revision_serves_without_any_backend_call() {
+        // Both caches are seeded by hand and the clients are unconnectable,
+        // so this 200 proves a warm request spends zero grpc calls.
         let app = router(
             lazy_clients(),
-            caches,
+            caches_with_cached_script().await,
             test_egress(),
             1024,
             Duration::from_secs(5),
@@ -464,5 +582,29 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(&body[..], b"served from cache");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_live_request_never_serves_the_published_cache() {
+        // The same script is fully warm in both caches, but a live request
+        // must fetch the session's current bundle; with unconnectable
+        // clients that fetch fails, so a 200 here means the live path served
+        // the published revision, which is exactly the bug this guards.
+        let app = router(
+            lazy_clients(),
+            caches_with_cached_script().await,
+            test_egress(),
+            1024,
+            Duration::from_secs(5),
+        );
+
+        let request = axum::http::Request::builder()
+            .uri("/_live/cached-script/some-session/")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
