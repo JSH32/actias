@@ -205,11 +205,7 @@ impl PreparedRevision {
 
     /// Entry point module the bundle names, if it exists.
     fn entry_module(&self) -> Option<mlua::Result<LuaModule>> {
-        self.bundle
-            .files
-            .iter()
-            .find(|file| file.file_name == self.bundle.entry_point)
-            .map(|file| self.module_for(file))
+        self.module_by_path(&self.bundle.entry_point)
     }
 
     /// Wraps `file` as a loadable module, preferring its compiled bytecode.
@@ -707,10 +703,9 @@ mod tests {
 
     fn lua_file(path: &str, source: &str) -> File {
         File {
-            revision_id: String::new(),
-            file_name: path.rsplit('/').next().unwrap_or(path).to_owned(),
             file_path: path.to_owned(),
             content: source.as_bytes().to_vec(),
+            ..Default::default()
         }
     }
 

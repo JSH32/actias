@@ -8,15 +8,31 @@ import { Metadata } from '@grpc/grpc-js';
 export namespace bundle {
     // A revision&#x27;s content: the entry point plus every file in the bundle.
     export interface Bundle {
+        // Path of the file executed first; must name a module in &#x60;files&#x60;.
         entryPoint?: string;
         files?: bundle.File[];
     }
-    // One file in a bundle.
+    // How the platform treats a file.
+    export enum FileKind {
+        // Lua source, compiled and loadable by the runtime.
+        FILE_KIND_MODULE = 0,
+        // Static content, served as-is without a vm.
+        FILE_KIND_ASSET = 1,
+    }
+    // One file in a bundle. The path is its identity within the bundle; the
+    // hash is its content identity across the platform.
     export interface File {
-        revisionId?: string;
-        fileName?: string;
+        // Path relative to the bundle root, canonical and unique per bundle.
         filePath?: string;
+        // Raw content bytes; dies once workers pull blobs from object storage.
         content?: Uint8Array;
+        // blake3 of the content, lowercase hex; computed by the store.
+        hash?: string;
+        // Content size in bytes; computed by the store.
+        size?: number;
+        // Mime type served for assets; informative for modules.
+        contentType?: string;
+        kind?: bundle.FileKind;
     }
 }
 

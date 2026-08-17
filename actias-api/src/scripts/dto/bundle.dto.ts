@@ -1,32 +1,48 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { bundle } from 'src/protobufs/shared/bundle';
 
 export class FileDto {
   /**
-   * ID of the revision this file resides in.
-   * This is empty when creating a revision or uploading a bundle.
-   */
-  revisionId?: string;
-
-  /**
-   * Name of the file
-   */
-  fileName: string;
-
-  /**
-   * Path of file relative from the root path
+   * Path of the file relative to the bundle root; its identity within the
+   * bundle.
    */
   filePath: string;
 
   /**
-   * Content of the file, base64 encoded
+   * Content of the file, base64 encoded.
    */
   content: string;
 
+  /**
+   * Mime type served for assets; informative for modules.
+   */
+  contentType?: string;
+
+  /**
+   * How the platform treats the file; modules are lua source, assets are
+   * served as-is. Defaults to module.
+   */
+  @ApiProperty({ enum: ['module', 'asset'], required: false })
+  kind?: 'module' | 'asset';
+
+  /**
+   * blake3 of the content, computed by the store; ignored on upload.
+   */
+  hash?: string;
+
+  /**
+   * Content size in bytes, computed by the store; ignored on upload.
+   */
+  size?: number;
+
   constructor(file: bundle.File) {
-    this.revisionId = file.revisionId;
-    this.fileName = file.fileName;
     this.filePath = file.filePath;
     this.content = Buffer.from(file.content).toString('base64');
+    this.contentType = file.contentType;
+    this.kind =
+      file.kind === bundle.FileKind.FILE_KIND_ASSET ? 'asset' : 'module';
+    this.hash = file.hash;
+    this.size = file.size;
   }
 }
 
@@ -54,13 +70,21 @@ export class BundleDto {
   }
 
   toServiceBundle(): bundle.Bundle {
-    const bundle = Object.assign({}, this) as unknown as bundle.Bundle;
+    const serviceBundle = Object.assign({}, this) as unknown as bundle.Bundle;
 
-    bundle.files = bundle.files.map((file) => ({
-      ...file,
-      content: Buffer.from(file.content as any, 'base64'),
-    }));
+    serviceBundle.files = this.files.map(
+      (file) =>
+        ({
+          filePath: file.filePath,
+          content: Buffer.from(file.content as any, 'base64'),
+          contentType: file.contentType ?? '',
+          kind:
+            file.kind === 'asset'
+              ? bundle.FileKind.FILE_KIND_ASSET
+              : bundle.FileKind.FILE_KIND_MODULE,
+        } as bundle.File),
+    );
 
-    return bundle;
+    return serviceBundle;
   }
 }

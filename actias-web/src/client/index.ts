@@ -17,7 +17,7 @@ export type { CreateProjectDto } from './models/CreateProjectDto';
 export type { CreateRevisionDto } from './models/CreateRevisionDto';
 export type { CreateScriptDto } from './models/CreateScriptDto';
 export type { CreateUserDto } from './models/CreateUserDto';
-export type { FileDto } from './models/FileDto';
+export { FileDto } from './models/FileDto';
 export type { ListNamespaceDto } from './models/ListNamespaceDto';
 export type { LoginDto } from './models/LoginDto';
 export type { MessageResponseDto } from './models/MessageResponseDto';

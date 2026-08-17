@@ -3,14 +3,33 @@ package bundle;
 
 // A revision's content: the entry point plus every file in the bundle.
 message Bundle {
+    // Path of the file executed first; must name a module in `files`.
     string entry_point = 1;
     repeated File files = 2;
 }
 
-// One file in a bundle.
+// How the platform treats a file.
+enum FileKind {
+    // Lua source, compiled and loadable by the runtime.
+    FILE_KIND_MODULE = 0;
+    // Static content, served as-is without a vm.
+    FILE_KIND_ASSET = 1;
+}
+
+// One file in a bundle. The path is its identity within the bundle; the
+// hash is its content identity across the platform.
 message File {
-    string revision_id = 1;
-    string file_name = 2;
+    reserved 1, 2; // dead file_name and revision_id from the v1 schema
+
+    // Path relative to the bundle root, canonical and unique per bundle.
     string file_path = 3;
+    // Raw content bytes; dies once workers pull blobs from object storage.
     bytes content = 5;
+    // blake3 of the content, lowercase hex; computed by the store.
+    string hash = 6;
+    // Content size in bytes; computed by the store.
+    uint64 size = 7;
+    // Mime type served for assets; informative for modules.
+    string content_type = 8;
+    FileKind kind = 9;
 }

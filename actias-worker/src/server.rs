@@ -568,10 +568,9 @@ mod tests {
             bundle: Some(Bundle {
                 entry_point: "main.lua".to_owned(),
                 files: vec![File {
-                    revision_id: "revision-1".to_owned(),
-                    file_name: "main.lua".to_owned(),
                     file_path: "main.lua".to_owned(),
                     content: source.to_vec(),
+                    ..Default::default()
                 }],
             }),
             ..Default::default()
