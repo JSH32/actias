@@ -15,6 +15,10 @@ export class CapabilitiesDto {
    * Events declared with `on "event"`.
    */
   events: string[];
+  /**
+   * Secrets declared with `secret "name"`.
+   */
+  secrets: string[];
 }
 
 export class ScriptConfigDto {

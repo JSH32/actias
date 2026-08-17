@@ -41,6 +41,8 @@ message Capabilities {
     repeated string kv = 1;
     // Events declared with `on "event"`.
     repeated string events = 2;
+    // Secrets declared with `secret "name"`.
+    repeated string secrets = 3;
 }
 
 message ScriptConfig {

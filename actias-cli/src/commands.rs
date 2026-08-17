@@ -40,6 +40,13 @@ pub enum Commands {
         /// A project directory or a script id
         target: String,
     },
+    /// 🔐 Manage a project's secrets
+    Secret {
+        /// Project the secrets belong to.
+        project: String,
+        #[clap(subcommand)]
+        sub: SecretOperations,
+    },
     /// 📁 List projects
     Projects { page: Option<i64> },
     /// 📜 Manage a project
@@ -63,6 +70,20 @@ pub enum Commands {
         /// Directory of project
         directory: String,
     },
+}
+
+#[derive(Parser, Debug)]
+pub enum SecretOperations {
+    /// 🔏 Set a secret, prompting for the value when not given.
+    Put {
+        name: String,
+        /// Value; prompted for (hidden) when omitted.
+        value: Option<String>,
+    },
+    /// 📑 List secret names. Values are never shown.
+    List,
+    /// 🚮 Delete a secret.
+    Delete { name: String },
 }
 
 #[derive(Parser, Debug)]

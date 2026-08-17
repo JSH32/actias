@@ -27,6 +27,7 @@ import {
 } from './dto/responses.dto';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { SetKeyDto } from './dto/requests.dto';
+import { RESERVED_NAMESPACE_PREFIX, assertNotReserved } from './reserved';
 import { MessageResponseDto } from 'src/shared/dto/message';
 
 @UseGuards(AuthGuard, AclGuard)
@@ -54,13 +55,19 @@ export class KvController {
   async listNamespaces(
     @EntityParam('project', Projects) project: Projects,
   ): Promise<NamespaceDto[]> {
-    return (
+    const namespaces = (
       await lastValueFrom(
         this.kvService
           .listNamespaces({ projectId: project.id })
           .pipe(toHttpException()),
       )
     ).namespaces as NamespaceDto[];
+
+    // Reserved namespaces carry platform data and are not part of a
+    // project's own kv surface.
+    return (namespaces || []).filter(
+      (namespace) => !namespace.name.startsWith(RESERVED_NAMESPACE_PREFIX),
+    );
   }
 
   /**
@@ -80,6 +87,7 @@ export class KvController {
     @EntityParam('project', Projects) project: Projects,
     @Param('namespace') namespace: string,
   ): Promise<NamespaceDto> {
+    assertNotReserved(namespace);
     return (await lastValueFrom(
       this.kvService
         .createNamespace({ projectId: project.id, namespace })
@@ -101,6 +109,7 @@ export class KvController {
     @EntityParam('project', Projects) project: Projects,
     @Param('namespace') namespace: string,
   ) {
+    assertNotReserved(namespace);
     await lastValueFrom(
       this.kvService
         .deleteNamespace({ projectId: project.id, namespace })
@@ -131,6 +140,7 @@ export class KvController {
     @Param('namespace') namespace: string,
     @Query('token') token?: string,
   ): Promise<ListNamespaceDto> {
+    assertNotReserved(namespace);
     const page = await lastValueFrom(
       this.kvService
         .listPairs({ projectId: project.id, namespace, token, pageSize: 25 })
@@ -165,6 +175,7 @@ export class KvController {
     @Param('namespace') namespace: string,
     @Param('key') key: string,
   ): Promise<PairDto> {
+    assertNotReserved(namespace);
     const pair = await lastValueFrom(
       this.kvService
         .getPair({ projectId: project.id, namespace, key })
@@ -191,6 +202,7 @@ export class KvController {
     @Param('namespace') namespace: string,
     @Param('key') key: string,
   ): Promise<MessageResponseDto> {
+    assertNotReserved(namespace);
     await lastValueFrom(
       this.kvService
         .deletePairs({ pairs: [{ projectId: project.id, namespace, key }] })
@@ -218,6 +230,7 @@ export class KvController {
     @Param('key') key: string,
     @Body() body: SetKeyDto,
   ): Promise<MessageResponseDto> {
+    assertNotReserved(namespace);
     // Validate type provided with value.
     switch (body.type.toLowerCase()) {
       case 'json':

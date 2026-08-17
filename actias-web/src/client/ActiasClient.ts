@@ -12,6 +12,7 @@ import { KvService } from './services/KvService';
 import { ProjectService } from './services/ProjectService';
 import { RevisionsService } from './services/RevisionsService';
 import { ScriptsService } from './services/ScriptsService';
+import { SecretsService } from './services/SecretsService';
 import { UsersService } from './services/UsersService';
 
 type HttpRequestConstructor = new (config: OpenAPIConfig) => BaseHttpRequest;
@@ -25,6 +26,7 @@ export class ActiasClient {
     public readonly project: ProjectService;
     public readonly revisions: RevisionsService;
     public readonly scripts: ScriptsService;
+    public readonly secrets: SecretsService;
     public readonly users: UsersService;
 
     public readonly request: BaseHttpRequest;
@@ -49,6 +51,7 @@ export class ActiasClient {
         this.project = new ProjectService(this.request);
         this.revisions = new RevisionsService(this.request);
         this.scripts = new ScriptsService(this.request);
+        this.secrets = new SecretsService(this.request);
         this.users = new UsersService(this.request);
     }
 }

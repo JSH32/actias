@@ -22,6 +22,12 @@ pub fn handle(directory: &str) -> Result<()> {
     if !declared.events.is_empty() {
         println!("⚡ Handles events: {}", declared.events.join(", ").purple());
     }
+    if !declared.secrets.is_empty() {
+        println!(
+            "🔐 Declares secrets: {}",
+            declared.secrets.join(", ").purple()
+        );
+    }
 
     Ok(())
 }

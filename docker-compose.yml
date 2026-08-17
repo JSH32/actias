@@ -91,6 +91,8 @@ services:
       - KV_SERVICE_URI=http://kv_service:3000
       # Carries script log lines to the live tail subscribers.
       - REDIS_URL=redis://redis:6379
+      # Development-only key; a deployment must set its own.
+      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
     ports:
       - 3002:3000
 
@@ -163,6 +165,8 @@ services:
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:3000}
+      # Development-only key, must match the worker's; a deployment sets its own.
+      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
 
   actias_web:
     image: ghcr.io/jsh32/actias_web:latest

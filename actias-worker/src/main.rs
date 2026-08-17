@@ -82,6 +82,17 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )
     .await?;
 
+    use base64::Engine;
+    let secrets_key = config.secret_encryption_key.map(|encoded| {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("SECRET_ENCRYPTION_KEY is not valid base64");
+        let key: [u8; extensions::secrets::KEY_LEN] = bytes
+            .try_into()
+            .expect("SECRET_ENCRYPTION_KEY must decode to exactly 32 bytes");
+        std::sync::Arc::new(key)
+    });
+
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let app = server::router(
         server::Clients {
@@ -94,6 +105,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ),
         egress,
         Some(redis),
+        secrets_key,
         config.max_body_bytes,
         std::time::Duration::from_secs(config.request_timeout_secs),
     );

@@ -37,11 +37,18 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
     if !declared.kv.is_empty() {
         println!("📦 Declares kv: {}", declared.kv.join(", ").purple());
     }
+    if !declared.secrets.is_empty() {
+        println!(
+            "🔐 Declares secrets: {}",
+            declared.secrets.join(", ").purple()
+        );
+    }
 
     let mut config_dto: ScriptConfigDto = script_config.clone().into();
     config_dto.capabilities = Some(CapabilitiesDto {
         kv: declared.kv,
         events: declared.events,
+        secrets: declared.secrets,
     });
 
     // Create revision

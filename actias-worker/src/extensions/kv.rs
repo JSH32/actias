@@ -24,6 +24,15 @@ impl LuaExtension for KvExtension {
         // script's capability contract (docs/SURFACE.md).
         let declaration = lua.create_function(move |lua, namespace: String| {
             crate::runtime::ActiasRuntime::assert_declaration_phase(lua, "kv")?;
+
+            // Reserved namespaces carry platform data (secrets among them);
+            // handing a script one would leak it.
+            if namespace.starts_with(actias_common::naming::RESERVED_NAMESPACE_PREFIX) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Namespace '{namespace}' is reserved for the platform."
+                )));
+            }
+
             crate::runtime::ActiasRuntime::record_kv_declaration(lua, &namespace);
 
             lua.create_userdata(KvNamespace {

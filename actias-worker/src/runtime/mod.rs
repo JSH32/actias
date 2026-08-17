@@ -90,6 +90,8 @@ pub struct Declarations {
     pub kv: Vec<String>,
     /// Events handed to `on "event"`.
     pub events: Vec<String>,
+    /// Names handed to `secret "name"`.
+    pub secrets: Vec<String>,
 }
 
 /// A revision compiled once and shared by every request that runs it.
@@ -254,6 +256,13 @@ impl ActiasRuntime {
         }
     }
 
+    /// Records one `secret` declaration into the vm's [`Declarations`].
+    pub fn record_secret_declaration(lua: &Lua, name: &str) {
+        if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+            declarations.secrets.push(name.to_owned());
+        }
+    }
+
     /// Everything the entry point declared.
     ///
     /// Recording is load-bearing (the declaration forms write here); nothing
@@ -397,12 +406,14 @@ impl ActiasRuntime {
     /// - `kv_client` - Key value service client, allows the script to access/store persistent data.
     /// - `egress` - Guarded http client for the script's outbound requests.
     /// - `logs` - Where the script's log output goes; [`None`] keeps it in worker tracing only.
+    /// - `secrets_key` - Key decrypting stored secrets; [`None`] makes `secret` declarations error.
     /// - `time_limit` - Total Time limit in seconds, this is based on seconds and will start when [`start_timer`] is called
     pub async fn new(
         prepared: Arc<PreparedRevision>,
         kv_client: KvServiceClient<tonic::transport::Channel>,
         egress: crate::egress::EgressClient,
         logs: Option<crate::extensions::log::LogPublisher>,
+        secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
         time_limit: Option<u64>,
     ) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
@@ -454,8 +465,13 @@ impl ActiasRuntime {
             &UuidExtension,
             &crate::extensions::http::HttpExtension { egress },
             &KvExtension {
+                kv_client: kv_client.clone(),
+                project_id: prepared.script.project_id.clone(),
+            },
+            &crate::extensions::secrets::SecretsExtension {
                 kv_client,
                 project_id: prepared.script.project_id.clone(),
+                key: secrets_key,
             },
             &crate::extensions::log::LogExtension { publisher: logs },
             &JwtExtension,
@@ -764,6 +780,7 @@ mod tests {
             crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
             crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
                 .expect("client builds"),
+            None,
             None,
             None,
         )
