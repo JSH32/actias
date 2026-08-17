@@ -4,71 +4,140 @@ import { ScriptsGateway } from './scripts.gateway';
 
 const SCRIPT_ID = 'script-1';
 const SESSION_ID = 'session-1';
+const TOKEN = 'a-valid-token';
+const USER = { id: 'user-1' } as any;
 
 /** Enough of a WebSocket for the gateway to talk to. */
 function socket() {
   return { send: jest.fn(), close: jest.fn() } as any;
 }
 
-/**
- * Builds an update payload the gateway will accept, with overrides for the
- * fields a caller wants to make wrong.
- */
-function update(overrides: { sessionId?: string; scriptId?: string } = {}) {
+/** The http upgrade request a browser or CLI would send. */
+function upgrade(auth?: string) {
+  return { headers: auth ? { authorization: auth } : {} } as any;
+}
+
+/** A live payload, with overrides for the fields a caller makes wrong. */
+function payload(overrides: { sessionId?: string; scriptId?: string } = {}) {
   return {
-    sessionId: overrides.sessionId ?? SESSION_ID,
+    sessionId: overrides.sessionId,
     scriptId: SCRIPT_ID,
     revision: {
       scriptConfig: { id: overrides.scriptId ?? SCRIPT_ID },
-      bundle: {
-        toServiceBundle: () => ({ entryPoint: 'main.lua', files: [] }),
-      },
+      bundle: { entryPoint: 'main.lua', files: [] },
     },
   } as any;
 }
 
-/** A gateway whose script service records what it was asked to store. */
-function gateway() {
+/** A gateway over mocks that record what was stored and allow acl. */
+function gateway(options: { aclAllows?: boolean } = {}) {
   const putLiveSession = jest.fn((request: unknown) =>
     of({ sessionId: SESSION_ID, scriptId: SCRIPT_ID, request }),
   );
+  const queryScript = jest.fn((request: unknown) =>
+    of({ id: SCRIPT_ID, projectId: 'project-1', request }),
+  );
 
-  const subject = new ScriptsGateway({
-    getService: () => ({ putLiveSession }),
-  } as any);
+  const subject = new ScriptsGateway(
+    { getService: () => ({ putLiveSession, queryScript }) } as any,
+    {
+      getUserFromToken: jest.fn(async (token: string) => {
+        if (token !== TOKEN) throw new Error('bad token');
+        return USER;
+      }),
+    } as any,
+    {
+      getProjectAccess: jest.fn(async () => ({
+        test: () => options.aclAllows ?? true,
+      })),
+    } as any,
+    {
+      // Enough of an EntityManager for RequestContext.createAsync to wrap.
+      name: 'default',
+      fork: () => ({}),
+      findOneOrFail: jest.fn(async () => ({ id: 'project-1' })),
+    } as any,
+  );
   subject.onModuleInit();
 
   return { subject, putLiveSession };
 }
 
-/** Opens a session so `handleUpdate` has something to validate against. */
-async function connected() {
-  const { subject, putLiveSession } = gateway();
+/** Authenticates a socket and starts a session on it. */
+async function started(options: { aclAllows?: boolean } = {}) {
+  const { subject, putLiveSession } = gateway(options);
   const client = socket();
 
-  await subject.handleConnection(
-    client,
-    {} as any,
-    {
-      scriptId: SCRIPT_ID,
-      revision: {
-        scriptConfig: { id: SCRIPT_ID },
-        bundle: {
-          toServiceBundle: () => ({ entryPoint: 'main.lua', files: [] }),
-        },
-      },
-    } as any,
-  );
+  await subject.handleConnection(client, upgrade(`Bearer ${TOKEN}`));
+  await subject.handleStart(client, payload());
 
   putLiveSession.mockClear();
   return { subject, client, putLiveSession };
 }
 
 describe('ScriptsGateway', () => {
-  it('accepts an update matching the open session', async () => {
-    const { subject, client, putLiveSession } = await connected();
+  it('closes a connection with no usable bearer token', async () => {
+    const { subject } = gateway();
 
-    await subject.handleUpdate(client, update());
+    const missing = socket();
+    await subject.handleConnection(missing, upgrade());
+    expect(missing.close).toHaveBeenCalledWith(4401, expect.any(String));
+
+    const wrong = socket();
+    await subject.handleConnection(wrong, upgrade('Bearer nonsense'));
+    expect(wrong.close).toHaveBeenCalledWith(4401, expect.any(String));
+  });
+
+  it('confirms authentication with ready before anything else', async () => {
+    const { subject } = gateway();
+    const client = socket();
+
+    await subject.handleConnection(client, upgrade(`Bearer ${TOKEN}`));
+
+    // Clients wait for this: messages sent before the async connection
+    // handling finished would be dropped, so ready is the green light.
+    expect(client.send).toHaveBeenCalledWith(
+      JSON.stringify({ status: 'ready' }),
+    );
+  });
+
+  it('starts a session and answers with its id', async () => {
+    const { subject, putLiveSession } = gateway();
+    const client = socket();
+
+    await subject.handleConnection(client, upgrade(`Bearer ${TOKEN}`));
+    await subject.handleStart(client, payload());
+
+    expect(putLiveSession).toHaveBeenCalledTimes(1);
+    expect(client.send).toHaveBeenCalledWith(
+      JSON.stringify({ status: 'created', sessionId: SESSION_ID }),
+    );
+  });
+
+  it('refuses to start a session without project access', async () => {
+    const { subject, putLiveSession } = gateway({ aclAllows: false });
+    const client = socket();
+
+    await subject.handleConnection(client, upgrade(`Bearer ${TOKEN}`));
+
+    await expect(subject.handleStart(client, payload())).rejects.toBeInstanceOf(
+      WsException,
+    );
+    expect(putLiveSession).not.toHaveBeenCalled();
+  });
+
+  it('refuses messages from a socket that never authenticated', async () => {
+    const { subject } = gateway();
+
+    await expect(
+      subject.handleStart(socket(), payload()),
+    ).rejects.toBeInstanceOf(WsException);
+  });
+
+  it('accepts an update matching the open session', async () => {
+    const { subject, client, putLiveSession } = await started();
+
+    await subject.handleUpdate(client, payload({ sessionId: SESSION_ID }));
 
     expect(putLiveSession).toHaveBeenCalledTimes(1);
     // The session id goes back out, which is what keeps an update replacing
@@ -80,45 +149,49 @@ describe('ScriptsGateway', () => {
   });
 
   it('rejects an update naming a different session', async () => {
-    const { subject, client, putLiveSession } = await connected();
+    const { subject, client, putLiveSession } = await started();
 
     await expect(
-      subject.handleUpdate(client, update({ sessionId: 'someone-elses' })),
+      subject.handleUpdate(client, payload({ sessionId: 'someone-elses' })),
     ).rejects.toBeInstanceOf(WsException);
     expect(putLiveSession).not.toHaveBeenCalled();
   });
 
   it('rejects an update naming a different script', async () => {
-    const { subject, client, putLiveSession } = await connected();
+    const { subject, client, putLiveSession } = await started();
 
     await expect(
-      subject.handleUpdate(client, update({ scriptId: 'someone-elses' })),
+      subject.handleUpdate(
+        client,
+        payload({ sessionId: SESSION_ID, scriptId: 'someone-elses' }),
+      ),
     ).rejects.toBeInstanceOf(WsException);
     expect(putLiveSession).not.toHaveBeenCalled();
   });
 
-  it('rejects an update from a socket that never connected', async () => {
+  it('rejects an update before a session started', async () => {
     const { subject } = gateway();
-
-    await expect(
-      subject.handleUpdate(socket(), update()),
-    ).rejects.toBeInstanceOf(WsException);
-  });
-
-  it('refuses a connection that already carries a session id', async () => {
-    const { subject, putLiveSession } = gateway();
     const client = socket();
 
-    await subject.handleConnection(
-      client,
-      {} as any,
-      {
-        sessionId: SESSION_ID,
-        scriptId: SCRIPT_ID,
-      } as any,
-    );
+    await subject.handleConnection(client, upgrade(`Bearer ${TOKEN}`));
 
-    expect(client.close).toHaveBeenCalledWith(4001, expect.any(String));
-    expect(putLiveSession).not.toHaveBeenCalled();
+    await expect(
+      subject.handleUpdate(client, payload({ sessionId: SESSION_ID })),
+    ).rejects.toBeInstanceOf(WsException);
+  });
+
+  it('ping re-stores the last payload so the session ttl moves', async () => {
+    const { subject, client, putLiveSession } = await started();
+
+    await subject.handlePing(client);
+
+    expect(putLiveSession).toHaveBeenCalledTimes(1);
+    expect(putLiveSession.mock.calls[0][0]).toMatchObject({
+      sessionId: SESSION_ID,
+      scriptId: SCRIPT_ID,
+    });
+    expect(client.send).toHaveBeenCalledWith(
+      JSON.stringify({ status: 'alive' }),
+    );
   });
 });

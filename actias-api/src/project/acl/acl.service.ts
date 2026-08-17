@@ -27,7 +27,11 @@ export class AclService {
     isWs = false,
   ): Promise<BitSet<AccessFields>> {
     if (project.owner === user) {
-      return new BitField(AccessFields.FULL);
+      // The constructor argument is a flag count, not an initial value, so
+      // building the owner's full grant goes through on().
+      const full = new BitField<AccessFields>();
+      full.on(AccessFields.FULL);
+      return full;
     }
 
     const permissions = await this.em.findOne(Access, { project, user });
