@@ -37,13 +37,19 @@ function gateway(options: { aclAllows?: boolean } = {}) {
   const queryScript = jest.fn((request: unknown) =>
     of({ id: SCRIPT_ID, projectId: 'project-1', request }),
   );
-  // A live stream that emits what the test pushes into it.
+  // Live streams that emit what the test pushes into them.
   const logLines = new Subject<any>();
   const streamLiveLogs = jest.fn(() => logLines.asObservable());
+  const streamScriptLogs = jest.fn(() => logLines.asObservable());
 
   const subject = new ScriptsGateway(
     {
-      getService: () => ({ putLiveSession, queryScript, streamLiveLogs }),
+      getService: () => ({
+        putLiveSession,
+        queryScript,
+        streamLiveLogs,
+        streamScriptLogs,
+      }),
     } as any,
     {
       getUserFromToken: jest.fn(async (token: string) => {
@@ -204,6 +210,45 @@ describe('ScriptsGateway', () => {
         timestampMs: 5,
       }),
     );
+  });
+
+  it('tails a script and forwards its production log stream', async () => {
+    const { subject, logLines } = gateway();
+    const client = socket();
+
+    await subject.handleConnection(client, upgrade(`Bearer ${TOKEN}`));
+    await subject.handleTail(client, { scriptId: SCRIPT_ID });
+
+    expect(client.send).toHaveBeenCalledWith(
+      JSON.stringify({ status: 'tailing' }),
+    );
+
+    client.send.mockClear();
+    logLines.next({
+      level: 'warn',
+      message: 'from production',
+      timestampMs: 9,
+    });
+
+    expect(client.send).toHaveBeenCalledWith(
+      JSON.stringify({
+        status: 'log',
+        level: 'warn',
+        message: 'from production',
+        timestampMs: 9,
+      }),
+    );
+  });
+
+  it('refuses a tail without read access', async () => {
+    const { subject } = gateway({ aclAllows: false });
+    const client = socket();
+
+    await subject.handleConnection(client, upgrade(`Bearer ${TOKEN}`));
+
+    await expect(
+      subject.handleTail(client, { scriptId: SCRIPT_ID }),
+    ).rejects.toBeInstanceOf(WsException);
   });
 
   it('ping re-stores the last payload so the session ttl moves', async () => {

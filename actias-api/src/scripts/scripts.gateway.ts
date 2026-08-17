@@ -21,7 +21,7 @@ import {
   WsExceptionFilter,
 } from '@nestjs/common';
 import { script_service } from 'src/protobufs/script_service';
-import { Subscription, lastValueFrom } from 'rxjs';
+import { Observable, Subscription, lastValueFrom } from 'rxjs';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { AuthService } from 'src/auth/auth.service';
 import { Users } from 'src/entities/Users';
@@ -45,6 +45,8 @@ interface SocketData {
     /** The session's log stream, forwarded to the socket until it closes. */
     logs: Subscription;
   };
+  /** A production log tail, when the socket asked for one instead. */
+  tail?: Subscription;
 }
 
 /**
@@ -117,6 +119,7 @@ export class ScriptsGateway
         `live session ${data.session.sessionId} disconnected from script ${data.session.scriptId}`,
       );
     }
+    data?.tail?.unsubscribe();
 
     this.connectedSockets.delete(client);
   }
@@ -155,32 +158,15 @@ export class ScriptsGateway
     @MessageBody() data: LiveScriptDto,
   ) {
     const state = this.socketState(client);
-    if (state.session) {
-      throw new WsException('Session already started on this connection');
+    if (state.session || state.tail) {
+      throw new WsException('This connection is already in use');
     }
 
-    const script = await lastValueFrom(
-      this.scriptService
-        .queryScript({ id: data.scriptId })
-        .pipe(toHttpException()),
+    await this.assertScriptAccess(
+      state.user,
+      data.scriptId,
+      AccessFields.SCRIPT_RESOURCE,
     );
-
-    const access = await RequestContext.createAsync(this.em, async () => {
-      const project = await this.em.findOneOrFail(Projects, {
-        id: script.projectId,
-      });
-
-      // The stored user came from the connection's orm context; the acl's
-      // owner check compares identities, so the user is re-read in this one.
-      const user = await this.em.findOneOrFail(Users, { id: state.user.id });
-
-      return this.aclService.getProjectAccess(user, project, true);
-    });
-    if (!access.test(AccessFields.SCRIPT_RESOURCE)) {
-      throw new WsException(
-        'You do not have enough permissions to perform this action',
-      );
-    }
 
     const payload = this.toLiveScript(data, undefined);
     const session = await lastValueFrom(
@@ -189,26 +175,14 @@ export class ScriptsGateway
 
     // Everything the session logs goes straight out over the socket; the
     // stream dying must not kill the session, since logs are best-effort.
-    const logs = this.scriptService
-      .streamLiveLogs({
+    const logs = this.forwardLogs(
+      client,
+      this.scriptService.streamLiveLogs({
         scriptId: data.scriptId,
         sessionId: session.sessionId,
-      })
-      .subscribe({
-        next: (line) =>
-          client.send(
-            JSON.stringify({
-              status: 'log',
-              level: line.level,
-              message: line.message,
-              timestampMs: line.timestampMs,
-            }),
-          ),
-        error: (error) =>
-          this.logger.warn(
-            `log stream for session ${session.sessionId} failed: ${error}`,
-          ),
-      });
+      }),
+      `session ${session.sessionId}`,
+    );
 
     state.session = {
       sessionId: session.sessionId,
@@ -220,6 +194,35 @@ export class ScriptsGateway
     client.send(
       JSON.stringify({ status: 'created', sessionId: session.sessionId }),
     );
+  }
+
+  /**
+   * Follows a published script's log lines over this socket, for
+   * `actias tail`; read access on the script's project is enough.
+   */
+  @SubscribeMessage('tail')
+  async handleTail(
+    @ConnectedSocket() client: WebSocket,
+    @MessageBody() data: { scriptId: string },
+  ) {
+    const state = this.socketState(client);
+    if (state.session || state.tail) {
+      throw new WsException('This connection is already in use');
+    }
+
+    await this.assertScriptAccess(
+      state.user,
+      data.scriptId,
+      AccessFields.SCRIPT_READ,
+    );
+
+    state.tail = this.forwardLogs(
+      client,
+      this.scriptService.streamScriptLogs({ scriptId: data.scriptId }),
+      `script ${data.scriptId}`,
+    );
+
+    client.send(JSON.stringify({ status: 'tailing' }));
   }
 
   @SubscribeMessage('update')
@@ -257,6 +260,62 @@ export class ScriptsGateway
     await lastValueFrom(this.scriptService.putLiveSession(session.last));
 
     client.send(JSON.stringify({ status: 'alive' }));
+  }
+
+  /**
+   * Rejects unless `user` holds `required` access on the script's project.
+   *
+   * Runs inside an explicit orm context, where the user is re-read because
+   * the acl's owner check compares entity identities and the stored user
+   * came from the connection's own context.
+   */
+  private async assertScriptAccess(
+    user: Users,
+    scriptId: string,
+    required: AccessFields,
+  ) {
+    const script = await lastValueFrom(
+      this.scriptService.queryScript({ id: scriptId }).pipe(toHttpException()),
+    );
+
+    const access = await RequestContext.createAsync(this.em, async () => {
+      const project = await this.em.findOneOrFail(Projects, {
+        id: script.projectId,
+      });
+      const contextUser = await this.em.findOneOrFail(Users, { id: user.id });
+
+      return this.aclService.getProjectAccess(contextUser, project, true);
+    });
+
+    if (!access.test(required)) {
+      throw new WsException(
+        'You do not have enough permissions to perform this action',
+      );
+    }
+  }
+
+  /**
+   * Forwards a log stream over the socket as `log` frames. Stream failure is
+   * logged, not fatal, because logs are best-effort.
+   */
+  private forwardLogs(
+    client: WebSocket,
+    stream: Observable<script_service.LogMessage>,
+    label: string,
+  ): Subscription {
+    return stream.subscribe({
+      next: (line) =>
+        client.send(
+          JSON.stringify({
+            status: 'log',
+            level: line.level,
+            message: line.message,
+            timestampMs: line.timestampMs,
+          }),
+        ),
+      error: (error) =>
+        this.logger.warn(`log stream for ${label} failed: ${error}`),
+    });
   }
 
   /** State for a socket that authenticated at upgrade time. */

@@ -5,3 +5,4 @@ pub mod projects;
 pub mod publish;
 pub mod revisions;
 pub mod scripts;
+pub mod tail;

@@ -67,6 +67,7 @@ MAIN_LUA=$(base64 -w0 <<'LUA'
 add_event_listener("fetch", function(request)
     local ns = kv.get_namespace("smoke")
     ns:set("visited", true)
+    log.info("hello from production")
     return {
         body = json.stringify({ ok = true, visited = ns:get("visited") }),
         headers = { ["Content-Type"] = "application/json" },
@@ -158,6 +159,34 @@ for _ in $(seq 1 15); do
 done
 [ "$LOGGED" = 1 ] || { echo "the log line never reached the CLI"; exit 1; }
 echo "log line reached the CLI"
+
+kill "$DEV_PID" 2>/dev/null || true
+DEV_PID=""
+
+echo "== tailing the published script (actias tail)"
+TAIL_LOG="$DEVDIR/tail.log"
+"$REPO/target/debug/actias-cli" tail "$SCRIPT_ID" > "$TAIL_LOG" 2>&1 &
+DEV_PID=$!
+
+for _ in $(seq 1 15); do
+    grep -q "Tailing" "$TAIL_LOG" && break
+    sleep 1
+done
+
+# A fresh request makes the published script log, which must arrive in the
+# tail's terminal.
+curl -sf "$WORKER/$IDENT/" -o /dev/null
+TAILED=0
+for _ in $(seq 1 15); do
+    if grep -q "hello from production" "$TAIL_LOG"; then
+        TAILED=1
+        break
+    fi
+    curl -sf "$WORKER/$IDENT/" -o /dev/null || true
+    sleep 1
+done
+[ "$TAILED" = 1 ] || { echo "the production log line never reached the tail"; cat "$TAIL_LOG"; exit 1; }
+echo "production log line reached the tail"
 
 kill "$DEV_PID" 2>/dev/null || true
 DEV_PID=""

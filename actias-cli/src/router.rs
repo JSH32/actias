@@ -32,6 +32,9 @@ impl Router {
                 directory,
                 worker_url,
             } => handlers::dev::handle(&self.client, &self.settings, &directory, &worker_url).await,
+            Commands::Tail { target } => {
+                handlers::tail::handle(&self.client, &self.settings, &target).await
+            }
             Commands::Scripts { project, page } => self.handle_list_scripts(project, page).await,
             Commands::Projects { page } => self.handle_list_projects(page).await,
             Commands::Project { id, sub } => self.handle_project(id, sub).await,

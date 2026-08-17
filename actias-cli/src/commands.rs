@@ -35,6 +35,11 @@ pub enum Commands {
         #[clap(long, default_value = "http://127.0.0.1:3002")]
         worker_url: String,
     },
+    /// 📡 Stream a published script's log lines
+    Tail {
+        /// A project directory or a script id
+        target: String,
+    },
     /// 📁 List projects
     Projects { page: Option<i64> },
     /// 📜 Manage a project

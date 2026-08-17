@@ -1,6 +1,7 @@
 mod client;
 mod commands;
 mod errors;
+mod gateway;
 mod handlers;
 mod router;
 mod script;
