@@ -14,12 +14,12 @@ import { useForm } from '@mantine/form';
 import api, { errorForm, showError } from '@/helpers/api';
 import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/router';
-import { useStore } from '@/helpers/state';
+import { useUser } from '@/helpers/auth';
 import { RegistrationConfigDto } from '@/client';
 
 export default function Register() {
   const router = useRouter();
-  const store = useStore();
+  const { data: user } = useUser();
 
   const form = useForm({
     initialValues: {
@@ -41,9 +41,9 @@ export default function Register() {
 
   // Go to user info if logged in
   React.useEffect(() => {
-    if (store?.userData) router.push('/projects');
+    if (user) router.push('/projects');
     api.users.registrationConfig().then(setRegistrationConfig).catch(showError);
-  }, [store, router]);
+  }, [user, router]);
 
   const createAccount = React.useCallback(
     (values: any) => {

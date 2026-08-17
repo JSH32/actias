@@ -16,12 +16,13 @@ import Link from 'next/link';
 import api, { showError } from '@/helpers/api';
 import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/router';
-import { useStore } from '@/helpers/state';
+import { useSignIn, useUser } from '@/helpers/auth';
 
 export default function Login() {
   const router = useRouter();
 
-  const store = useStore();
+  const { data: user } = useUser();
+  const signIn = useSignIn();
 
   const form = useForm({
     initialValues: {
@@ -33,8 +34,8 @@ export default function Login() {
 
   // Go to user info if logged in
   React.useEffect(() => {
-    if (store?.userData) router.push('/projects');
-  }, [store, router]);
+    if (user) router.push('/projects');
+  }, [user, router]);
 
   const login = React.useCallback(
     (values: any) => {
@@ -43,12 +44,12 @@ export default function Login() {
         .then((res) => {
           localStorage.setItem('token', res.token);
 
-          api.users.me().then((user) => {
-            store?.setUserInfo(user);
+          api.users.me().then((me) => {
+            signIn(res.token, me);
 
             notifications.show({
               title: 'Logged in!',
-              message: `Welcome ${user.username}`,
+              message: `Welcome ${me.username}`,
             });
 
             router.push('/projects');
@@ -56,7 +57,7 @@ export default function Login() {
         })
         .catch(showError);
     },
-    [router, store],
+    [router, signIn],
   );
 
   return (

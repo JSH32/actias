@@ -1,5 +1,6 @@
 import { NamespaceDto, ProjectDto } from '@/client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { showError } from '@/helpers/api';
 import {
   Anchor,
@@ -25,16 +26,17 @@ const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
   project,
   write,
 }) => {
-  const [namespaces, setNamespaces] = useState<NamespaceDto[] | null>(null);
+  const queryClient = useQueryClient();
+  const { data: namespaces } = useQuery<NamespaceDto[]>({
+    queryKey: ['namespaces', project.id],
+    queryFn: async () => (await api.kv.listNamespaces(project.id)) || [],
+  });
 
-  const loadNamespaces = useCallback(() => {
-    api.kv
-      .listNamespaces(project.id)
-      .then((namespaces) => {
-        setNamespaces(namespaces || []);
-      })
-      .catch(showError);
-  }, [project]);
+  const loadNamespaces = useCallback(
+    () =>
+      queryClient.invalidateQueries({ queryKey: ['namespaces', project.id] }),
+    [queryClient, project.id],
+  );
 
   const [createNamespaceModalOpened, createNamespaceModal] =
     useDisclosure(false);
@@ -81,10 +83,6 @@ const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
     [project, loadNamespaces, createNamespaceModal],
   );
 
-  useEffect(() => {
-    loadNamespaces();
-  }, [loadNamespaces]);
-
   return (
     <Stack>
       <Title>KV Namespaces</Title>
@@ -116,9 +114,9 @@ const KvControl: React.FC<{ project: ProjectDto; write: boolean }> = ({
         </>
       )}
 
-      {namespaces !== null ? (
+      {namespaces ? (
         <Grid gutter="xs">
-          {namespaces.map((ns) => (
+          {namespaces.map((ns: NamespaceDto) => (
             <Grid.Col key={ns.name} span={{ md: 6, lg: 3 }}>
               <NamespaceCard
                 namespace={ns}

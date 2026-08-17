@@ -1,5 +1,5 @@
-import { withAuthentication } from '@/helpers/authenticated';
-import { useStore } from '@/helpers/state';
+import { AuthGuard, useUser } from '@/helpers/auth';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button, PasswordInput, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { useCallback } from 'react';
@@ -7,11 +7,12 @@ import api, { errorForm } from '@/helpers/api';
 import { notifications } from '@mantine/notifications';
 
 const Settings = () => {
-  const store = useStore();
+  const { data: user } = useUser();
+  const queryClient = useQueryClient();
   const detailsForm = useForm({
     initialValues: {
-      username: store?.userData?.username,
-      email: store?.userData?.email,
+      username: user?.username,
+      email: user?.email,
     },
   });
 
@@ -55,8 +56,8 @@ const Settings = () => {
           username: values.username,
           email: values.email,
         })
-        .then((user) => {
-          store?.setUserInfo(user);
+        .then((updated) => {
+          queryClient.setQueryData(['me'], updated);
 
           notifications.show({
             title: 'Settings updated!',
@@ -65,7 +66,7 @@ const Settings = () => {
         })
         .catch((err) => errorForm(err, detailsForm));
     },
-    [detailsForm, store],
+    [detailsForm, queryClient],
   );
 
   return (
@@ -120,4 +121,10 @@ const Settings = () => {
   );
 };
 
-export default withAuthentication(Settings);
+export default function SettingsPage() {
+  return (
+    <AuthGuard>
+      <Settings />
+    </AuthGuard>
+  );
+}

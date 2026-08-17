@@ -2,34 +2,26 @@ import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 import '@mantine/code-highlight/styles.css';
 import '@/styles/globals.css';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import NextApp, { AppProps, AppContext } from 'next/app';
 import { getCookie } from 'cookies-next';
 import Head from 'next/head';
 import { MantineProvider, AppShell } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { Header } from '@/components/Header';
-import { Store, StoreContext } from '@/helpers/state';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import classes from './App.module.css';
 
 export default function App(props: AppProps) {
   const { Component, pageProps } = props;
 
-  const [dataStore, setDataStore] = useState<Store | null>(null);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const store = new Store();
-
-      store.fetchUserInfo().then(() => {
-        setDataStore(store);
-      });
-    }
-  }, []);
+  // One client per app instance, created lazily so SSR never shares state
+  // between requests.
+  const [queryClient] = useState(() => new QueryClient());
 
   return (
     <>
-      <StoreContext.Provider value={dataStore}>
+      <QueryClientProvider client={queryClient}>
         <Head>
           <title>Actias</title>
           <meta
@@ -55,7 +47,7 @@ export default function App(props: AppProps) {
             </AppShell.Main>
           </AppShell>
         </MantineProvider>
-      </StoreContext.Provider>
+      </QueryClientProvider>
     </>
   );
 }

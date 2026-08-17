@@ -1,7 +1,8 @@
 import { ProjectDto } from '@/client';
-import { withAuthentication } from '@/helpers/authenticated';
-import React, { useCallback, useEffect, useState } from 'react';
+import { AuthGuard } from '@/helpers/auth';
+import React, { useCallback } from 'react';
 import api, { errorForm, showError } from '@/helpers/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Anchor,
   Button,
@@ -23,18 +24,17 @@ import { notifications } from '@mantine/notifications';
 import Link from 'next/link';
 
 const Projects = () => {
-  const [projects, setProjects] = useState<ProjectDto[] | null>(null);
+  const queryClient = useQueryClient();
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: async () =>
+      ((await api.project.listProjects(1)) as any).items as ProjectDto[],
+  });
 
-  const loadProjects = useCallback(() => {
-    api.project.listProjects(1).then((projects) => {
-      setProjects((projects as any).items);
-    });
-  }, []);
-
-  // First load.
-  useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+  const reloadProjects = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    [queryClient],
+  );
 
   const [createOpened, { open, close }] = useDisclosure(false);
 
@@ -54,14 +54,14 @@ const Projects = () => {
             message: `New project named ${res.name} was created.`,
           });
 
-          projects?.push(res);
+          reloadProjects();
           close();
         })
         .catch((err) => errorForm(err, createProjectForm));
 
       createProjectForm.reset();
     },
-    [projects, createProjectForm, close],
+    [reloadProjects, createProjectForm, close],
   );
 
   const deleteProject = useCallback(
@@ -74,11 +74,11 @@ const Projects = () => {
             message,
           });
 
-          loadProjects();
+          reloadProjects();
         })
         .catch(showError);
     },
-    [loadProjects],
+    [reloadProjects],
   );
 
   return (
@@ -106,7 +106,7 @@ const Projects = () => {
 
         {!projects && <Loader />}
         <Grid gutter="xs">
-          {projects?.map((project) => (
+          {projects?.map((project: ProjectDto) => (
             <Grid.Col key={project.id} span={{ md: 6, lg: 3 }}>
               <ProjectCard
                 key={project.id}
@@ -147,4 +147,10 @@ const ProjectCard: React.FC<{
   );
 };
 
-export default withAuthentication(Projects);
+export default function ProjectsPage() {
+  return (
+    <AuthGuard>
+      <Projects />
+    </AuthGuard>
+  );
+}

@@ -4,10 +4,11 @@ import {
   RevisionDataDto,
   ScriptDto,
 } from '@/client';
-import { withAuthentication } from '@/helpers/authenticated';
+import { AuthGuard } from '@/helpers/auth';
 import { useRouter } from 'next/router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import api, { showError } from '@/helpers/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ActionIcon,
   Anchor,
@@ -29,44 +30,32 @@ const { publicRuntimeConfig } = getConfig();
 
 const Script = () => {
   const router = useRouter();
+  const queryClient = useQueryClient();
+  const scriptId = router.query.id as string | undefined;
+  const [page, setPage] = useState(1);
 
-  const [script, setScript] = useState<ScriptDto | null>(null);
-  const [parentProject, setParentProject] = useState<ProjectDto | null>(null);
-  const [revisions, setRevisions] = useState<PaginatedResponseDto | null>(null);
+  const { data: script } = useQuery<ScriptDto>({
+    queryKey: ['script', scriptId],
+    queryFn: () => api.scripts.getScript(scriptId as string),
+    enabled: !!scriptId,
+  });
 
-  const revisionPage = useCallback(
-    (page: number) => {
-      api.scripts
-        .revisionList(script!.id, page)
-        .then(setRevisions)
-        .catch(showError);
-    },
-    [script],
-  );
+  const { data: parentProject } = useQuery<ProjectDto>({
+    queryKey: ['project', script?.projectId],
+    queryFn: () => api.project.getProject(script?.projectId as string),
+    enabled: !!script,
+  });
 
-  const loadScript = useCallback(() => {
-    api.scripts
-      .getScript(router.query.id as string)
-      .then((script) => {
-        setScript(script);
+  const { data: revisions } = useQuery<PaginatedResponseDto>({
+    queryKey: ['revisions', script?.id, page],
+    queryFn: () => api.scripts.revisionList(script?.id as string, page),
+    enabled: !!script,
+  });
 
-        api.project
-          .getProject(script.projectId)
-          .then(setParentProject)
-          .catch(showError);
-      })
-      .catch(showError);
-  }, [router]);
-
-  useEffect(() => {
-    loadScript();
-  }, [loadScript]);
-
-  useEffect(() => {
-    if (script) {
-      revisionPage(1);
-    }
-  }, [revisionPage, script]);
+  const reload = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['script', scriptId] });
+    queryClient.invalidateQueries({ queryKey: ['revisions'] });
+  }, [queryClient, scriptId]);
 
   const deleteRevision = useCallback(
     (revision: RevisionDataDto) => {
@@ -78,12 +67,11 @@ const Script = () => {
             message: `Revision with ID ${revision.id} was deleted.`,
           });
 
-          loadScript();
-          revisionPage(revisions!.page);
+          reload();
         })
         .catch(showError);
     },
-    [revisionPage, revisions, loadScript],
+    [reload],
   );
 
   const setRevision = useCallback(
@@ -96,12 +84,11 @@ const Script = () => {
             message: `Revision with ID ${res.revisionId} was set as current.`,
           });
 
-          loadScript();
-          revisionPage(revisions!.page);
+          reload();
         })
         .catch(showError);
     },
-    [revisionPage, revisions, script, loadScript],
+    [reload, script],
   );
 
   return script && parentProject ? (
@@ -180,7 +167,7 @@ const Script = () => {
           </Table>
           <Pagination
             value={revisions.page}
-            onChange={revisionPage}
+            onChange={setPage}
             total={revisions.lastPage}
           />
         </Stack>
@@ -211,4 +198,10 @@ const Details: React.FC<{ script: ScriptDto }> = ({ script }) => {
   );
 };
 
-export default withAuthentication(Script);
+export default function ScriptPage() {
+  return (
+    <AuthGuard>
+      <Script />
+    </AuthGuard>
+  );
+}

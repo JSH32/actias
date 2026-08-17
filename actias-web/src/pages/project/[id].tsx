@@ -1,8 +1,7 @@
-import { AclListDto, ProjectDto } from '@/client';
-import { withAuthentication } from '@/helpers/authenticated';
+import { AuthGuard } from '@/helpers/auth';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
-import api, { showError } from '@/helpers/api';
+import api from '@/helpers/api';
+import { useQuery } from '@tanstack/react-query';
 import { Breadcrumbs, Loader, Stack } from '@mantine/core';
 import { breadcrumbs } from '@/helpers/util';
 import AccessControl from '@/components/AccessControl';
@@ -11,19 +10,19 @@ import KvControl from '@/components/KvControl';
 
 const Project = () => {
   const router = useRouter();
+  const projectId = router.query.id as string | undefined;
 
-  const [project, setProject] = useState<ProjectDto | null>(null);
-  const [permissions, setPermissions] = useState<AclListDto | null>(null);
+  const { data: project } = useQuery({
+    queryKey: ['project', projectId],
+    queryFn: () => api.project.getProject(projectId as string),
+    enabled: !!projectId,
+  });
 
-  useEffect(() => {
-    api.project
-      .getProject(router.query.id as string)
-      .then((project) => {
-        setProject(project);
-        api.acl.getAclMe(project.id).then(setPermissions);
-      })
-      .catch(showError);
-  }, [router]);
+  const { data: permissions } = useQuery({
+    queryKey: ['acl-me', project?.id],
+    queryFn: () => api.acl.getAclMe(project?.id as string),
+    enabled: !!project,
+  });
 
   return project ? (
     <>
@@ -62,4 +61,10 @@ const Project = () => {
   );
 };
 
-export default withAuthentication(Project);
+export default function ProjectPage() {
+  return (
+    <AuthGuard>
+      <Project />
+    </AuthGuard>
+  );
+}
