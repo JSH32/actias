@@ -83,7 +83,7 @@ printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$TOKEN" \
     > "$XDG_CONFIG_HOME/actias-cli/settings.json"
 
 cat > "$DEVDIR/published/script.json" <<EOF
-{"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua"],"ignore":[]}
+{"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua","**/*.txt"],"ignore":[]}
 EOF
 cat > "$DEVDIR/published/main.lua" <<'LUA'
 local ns = kv "smoke"
@@ -92,12 +92,20 @@ local token = secret "smoke-token"
 on "fetch" (function(request)
     ns:set("visited", true)
     log.info("hello from production")
+    -- getfile hands back raw bytes; decode them for the assertion.
+    local motd = string.char(table.unpack(getfile("motd.txt")))
     return {
-        body = json.stringify({ ok = true, visited = ns:get("visited"), secret = token }),
+        body = json.stringify({
+            ok = true,
+            visited = ns:get("visited"),
+            secret = token,
+            asset = motd,
+        }),
         headers = { ["Content-Type"] = "application/json" },
     }
 end)
 LUA
+printf 'hello from an asset' > "$DEVDIR/published/motd.txt"
 
 echo "== setting a secret (actias secret put)"
 "$REPO/target/debug/actias-cli" secret "$PROJECT_ID" put smoke-token hunter2-from-secrets
@@ -124,6 +132,8 @@ echo "$BODY" | jq -e '.ok == true and .visited == true' >/dev/null \
     || { echo "response did not round-trip through kv"; exit 1; }
 echo "$BODY" | jq -e '.secret == "hunter2-from-secrets"' >/dev/null \
     || { echo "the secret did not decrypt through the worker"; exit 1; }
+echo "$BODY" | jq -e '.asset == "hello from an asset"' >/dev/null \
+    || { echo "the asset file did not round-trip through the bundle"; exit 1; }
 
 # The encrypted store is platform-internal: the kv api must not list it.
 if curl -sf "$API/project/$PROJECT_ID/kv" -H "$AUTH" | jq -e '.[] | select(.name == "__secrets")' >/dev/null 2>&1; then

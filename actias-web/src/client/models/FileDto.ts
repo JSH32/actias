@@ -4,21 +4,44 @@
 
 export type FileDto = {
     /**
-     * ID of the revision this file resides in.
-     * This is empty when creating a revision or uploading a bundle.
+     * How the platform treats the file; modules are lua source, assets are
+     * served as-is. Defaults to module.
      */
-    revisionId?: string;
+    kind?: FileDto.kind;
     /**
-     * Name of the file
-     */
-    fileName: string;
-    /**
-     * Path of file relative from the root path
+     * Path of the file relative to the bundle root; its identity within the
+     * bundle.
      */
     filePath: string;
     /**
-     * Content of the file, base64 encoded
+     * Content of the file, base64 encoded.
      */
     content: string;
+    /**
+     * Mime type served for assets; informative for modules.
+     */
+    contentType?: string;
+    /**
+     * blake3 of the content, computed by the store; ignored on upload.
+     */
+    hash?: string;
+    /**
+     * Content size in bytes, computed by the store; ignored on upload.
+     */
+    size?: number;
 };
+
+export namespace FileDto {
+
+    /**
+     * How the platform treats the file; modules are lua source, assets are
+     * served as-is. Defaults to module.
+     */
+    export enum kind {
+        MODULE = 'module',
+        ASSET = 'asset',
+    }
+
+
+}
 

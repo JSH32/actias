@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use wax::Glob;
 
 use crate::{
-    client::types::{BundleDto, FileDto, ScriptConfigDto},
+    client::types::{BundleDto, FileDto, FileDtoKind, ScriptConfigDto},
     util,
 };
 
@@ -75,17 +75,26 @@ impl ScriptConfig {
 
         let mut files = vec![];
         for file in file_paths {
+            let file_path = file
+                .strip_prefix(self.project_path.clone().unwrap().as_path())
+                .map_err(|e| e.to_string())?
+                .to_str()
+                .unwrap()
+                .to_string();
+
             files.push(FileDto {
                 content: base64::engine::general_purpose::STANDARD_NO_PAD
                     .encode(fs::read(file.clone()).unwrap()),
-                file_name: file.file_name().unwrap().to_str().unwrap().to_owned(),
-                file_path: file
-                    .strip_prefix(self.project_path.clone().unwrap().as_path())
-                    .map_err(|e| e.to_string())?
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
-                revision_id: None,
+                content_type: Some(content_type_for(&file).to_owned()),
+                kind: Some(if file_path.ends_with(".lua") {
+                    FileDtoKind::Module
+                } else {
+                    FileDtoKind::Asset
+                }),
+                file_path,
+                // Computed by the store; nothing to claim from here.
+                hash: None,
+                size: None,
             })
         }
 
@@ -140,5 +149,25 @@ impl ScriptConfig {
             .into_iter()
             .filter(|item| !ignores.contains(item))
             .collect())
+    }
+}
+
+/// Mime type for a bundle file by extension, which the platform serves
+/// assets with; unknown extensions fall back to octet-stream.
+fn content_type_for(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" => "application/json",
+        "txt" | "md" => "text/plain; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "ico" => "image/x-icon",
+        "wasm" => "application/wasm",
+        "lua" => "text/x-lua",
+        _ => "application/octet-stream",
     }
 }

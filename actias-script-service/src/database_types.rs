@@ -87,10 +87,12 @@ pub struct DbRevision {
 
 #[derive(sqlx::FromRow)]
 pub struct DbFile {
-    pub revision_id: Uuid,
     pub content: Vec<u8>,
-    pub file_name: String,
     pub file_path: String,
+    pub hash: String,
+    pub size: i64,
+    pub content_type: String,
+    pub kind: i16,
 }
 
 #[derive(sqlx::FromRow, Clone, Debug)]

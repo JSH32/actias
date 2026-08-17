@@ -95,7 +95,11 @@ impl ScriptService {
             ));
         }
 
+        // Hash and size are computed here over the raw content, so the store
+        // is authoritative whatever the client claimed.
         for file in bundle.files.iter_mut() {
+            file.hash = blake3::hash(&file.content).to_hex().to_string();
+            file.size = file.content.len() as u64;
             file.content = compress_prepend_size(&file.clone().content);
         }
 
@@ -116,14 +120,20 @@ impl ScriptService {
         .map_err(|e| Status::internal(e.to_string()))?;
 
         for file in bundle.files.iter() {
-            sqlx::query("INSERT INTO files (revision_id, content, file_name, file_path) VALUES ($1, $2, $3, $4)")
-                .bind(revision_info.id)
-                .bind(&file.content)
-                .bind(&file.file_name)
-                .bind(&file.file_path)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?;
+            sqlx::query(
+                "INSERT INTO files (revision_id, content, file_path, hash, size, content_type, kind) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(revision_info.id)
+            .bind(&file.content)
+            .bind(&file.file_path)
+            .bind(&file.hash)
+            .bind(file.size as i64)
+            .bind(&file.content_type)
+            .bind(file.kind as i16)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
         }
 
         sqlx::query("UPDATE scripts SET current_revision = $1, last_updated = now() WHERE id = $2")
@@ -239,8 +249,8 @@ impl script_service_server::ScriptService for ScriptService {
         if request.with_bundle {
             let files = sqlx::query_as::<_, DbFile>(
                 r#"
-                SELECT f.file_name, f.file_path, f.content, f.revision_id
-                FROM files f, revisions r 
+                SELECT f.file_path, f.content, f.hash, f.size, f.content_type, f.kind
+                FROM files f, revisions r
                 WHERE revision_id = $1 AND r.id = f.revision_id
                 "#,
             )
@@ -262,9 +272,11 @@ impl script_service_server::ScriptService for ScriptService {
 
                 bundle_files.push(File {
                     content,
-                    file_name: file.file_name.clone(),
                     file_path: file.file_path.clone(),
-                    revision_id: file.revision_id.to_string(),
+                    hash: file.hash.trim().to_string(),
+                    size: file.size as u64,
+                    content_type: file.content_type.clone(),
+                    kind: file.kind as i32,
                 });
             }
 
