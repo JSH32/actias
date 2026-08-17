@@ -66,6 +66,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             script: script_client,
             kv: kv_client,
         },
+        server::WorkerCaches::new(
+            std::time::Duration::from_secs(config.pointer_ttl_secs),
+            config.revision_cache_bytes,
+        ),
         config.max_body_bytes,
         std::time::Duration::from_secs(config.request_timeout_secs),
     );

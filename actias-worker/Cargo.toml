@@ -26,6 +26,7 @@ argon2 = "0.5.2"
 sha2 = "0.10.8"
 rsa = { version = "0.9.3" }
 axum = "0.8"
+moka = { version = "0.12.16", features = ["future"] }
 
 [build-dependencies]
 tonic-build = { workspace = true }

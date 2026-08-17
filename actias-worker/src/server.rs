@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use actias_common::tracing::Level;
@@ -17,9 +18,10 @@ use crate::extensions::http::Request as LuaRequest;
 use crate::proto::kv_service::kv_service_client::KvServiceClient;
 use crate::proto::script_service::FindScriptRequest;
 use crate::proto::script_service::GetRevisionRequest;
+use crate::proto::script_service::Script;
 use crate::proto::script_service::find_script_request::Query;
 use crate::proto::script_service::script_service_client::ScriptServiceClient;
-use crate::runtime::ActiasRuntime;
+use crate::runtime::{ActiasRuntime, PreparedRevision};
 
 /// The service clients every request handler needs.
 #[derive(Clone)]
@@ -28,15 +30,50 @@ pub struct Clients {
     pub kv: KvServiceClient<Channel>,
 }
 
+/// Hot-path caches shared across requests.
+///
+/// The pointer cache maps a public identifier to its script row and expires
+/// quickly, so a publish propagates within the ttl. The revision cache holds
+/// prepared revisions and is bounded by bytes rather than time, because a
+/// revision is immutable; only eviction pressure should drop one.
+#[derive(Clone)]
+pub struct WorkerCaches {
+    pointers: moka::future::Cache<String, Script>,
+    revisions: moka::future::Cache<String, Arc<PreparedRevision>>,
+}
+
+impl WorkerCaches {
+    pub fn new(pointer_ttl: Duration, revision_cache_bytes: u64) -> Self {
+        Self {
+            pointers: moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(pointer_ttl)
+                .build(),
+            revisions: moka::future::Cache::builder()
+                .max_capacity(revision_cache_bytes)
+                .weigher(|_, prepared: &Arc<PreparedRevision>| {
+                    prepared.weight().clamp(1, u32::MAX as u64) as u32
+                })
+                .build(),
+        }
+    }
+}
+
 /// Builds the worker's http surface: every path and method funnels into the
 /// script handler, bodies are capped, and the whole request carries a
 /// deadline.
-pub fn router(clients: Clients, max_body_bytes: usize, request_timeout: Duration) -> Router {
+pub fn router(
+    clients: Clients,
+    caches: WorkerCaches,
+    max_body_bytes: usize,
+    request_timeout: Duration,
+) -> Router {
     Router::new()
         .fallback(handle)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(AppState {
             clients,
+            caches,
             request_timeout,
         })
 }
@@ -44,6 +81,7 @@ pub fn router(clients: Clients, max_body_bytes: usize, request_timeout: Duration
 #[derive(Clone)]
 struct AppState {
     clients: Clients,
+    caches: WorkerCaches,
     request_timeout: Duration,
 }
 
@@ -81,6 +119,14 @@ fn internal_error_response(error: &anyhow::Error) -> Response {
     )));
     *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
     response
+}
+
+/// Unwraps the shared error a moka loader hands back into an owned one.
+///
+/// `try_get_with` clones one load error to every caller that piled onto the
+/// same miss, so it arrives in an [`Arc`] and only its rendering survives.
+fn cache_load_error(error: Arc<anyhow::Error>) -> anyhow::Error {
+    anyhow::anyhow!("{error:#}")
 }
 
 /// Converts a lua response table into the wire response.
@@ -149,27 +195,52 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         }
     };
 
-    let mut script_client = state.clients.script.clone();
-
-    let script = script_client
-        .query_script(FindScriptRequest {
-            query: Some(Query::PublicName(identifier)),
+    // Cache misses resolve through the loaders below; moka deduplicates
+    // concurrent misses of one key into a single backend call. Failed loads
+    // are not cached, so an unknown identifier costs a lookup every time.
+    let script = state
+        .caches
+        .pointers
+        .try_get_with(identifier.clone(), {
+            let mut client = state.clients.script.clone();
+            async move {
+                let script = client
+                    .query_script(FindScriptRequest {
+                        query: Some(Query::PublicName(identifier)),
+                    })
+                    .await?;
+                Ok::<_, anyhow::Error>(script.into_inner())
+            }
         })
-        .await?;
+        .await
+        .map_err(cache_load_error)?;
 
-    let Some(current_revision_id) = script.get_ref().current_revision_id.clone() else {
+    let Some(revision_id) = script.current_revision_id.clone() else {
         return Ok(text_response(
             StatusCode::NOT_FOUND,
             "Script did not have a revision.",
         ));
     };
 
-    let revision = script_client
-        .get_revision(GetRevisionRequest {
-            id: current_revision_id,
-            with_bundle: true,
+    let prepared = state
+        .caches
+        .revisions
+        .try_get_with(revision_id.clone(), {
+            let mut client = state.clients.script.clone();
+            async move {
+                let revision = client
+                    .get_revision(GetRevisionRequest {
+                        id: revision_id,
+                        with_bundle: true,
+                    })
+                    .await?
+                    .into_inner();
+
+                Ok::<_, anyhow::Error>(Arc::new(PreparedRevision::prepare(script, revision)?))
+            }
         })
-        .await?;
+        .await
+        .map_err(cache_load_error)?;
 
     // Create a context URI without the identifier, used for better routing.
     let old_uri = &parts.uri;
@@ -209,10 +280,8 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // directly on the async executor; the old block_in_place/LocalSet dance
     // died with mlua 0.9.
     let kv_client = state.clients.kv.clone();
-    let script = script.into_inner();
-    let revision = revision.into_inner();
 
-    let lua = ActiasRuntime::new(script, revision, kv_client, Some(10)).await?;
+    let lua = ActiasRuntime::new(prepared, kv_client, Some(10)).await?;
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
@@ -238,6 +307,11 @@ mod tests {
             script: ScriptServiceClient::new(channel.clone()),
             kv: KvServiceClient::new(channel),
         }
+    }
+
+    /// Empty caches sized like production, so every lookup is a miss.
+    fn empty_caches() -> WorkerCaches {
+        WorkerCaches::new(Duration::from_secs(5), 64 * 1024 * 1024)
     }
 
     #[test]
@@ -277,7 +351,7 @@ mod tests {
     async fn an_oversized_body_is_rejected_before_any_backend_call() {
         // 1 KiB cap; the clients are unconnectable, so reaching them would
         // turn this 413 into a 500 and fail the assertion.
-        let app = router(lazy_clients(), 1024, Duration::from_secs(5));
+        let app = router(lazy_clients(), empty_caches(), 1024, Duration::from_secs(5));
 
         let request = axum::http::Request::builder()
             .method("POST")
@@ -292,7 +366,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn the_bare_root_is_a_404_without_any_backend_call() {
-        let app = router(lazy_clients(), 1024, Duration::from_secs(5));
+        let app = router(lazy_clients(), empty_caches(), 1024, Duration::from_secs(5));
 
         let request = axum::http::Request::builder()
             .uri("/")
@@ -302,5 +376,66 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cached_revision_serves_without_any_backend_call() {
+        use crate::proto::bundle::{Bundle, File};
+        use crate::proto::script_service::Revision;
+
+        // Both caches are seeded by hand and the clients are unconnectable,
+        // so this 200 proves a warm request spends zero grpc calls.
+        let caches = empty_caches();
+
+        let script = Script {
+            id: "script-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            public_identifier: "cached-script".to_owned(),
+            current_revision_id: Some("revision-1".to_owned()),
+            ..Default::default()
+        };
+
+        let source = br#"add_event_listener("fetch", function(request)
+            return { body = "served from cache" }
+        end)"#;
+
+        let revision = Revision {
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files: vec![File {
+                    revision_id: "revision-1".to_owned(),
+                    file_name: "main.lua".to_owned(),
+                    file_path: "main.lua".to_owned(),
+                    content: source.to_vec(),
+                }],
+            }),
+            ..Default::default()
+        };
+
+        caches
+            .pointers
+            .insert("cached-script".to_owned(), script.clone())
+            .await;
+        caches
+            .revisions
+            .insert(
+                "revision-1".to_owned(),
+                Arc::new(PreparedRevision::prepare(script, revision).unwrap()),
+            )
+            .await;
+
+        let app = router(lazy_clients(), caches, 1024, Duration::from_secs(5));
+
+        let request = axum::http::Request::builder()
+            .uri("/cached-script/")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"served from cache");
     }
 }

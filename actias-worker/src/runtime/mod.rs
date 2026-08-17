@@ -12,10 +12,11 @@ use crate::{
 
 use self::extension::LuaExtension;
 use actias_common::tracing::trace;
-use mlua::{AsChunk, ExternalResult, Lua, LuaSerdeExt, Table, UserData};
+use mlua::{AsChunk, ChunkMode, ExternalResult, Lua, LuaSerdeExt, Table, UserData};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
+    collections::HashMap,
     ops::Deref,
     sync::{Arc, RwLock},
     time::Instant,
@@ -63,12 +64,122 @@ fn module_key(name: &str) -> String {
     name.replace('/', ".")
 }
 
-/// Error for a runtime whose [`Bundle`] app data is missing.
+/// Error for a runtime whose [`PreparedRevision`] app data is missing.
 ///
 /// Only reachable if the runtime was built without one, which
 /// [`ActiasRuntime::new`] does not allow.
-fn no_bundle() -> mlua::Error {
-    mlua::Error::RuntimeError("Runtime has no bundle loaded.".into())
+fn no_revision() -> mlua::Error {
+    mlua::Error::RuntimeError("Runtime has no revision loaded.".into())
+}
+
+/// A revision compiled once and shared by every request that runs it.
+///
+/// Revisions are immutable, so the bundle and the luau bytecode of each lua
+/// file are prepared a single time and cached; what remains per request is
+/// creating a vm and running already-compiled chunks.
+pub struct PreparedRevision {
+    /// The script the revision belongs to, for identity and kv scoping.
+    pub script: Script,
+    bundle: Bundle,
+    /// Compiled bytecode per lua file, keyed by exact file path.
+    bytecode: HashMap<String, Arc<Vec<u8>>>,
+}
+
+impl PreparedRevision {
+    /// Compiles every lua file in `revision`'s bundle.
+    ///
+    /// A file that fails to compile is kept as source rather than failing the
+    /// whole revision, so loading it later reports the syntax error exactly as
+    /// an uncached load would, and only if the script actually reaches it.
+    ///
+    /// # Errors
+    /// Returns [`mlua::Error`] when the revision carries no bundle.
+    pub fn prepare(script: Script, revision: Revision) -> mlua::Result<Self> {
+        let bundle = revision.bundle.ok_or_else(|| {
+            mlua::Error::RuntimeError("Revision was fetched without its bundle.".into())
+        })?;
+
+        let compiler = mlua::Compiler::new();
+        let mut bytecode = HashMap::new();
+
+        for file in &bundle.files {
+            if !file.file_path.ends_with(".lua") {
+                continue;
+            }
+
+            match compiler.compile(&file.content) {
+                Ok(code) => {
+                    bytecode.insert(file.file_path.clone(), Arc::new(code));
+                }
+                Err(error) => trace!(
+                    file = file.file_path,
+                    %error,
+                    "file kept as source, ahead-of-time compilation failed"
+                ),
+            }
+        }
+
+        Ok(Self {
+            script,
+            bundle,
+            bytecode,
+        })
+    }
+
+    /// Bytes this revision occupies, for weighing cache entries.
+    pub fn weight(&self) -> u64 {
+        let source: usize = self.bundle.files.iter().map(|f| f.content.len()).sum();
+        let compiled: usize = self.bytecode.values().map(|b| b.len()).sum();
+        (source + compiled) as u64
+    }
+
+    /// File at exactly `path`, if the bundle has one.
+    fn file(&self, path: &str) -> Option<&File> {
+        self.bundle.files.iter().find(|file| file.file_path == path)
+    }
+
+    /// Loadable module for the bundle file at exactly `path`.
+    fn module_by_path(&self, path: &str) -> Option<mlua::Result<LuaModule>> {
+        self.file(path).map(|file| self.module_for(file))
+    }
+
+    /// Loadable module for the file whose [`module_key`] matches `key`.
+    fn module_by_key(&self, key: &str) -> Option<mlua::Result<LuaModule>> {
+        self.bundle
+            .files
+            .iter()
+            .find(|file| module_key(&file.file_path) == key)
+            .map(|file| self.module_for(file))
+    }
+
+    /// Entry point module the bundle names, if it exists.
+    fn entry_module(&self) -> Option<mlua::Result<LuaModule>> {
+        self.bundle
+            .files
+            .iter()
+            .find(|file| file.file_name == self.bundle.entry_point)
+            .map(|file| self.module_for(file))
+    }
+
+    /// Wraps `file` as a loadable module, preferring its compiled bytecode.
+    ///
+    /// # Errors
+    /// Returns [`mlua::Error`] when an uncompiled file is not valid utf-8.
+    fn module_for(&self, file: &File) -> mlua::Result<LuaModule> {
+        let code = match self.bytecode.get(&file.file_path) {
+            Some(code) => ModuleCode::Bytecode(code.clone()),
+            None => ModuleCode::Source(
+                std::str::from_utf8(&file.content)
+                    .into_lua_err()?
+                    .to_string(),
+            ),
+        };
+
+        Ok(LuaModule {
+            name: file.file_path.clone(),
+            code,
+        })
+    }
 }
 
 impl ActiasRuntime {
@@ -107,10 +218,10 @@ impl ActiasRuntime {
     }
 
     /// Installs `require`, `dofile` and `getfile` along with the registry they
-    /// share, resolving everything against the [`Bundle`] in app data.
+    /// share, resolving everything against the [`PreparedRevision`] in app data.
     ///
     /// Takes the [`Lua`] rather than `&self` because these globals need nothing
-    /// but the bundle, which lets them be exercised without service clients.
+    /// but the revision, which lets them be exercised without service clients.
     ///
     /// # Errors
     /// Returns [`mlua::Error`] if a global cannot be defined.
@@ -132,17 +243,15 @@ impl ActiasRuntime {
                     return Ok(cached);
                 }
 
-                // The bundle borrow ends before loading, so a module that itself
-                // calls require does not hold it across the await.
+                // The revision borrow ends before loading, so a module that
+                // itself calls require does not hold it across the await.
                 let module = {
-                    let bundle = lua.app_data_ref::<Bundle>().ok_or_else(no_bundle)?;
+                    let prepared = lua
+                        .app_data_ref::<Arc<PreparedRevision>>()
+                        .ok_or_else(no_revision)?;
 
-                    match bundle
-                        .files
-                        .iter()
-                        .find(|file| module_key(&file.file_path) == key)
-                    {
-                        Some(file) => LuaModule::from_file(file)?,
+                    match prepared.module_by_key(&key) {
+                        Some(module) => module?,
                         None => return Ok(mlua::Value::Nil),
                     }
                 };
@@ -159,14 +268,12 @@ impl ActiasRuntime {
             "dofile",
             lua.create_async_function(|lua, module_name: String| async move {
                 let module = {
-                    let bundle = lua.app_data_ref::<Bundle>().ok_or_else(no_bundle)?;
+                    let prepared = lua
+                        .app_data_ref::<Arc<PreparedRevision>>()
+                        .ok_or_else(no_revision)?;
 
-                    match bundle
-                        .files
-                        .iter()
-                        .find(|file| file.file_path == module_name)
-                    {
-                        Some(file) => LuaModule::from_file(file)?,
+                    match prepared.module_by_path(&module_name) {
+                        Some(module) => module?,
                         None => return Ok(mlua::Value::Nil),
                     }
                 };
@@ -178,10 +285,11 @@ impl ActiasRuntime {
         lua.globals().set(
             "getfile",
             lua.create_function(|lua, path: String| {
-                let bundle = lua.app_data_ref::<Bundle>().ok_or_else(no_bundle)?;
-                let file = bundle.files.iter().find(|file| file.file_path == path);
+                let prepared = lua
+                    .app_data_ref::<Arc<PreparedRevision>>()
+                    .ok_or_else(no_revision)?;
 
-                Ok(match file {
+                Ok(match prepared.file(&path) {
                     Some(v) => lua.to_value(&v.content)?,
                     None => mlua::Value::Nil,
                 })
@@ -194,13 +302,11 @@ impl ActiasRuntime {
     /// Create a new [`ActiasRuntime`], this will run the main script from the entrypoint defined in the [`Bundle`].
     ///
     /// # Arguments
-    /// - `script` - Script information, this is so the script can identify it's own routing pattern.
-    /// - `revision` - Script revision, ensure that this revision has a [`Bundle`] (use `with_bundle`).
+    /// - `prepared` - Compiled revision, shared with the cache; the vm loads its bytecode without recompiling.
     /// - `kv_client` - Key value service client, allows the script to access/store persistent data.
     /// - `time_limit` - Total Time limit in seconds, this is based on seconds and will start when [`start_timer`] is called
     pub async fn new(
-        script: Script,
-        revision: Revision,
+        prepared: Arc<PreparedRevision>,
         kv_client: KvServiceClient<tonic::transport::Channel>,
         time_limit: Option<u64>,
     ) -> mlua::Result<Self> {
@@ -217,10 +323,7 @@ impl ActiasRuntime {
             })),
         };
 
-        let bundle = revision.bundle.ok_or_else(|| {
-            mlua::Error::RuntimeError("Revision was fetched without its bundle.".into())
-        })?;
-        lua.set_app_data::<Bundle>(bundle.clone());
+        lua.set_app_data::<Arc<PreparedRevision>>(prepared.clone());
 
         lua.sandbox(true)?;
 
@@ -273,7 +376,7 @@ impl ActiasRuntime {
             &crate::extensions::http::HttpExtension,
             &KvExtension {
                 kv_client,
-                project_id: script.project_id.clone(),
+                project_id: prepared.script.project_id.clone(),
             },
             &JwtExtension,
             &CryptoExtension,
@@ -282,15 +385,12 @@ impl ActiasRuntime {
         lua.globals().set(
             "script",
             lua.to_value(&ScriptInfo {
-                identifier: script.public_identifier,
-                project_id: script.project_id,
+                identifier: prepared.script.public_identifier.clone(),
+                project_id: prepared.script.project_id.clone(),
             })?,
         )?;
 
-        let entry_point = bundle
-            .files
-            .iter()
-            .find(|file| file.file_name == bundle.entry_point);
+        let entry_point = prepared.entry_module().transpose()?;
 
         // We need to set a new timer temporarily when registering.
         // This should be one second since nothing should be happening in this time.
@@ -302,10 +402,7 @@ impl ActiasRuntime {
 
         // Run entry point and register handlers.
         if let Some(entry_point) = entry_point {
-            let _: () = lua
-                .load(&LuaModule::from_file(entry_point)?)
-                .eval_async()
-                .await?;
+            let _: () = lua.load(&entry_point).eval_async().await?;
         }
 
         // Set original timer.
@@ -361,28 +458,21 @@ impl ActiasRuntime {
     }
 }
 
-/// Lua module.
+/// Lua module, named by its bundle path so tracebacks point at something a
+/// user can find.
 pub struct LuaModule {
     /// Name or path of the module.
     pub name: String,
-    /// Source code of the module.
-    pub source: String,
+    /// What the vm loads.
+    pub code: ModuleCode,
 }
 
-impl LuaModule {
-    /// Reads a bundle file into a loadable module, named by its path so lua
-    /// tracebacks point at something a user can find.
-    ///
-    /// # Errors
-    /// Returns [`mlua::Error`] when the file content is not valid utf-8.
-    fn from_file(file: &File) -> mlua::Result<Self> {
-        Ok(Self {
-            name: file.file_path.clone(),
-            source: std::str::from_utf8(&file.content)
-                .into_lua_err()?
-                .to_string(),
-        })
-    }
+/// Code of a [`LuaModule`], compiled ahead of time when possible.
+pub enum ModuleCode {
+    /// Raw source, for files [`PreparedRevision::prepare`] could not compile.
+    Source(String),
+    /// Bytecode shared with the revision cache, loaded without recompiling.
+    Bytecode(Arc<Vec<u8>>),
 }
 
 impl AsChunk for &LuaModule {
@@ -390,7 +480,17 @@ impl AsChunk for &LuaModule {
     where
         Self: 'a,
     {
-        Ok(Cow::Borrowed(self.source.as_bytes()))
+        Ok(match &self.code {
+            ModuleCode::Source(source) => Cow::Borrowed(source.as_bytes()),
+            ModuleCode::Bytecode(code) => Cow::Borrowed(code.as_slice()),
+        })
+    }
+
+    fn mode(&self) -> Option<ChunkMode> {
+        Some(match &self.code {
+            ModuleCode::Source(_) => ChunkMode::Text,
+            ModuleCode::Bytecode(_) => ChunkMode::Binary,
+        })
     }
 
     fn name(&self) -> Option<String> {
@@ -426,14 +526,24 @@ mod tests {
         assert_eq!(module_key("main.lua"), "main");
     }
 
-    /// Builds a lua state carrying `files` as its bundle, with the module
-    /// loaders installed and no service clients.
+    /// Prepares a revision out of `files`, as the revision cache would.
+    fn prepared_with(files: Vec<File>) -> Arc<PreparedRevision> {
+        let revision = Revision {
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files,
+            }),
+            ..Default::default()
+        };
+
+        Arc::new(PreparedRevision::prepare(Script::default(), revision).expect("prepares"))
+    }
+
+    /// Builds a lua state carrying `files` as its prepared revision, with the
+    /// module loaders installed and no service clients.
     fn runtime_with(files: Vec<File>) -> Lua {
         let lua = Lua::new();
-        lua.set_app_data(Bundle {
-            entry_point: "main.lua".to_owned(),
-            files,
-        });
+        lua.set_app_data(prepared_with(files));
         ActiasRuntime::set_module_loaders(&lua).expect("module loaders install");
         lua
     }
@@ -504,6 +614,44 @@ mod tests {
             .unwrap();
 
         assert_eq!((first, second), (1, 2));
+    }
+
+    #[test]
+    fn prepare_compiles_lua_files_ahead_of_time() {
+        // If this regresses to source, every request pays compilation again
+        // and the revision cache stops being a bytecode cache.
+        let prepared = prepared_with(vec![lua_file("lib/counter.lua", "return 1")]);
+
+        let module = prepared
+            .module_by_key("lib.counter")
+            .expect("module resolves")
+            .expect("module loads");
+
+        assert!(
+            matches!(module.code, ModuleCode::Bytecode(_)),
+            "lua file was not compiled at prepare time"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_that_does_not_compile_fails_at_require_not_prepare() {
+        // A broken file a script never loads must not take down the whole
+        // revision; the error surfaces only when the file is actually loaded.
+        let lua = runtime_with(vec![
+            lua_file("ok.lua", "return 1"),
+            lua_file("broken.lua", "this is ((( not lua"),
+        ]);
+
+        let ok: i64 = lua
+            .load("return require(\"ok\")")
+            .eval_async()
+            .await
+            .unwrap();
+        assert_eq!(ok, 1);
+
+        let broken: mlua::Result<mlua::Value> =
+            lua.load("return require(\"broken\")").eval_async().await;
+        assert!(broken.is_err(), "expected a syntax error, got {broken:?}");
     }
 
     #[tokio::test]
