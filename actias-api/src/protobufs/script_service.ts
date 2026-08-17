@@ -32,7 +32,7 @@ export namespace script_service {
         projectId?: string;
     }
     // What a script declared at its top level, extracted from the code at
-    // publish; the code is the manifest (docs/SURFACE.md governs the shape).
+    // publish; the code is the manifest.
     export interface Capabilities {
         // Namespaces declared with &#x60;kv &quot;name&quot;&#x60;.
         kv?: string[];

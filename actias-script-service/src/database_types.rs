@@ -21,7 +21,7 @@ pub struct ScriptConfig {
     pub capabilities: Option<Capabilities>,
 }
 
-/// What a script declared at its top level (docs/SURFACE.md).
+/// What a script declared at its top level.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Capabilities {
     pub kv: Vec<String>,
