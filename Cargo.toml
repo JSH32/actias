@@ -11,7 +11,6 @@ members = [
 
 [workspace.dependencies]
 actias-common = { path = "./actias-common" }
-hyper = { version = "0.14.23", features = ["full"] }
 tokio = { version = "1.23.0", features = ["full"] }
 tonic = "0.13.0"
 prost = "0.13.5"

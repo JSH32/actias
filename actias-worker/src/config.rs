@@ -13,6 +13,12 @@ pub struct Config {
     pub pointer_ttl_secs: u64,
     /// Byte budget for the prepared revision cache.
     pub revision_cache_bytes: u64,
+    /// Hostnames scripts may never reach, beyond the service uris the worker
+    /// already knows; comma separated.
+    pub egress_denied_hosts: Vec<String>,
+    /// Permits outbound requests to private and local addresses; for local
+    /// development only.
+    pub egress_allow_private: bool,
 }
 
 impl Config {
@@ -27,6 +33,13 @@ impl Config {
             request_timeout_secs: get_env_or("REQUEST_TIMEOUT_SECS", 30),
             pointer_ttl_secs: get_env_or("POINTER_TTL_SECS", 5),
             revision_cache_bytes: get_env_or::<u64>("REVISION_CACHE_MB", 128) * 1024 * 1024,
+            egress_denied_hosts: get_env_or("EGRESS_DENIED_HOSTS", String::new())
+                .split(',')
+                .map(str::trim)
+                .filter(|host| !host.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            egress_allow_private: get_env_or("EGRESS_ALLOW_PRIVATE", false),
         }
     }
 }

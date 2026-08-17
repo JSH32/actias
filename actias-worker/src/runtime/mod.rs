@@ -304,10 +304,12 @@ impl ActiasRuntime {
     /// # Arguments
     /// - `prepared` - Compiled revision, shared with the cache; the vm loads its bytecode without recompiling.
     /// - `kv_client` - Key value service client, allows the script to access/store persistent data.
+    /// - `egress` - Guarded http client for the script's outbound requests.
     /// - `time_limit` - Total Time limit in seconds, this is based on seconds and will start when [`start_timer`] is called
     pub async fn new(
         prepared: Arc<PreparedRevision>,
         kv_client: KvServiceClient<tonic::transport::Channel>,
+        egress: crate::egress::EgressClient,
         time_limit: Option<u64>,
     ) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
@@ -373,7 +375,7 @@ impl ActiasRuntime {
         lua.register_extensions(&[
             &JsonExtension,
             &UuidExtension,
-            &crate::extensions::http::HttpExtension,
+            &crate::extensions::http::HttpExtension { egress },
             &KvExtension {
                 kv_client,
                 project_id: prepared.script.project_id.clone(),

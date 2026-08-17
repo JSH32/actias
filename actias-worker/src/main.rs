@@ -1,4 +1,5 @@
 mod config;
+mod egress;
 mod extensions;
 mod runtime;
 mod server;
@@ -57,6 +58,22 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     setup_tracing().expect("tracing subscriber could not be installed");
 
     let config = Config::new();
+
+    // The worker's own backends are denied to scripts by name as well as by
+    // address, so the policy holds even where the services resolve publicly.
+    let mut denied_hosts = config.egress_denied_hosts.clone();
+    for uri in [&config.script_service_uri, &config.kv_service_uri] {
+        if let Ok(uri) = uri.parse::<axum::http::Uri>()
+            && let Some(host) = uri.host()
+        {
+            denied_hosts.push(host.to_owned());
+        }
+    }
+    let egress = egress::EgressClient::new(egress::EgressPolicy::new(
+        denied_hosts,
+        config.egress_allow_private,
+    ))?;
+
     let script_client = ScriptServiceClient::connect(config.script_service_uri).await?;
     let kv_client = KvServiceClient::connect(config.kv_service_uri).await?;
 
@@ -70,6 +87,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             std::time::Duration::from_secs(config.pointer_ttl_secs),
             config.revision_cache_bytes,
         ),
+        egress,
         config.max_body_bytes,
         std::time::Duration::from_secs(config.request_timeout_secs),
     );

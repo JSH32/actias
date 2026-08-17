@@ -13,6 +13,7 @@ use mlua::LuaSerdeExt;
 use std::path;
 use tonic::transport::Channel;
 
+use crate::egress::EgressClient;
 use crate::extensions;
 use crate::extensions::http::Request as LuaRequest;
 use crate::proto::kv_service::kv_service_client::KvServiceClient;
@@ -65,6 +66,7 @@ impl WorkerCaches {
 pub fn router(
     clients: Clients,
     caches: WorkerCaches,
+    egress: EgressClient,
     max_body_bytes: usize,
     request_timeout: Duration,
 ) -> Router {
@@ -74,6 +76,7 @@ pub fn router(
         .with_state(AppState {
             clients,
             caches,
+            egress,
             request_timeout,
         })
 }
@@ -82,6 +85,7 @@ pub fn router(
 struct AppState {
     clients: Clients,
     caches: WorkerCaches,
+    egress: EgressClient,
     request_timeout: Duration,
 }
 
@@ -281,7 +285,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // died with mlua 0.9.
     let kv_client = state.clients.kv.clone();
 
-    let lua = ActiasRuntime::new(prepared, kv_client, Some(10)).await?;
+    let lua = ActiasRuntime::new(prepared, kv_client, state.egress.clone(), Some(10)).await?;
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
@@ -312,6 +316,11 @@ mod tests {
     /// Empty caches sized like production, so every lookup is a miss.
     fn empty_caches() -> WorkerCaches {
         WorkerCaches::new(Duration::from_secs(5), 64 * 1024 * 1024)
+    }
+
+    /// A guarded client with the production default policy.
+    fn test_egress() -> EgressClient {
+        EgressClient::new(crate::egress::EgressPolicy::new([], false)).unwrap()
     }
 
     #[test]
@@ -351,7 +360,13 @@ mod tests {
     async fn an_oversized_body_is_rejected_before_any_backend_call() {
         // 1 KiB cap; the clients are unconnectable, so reaching them would
         // turn this 413 into a 500 and fail the assertion.
-        let app = router(lazy_clients(), empty_caches(), 1024, Duration::from_secs(5));
+        let app = router(
+            lazy_clients(),
+            empty_caches(),
+            test_egress(),
+            1024,
+            Duration::from_secs(5),
+        );
 
         let request = axum::http::Request::builder()
             .method("POST")
@@ -366,7 +381,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn the_bare_root_is_a_404_without_any_backend_call() {
-        let app = router(lazy_clients(), empty_caches(), 1024, Duration::from_secs(5));
+        let app = router(
+            lazy_clients(),
+            empty_caches(),
+            test_egress(),
+            1024,
+            Duration::from_secs(5),
+        );
 
         let request = axum::http::Request::builder()
             .uri("/")
@@ -424,7 +445,13 @@ mod tests {
             )
             .await;
 
-        let app = router(lazy_clients(), caches, 1024, Duration::from_secs(5));
+        let app = router(
+            lazy_clients(),
+            caches,
+            test_egress(),
+            1024,
+            Duration::from_secs(5),
+        );
 
         let request = axum::http::Request::builder()
             .uri("/cached-script/")

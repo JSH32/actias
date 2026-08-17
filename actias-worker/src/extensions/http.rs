@@ -1,17 +1,17 @@
+use crate::egress::EgressClient;
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 use actias_common::tracing::debug;
-use hyper::{
-    Body, Client, Version,
-    client::HttpConnector,
-    http::{self, uri::InvalidUri},
-};
-use hyper_tls::HttpsConnector;
+use http::uri::InvalidUri;
 use mlua::{ExternalResult, LuaSerdeExt, UserData};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr};
 
-/// Http oerations.
-pub struct HttpExtension;
+/// Http operations.
+pub struct HttpExtension {
+    /// Shared client whose resolver and redirect handling enforce the
+    /// platform's egress policy.
+    pub egress: EgressClient,
+}
 
 impl LuaExtension for HttpExtension {
     fn extension_info(&self) -> ExtensionInfo<'_> {
@@ -23,44 +23,24 @@ impl LuaExtension for HttpExtension {
     }
 
     fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
-        // Http request method
         let http = lua.create_table()?;
+        let egress = self.egress.clone();
+
         http.set(
             "make_request",
-            lua.create_async_function(|lua, request: mlua::Table| async move {
-                // Since we accept userdata, we need to do this hack to allow for conversion.
-                let lua_request: Request =
-                    serde_json::from_str(&serde_json::to_string(&request).into_lua_err()?)
-                        .into_lua_err()?;
+            lua.create_async_function(move |lua, request: mlua::Table| {
+                let egress = egress.clone();
+                async move {
+                    // Since we accept userdata, we need to do this hack to allow for conversion.
+                    let lua_request: Request =
+                        serde_json::from_str(&serde_json::to_string(&request).into_lua_err()?)
+                            .into_lua_err()?;
 
-                let request: mlua::Result<hyper::Request<_>> = lua_request.clone().into();
+                    debug!(request = ?lua_request, "Making outbound request");
 
-                let hyper_uri: http::Result<hyper::Uri> =
-                    lua_request.uri.to_uri().into_lua_err()?.into();
-
-                debug!(
-                    request = ?lua_request,
-                    "Making request to {}", hyper_uri.into_lua_err()?.to_string()
-                );
-
-                // Cloned out of app data so no guard is held across the await;
-                // hyper clients are cheap handles over a shared pool.
-                let client = match lua.app_data_ref::<Client<HttpsConnector<HttpConnector>, Body>>()
-                {
-                    Some(v) => v.clone(),
-                    // Create on first use.
-                    None => {
-                        let client = Client::builder().build(HttpsConnector::new());
-                        lua.set_app_data::<Client<HttpsConnector<HttpConnector>, Body>>(
-                            client.clone(),
-                        );
-                        client
-                    }
-                };
-
-                let response =
-                    Response::new(client.request(request?).await.into_lua_err()?).await?;
-                lua.to_value(&response)
+                    let response = lua_request.send(&egress).await?;
+                    lua.to_value(&response)
+                }
             })?,
         )?;
 
@@ -83,7 +63,7 @@ impl UriType {
     pub fn to_uri(&self) -> Result<Uri, InvalidUri> {
         Ok(match self {
             UriType::Uri(uri) => uri.clone(),
-            UriType::String(v) => Uri::from(hyper::Uri::from_str(v)?),
+            UriType::String(v) => Uri::from(http::Uri::from_str(v)?),
         })
     }
 }
@@ -109,11 +89,6 @@ pub enum BodyType {
 }
 
 impl BodyType {
-    async fn from_hyper(body: hyper::Body) -> mlua::Result<Self> {
-        let body_bytes = hyper::body::to_bytes(body).await.into_lua_err()?;
-        Ok(Self::from_bytes(body_bytes.to_vec()))
-    }
-
     /// Wraps raw bytes, as text when they are valid utf-8.
     fn from_bytes(bytes: Vec<u8>) -> Self {
         match String::from_utf8(bytes) {
@@ -131,11 +106,11 @@ impl BodyType {
     }
 }
 
-impl From<BodyType> for hyper::Body {
+impl From<BodyType> for reqwest::Body {
     fn from(val: BodyType) -> Self {
         match val {
-            BodyType::Binary(v) => hyper::Body::from(v),
-            BodyType::Text(v) => hyper::Body::from(v),
+            BodyType::Binary(v) => reqwest::Body::from(v),
+            BodyType::Text(v) => reqwest::Body::from(v),
         }
     }
 }
@@ -171,28 +146,43 @@ impl Request {
             body: Some(BodyType::from_bytes(body)),
         }
     }
+
+    /// Sends the request through the guarded client.
+    ///
+    /// The url is checked before anything is sent; this is the layer that
+    /// catches literal ip destinations, which never reach the client's dns
+    /// resolver. Hostnames are checked again at resolution time.
+    async fn send(self, egress: &EgressClient) -> mlua::Result<Response> {
+        let uri_string = {
+            let uri: http::Result<http::Uri> = self.uri.to_uri().into_lua_err()?.into();
+            uri.into_lua_err()?.to_string()
+        };
+
+        let url = url::Url::parse(&uri_string).into_lua_err()?;
+        egress.policy.check_url(&url).into_lua_err()?;
+
+        let method =
+            reqwest::Method::from_str(self.method.as_deref().unwrap_or("GET")).into_lua_err()?;
+
+        let mut builder = egress.client.request(method, url);
+
+        for (key, value) in self.headers {
+            builder = builder.header(key, value);
+        }
+
+        if let Some(version) = &self.version {
+            builder = builder.version(string_to_version(version)?);
+        }
+
+        if let Some(body) = self.body {
+            builder = builder.body(reqwest::Body::from(body));
+        }
+
+        Response::new(builder.send().await.into_lua_err()?).await
+    }
 }
 
 impl UserData for Request {}
-
-impl From<Request> for mlua::Result<hyper::Request<hyper::Body>> {
-    fn from(req: Request) -> Self {
-        let hyper_uri: http::Result<hyper::Uri> = req.uri.to_uri().into_lua_err()?.into();
-
-        Ok(hyper::Request::builder()
-            .uri(hyper_uri.into_lua_err()?)
-            .method(req.method.unwrap_or("GET".to_string()).as_str())
-            .version(match req.version {
-                Some(v) => string_to_version(&v)?,
-                None => Version::HTTP_11,
-            })
-            .body(match req.body {
-                Some(v) => v.into(),
-                None => hyper::Body::empty(),
-            })
-            .unwrap())
-    }
-}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Authority {
@@ -213,7 +203,7 @@ pub struct Uri {
 impl UserData for Uri {
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("tostring", |_, this, ()| {
-            let uri: http::Result<hyper::Uri> = this.to_owned().into();
+            let uri: http::Result<http::Uri> = this.to_owned().into();
             Ok(uri.into_lua_err()?.to_string())
         });
 
@@ -224,7 +214,7 @@ impl UserData for Uri {
         });
 
         methods.add_function("parse", |lua, uri: String| {
-            let uri = hyper::Uri::from_str(&uri).into_lua_err()?;
+            let uri = http::Uri::from_str(&uri).into_lua_err()?;
             lua.create_ser_userdata(Uri::from(uri))
         });
     }
@@ -237,8 +227,8 @@ impl UserData for Uri {
     }
 }
 
-impl From<hyper::Uri> for Uri {
-    fn from(uri: hyper::Uri) -> Self {
+impl From<http::Uri> for Uri {
+    fn from(uri: http::Uri) -> Self {
         Self {
             scheme: uri.scheme_str().map(str::to_string),
             authority: uri.authority().map(|v| Authority {
@@ -251,9 +241,9 @@ impl From<hyper::Uri> for Uri {
     }
 }
 
-impl From<Uri> for http::Result<hyper::Uri> {
+impl From<Uri> for http::Result<http::Uri> {
     fn from(uri: Uri) -> Self {
-        let mut builder = hyper::Uri::builder().path_and_query(format!(
+        let mut builder = http::Uri::builder().path_and_query(format!(
             "{}{}",
             uri.path,
             match &uri.query {
@@ -292,7 +282,7 @@ pub struct Response {
 impl UserData for Response {}
 
 impl Response {
-    pub async fn new(response: hyper::Response<hyper::Body>) -> mlua::Result<Self> {
+    pub async fn new(response: reqwest::Response) -> mlua::Result<Self> {
         Ok(Self {
             status_code: Some(response.status().as_u16()),
             headers: Some(
@@ -302,22 +292,20 @@ impl Response {
                     .map(|h| (h.0.to_string(), h.1.to_str().unwrap_or("").to_string()))
                     .collect(),
             ),
-            body: Some(
-                BodyType::from_hyper(response.into_body())
-                    .await
-                    .into_lua_err()?,
-            ),
+            body: Some(BodyType::from_bytes(
+                response.bytes().await.into_lua_err()?.to_vec(),
+            )),
         })
     }
 }
 
-fn string_to_version(str: &str) -> mlua::Result<Version> {
+fn string_to_version(str: &str) -> mlua::Result<http::Version> {
     Ok(match str {
-        "HTTP/0.9" => Version::HTTP_09,
-        "HTTP/1.0" => Version::HTTP_10,
-        "HTTP/1.1" => Version::HTTP_11,
-        "HTTP/2.0" => Version::HTTP_2,
-        "HTTP/3.0" => Version::HTTP_3,
+        "HTTP/0.9" => http::Version::HTTP_09,
+        "HTTP/1.0" => http::Version::HTTP_10,
+        "HTTP/1.1" => http::Version::HTTP_11,
+        "HTTP/2.0" => http::Version::HTTP_2,
+        "HTTP/3.0" => http::Version::HTTP_3,
         _ => {
             return Err(mlua::Error::DeserializeError(format!(
                 "'{}' was not a valid HTTP version.",
@@ -325,4 +313,115 @@ fn string_to_version(str: &str) -> mlua::Result<Version> {
             )));
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::egress::{EgressClient, EgressPolicy};
+    use crate::proto::bundle::Bundle;
+    use crate::proto::kv_service::kv_service_client::KvServiceClient;
+    use crate::proto::script_service::{Revision, Script};
+    use crate::runtime::{ActiasRuntime, PreparedRevision};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    /// A full runtime over an empty bundle, unconnectable kv, and `policy`
+    /// guarding its outbound http.
+    async fn runtime_guarded_by(policy: EgressPolicy) -> ActiasRuntime {
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+
+        let prepared = PreparedRevision::prepare(
+            Script::default(),
+            Revision {
+                bundle: Some(Bundle {
+                    entry_point: "main.lua".to_owned(),
+                    files: vec![],
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("empty revision prepares");
+
+        ActiasRuntime::new(
+            Arc::new(prepared),
+            KvServiceClient::new(channel),
+            EgressClient::new(policy).expect("client builds"),
+            None,
+        )
+        .await
+        .expect("runtime builds")
+    }
+
+    /// Runs `http.make_request` against `uri` and returns the result.
+    async fn make_request(lua: &ActiasRuntime, uri: &str) -> mlua::Result<mlua::Value> {
+        lua.load(format!("return http.make_request({{ uri = \"{uri}\" }})"))
+            .eval_async()
+            .await
+    }
+
+    /// Listener that flips `hit` if anything ever connects to it.
+    async fn tripwire() -> (std::net::SocketAddr, Arc<AtomicBool>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hit = Arc::new(AtomicBool::new(false));
+
+        let flag = hit.clone();
+        tokio::spawn(async move {
+            if listener.accept().await.is_ok() {
+                flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        (addr, hit)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_literal_private_ip_is_denied_before_any_connection() {
+        let (addr, hit) = tripwire().await;
+        let lua = runtime_guarded_by(EgressPolicy::new([], false)).await;
+
+        let result = make_request(&lua, &format!("http://{addr}/")).await;
+
+        let error = result.expect_err("a private literal ip must be denied");
+        assert!(
+            error.to_string().contains("outbound request denied"),
+            "wrong error: {error}"
+        );
+        assert!(
+            !hit.load(Ordering::SeqCst),
+            "the request reached the socket"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hostname_resolving_to_a_private_ip_is_denied_at_resolution() {
+        // localhost passes the literal-ip check because it is a name; only
+        // the resolver layer can stop it, which is what this proves.
+        let (addr, hit) = tripwire().await;
+        let lua = runtime_guarded_by(EgressPolicy::new([], false)).await;
+
+        let result = make_request(&lua, &format!("http://localhost:{}/", addr.port())).await;
+
+        assert!(result.is_err(), "localhost must be denied at dns time");
+        assert!(
+            !hit.load(Ordering::SeqCst),
+            "the request reached the socket"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_denied_service_name_is_rejected_by_name() {
+        let lua = runtime_guarded_by(EgressPolicy::new(["kv_service".to_owned()], false)).await;
+
+        let error = make_request(&lua, "http://kv_service:50051/")
+            .await
+            .expect_err("a denied service name must be rejected");
+
+        assert!(
+            error.to_string().contains("outbound request denied"),
+            "wrong error: {error}"
+        );
+    }
 }
