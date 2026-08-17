@@ -72,6 +72,26 @@ fn no_revision() -> mlua::Error {
     mlua::Error::RuntimeError("Runtime has no revision loaded.".into())
 }
 
+/// Whether the vm is evaluating the entry point's top level, the only time
+/// declaration forms (`kv "name"`, `on "fetch"`) may run.
+///
+/// Keeping declarations out of handlers is what makes the code extractable
+/// as a manifest: a capability that could be minted per request could not be
+/// recorded at publish (docs/SURFACE.md).
+struct DeclarationPhase(bool);
+
+/// Everything the entry point declared, recorded as the declarations run.
+///
+/// This is the code-derived capability contract: the same pass `actias
+/// publish` performs to store it with a revision.
+#[derive(Default, Debug, Clone)]
+pub struct Declarations {
+    /// Names handed to `kv "name"`.
+    pub kv: Vec<String>,
+    /// Events handed to `on "event"`.
+    pub events: Vec<String>,
+}
+
 /// A revision compiled once and shared by every request that runs it.
 ///
 /// Revisions are immutable, so the bundle and the luau bytecode of each lua
@@ -206,6 +226,77 @@ impl ActiasRuntime {
     /// Returns [`mlua::Error`] when the script registered no listener for it.
     pub fn listener(&self, event: &str) -> mlua::Result<mlua::Function> {
         self.lua.named_registry_value(&Self::listener_key(event))
+    }
+
+    /// Errors unless the vm is evaluating the entry point's top level.
+    ///
+    /// Every declaration form calls this first, so `kv "x"` inside a handler
+    /// fails with the same message everywhere.
+    pub fn assert_declaration_phase(lua: &Lua, form: &str) -> mlua::Result<()> {
+        let declaring = lua
+            .app_data_ref::<DeclarationPhase>()
+            .map(|phase| phase.0)
+            .unwrap_or(false);
+
+        if declaring {
+            Ok(())
+        } else {
+            Err(mlua::Error::RuntimeError(format!(
+                "'{form}' is a declaration and is only available at the top level of the entry point"
+            )))
+        }
+    }
+
+    /// Records one declaration into the vm's [`Declarations`].
+    pub fn record_kv_declaration(lua: &Lua, namespace: &str) {
+        if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+            declarations.kv.push(namespace.to_owned());
+        }
+    }
+
+    /// Everything the entry point declared.
+    ///
+    /// Recording is load-bearing (the declaration forms write here); nothing
+    /// at runtime reads it back yet, so the accessor is test-only until an
+    /// enforcement or introspection consumer exists.
+    #[cfg(test)]
+    pub fn declarations(&self) -> Declarations {
+        self.lua
+            .app_data_ref::<Declarations>()
+            .map(|d| d.clone())
+            .unwrap_or_default()
+    }
+
+    /// Installs the `on` declaration: `on "fetch" (handler)` registers the
+    /// handler for the event, replacing `add_event_listener`.
+    ///
+    /// Takes the [`Lua`] rather than `&self` for the same reason as
+    /// [`ActiasRuntime::set_module_loaders`]: nothing here needs clients, so
+    /// tests can exercise it without any.
+    fn set_event_declaration(lua: &Lua) -> mlua::Result<()> {
+        lua.globals().set(
+            "on",
+            lua.create_function(|lua, event: String| {
+                Self::assert_declaration_phase(lua, "on")?;
+
+                if !Self::EVENTS.contains(&event.as_str()) {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Invalid event '{event}', expected one of: {}.",
+                        Self::EVENTS.join(", ")
+                    )));
+                }
+
+                if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+                    declarations.events.push(event.clone());
+                }
+
+                // `on "fetch" (fn)` is `on("fetch")(fn)`, so the declaration
+                // returns the registrar that takes the handler.
+                lua.create_function(move |lua, callback: mlua::Function| {
+                    lua.set_named_registry_value(&Self::listener_key(&event), callback)
+                })
+            })?,
+        )
     }
 
     /// Table of modules loaded so far, keyed by [`module_key`].
@@ -355,23 +446,7 @@ impl ActiasRuntime {
             Ok(mlua::VmState::Continue)
         });
 
-        // Function to add listener to registry
-        // All added listeners are prefixed with `_listener`
-        lua.globals().set(
-            "add_event_listener",
-            lua.create_function(|lua, (event, callback): (String, mlua::Function)| {
-                if !Self::EVENTS.contains(&event.as_str()) {
-                    Err(mlua::Error::RuntimeError(format!(
-                        "Invalid event '{event}', expected one of: {}.",
-                        Self::EVENTS.join(", ")
-                    )))
-                } else {
-                    lua.set_named_registry_value(&Self::listener_key(&event), callback)?;
-                    Ok(())
-                }
-            })?,
-        )?;
-
+        Self::set_event_declaration(&lua)?;
         Self::set_module_loaders(&lua)?;
 
         lua.register_extensions(&[
@@ -405,10 +480,18 @@ impl ActiasRuntime {
             time_limit: Some(1),
         };
 
+        // Declarations exist only while the entry point's top level runs;
+        // afterwards the same calls error, which is what keeps the code
+        // extractable as a manifest.
+        lua.set_app_data(Declarations::default());
+        lua.set_app_data(DeclarationPhase(true));
+
         // Run entry point and register handlers.
         if let Some(entry_point) = entry_point {
             let _: () = lua.load(&entry_point).eval_async().await?;
         }
+
+        lua.set_app_data(DeclarationPhase(false));
 
         // Set original timer.
         *lua.timer.write().unwrap() = original_timer;
@@ -670,6 +753,74 @@ mod tests {
             .unwrap();
 
         assert!(value.is_nil(), "expected nil, got {value:?}");
+    }
+
+    /// A full runtime over `source` as main.lua, with unconnectable clients.
+    async fn runtime_running(source: &str) -> mlua::Result<ActiasRuntime> {
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+
+        ActiasRuntime::new(
+            prepared_with(vec![lua_file("main.lua", source)]),
+            crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
+            crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
+                .expect("client builds"),
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn declarations_at_the_top_level_are_recorded() {
+        let lua = runtime_running(
+            r#"
+            local visits = kv "visits"
+            local sessions = kv "sessions"
+            on "fetch" (function(request) return { body = "ok" } end)
+            "#,
+        )
+        .await
+        .expect("entry point runs");
+
+        let declarations = lua.declarations();
+        assert_eq!(declarations.kv, vec!["visits", "sessions"]);
+        assert_eq!(declarations.events, vec!["fetch"]);
+
+        // The registered handler is the one the server will call.
+        lua.listener(ActiasRuntime::FETCH_EVENT)
+            .expect("the fetch handler is registered");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn declarations_inside_a_handler_error_at_request_time() {
+        // Minting a capability per request would make the code inextractable
+        // as a manifest, so it must fail loudly, not work quietly.
+        let lua = runtime_running(
+            r#"
+            on "fetch" (function(request)
+                local sneaky = kv "sneaky"
+                return { body = "unreachable" }
+            end)
+            "#,
+        )
+        .await
+        .expect("entry point runs");
+
+        let listener = lua.listener(ActiasRuntime::FETCH_EVENT).expect("handler");
+        let result: mlua::Result<mlua::Value> = listener.call_async(mlua::Value::Nil).await;
+
+        let error = result.expect_err("a handler-time declaration must fail");
+        assert!(
+            error.to_string().contains("top level"),
+            "wrong error: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unknown_event_declaration_fails_the_entry_point() {
+        let result = runtime_running(r#"on "teleport" (function() end)"#).await;
+
+        assert!(result.is_err(), "expected an invalid event error");
     }
 
     #[tokio::test]

@@ -13,7 +13,9 @@ script = {}
 ---@alias Event
 ---| "fetch" # HTTP fetch event.
 
----Add an event listener to the global listeners table.
----@param event Event event to listen to, this will replace the existing listener.
----@overload fun(url: "fetch", callback: fun(request: Request): Response)
-function add_event_listener(event, callback) end
+---Declare an event handler: `on "fetch" (function(request) ... end)`.
+---This is a declaration: it is only available at the top level of the
+---entry point, and it replaces any existing handler for the event.
+---@param event Event event to handle.
+---@return fun(handler: fun(request: Request): Response) # registrar taking the handler.
+function on(event) end

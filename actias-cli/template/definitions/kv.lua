@@ -21,10 +21,9 @@ function KvNamespace:set_batch(values) end
 ---@param ... string keys to delete.
 function KvNamespace:delete(...) end
 
----Exposed KV module.
-kv = {}
-
----Make a request with the parameters.
----@param namespace string name of the namespace to get or create.
+---Declare the kv namespace this script uses, minting its handle.
+---This is a declaration: it is only available at the top level of the
+---entry point, and the declared names form the script's capability contract.
+---@param namespace string name of the namespace, created on first write.
 ---@return KvNamespace
-kv.get_namespace = function(namespace) end
+function kv(namespace) end

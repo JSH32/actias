@@ -2,8 +2,8 @@ local Router = require "utils.router"
 
 local router = Router.new()
 
--- TODO storage.
-local todo_ns = kv.get_namespace("todos")
+-- TODO storage; `kv "todos"` declares the namespace this script uses.
+local todo_ns = kv "todos"
 
 -- Serve frontend.
 router:add_route{

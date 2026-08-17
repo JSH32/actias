@@ -546,7 +546,7 @@ mod tests {
             ..Default::default()
         };
 
-        let source = br#"add_event_listener("fetch", function(request)
+        let source = br#"on "fetch" (function(request)
             return { body = "served from cache" }
         end)"#;
 

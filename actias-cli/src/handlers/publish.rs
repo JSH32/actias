@@ -3,9 +3,10 @@ use inquire::{Confirm, Text};
 use std::path::Path;
 
 use crate::{
+    capabilities,
     client::{
         Client,
-        types::{CreateRevisionDto, CreateScriptDto},
+        types::{CapabilitiesDto, CreateRevisionDto, CreateScriptDto, ScriptConfigDto},
     },
     errors::{Error, Result, progenitor_error},
     script::ScriptConfig,
@@ -30,6 +31,19 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         None => create_new_script(client, &mut script_config, &script_path).await?,
     };
 
+    // The declaration pass derives the capability contract from the code;
+    // it also catches syntax errors before anything is uploaded.
+    let declared = capabilities::extract(&script_config).map_err(Error::Script)?;
+    if !declared.kv.is_empty() {
+        println!("📦 Declares kv: {}", declared.kv.join(", ").purple());
+    }
+
+    let mut config_dto: ScriptConfigDto = script_config.clone().into();
+    config_dto.capabilities = Some(CapabilitiesDto {
+        kv: declared.kv,
+        events: declared.events,
+    });
+
     // Create revision
     client
         .create_revision()
@@ -37,7 +51,7 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         .body(
             CreateRevisionDto::builder()
                 .bundle(script_config.to_bundle().map_err(Error::Script)?)
-                .script_config(script_config),
+                .script_config(config_dto),
         )
         .send()
         .await

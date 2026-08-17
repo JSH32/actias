@@ -714,6 +714,7 @@ mod tests {
                     entry_point: "main.lua".to_owned(),
                     includes: vec![],
                     ignore: vec![],
+                    capabilities: None,
                 },
                 bundle: Bundle {
                     entry_point: "main.lua".to_owned(),

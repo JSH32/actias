@@ -12,6 +12,7 @@ export type { OpenAPIConfig } from './core/OpenAPI';
 export type { AclListDto } from './models/AclListDto';
 export type { AuthTokenDto } from './models/AuthTokenDto';
 export type { BundleDto } from './models/BundleDto';
+export type { CapabilitiesDto } from './models/CapabilitiesDto';
 export type { CreateProjectDto } from './models/CreateProjectDto';
 export type { CreateRevisionDto } from './models/CreateRevisionDto';
 export type { CreateScriptDto } from './models/CreateScriptDto';

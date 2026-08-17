@@ -16,23 +16,24 @@ pub struct KvExtension {
 
 impl LuaExtension for KvExtension {
     fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
-        let kv = lua.create_table()?;
-
         let kv_client = self.kv_client.clone();
         let project_id = self.project_id.clone();
 
-        kv.set(
-            "get_namespace",
-            lua.create_function(move |lua, namespace: String| {
-                lua.create_userdata(KvNamespace {
-                    kv_client: kv_client.clone(),
-                    project_id: project_id.clone(),
-                    namespace,
-                })
-            })?,
-        )?;
+        // `local visits = kv "visits"` is a declaration: it mints the handle
+        // at the entry point's top level and is recorded as part of the
+        // script's capability contract (docs/SURFACE.md).
+        let declaration = lua.create_function(move |lua, namespace: String| {
+            crate::runtime::ActiasRuntime::assert_declaration_phase(lua, "kv")?;
+            crate::runtime::ActiasRuntime::record_kv_declaration(lua, &namespace);
 
-        Ok(mlua::Value::Table(kv))
+            lua.create_userdata(KvNamespace {
+                kv_client: kv_client.clone(),
+                project_id: project_id.clone(),
+                namespace,
+            })
+        })?;
+
+        Ok(mlua::Value::Function(declaration))
     }
 
     fn extension_info(&self) -> ExtensionInfo<'_> {

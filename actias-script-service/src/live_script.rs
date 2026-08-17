@@ -251,6 +251,7 @@ mod tests {
                 entry_point: entry_point.to_owned(),
                 includes: vec![],
                 ignore: vec![],
+                capabilities: None,
             },
             bundle: Bundle {
                 entry_point: entry_point.to_owned(),

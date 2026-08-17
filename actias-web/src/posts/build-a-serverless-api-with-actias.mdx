@@ -51,7 +51,7 @@ The `script.json` file includes the project settings, hosting the project ID and
 The `main.lua` file contains the actual code. Given that we picked the `basic` template, this is a simple "hello world" project.
 
 ```lua
-add_event_listener("fetch", function(request)
+on "fetch" (function(request)
     return {
         body = json.stringify({hello = "world"}),
         headers = {["Content-Type"] = "application/json"}
@@ -69,8 +69,8 @@ The Actias KV storage revolves around namespaces containing scoped values. In th
 To construct our counter, we'll be using the KV storage to keep track of the number of requests the API has received. The final script is provided below.
 
 ```lua
-add_event_listener("fetch", function(request)
-    local ns = kv.get_namespace("counter")
+on "fetch" (function(request)
+    local ns = kv "counter"
     local current = ns:get("count") or 0
     ns:set("count", current + 1)
 
