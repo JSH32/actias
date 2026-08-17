@@ -87,15 +87,31 @@ name = "actias-worker"
 version = "0.1.0"
 dependencies = [
  "actias-common",
- "aes-gcm",
+ "actias-worker-core",
  "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "mlua",
+ "moka",
+ "redis",
+ "tokio",
+ "tonic 0.13.0",
+ "tower",
+ "uuid",
+]
+
+[[package]]
+name = "actias-worker-core"
+version = "0.1.0"
+dependencies = [
+ "actias-common",
+ "aes-gcm",
  "argon2",
  "axum",
  "base64 0.23.1",
  "http 1.5.0",
  "jsonwebtoken",
  "mlua",
- "moka",
  "prost 0.13.5",
  "prost-build",
  "redis",
@@ -107,7 +123,6 @@ dependencies = [
  "tokio",
  "tonic 0.13.0",
  "tonic-build",
- "tower",
  "url",
  "uuid",
 ]

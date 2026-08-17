@@ -13,20 +13,20 @@ use mlua::LuaSerdeExt;
 use std::path;
 use tonic::transport::Channel;
 
-use crate::egress::EgressClient;
-use crate::extensions;
-use crate::extensions::http::Request as LuaRequest;
-use crate::extensions::log::LogPublisher;
-use crate::proto::kv_service::kv_service_client::KvServiceClient;
-use crate::proto::script_service::FindScriptRequest;
-use crate::proto::script_service::GetRevisionRequest;
-use crate::proto::script_service::LiveScriptSession;
-use crate::proto::script_service::Revision;
-use crate::proto::script_service::Script;
-use crate::proto::script_service::find_script_request::Query;
-use crate::proto::script_service::script_service_client::ScriptServiceClient;
-use crate::runtime::{ActiasRuntime, PreparedRevision};
 use actias_common::logging::{live_log_channel, script_log_channel};
+use actias_worker_core::egress::EgressClient;
+use actias_worker_core::extensions;
+use actias_worker_core::extensions::http::Request as LuaRequest;
+use actias_worker_core::extensions::log::LogPublisher;
+use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
+use actias_worker_core::proto::script_service::FindScriptRequest;
+use actias_worker_core::proto::script_service::GetRevisionRequest;
+use actias_worker_core::proto::script_service::LiveScriptSession;
+use actias_worker_core::proto::script_service::Revision;
+use actias_worker_core::proto::script_service::Script;
+use actias_worker_core::proto::script_service::find_script_request::Query;
+use actias_worker_core::proto::script_service::script_service_client::ScriptServiceClient;
+use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
 
 /// The service clients every request handler needs.
 #[derive(Clone)]
@@ -72,7 +72,7 @@ pub fn router(
     caches: WorkerCaches,
     egress: EgressClient,
     redis: Option<redis::aio::ConnectionManager>,
-    secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
+    secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
     max_body_bytes: usize,
     request_timeout: Duration,
 ) -> Router {
@@ -97,7 +97,7 @@ struct AppState {
     /// Carries script log lines out; without it they stay in worker tracing.
     redis: Option<redis::aio::ConnectionManager>,
     /// Decrypts stored secrets; without it `secret` declarations error.
-    secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
+    secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
     request_timeout: Duration,
 }
 
@@ -437,7 +437,7 @@ mod tests {
 
     /// A guarded client with the production default policy.
     fn test_egress() -> EgressClient {
-        EgressClient::new(crate::egress::EgressPolicy::new([], false)).unwrap()
+        EgressClient::new(actias_worker_core::egress::EgressPolicy::new([], false)).unwrap()
     }
 
     #[test]
@@ -548,7 +548,7 @@ mod tests {
     /// Caches holding `cached-script` fully resolved: pointer and prepared
     /// revision both warm, so the published path needs no backend at all.
     async fn caches_with_cached_script() -> WorkerCaches {
-        use crate::proto::bundle::{Bundle, File};
+        use actias_worker_core::proto::bundle::{Bundle, File};
 
         let caches = empty_caches();
 
