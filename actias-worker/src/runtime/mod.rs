@@ -16,7 +16,7 @@ use mlua::{AsChunk, ChunkMode, ExternalResult, Lua, LuaSerdeExt, Table, UserData
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Deref,
     sync::{Arc, RwLock},
     time::Instant,
@@ -77,7 +77,7 @@ fn no_revision() -> mlua::Error {
 ///
 /// Keeping declarations out of handlers is what makes the code extractable
 /// as a manifest: a capability that could be minted per request could not be
-/// recorded at publish (docs/SURFACE.md).
+/// recorded at publish.
 struct DeclarationPhase(bool);
 
 /// Everything the entry point declared, recorded as the declarations run.
@@ -94,6 +94,23 @@ pub struct Declarations {
     pub secrets: Vec<String>,
 }
 
+/// The capability contract a revision was published with.
+///
+/// Extracted from the code by `actias publish`; when present, the vm only
+/// honors declarations the contract records, so a bundle whose stored
+/// contract disagrees with its code (tampering, a bypassed publish) fails
+/// loudly instead of gaining capabilities.
+pub struct Contract {
+    kv: HashSet<String>,
+    secrets: HashSet<String>,
+}
+
+/// Which contract list a declaration checks against.
+pub enum ContractKind {
+    Kv,
+    Secret,
+}
+
 /// A revision compiled once and shared by every request that runs it.
 ///
 /// Revisions are immutable, so the bundle and the luau bytecode of each lua
@@ -105,6 +122,9 @@ pub struct PreparedRevision {
     bundle: Bundle,
     /// Compiled bytecode per lua file, keyed by exact file path.
     bytecode: HashMap<String, Arc<Vec<u8>>>,
+    /// Present when the revision was published with a contract; live
+    /// sessions and contract-less revisions stay unenforced.
+    contract: Option<Contract>,
 }
 
 impl PreparedRevision {
@@ -141,10 +161,19 @@ impl PreparedRevision {
             }
         }
 
+        let contract = revision
+            .script_config
+            .capabilities
+            .map(|capabilities| Contract {
+                kv: capabilities.kv.into_iter().collect(),
+                secrets: capabilities.secrets.into_iter().collect(),
+            });
+
         Ok(Self {
             script,
             bundle,
             bytecode,
+            contract,
         })
     }
 
@@ -245,6 +274,30 @@ impl ActiasRuntime {
         } else {
             Err(mlua::Error::RuntimeError(format!(
                 "'{form}' is a declaration and is only available at the top level of the entry point"
+            )))
+        }
+    }
+
+    /// Errors when the revision's published [`Contract`] does not record
+    /// `name` for `kind`; contract-less revisions pass.
+    pub fn assert_contract_allows(lua: &Lua, kind: ContractKind, name: &str) -> mlua::Result<()> {
+        let Some(prepared) = lua.app_data_ref::<Arc<PreparedRevision>>() else {
+            return Ok(());
+        };
+        let Some(contract) = &prepared.contract else {
+            return Ok(());
+        };
+
+        let (allowed, what) = match kind {
+            ContractKind::Kv => (&contract.kv, "Namespace"),
+            ContractKind::Secret => (&contract.secrets, "Secret"),
+        };
+
+        if allowed.contains(name) {
+            Ok(())
+        } else {
+            Err(mlua::Error::RuntimeError(format!(
+                "{what} '{name}' is not in this revision's capability contract; republish after declaring it."
             )))
         }
     }
@@ -829,6 +882,88 @@ mod tests {
         let error = result.expect_err("a handler-time declaration must fail");
         assert!(
             error.to_string().contains("top level"),
+            "wrong error: {error}"
+        );
+    }
+
+    /// A full runtime whose revision carries a published contract.
+    async fn runtime_with_contract(
+        source: &str,
+        kv: &[&str],
+        secrets: &[&str],
+    ) -> mlua::Result<ActiasRuntime> {
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+
+        let revision = Revision {
+            script_config: crate::proto::script_service::ScriptConfig {
+                capabilities: Some(crate::proto::script_service::Capabilities {
+                    kv: kv.iter().map(|s| s.to_string()).collect(),
+                    events: vec!["fetch".to_owned()],
+                    secrets: secrets.iter().map(|s| s.to_string()).collect(),
+                }),
+                ..Default::default()
+            },
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files: vec![lua_file("main.lua", source)],
+            }),
+            ..Default::default()
+        };
+
+        ActiasRuntime::new(
+            Arc::new(PreparedRevision::prepare(Script::default(), revision)?),
+            crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
+            crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
+                .expect("client builds"),
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_declaration_outside_the_contract_fails_the_entry_point() {
+        // The contract came from this code at publish; disagreement means the
+        // bundle changed without a publish, which must not mint capabilities.
+        let result =
+            runtime_with_contract(r#"local sneaky = kv "sneaky""#, &["allowed"], &[]).await;
+
+        let Err(error) = result else {
+            panic!("an uncontracted namespace must fail")
+        };
+        assert!(
+            error.to_string().contains("capability contract"),
+            "wrong error: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn contracted_declarations_run_and_contractless_revisions_are_unenforced() {
+        // The happy path: the declared name is in the contract.
+        runtime_with_contract(r#"local visits = kv "allowed""#, &["allowed"], &[])
+            .await
+            .expect("a contracted declaration runs");
+
+        // No contract stored (live sessions, pre-contract revisions): any
+        // declaration is honored.
+        runtime_running(r#"local visits = kv "anything""#)
+            .await
+            .expect("a contract-less revision stays unenforced");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_uncontracted_secret_fails_before_any_lookup() {
+        // The contract check precedes configuration and network access, so
+        // this fails with the contract error even with no key and no backend.
+        let result =
+            runtime_with_contract(r#"local token = secret "sneaky""#, &[], &["allowed"]).await;
+
+        let Err(error) = result else {
+            panic!("an uncontracted secret must fail")
+        };
+        assert!(
+            error.to_string().contains("capability contract"),
             "wrong error: {error}"
         );
     }

@@ -21,7 +21,7 @@ impl LuaExtension for KvExtension {
 
         // `local visits = kv "visits"` is a declaration: it mints the handle
         // at the entry point's top level and is recorded as part of the
-        // script's capability contract (docs/SURFACE.md).
+        // script's capability contract.
         let declaration = lua.create_function(move |lua, namespace: String| {
             crate::runtime::ActiasRuntime::assert_declaration_phase(lua, "kv")?;
 
@@ -33,6 +33,11 @@ impl LuaExtension for KvExtension {
                 )));
             }
 
+            crate::runtime::ActiasRuntime::assert_contract_allows(
+                lua,
+                crate::runtime::ContractKind::Kv,
+                &namespace,
+            )?;
             crate::runtime::ActiasRuntime::record_kv_declaration(lua, &namespace);
 
             lua.create_userdata(KvNamespace {

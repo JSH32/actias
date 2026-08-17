@@ -71,7 +71,7 @@ impl LuaExtension for SecretsExtension {
         let key = self.key.clone();
 
         // `local token = secret "name"`: the handle is the string value
-        // itself (docs/SURFACE.md), fetched and decrypted at declaration.
+        // itself, fetched and decrypted at declaration.
         let declaration = lua.create_async_function(move |lua, name: String| {
             let mut kv_client = kv_client.clone();
             let project_id = project_id.clone();
@@ -79,6 +79,11 @@ impl LuaExtension for SecretsExtension {
 
             async move {
                 crate::runtime::ActiasRuntime::assert_declaration_phase(&lua, "secret")?;
+                crate::runtime::ActiasRuntime::assert_contract_allows(
+                    &lua,
+                    crate::runtime::ContractKind::Secret,
+                    &name,
+                )?;
                 crate::runtime::ActiasRuntime::record_secret_declaration(&lua, &name);
 
                 let Some(key) = key else {
