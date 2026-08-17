@@ -49,3 +49,23 @@ jobs:
       # fmt, clippy, cargo test, api and web lint/build, codegen drift check.
       - name: Run CI pipeline
         run: nix develop -c just ci
+
+  smoke:
+    name: Full-stack smoke test
+    runs-on: ubuntu-24.04
+    needs: ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # Boots the whole compose stack, publishes a script through the api,
+      # requests it through the worker, and verifies the checked-in clients
+      # match the live api.
+      - name: Run smoke test
+        run: nix develop -c just smoke

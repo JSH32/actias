@@ -39,6 +39,10 @@
             # Task runner; see the justfile for the verb list.
             just
 
+            # The smoke test drives the api with these.
+            curl
+            jq
+
             # reqwest/hyper-tls link against system openssl.
             pkg-config
           ];

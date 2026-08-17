@@ -89,6 +89,11 @@ check-generated: generate
 up:
     docker compose up -d --build
 
+# Full-stack smoke test: compose up, publish a script, request it through the
+# worker, verify the checked-in clients match the live api. Needs docker.
+smoke:
+    ./scripts/smoke-test.sh
+
 # Tear the local stack down.
 down:
     docker compose down
