@@ -1,14 +1,15 @@
 use std::{
     io::{self, Write},
+    ops::ControlFlow,
     str::FromStr,
 };
 
 use base64::{engine::general_purpose, read, write};
 use scylla::{
-    Bytes, Session, SessionBuilder,
-    cql_to_rust::FromRowError,
-    prepared_statement::PreparedStatement,
-    transport::{errors::QueryError, query_result::FirstRowTypedError},
+    client::{session::Session, session_builder::SessionBuilder},
+    errors::ExecutionError,
+    response::PagingState,
+    statement::prepared::PreparedStatement,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -19,15 +20,31 @@ use crate::proto_kv_service::{
 
 #[derive(Error, Debug)]
 pub enum DatabaseError {
+    /// Boxed because the driver's error is an order of magnitude larger than
+    /// the other variants, and this enum travels through every Result here.
     #[error("{0}")]
-    Query(#[from] QueryError),
+    Query(Box<ExecutionError>),
+    /// A response did not carry rows in the shape its query promises.
     #[error("{0}")]
-    FirstRowTyped(#[from] FirstRowTypedError),
-    #[error("{0}")]
-    FromRow(#[from] FromRowError),
+    Rows(String),
     #[error("Invalid data provided: {0}")]
     Invalid(String),
 }
+
+impl From<ExecutionError> for DatabaseError {
+    fn from(error: ExecutionError) -> Self {
+        DatabaseError::Query(Box::new(error))
+    }
+}
+
+/// Collapses the driver's per-stage result errors into [`DatabaseError::Rows`];
+/// they all mean the same thing to a caller, a result of the wrong shape.
+fn rows_error<E: std::fmt::Display>(error: E) -> DatabaseError {
+    DatabaseError::Rows(error.to_string())
+}
+
+/// The column tuple every pair query selects, in select-list order.
+type PairRow = (Option<i32>, Uuid, String, String, String, String);
 
 /// Data access for the pairs and namespaces tables.
 ///
@@ -51,15 +68,26 @@ pub struct Database {
     unregister_all_namespaces_statement: PreparedStatement,
 }
 
-impl Database {
-    pub async fn new(scylla_nodes: Vec<String>) -> Self {
-        let session = SessionBuilder::new()
-            .known_nodes(scylla_nodes)
-            .use_keyspace("kv_service", true)
-            .build()
-            .await
-            .expect("scylla session could not be established from SCYLLA_NODES");
+/// Connects a session pointed at the kv keyspace.
+///
+/// Session construction lives apart from [`Database::new`] so environments
+/// that need connection options the service does not (address translation in
+/// tests, for one) can build their own.
+///
+/// # Panics
+/// Panics when no node accepts a session; this runs at startup, where dying
+/// loudly is the right outcome.
+pub async fn connect(scylla_nodes: Vec<String>) -> Session {
+    SessionBuilder::new()
+        .known_nodes(scylla_nodes)
+        .use_keyspace("kv_service", true)
+        .build()
+        .await
+        .expect("scylla session could not be established from SCYLLA_NODES")
+}
 
+impl Database {
+    pub async fn new(session: Session) -> Self {
         let prepare = |cql: &'static str| {
             let session = &session;
             async move {
@@ -146,14 +174,16 @@ impl Database {
     ) -> Result<Option<Pair>, DatabaseError> {
         let project_id = Self::project_uuid(project_id)?;
 
-        match self
+        let result = self
             .session
-            .execute(&self.get_statement, (project_id, namespace, key))
+            .execute_unpaged(&self.get_statement, (project_id, namespace, key))
             .await?
-            .first_row()
-        {
-            Ok(row) => Ok(Some(Self::row_into_pair(row)?)),
-            Err(_) => Ok(None),
+            .into_rows_result()
+            .map_err(rows_error)?;
+
+        match result.maybe_first_row::<PairRow>().map_err(rows_error)? {
+            Some(row) => Ok(Some(Self::row_into_pair(row)?)),
+            None => Ok(None),
         }
     }
 
@@ -169,7 +199,7 @@ impl Database {
             let project_id = Self::project_uuid(&pair.project_id)?;
 
             self.session
-                .execute(
+                .execute_unpaged(
                     &self.set_statement,
                     (
                         pair.ttl.unwrap_or(0),
@@ -185,7 +215,7 @@ impl Database {
             // Plain INSERT is an upsert in CQL, so registering on every write
             // costs one extra statement and needs no read or LWT.
             self.session
-                .execute(
+                .execute_unpaged(
                     &self.register_namespace_statement,
                     (project_id, pair.namespace),
                 )
@@ -204,7 +234,7 @@ impl Database {
             let project_id = Self::project_uuid(&pair.project_id)?;
 
             self.session
-                .execute(
+                .execute_unpaged(
                     &self.delete_statement,
                     (project_id, pair.namespace, pair.key),
                 )
@@ -226,7 +256,7 @@ impl Database {
         let project_id = Self::project_uuid(project_id)?;
 
         self.session
-            .execute(&self.register_namespace_statement, (project_id, namespace))
+            .execute_unpaged(&self.register_namespace_statement, (project_id, namespace))
             .await?;
 
         Ok(())
@@ -246,14 +276,14 @@ impl Database {
         let project_id = Self::project_uuid(project_id)?;
 
         self.session
-            .execute(
+            .execute_unpaged(
                 &self.delete_namespace_pairs_statement,
                 (project_id, namespace),
             )
             .await?;
 
         self.session
-            .execute(
+            .execute_unpaged(
                 &self.unregister_namespace_statement,
                 (project_id, namespace),
             )
@@ -269,25 +299,39 @@ impl Database {
     pub async fn delete_project(&self, project_id: &str) -> Result<(), DatabaseError> {
         let project_uuid = Self::project_uuid(project_id)?;
 
-        let namespaces = self
-            .session
-            .execute(&self.list_namespaces_statement, (project_uuid,))
-            .await?
-            .rows_or_empty();
+        let namespaces = self.namespace_names(project_uuid).await?;
 
-        for row in namespaces {
-            let (name,) = row.into_typed::<(String,)>()?;
-
+        for name in namespaces {
             self.session
-                .execute(&self.delete_namespace_pairs_statement, (project_uuid, name))
+                .execute_unpaged(&self.delete_namespace_pairs_statement, (project_uuid, name))
                 .await?;
         }
 
         self.session
-            .execute(&self.unregister_all_namespaces_statement, (project_uuid,))
+            .execute_unpaged(&self.unregister_all_namespaces_statement, (project_uuid,))
             .await?;
 
         Ok(())
+    }
+
+    /// Reads a project's registered namespace names into owned strings, so
+    /// callers can keep querying while iterating them.
+    async fn namespace_names(&self, project_uuid: Uuid) -> Result<Vec<String>, DatabaseError> {
+        let result = self
+            .session
+            .execute_unpaged(&self.list_namespaces_statement, (project_uuid,))
+            .await?
+            .into_rows_result()
+            .map_err(rows_error)?;
+
+        let names = result
+            .rows::<(String,)>()
+            .map_err(rows_error)?
+            .map(|row| row.map(|(name,)| name))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(rows_error)?;
+
+        Ok(names)
     }
 
     /// Gets a project's namespaces from the registry, with a per-partition
@@ -303,21 +347,17 @@ impl Database {
 
         let mut namespaces = vec![];
 
-        for row in self
-            .session
-            .execute(&self.list_namespaces_statement, (project_uuid,))
-            .await?
-            .rows_or_empty()
-        {
-            let (name,) = row.into_typed::<(String,)>()?;
-
+        for name in self.namespace_names(project_uuid).await? {
             // COUNT over one partition, not the cluster; acceptable at the
             // sizes a dashboard lists. Expired rows fall out automatically.
             let (count,) = self
                 .session
-                .execute(&self.count_statement, (project_uuid, name.as_str()))
+                .execute_unpaged(&self.count_statement, (project_uuid, name.as_str()))
                 .await?
-                .first_row_typed::<(i64,)>()?;
+                .into_rows_result()
+                .map_err(rows_error)?
+                .first_row::<(i64,)>()
+                .map_err(rows_error)?;
 
             namespaces.push(Namespace {
                 project_id: project_id.to_string(),
@@ -349,8 +389,16 @@ impl Database {
     ) -> Result<ListPairsResponse, DatabaseError> {
         let project_id = Self::project_uuid(project_id)?;
 
+        // The driver panics on a nonpositive page size, and this one comes
+        // off the wire.
+        if page_size <= 0 {
+            return Err(DatabaseError::Invalid(
+                "Page size must be positive".to_string(),
+            ));
+        }
+
         let paging_state = match token {
-            None => None,
+            None => PagingState::start(),
             Some(v) => {
                 let mut output = Vec::new();
 
@@ -360,58 +408,63 @@ impl Database {
                 io::copy(&mut decoder, &mut output)
                     .map_err(|_| DatabaseError::Invalid("Invalid token provided".to_string()))?;
 
-                Some(Bytes::from(output))
+                PagingState::new_from_raw_bytes(output)
             }
         };
 
         let mut statement = self.list_statement.clone();
         statement.set_page_size(page_size);
 
-        let page = self
+        let (page, paging_response) = self
             .session
-            .execute_paged(&statement, (project_id, namespace), paging_state)
+            .execute_single_page(&statement, (project_id, namespace), paging_state)
             .await?;
 
-        let token = match page.paging_state.clone() {
-            Some(state) => {
-                // The driver can hand back a state even when the partition is
+        let token = match paging_response.into_paging_control_flow() {
+            ControlFlow::Break(()) => None,
+            ControlFlow::Continue(state) => {
+                // The server can hand back a state even when the partition is
                 // exhausted; probing with a count from that position keeps the
                 // last page from advertising a next page. Partition-local, so
                 // the probe is cheap.
-                let (remaining,) = self
+                let (count_page, _) = self
                     .session
-                    .execute_paged(
+                    .execute_single_page(
                         &self.count_statement,
                         (project_id, namespace),
-                        Some(state.clone()),
+                        state.clone(),
                     )
-                    .await?
-                    .first_row_typed::<(i64,)>()?;
+                    .await?;
 
-                if remaining > 0 {
-                    let mut output = String::new();
+                let (remaining,) = count_page
+                    .into_rows_result()
+                    .map_err(rows_error)?
+                    .first_row::<(i64,)>()
+                    .map_err(rows_error)?;
 
-                    write::EncoderStringWriter::from_consumer(
-                        &mut output,
-                        &general_purpose::STANDARD_NO_PAD,
-                    )
-                    .write_all(&state)
-                    .map_err(|e| DatabaseError::Invalid(e.to_string()))?;
+                match state.as_bytes_slice() {
+                    Some(bytes) if remaining > 0 => {
+                        let mut output = String::new();
 
-                    Some(output)
-                } else {
-                    None
+                        write::EncoderStringWriter::from_consumer(
+                            &mut output,
+                            &general_purpose::STANDARD_NO_PAD,
+                        )
+                        .write_all(bytes)
+                        .map_err(|e| DatabaseError::Invalid(e.to_string()))?;
+
+                        Some(output)
+                    }
+                    _ => None,
                 }
             }
-            None => None,
         };
 
+        let rows_result = page.into_rows_result().map_err(rows_error)?;
+
         let mut pairs = vec![];
-        for row in page
-            .rows()
-            .map_err(|e| DatabaseError::Invalid(e.to_string()))?
-        {
-            pairs.push(Self::row_into_pair(row)?);
+        for row in rows_result.rows::<PairRow>().map_err(rows_error)? {
+            pairs.push(Self::row_into_pair(row.map_err(rows_error)?)?);
         }
 
         Ok(ListPairsResponse {
@@ -422,9 +475,7 @@ impl Database {
     }
 
     /// Converts a row in the shape every pair query selects into a [`Pair`].
-    fn row_into_pair(row: scylla::frame::response::result::Row) -> Result<Pair, DatabaseError> {
-        let typed = row.into_typed::<(Option<i32>, Uuid, String, String, String, String)>()?;
-
+    fn row_into_pair(typed: PairRow) -> Result<Pair, DatabaseError> {
         let value_type: ValueType = typed.5.try_into().map_err(DatabaseError::Invalid)?;
 
         Ok(Pair {
@@ -474,8 +525,29 @@ impl TryFrom<String> for ValueType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scylla::errors::TranslationError;
+    use scylla::policies::address_translator::{AddressTranslator, UntranslatedPeer};
+    use std::net::SocketAddr;
+    use std::sync::Arc;
     use testcontainers::runners::AsyncRunner;
     use testcontainers::{ContainerAsync, GenericImage, ImageExt, core::WaitFor};
+
+    /// Routes every discovered peer to one address.
+    ///
+    /// The container advertises its bridge ip, but the driver pairs that ip
+    /// with the mapped host port, an address nothing listens on. With a
+    /// single node, everything the driver discovers is the contact point.
+    struct EverythingIsHere(SocketAddr);
+
+    #[async_trait::async_trait]
+    impl AddressTranslator for EverythingIsHere {
+        async fn translate_address(
+            &self,
+            _peer: &UntranslatedPeer,
+        ) -> Result<SocketAddr, TranslationError> {
+            Ok(self.0)
+        }
+    }
 
     /// Starts scylla, applies the real migrations, and connects.
     ///
@@ -499,19 +571,29 @@ mod tests {
             .get_host_port_ipv4(9042)
             .await
             .expect("cql port is published");
-        let node = format!("127.0.0.1:{port}");
+        let addr: SocketAddr = ([127, 0, 0, 1], port).into();
 
-        // The driver can win the race against scylla's CQL listener, so
-        // connecting retries briefly.
+        let builder = || {
+            SessionBuilder::new()
+                .known_node(addr.to_string())
+                .address_translator(Arc::new(EverythingIsHere(addr)))
+        };
+
+        // The driver can win the race against scylla's CQL listener, and a
+        // freshly built session can still have a broken pool while shards
+        // come up, so readiness is a served query, not a connection.
         let mut session = None;
         for _ in 0..60 {
-            match SessionBuilder::new().known_node(&node).build().await {
-                Ok(s) => {
-                    session = Some(s);
-                    break;
-                }
-                Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            if let Ok(s) = builder().build().await
+                && s.query_unpaged("SELECT release_version FROM system.local", ())
+                    .await
+                    .is_ok()
+            {
+                session = Some(s);
+                break;
             }
+
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
         let session = session.expect("scylla accepts connections");
 
@@ -525,7 +607,13 @@ mod tests {
             .await
             .expect("migrations are re-runnable");
 
-        (container, Database::new(vec![node]).await)
+        let data_session = builder()
+            .use_keyspace("kv_service", true)
+            .build()
+            .await
+            .expect("scylla accepts a data session");
+
+        (container, Database::new(data_session).await)
     }
 
     fn pair(project: Uuid, namespace: &str, key: &str, value: &str) -> Pair {

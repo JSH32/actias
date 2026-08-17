@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let addr = format!("0.0.0.0:{}", config.port).parse()?;
-    let database = Database::new(config.scylla_nodes).await;
+    let database = Database::new(database::connect(config.scylla_nodes).await).await;
 
     info!("KV Service listening on {}", addr);
 

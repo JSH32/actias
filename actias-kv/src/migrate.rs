@@ -9,7 +9,7 @@
 //! friends).
 
 use include_dir::{Dir, include_dir};
-use scylla::{Session, SessionBuilder};
+use scylla::client::{session::Session, session_builder::SessionBuilder};
 
 static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
@@ -33,7 +33,7 @@ fn split_statements(source: &str) -> Vec<String> {
 async fn run_file(session: &Session, name: &str, source: &str) -> Result<(), String> {
     for statement in split_statements(source) {
         session
-            .query(statement.as_str(), ())
+            .query_unpaged(statement.as_str(), ())
             .await
             .map_err(|e| format!("{name}: {e}"))?;
     }
@@ -55,7 +55,7 @@ pub async fn apply(session: &Session) -> Result<(), String> {
     run_file(session, "bootstrap.cql", bootstrap).await?;
 
     session
-        .query(
+        .query_unpaged(
             "CREATE TABLE IF NOT EXISTS kv_service.schema_migrations ( \
                 name text PRIMARY KEY, applied_at timestamp)",
             (),
@@ -77,15 +77,16 @@ pub async fn apply(session: &Session) -> Result<(), String> {
         let name = file.path().display().to_string();
 
         let applied = session
-            .query(
+            .query_unpaged(
                 "SELECT name FROM kv_service.schema_migrations WHERE name = ?",
                 (name.as_str(),),
             )
             .await
             .map_err(|e| format!("{name}: {e}"))?
-            .rows_or_empty();
+            .into_rows_result()
+            .map_err(|e| format!("{name}: {e}"))?;
 
-        if !applied.is_empty() {
+        if applied.rows_num() > 0 {
             continue;
         }
 
@@ -95,7 +96,7 @@ pub async fn apply(session: &Session) -> Result<(), String> {
         run_file(session, &name, source).await?;
 
         session
-            .query(
+            .query_unpaged(
                 "INSERT INTO kv_service.schema_migrations (name, applied_at) \
                  VALUES (?, toTimestamp(now()))",
                 (name.as_str(),),
@@ -115,22 +116,26 @@ pub async fn apply(session: &Session) -> Result<(), String> {
 /// # Errors
 /// Returns text describing what failed; the process exits nonzero on it.
 pub async fn run(scylla_nodes: Vec<String>) -> Result<(), String> {
+    // A freshly built session can still have a broken pool while the node's
+    // shards come up, so readiness is a served query, not a connection.
     let mut session = None;
     for _ in 0..60 {
-        match SessionBuilder::new()
+        if let Ok(s) = SessionBuilder::new()
             .known_nodes(&scylla_nodes)
             .build()
             .await
+            && s.query_unpaged("SELECT release_version FROM system.local", ())
+                .await
+                .is_ok()
         {
-            Ok(s) => {
-                session = Some(s);
-                break;
-            }
-            Err(_) => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+            session = Some(s);
+            break;
         }
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
-    let session = session.ok_or("scylla did not accept a connection in time")?;
+    let session = session.ok_or("scylla did not accept a query in time")?;
     apply(&session).await
 }
 
