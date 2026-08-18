@@ -228,6 +228,28 @@ impl PreparedRevision {
         None
     }
 
+    /// Migration files for one database, in application order: every
+    /// `migrations/<database>/*.sql` in the bundle, sorted by path, which
+    /// is why the scaffold numbers them.
+    pub fn migrations(&self, database: &str) -> Vec<(String, String)> {
+        let prefix = format!("migrations/{database}/");
+
+        let mut files: Vec<(String, String)> = self
+            .bundle
+            .files
+            .iter()
+            .filter(|file| file.file_path.starts_with(&prefix) && file.file_path.ends_with(".sql"))
+            .map(|file| {
+                (
+                    file.file_path.clone(),
+                    String::from_utf8_lossy(&file.content).into_owned(),
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
     /// Loadable module for the bundle file at exactly `path`.
     fn module_by_path(&self, path: &str) -> Option<mlua::Result<LuaModule>> {
         self.file(path).map(|file| self.module_for(file))

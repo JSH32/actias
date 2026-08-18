@@ -91,6 +91,63 @@ impl SqliteStorage {
             .map_err(|e| e.to_string())
     }
 
+    /// Runs one migration file under the script guard: user sql, so the
+    /// same rules as any statement, but as a whole script since migration
+    /// files hold several statements.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn exec_script(&mut self, sql: &str) -> Result<(), String> {
+        self.connection.authorizer(Some(script_authorizer));
+        let result = self
+            .connection
+            .execute_batch(sql)
+            .map_err(|e| e.to_string());
+        self.connection.authorizer(
+            None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+        );
+        result
+    }
+
+    /// Migration names already applied to this database, sorted.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn applied_migrations(&mut self) -> Result<Vec<String>, String> {
+        self.connection
+            .execute(
+                "CREATE TABLE IF NOT EXISTS __actias_migrations (name TEXT PRIMARY KEY)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+
+        let mut statement = self
+            .connection
+            .prepare("SELECT name FROM __actias_migrations ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let names = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        Ok(names)
+    }
+
+    /// Records one migration as applied; rides the call's transaction, so
+    /// a failed migration records nothing.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn record_migration(&mut self, name: &str) -> Result<(), String> {
+        self.connection
+            .execute(
+                "INSERT INTO __actias_migrations (name) VALUES (?)",
+                rusqlite::params![name],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// Opens the transaction one dispatched call runs inside; the platform
     /// owns transaction boundaries, scripts never issue their own.
     ///

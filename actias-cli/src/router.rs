@@ -46,7 +46,7 @@ impl Router {
             Commands::Project { id, sub } => self.handle_project(id, sub).await,
             Commands::Script { id, sub } => self.handle_script(id, sub).await,
             // Handled before authentication in main; unreachable here.
-            Commands::Check { .. } | Commands::Test { .. } => Ok(()),
+            Commands::Check { .. } | Commands::Test { .. } | Commands::Sql { .. } => Ok(()),
         }
     }
 

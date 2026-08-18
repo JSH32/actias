@@ -380,14 +380,22 @@ mod tests {
     /// A pinned runtime whose entry point is `source`; clients are
     /// unconnectable, so tests exercise only the vm.
     async fn runtime_with(source: &str) -> ActiasRuntime {
+        runtime_with_files(&[("main.lua", source)]).await
+    }
+
+    /// Like [`runtime_with`] but with a whole bundle of files.
+    async fn runtime_with_files(files: &[(&str, &str)]) -> ActiasRuntime {
         let revision = Revision {
             bundle: Some(Bundle {
                 entry_point: "main.lua".to_owned(),
-                files: vec![File {
-                    file_path: "main.lua".to_owned(),
-                    content: source.as_bytes().to_vec(),
-                    ..Default::default()
-                }],
+                files: files
+                    .iter()
+                    .map(|(path, content)| File {
+                        file_path: (*path).to_owned(),
+                        content: content.as_bytes().to_vec(),
+                        ..Default::default()
+                    })
+                    .collect(),
             }),
             ..Default::default()
         };
@@ -980,6 +988,62 @@ mod tests {
             serde_json::json!(1),
             "the re-armed alarm must fire after the replacement"
         );
+    }
+
+    /// Migrations apply at first touch, exactly once per database, and a
+    /// respawn over the same file never reapplies them (the CREATE would
+    /// fail if it did).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn migrations_apply_once_at_first_touch() {
+        const MAIN: &str = r#"local db = database "main""#;
+        const MIGRATION: &str = "CREATE TABLE visits (at INTEGER);";
+        let files = [
+            ("main.lua", MAIN),
+            ("migrations/main/0001_init.sql", MIGRATION),
+        ];
+
+        let call = |method: &str, args: serde_json::Value| {
+            serde_json::json!({
+                "class": "__database", "name": "main", "method": method, "args": args,
+            })
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("main.db");
+
+        let first = spawn_object_task(
+            runtime_with_files(&files).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+        );
+        // The migrated table exists on the very first statement.
+        first
+            .call(
+                "__dispatch",
+                call("exec", serde_json::json!(["INSERT INTO visits VALUES (1)"])),
+            )
+            .await
+            .expect("the migration created the table");
+        drop(first);
+
+        // A fresh vm over the same file skips the applied migration; a
+        // reapply would fail on the bare CREATE.
+        let second = spawn_object_task(
+            runtime_with_files(&files).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+        );
+        let count = second
+            .call(
+                "__dispatch",
+                call(
+                    "query_one",
+                    serde_json::json!(["SELECT COUNT(*) AS n FROM visits"]),
+                ),
+            )
+            .await
+            .expect("the respawn served without reapplying");
+        assert_eq!(count, serde_json::json!({ "n": 1 }));
     }
 
     /// The transaction guard: a method that errors after writing must

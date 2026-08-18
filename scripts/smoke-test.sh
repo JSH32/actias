@@ -83,7 +83,7 @@ printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$TOKEN" \
     > "$XDG_CONFIG_HOME/actias-cli/settings.json"
 
 cat > "$DEVDIR/published/script.json" <<EOF
-{"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua","**/*.txt","**/*.html"],"ignore":[]}
+{"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua","**/*.txt","**/*.html","migrations/**/*.sql"],"ignore":[]}
 EOF
 cat > "$DEVDIR/published/main.lua" <<'LUA'
 local ns = kv "smoke"
@@ -115,7 +115,8 @@ on "fetch" (function(request)
             asset = motd,
             hits = Hits:get("global"):bump(),
             db_rows = (function()
-                db:exec("CREATE TABLE IF NOT EXISTS visits (at INTEGER)")
+                -- The visits table exists because the migration applied at
+                -- the database's first touch; nothing creates it here.
                 db:exec("INSERT INTO visits VALUES (?)", { 1 })
                 return db:query_one("SELECT COUNT(*) AS n FROM visits").n
             end)(),
@@ -125,6 +126,14 @@ on "fetch" (function(request)
 end)
 LUA
 printf 'hello from an asset' > "$DEVDIR/published/motd.txt"
+
+# Scaffold the migration through the cli, then give it content. The bare
+# CREATE (no IF NOT EXISTS) doubles as the reapply detector: a second
+# application would fail every db request.
+"$REPO/target/debug/actias-cli" sql main create visits --directory "$DEVDIR/published"
+cat > "$DEVDIR/published/migrations/main/0001_visits.sql" <<'SQL'
+CREATE TABLE visits (at INTEGER);
+SQL
 printf '<h1>served without a vm</h1>' > "$DEVDIR/published/page.html"
 
 echo "== setting a secret (actias secret put)"
@@ -193,6 +202,9 @@ for _ in $(seq 1 30); do
 done
 [ -n "$H3" ] && [ "$H3" -gt "$H2" ] 2>/dev/null \
     || { echo "object state did not survive the restart ($H2 -> '$H3')"; exit 1; }
+D3=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
+[ -n "$D3" ] && [ "$D3" -gt "$D2" ] 2>/dev/null \
+    || { echo "the migrated database broke across the restart ($D2 -> '$D3'), migrations may have reapplied"; exit 1; }
 echo "object resumed at $H3 after the worker restart"
 
 echo "== serving a static asset next to the lua handler"
