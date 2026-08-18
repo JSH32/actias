@@ -174,11 +174,35 @@ impl NodeRegistryService for NodeRegistry {
             // Claim raced a cascade; the caller simply claims again.
             Status::aborted("The lease was freed mid-claim; try again.")
         })?;
+        let acquired = claimed.rows_affected() == 1 || holder == node_id;
+
+        // A fresh claim advances the object's epoch, which never resets:
+        // it is the fence storage shipping writes into its manifests.
+        let epoch: i64 = if claimed.rows_affected() == 1 {
+            sqlx::query_scalar(
+                "INSERT INTO object_epochs (object_id) VALUES ($1)
+                 ON CONFLICT (object_id)
+                 DO UPDATE SET epoch = object_epochs.epoch + 1
+                 RETURNING epoch",
+            )
+            .bind(&request.object_id)
+            .fetch_one(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+        } else {
+            sqlx::query_scalar("SELECT epoch FROM object_epochs WHERE object_id = $1")
+                .bind(&request.object_id)
+                .fetch_optional(&self.database)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?
+                .unwrap_or(1)
+        };
 
         Ok(Response::new(Lease {
             object_id: request.object_id.clone(),
             node_id: holder.to_string(),
-            acquired: claimed.rows_affected() == 1 || holder == node_id,
+            acquired,
+            epoch: epoch.max(1) as u64,
         }))
     }
 
@@ -364,11 +388,15 @@ mod tests {
         assert_eq!(refused.node_id, holder);
 
         // The holder falls silent past the ttl: its node ages out and the
-        // cascade frees the lease, so the claimant now wins.
+        // cascade frees the lease, so the claimant now wins, one epoch on.
         backdate(&database, &holder, 46).await;
         let won = acquire(claimant.clone()).await;
         assert!(won.acquired, "an expired lease must be claimable");
         assert_eq!(won.node_id, claimant);
+        assert_eq!(won.epoch, 2, "a takeover must advance the epoch");
+
+        // Re-claiming keeps the epoch; the fence only moves on takeover.
+        assert_eq!(acquire(claimant).await.epoch, 2);
     }
 
     #[tokio::test]

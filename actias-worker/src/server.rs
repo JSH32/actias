@@ -36,6 +36,7 @@ use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
 
 use crate::blob_cache::BlobCache;
 use crate::metrics::Metrics;
+use crate::object_store::ObjectStore;
 
 /// The service clients every request handler needs.
 #[derive(Clone)]
@@ -114,6 +115,8 @@ pub struct AppState {
     pub object_db_max_bytes: u64,
     /// Per-script request counters, served at /_metrics.
     pub metrics: Arc<Metrics>,
+    /// Where object snapshots ship to and restore from.
+    pub object_store: Arc<ObjectStore>,
     /// Revisions whose cron events were already armed by this process;
     /// arming is idempotent, this only spares the calls.
     pub armed_crons: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -528,6 +531,7 @@ pub struct ObjectRouting {
     host: Arc<ObjectHost>,
     data_dir: std::path::PathBuf,
     db_max_bytes: u64,
+    store: Arc<ObjectStore>,
     idle_after: Duration,
     node_identity: Arc<std::sync::RwLock<Option<String>>>,
     registry: NodeRegistryServiceClient<Channel>,
@@ -548,6 +552,7 @@ impl ObjectRouting {
             host: state.objects.clone(),
             data_dir: state.object_data_dir.clone(),
             db_max_bytes: state.object_db_max_bytes,
+            store: state.object_store.clone(),
             idle_after: state.object_idle_after,
             node_identity: state.node_identity.clone(),
             registry: state.registry.clone(),
@@ -623,6 +628,23 @@ impl ObjectRouting {
                     ));
                 }
 
+                // No local file means this node has never hosted the
+                // object (or lost its volume): the last shipped snapshot
+                // is the truth, and restoring it here is rehoming.
+                if !file.exists() {
+                    match routing.store.restore(&object_id, &file).await {
+                        Ok(true) => {
+                            actias_common::tracing::info!(object_id, "object restored from store")
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "The object's snapshot could not be restored: {error}"
+                            )));
+                        }
+                    }
+                }
+
                 // Object logs join the script's production channel, so
                 // `actias tail` sees them like any handler line.
                 let logs = routing.redis.clone().map(|connection| {
@@ -648,12 +670,36 @@ impl ObjectRouting {
                     .set_size_limit(routing.db_max_bytes)
                     .map_err(mlua::Error::RuntimeError)?;
 
+                // The output gate: every call that wrote ships its snapshot
+                // before the caller hears the result. A refused (fenced) or
+                // failed ship is logged; local durability still holds and
+                // the next write retries.
+                let ship_store = routing.store.clone();
+                let ship_id = object_id.clone();
+                let ship_file = file.clone();
+                let epoch = lease.epoch;
+                let after_write: actias_worker_core::objects::AfterWrite = Arc::new(move || {
+                    let store = ship_store.clone();
+                    let object_id = ship_id.clone();
+                    let file = ship_file.clone();
+                    Box::pin(async move {
+                        if let Err(error) = store.ship(&object_id, epoch, &file).await {
+                            actias_common::tracing::warn!(
+                                %error,
+                                object_id,
+                                "object snapshot did not ship"
+                            );
+                        }
+                    })
+                });
+
                 Ok((
                     runtime,
                     actias_worker_core::objects::TaskOptions {
                         call_budget: Some(OBJECT_CALL_BUDGET_SECS),
                         storage: Some(storage),
                         hibernate_after: Some(routing.idle_after),
+                        after_write: Some(after_write),
                     },
                 ))
             })
@@ -1064,6 +1110,10 @@ mod tests {
             in_flight: Arc::default(),
             objects: Arc::default(),
             metrics: Arc::default(),
+            object_store: Arc::new(ObjectStore::new(
+                crate::blob_cache::s3_client("http://127.0.0.1:1", "unused", "unused"),
+                "unused".to_owned(),
+            )),
             object_data_dir: std::env::temp_dir(),
             object_db_max_bytes: 64 * 1024 * 1024,
             armed_crons: Arc::default(),

@@ -42,6 +42,9 @@ message Lease {
     // refusal.
     string node_id = 2;
     bool acquired = 3;
+    // Monotonic per-object claim counter; fences storage shipping, so a
+    // zombie ex-owner's uploads lose to any newer epoch.
+    uint64 epoch = 4;
 }
 
 message ReleaseLeaseRequest {

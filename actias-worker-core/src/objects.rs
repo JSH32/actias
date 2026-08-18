@@ -9,6 +9,7 @@
 //! layers above.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use mlua::LuaSerdeExt;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -84,6 +85,15 @@ impl ObjectHandle {
 /// Moves `runtime` onto its own task forever and hands back its mailbox.
 ///
 /// The task ends when every handle is dropped; the vm drops with it.
+/// Runs after a call that wrote, before its caller hears the result:
+/// the output gate. Shipping a snapshot is the intended occupant.
+pub type AfterWrite =
+    Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// Tracks the storage change counter across calls, so only calls that
+/// actually wrote pay the shipping toll.
+struct ShipMark(std::cell::Cell<i64>);
+
 /// Everything configurable about one pinned task; the runtime is the
 /// only required piece.
 #[derive(Default)]
@@ -96,6 +106,9 @@ pub struct TaskOptions {
     /// already on disk, and the host revives it on the next touch. An
     /// object holding a pending alarm stays warm until it fires.
     pub hibernate_after: Option<std::time::Duration>,
+    /// The output gate: runs after any call that wrote, before its caller
+    /// hears the result. Snapshot shipping lives here.
+    pub after_write: Option<AfterWrite>,
 }
 
 pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> ObjectHandle {
@@ -105,10 +118,12 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         call_budget,
         storage,
         hibernate_after,
+        after_write,
     } = options;
 
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
 
+    runtime.set_app_data(ShipMark(std::cell::Cell::new(0)));
     if let Some(mut storage) = storage {
         // A persisted alarm re-arms the moment the object is resident
         // again; past-due fires immediately. (A cold object with a due
@@ -148,7 +163,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                         None => break,
                     },
                     _ = tokio::time::sleep(std::time::Duration::from_millis(wait as u64)) => {
-                        fire_alarm(&runtime, alarm, call_budget).await;
+                        fire_alarm(&runtime, alarm, call_budget, after_write.as_ref()).await;
                         continue;
                     }
                 }
@@ -169,7 +184,14 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                 }
             };
 
-            let result = guarded_dispatch(&runtime, &call.method, call.payload, call_budget).await;
+            let result = guarded_dispatch(
+                &runtime,
+                &call.method,
+                call.payload,
+                call_budget,
+                after_write.as_ref(),
+            )
+            .await;
 
             // A caller that stopped waiting is its own problem; the state
             // change it asked for has already happened either way.
@@ -187,6 +209,7 @@ async fn fire_alarm(
     runtime: &ActiasRuntime,
     alarm: crate::extensions::objects::PendingAlarm,
     call_budget: Option<u64>,
+    after_write: Option<&AfterWrite>,
 ) {
     if let Some(cell) = runtime.app_data_ref::<crate::extensions::objects::AlarmCell>() {
         *cell.0.borrow_mut() = None;
@@ -207,6 +230,7 @@ async fn fire_alarm(
             "chain": [alarm.own_key],
         }),
         call_budget,
+        after_write,
     )
     .await;
 
@@ -223,6 +247,7 @@ async fn guarded_dispatch(
     method: &str,
     payload: serde_json::Value,
     call_budget: Option<u64>,
+    after_write: Option<&AfterWrite>,
 ) -> Result<serde_json::Value, ObjectError> {
     let has_storage = runtime
         .app_data_ref::<crate::storage::StorageCell>()
@@ -283,11 +308,37 @@ async fn guarded_dispatch(
     }
 
     // The handler is done; give storage its flush moment before the
-    // caller hears anything (the output-gate seed).
+    // caller hears anything.
     if let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
         && let Err(error) = cell.0.borrow_mut().checkpoint()
     {
         actias_common::tracing::warn!(%error, "object storage checkpoint failed");
+    }
+
+    // The output gate: a call that wrote does not answer until the write
+    // has also left the building.
+    if let Some(after_write) = after_write {
+        let advanced = {
+            let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>() else {
+                return result;
+            };
+            let current = cell.0.borrow_mut().total_changes().unwrap_or(0);
+            let mark = runtime
+                .app_data_ref::<ShipMark>()
+                .map(|mark| mark.0.get())
+                .unwrap_or(0);
+            if current != mark {
+                if let Some(ship_mark) = runtime.app_data_ref::<ShipMark>() {
+                    ship_mark.0.set(current);
+                }
+                true
+            } else {
+                false
+            }
+        };
+        if advanced {
+            after_write().await;
+        }
     }
 
     result
@@ -1440,6 +1491,58 @@ mod tests {
         assert!(cron_delay_ms("cron:* * * * * *").expect("six-field") >= 1000);
         assert!(cron_delay_ms("cron:*/5 * * * *").expect("five-field") >= 1000);
         assert!(cron_delay_ms("cron:not a schedule").is_err());
+    }
+
+    /// The output gate: only calls that wrote pay it, and it has run by
+    /// the time the caller has its answer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_after_write_gate_fires_for_writes_only() {
+        const SOURCE: &str = r#"
+            local Keeper = object "Keeper" {
+                init = function(state)
+                    state.sql:exec("CREATE TABLE t (n INTEGER)")
+                end,
+                put = function(state)
+                    state.sql:exec("INSERT INTO t VALUES (1)")
+                end,
+                peek = function(state)
+                    return state.sql:query_one("SELECT COUNT(*) AS n FROM t").n
+                end,
+            }
+        "#;
+        let call =
+            |method: &str| serde_json::json!({ "class": "Keeper", "method": method, "args": [] });
+
+        let shipped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = shipped.clone();
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("k.db")).expect("opens"),
+                ),
+                after_write: Some(Arc::new(move || {
+                    let observed = observed.clone();
+                    Box::pin(async move {
+                        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    })
+                })),
+                ..Default::default()
+            },
+        );
+
+        // init + insert happen on the first call: one gate.
+        handle.call("__dispatch", call("put")).await.expect("put");
+        assert_eq!(shipped.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // A pure read moves nothing and pays nothing.
+        handle.call("__dispatch", call("peek")).await.expect("peek");
+        assert_eq!(shipped.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        handle.call("__dispatch", call("put")).await.expect("put");
+        assert_eq!(shipped.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]

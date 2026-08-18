@@ -119,6 +119,7 @@ dependencies = [
  "mlua",
  "moka",
  "redis",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
