@@ -33,7 +33,16 @@ pub struct ObjectTarget {
     pub name: String,
     pub method: String,
     pub arguments: Vec<serde_json::Value>,
+    /// Object keys already on this call's stack; the router refuses a
+    /// target that appears here, because its mailbox is busy underneath
+    /// this very call.
+    pub chain: Vec<String>,
 }
+
+/// The call chain the currently dispatched method arrived on; app data in
+/// pinned vms, absent in request vms. One slot suffices because a pinned
+/// vm runs exactly one call at a time.
+pub struct CallChain(pub Vec<String>);
 
 /// What `__dispatch` receives from the mailbox, mirroring [`ObjectTarget`]
 /// minus the name, which the pinned vm embodies rather than reads.
@@ -43,6 +52,10 @@ struct DispatchCall {
     method: String,
     #[serde(default)]
     args: Vec<serde_json::Value>,
+    /// The stack this call rides on, own key included, installed for the
+    /// method's outbound calls to extend.
+    #[serde(default)]
+    chain: Vec<String>,
 }
 
 /// How a method call leaves this vm: the worker supplies the routing (id
@@ -139,13 +152,17 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
                         arguments.push(lua.from_value::<serde_json::Value>(value)?);
                     }
 
-                    let router = {
+                    let (router, chain) = {
                         let Some(router) = lua.app_data_ref::<ObjectRouter>() else {
                             return Err(mlua::Error::RuntimeError(
                                 "Objects are not available in this runtime.".to_owned(),
                             ));
                         };
-                        router.clone()
+                        let chain = lua
+                            .app_data_ref::<CallChain>()
+                            .map(|chain| chain.0.clone())
+                            .unwrap_or_default();
+                        (router.clone(), chain)
                     };
 
                     let result = router(ObjectTarget {
@@ -153,6 +170,7 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
                         name,
                         method,
                         arguments,
+                        chain,
                     })
                     .await
                     .map_err(mlua::Error::RuntimeError)?;
@@ -174,6 +192,11 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
         "__dispatch",
         lua.create_async_function(|lua, payload: mlua::Value| async move {
             let call: DispatchCall = lua.from_value(payload)?;
+
+            // The method's own outbound calls extend this stack; installing
+            // it per dispatch is safe because this vm runs one call at a
+            // time by construction.
+            lua.set_app_data(CallChain(call.chain.clone()));
 
             let classes: Table = lua.named_registry_value(CLASSES_KEY)?;
             let class: Table = classes.get(call.class.as_str()).map_err(|_| {
