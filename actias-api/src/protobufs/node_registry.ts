@@ -31,6 +31,37 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ListNodesResponse>;
+        // Claims one object for one node. A lease lives exactly as long as its
+    // holder stays in the registry, so expiry is node age-out; a claim
+    // against a dead holder frees it and wins.
+        acquireLease(
+            data: AcquireLeaseRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Lease>;
+        // Releases a lease the node still holds; a rehoming courtesy, never
+    // required for correctness.
+        releaseLease(
+            data: ReleaseLeaseRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
+    }
+    export interface AcquireLeaseRequest {
+        // blake3 of the object identity, hex.
+        objectId?: string;
+        nodeId?: string;
+    }
+    export interface Lease {
+        objectId?: string;
+        // Whoever holds it now: the claimant on success, the incumbent on
+    // refusal.
+        nodeId?: string;
+        acquired?: boolean;
+    }
+    export interface ReleaseLeaseRequest {
+        objectId?: string;
+        nodeId?: string;
     }
     export interface RegisterNodeRequest {
         // Where other platform services reach this node, host:port.

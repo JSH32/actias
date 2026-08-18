@@ -11,8 +11,8 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::proto_node_registry::{
-    HeartbeatRequest, ListNodesResponse, Node, NodeRegistration, RegisterNodeRequest,
-    node_registry_service_server::NodeRegistryService,
+    AcquireLeaseRequest, HeartbeatRequest, Lease, ListNodesResponse, Node, NodeRegistration,
+    RegisterNodeRequest, ReleaseLeaseRequest, node_registry_service_server::NodeRegistryService,
 };
 
 /// One registry row.
@@ -133,6 +133,73 @@ impl NodeRegistryService for NodeRegistry {
         Ok(Response::new(ListNodesResponse {
             nodes: nodes.into_iter().map(Node::from).collect(),
         }))
+    }
+
+    async fn acquire_lease(
+        &self,
+        request: Request<AcquireLeaseRequest>,
+    ) -> Result<Response<Lease>, Status> {
+        let request = request.get_ref();
+        let node_id = Uuid::from_str(&request.node_id)
+            .map_err(|_| Status::invalid_argument("Node id is not a uuid."))?;
+
+        // A dead holder frees its leases by the same deletion that ages it
+        // out; doing it here means a claim never waits for a liveness read.
+        sqlx::query("DELETE FROM nodes WHERE last_heartbeat <= $1")
+            .bind(self.cutoff())
+            .execute(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // The conditional claim: exactly one row per object, first insert
+        // wins, a re-claim by the current holder is a no-op success.
+        let claimed = sqlx::query(
+            "INSERT INTO leases (object_id, node_id) VALUES ($1, $2)
+             ON CONFLICT (object_id) DO NOTHING",
+        )
+        .bind(&request.object_id)
+        .bind(node_id)
+        .execute(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        let holder: Option<Uuid> =
+            sqlx::query_scalar("SELECT node_id FROM leases WHERE object_id = $1")
+                .bind(&request.object_id)
+                .fetch_optional(&self.database)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+
+        let holder = holder.ok_or_else(|| {
+            // Claim raced a cascade; the caller simply claims again.
+            Status::aborted("The lease was freed mid-claim; try again.")
+        })?;
+
+        Ok(Response::new(Lease {
+            object_id: request.object_id.clone(),
+            node_id: holder.to_string(),
+            acquired: claimed.rows_affected() == 1 || holder == node_id,
+        }))
+    }
+
+    async fn release_lease(
+        &self,
+        request: Request<ReleaseLeaseRequest>,
+    ) -> Result<Response<()>, Status> {
+        let request = request.get_ref();
+        let node_id = Uuid::from_str(&request.node_id)
+            .map_err(|_| Status::invalid_argument("Node id is not a uuid."))?;
+
+        // Only the holder may release; anyone else's release is a no-op,
+        // so a laggard cannot free an object out from under its new home.
+        sqlx::query("DELETE FROM leases WHERE object_id = $1 AND node_id = $2")
+            .bind(&request.object_id)
+            .bind(node_id)
+            .execute(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(()))
     }
 }
 
@@ -261,5 +328,99 @@ mod tests {
             panic!("a heartbeat past the ttl must be refused");
         };
         assert_eq!(status.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn a_lease_is_exclusive_until_its_holder_dies() {
+        let (registry, database, _guard) = registry(45).await;
+
+        let holder = register(&registry, "holder:3000").await;
+        let claimant = register(&registry, "claimant:3000").await;
+        let object = "a".repeat(64);
+
+        let acquire = |node: String| {
+            let registry = &registry;
+            let object = object.clone();
+            async move {
+                registry
+                    .acquire_lease(Request::new(AcquireLeaseRequest {
+                        object_id: object,
+                        node_id: node,
+                    }))
+                    .await
+                    .expect("claim answers")
+                    .into_inner()
+            }
+        };
+
+        // First claim wins; re-claiming your own lease stays a success.
+        assert!(acquire(holder.clone()).await.acquired);
+        assert!(acquire(holder.clone()).await.acquired);
+
+        // A second claimant loses while the holder lives, and is told who
+        // holds it.
+        let refused = acquire(claimant.clone()).await;
+        assert!(!refused.acquired);
+        assert_eq!(refused.node_id, holder);
+
+        // The holder falls silent past the ttl: its node ages out and the
+        // cascade frees the lease, so the claimant now wins.
+        backdate(&database, &holder, 46).await;
+        let won = acquire(claimant.clone()).await;
+        assert!(won.acquired, "an expired lease must be claimable");
+        assert_eq!(won.node_id, claimant);
+    }
+
+    #[tokio::test]
+    async fn only_the_holder_can_release_a_lease() {
+        let (registry, _database, _guard) = registry(45).await;
+
+        let holder = register(&registry, "holder:3000").await;
+        let stranger = register(&registry, "stranger:3000").await;
+        let object = "b".repeat(64);
+
+        registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: object.clone(),
+                node_id: holder.clone(),
+            }))
+            .await
+            .expect("claims");
+
+        // A stranger's release is a no-op; the holder keeps the lease.
+        registry
+            .release_lease(Request::new(ReleaseLeaseRequest {
+                object_id: object.clone(),
+                node_id: stranger.clone(),
+            }))
+            .await
+            .expect("release answers");
+        let refused = registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: object.clone(),
+                node_id: stranger.clone(),
+            }))
+            .await
+            .expect("claim answers")
+            .into_inner();
+        assert!(!refused.acquired, "a stranger's release must not free it");
+
+        // The holder's release does free it.
+        registry
+            .release_lease(Request::new(ReleaseLeaseRequest {
+                object_id: object.clone(),
+                node_id: holder.clone(),
+            }))
+            .await
+            .expect("release answers");
+        let won = registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: object,
+                node_id: stranger,
+            }))
+            .await
+            .expect("claim answers")
+            .into_inner();
+        assert!(won.acquired);
     }
 }

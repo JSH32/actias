@@ -22,6 +22,8 @@ use actias_worker_core::extensions::objects::{ObjectRouter, ObjectTarget};
 use actias_worker_core::objects::ObjectHost;
 use actias_worker_core::proto::bundle::File;
 use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
+use actias_worker_core::proto::node_registry::AcquireLeaseRequest;
+use actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient;
 use actias_worker_core::proto::script_service::FindScriptRequest;
 use actias_worker_core::proto::script_service::GetAliasRequest;
 use actias_worker_core::proto::script_service::GetRevisionRequest;
@@ -106,6 +108,11 @@ pub struct AppState {
     pub objects: Arc<ObjectHost>,
     /// One SQLite file per object identity lives here.
     pub object_data_dir: std::path::PathBuf,
+    /// This node's registry identity, filled in once registration lands;
+    /// object claims speak as it.
+    pub node_identity: Arc<std::sync::RwLock<Option<String>>>,
+    /// The placement store, for object lease claims.
+    pub registry: NodeRegistryServiceClient<Channel>,
     /// Domain subdomain routing hangs off; [`None`] leaves only the path
     /// forms.
     pub base_domain: Option<String>,
@@ -468,6 +475,8 @@ async fn cached_revision(
 struct ObjectRouting {
     host: Arc<ObjectHost>,
     data_dir: std::path::PathBuf,
+    node_identity: Arc<std::sync::RwLock<Option<String>>>,
+    registry: NodeRegistryServiceClient<Channel>,
     kv: KvServiceClient<Channel>,
     egress: EgressClient,
     secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
@@ -504,16 +513,45 @@ impl ObjectRouting {
         let chain = actias_worker_core::objects::extend_call_chain(&target.chain, &key)?;
 
         let routing = self.clone();
-        // The file is the object's identity on disk: keyed by the same
-        // string as the vm registry minus the revision, hashed because the
-        // class and name are user-chosen text, not path material.
-        let file = self
-            .data_dir
-            .join(format!("{}.db", blake3::hash(key.as_bytes()).to_hex()));
+        // The hash is the object's platform-wide id: the lease key in the
+        // placement store and the file name on disk, because the class and
+        // instance names are user-chosen text.
+        let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
+        let file = self.data_dir.join(format!("{object_id}.db"));
 
         let handle = self
             .host
             .get_or_spawn(&key, &self.prepared.revision_id, || async move {
+                // One claim per residency, before anything is built: an
+                // object only ever lives where its lease is held, which is
+                // what makes a second node refusing to serve it correct.
+                let node_id = routing
+                    .node_identity
+                    .read()
+                    .expect("no poisoned lock")
+                    .clone()
+                    .ok_or_else(|| {
+                        mlua::Error::RuntimeError(
+                            "This node has not finished registering; try again.".to_owned(),
+                        )
+                    })?;
+
+                let lease = routing
+                    .registry
+                    .clone()
+                    .acquire_lease(AcquireLeaseRequest {
+                        object_id: object_id.clone(),
+                        node_id,
+                    })
+                    .await
+                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
+                    .into_inner();
+                if !lease.acquired {
+                    return Err(mlua::Error::RuntimeError(
+                        "Object is homed on another node.".to_owned(),
+                    ));
+                }
+
                 // Object logs join the script's production channel, so
                 // `actias tail` sees them like any handler line.
                 let logs = routing.redis.clone().map(|connection| {
@@ -776,6 +814,8 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     let router = Arc::new(ObjectRouting {
         host: state.objects.clone(),
         data_dir: state.object_data_dir.clone(),
+        node_identity: state.node_identity.clone(),
+        registry: state.registry.clone(),
         kv: state.clients.kv.clone(),
         egress: state.egress.clone(),
         secrets_key: state.secrets_key.clone(),
@@ -845,6 +885,10 @@ mod tests {
             in_flight: Arc::default(),
             objects: Arc::default(),
             object_data_dir: std::env::temp_dir(),
+            node_identity: Arc::default(),
+            registry: NodeRegistryServiceClient::new(
+                Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+            ),
             base_domain: None,
         }
     }
