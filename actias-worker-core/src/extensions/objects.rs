@@ -376,13 +376,21 @@ fn cron_class(lua: &Lua) -> mlua::Result<Table> {
         })?,
     )?;
 
+    // Errors are contained here in rust rather than by a lua pcall: the
+    // handler may yield (async platform calls), and Luau cannot yield
+    // across a pcall's C boundary. A failing handler is logged and the
+    // alarm method still succeeds, so the re-arm always commits.
     lua.globals().set(
         "__fire_event",
         lua.create_async_function(|lua, (event, payload): (String, mlua::Value)| async move {
-            let listener = ActiasRuntime::listener_in(&lua, &event).map_err(|_| {
-                mlua::Error::RuntimeError(format!("No listener registered for '{event}'."))
-            })?;
-            listener.call_async::<mlua::Value>(payload).await
+            let Ok(listener) = ActiasRuntime::listener_in(&lua, &event) else {
+                actias_common::tracing::warn!(event, "no listener registered for cron event");
+                return Ok(());
+            };
+            if let Err(error) = listener.call_async::<mlua::Value>(payload).await {
+                actias_common::tracing::warn!(%error, event, "cron handler failed");
+            }
+            Ok(())
         })?,
     )?;
 
@@ -400,13 +408,10 @@ fn cron_class(lua: &Lua) -> mlua::Result<Table> {
                 local row = state.sql:query_one("SELECT event FROM cron_state")
                 if not row then return end
                 state:set_alarm(__cron_next_ms(row.event) / 1000)
-                local ok, err = pcall(__fire_event, row.event, {
+                __fire_event(row.event, {
                     cron = row.event,
                     scheduled_at = state.now(),
                 })
-                if not ok then
-                    log.warn("cron handler failed: " .. tostring(err))
-                end
             end,
         }
         "#,
