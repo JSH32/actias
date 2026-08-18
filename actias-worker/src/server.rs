@@ -110,6 +110,8 @@ pub struct AppState {
     pub object_data_dir: std::path::PathBuf,
     /// Size cap per object database, bytes.
     pub object_db_max_bytes: u64,
+    /// Idle time before a pinned vm hibernates.
+    pub object_idle_after: Duration,
     /// This node's registry identity, filled in once registration lands;
     /// object claims speak as it.
     pub node_identity: Arc<std::sync::RwLock<Option<String>>>,
@@ -478,6 +480,7 @@ struct ObjectRouting {
     host: Arc<ObjectHost>,
     data_dir: std::path::PathBuf,
     db_max_bytes: u64,
+    idle_after: Duration,
     node_identity: Arc<std::sync::RwLock<Option<String>>>,
     registry: NodeRegistryServiceClient<Channel>,
     kv: KvServiceClient<Channel>,
@@ -599,7 +602,14 @@ impl ObjectRouting {
                     .set_size_limit(routing.db_max_bytes)
                     .map_err(mlua::Error::RuntimeError)?;
 
-                Ok((runtime, Some(OBJECT_CALL_BUDGET_SECS), Some(storage)))
+                Ok((
+                    runtime,
+                    actias_worker_core::objects::TaskOptions {
+                        call_budget: Some(OBJECT_CALL_BUDGET_SECS),
+                        storage: Some(storage),
+                        hibernate_after: Some(routing.idle_after),
+                    },
+                ))
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -873,6 +883,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         host: state.objects.clone(),
         data_dir: state.object_data_dir.clone(),
         db_max_bytes: state.object_db_max_bytes,
+        idle_after: state.object_idle_after,
         node_identity: state.node_identity.clone(),
         registry: state.registry.clone(),
         kv: state.clients.kv.clone(),
@@ -945,6 +956,7 @@ mod tests {
             objects: Arc::default(),
             object_data_dir: std::env::temp_dir(),
             object_db_max_bytes: 64 * 1024 * 1024,
+            object_idle_after: Duration::from_secs(300),
             node_identity: Arc::default(),
             registry: NodeRegistryServiceClient::new(
                 Channel::from_static("http://127.0.0.1:1").connect_lazy(),
