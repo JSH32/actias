@@ -268,7 +268,9 @@ mkdir -p "$UNIT"
 cp -r "$REPO/actias-cli/template/templates/basic/." "$UNIT/"
 "$REPO/target/debug/actias-cli" test "$UNIT" \
     || { echo "the template's shipped test failed"; exit 1; }
-echo "template test passed on the local runtime"
+"$REPO/target/debug/actias-cli" check "$UNIT" \
+    || { echo "the template failed actias check"; exit 1; }
+echo "template test and typed check passed on the local runtime"
 
 echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket

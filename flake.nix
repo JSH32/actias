@@ -52,6 +52,8 @@
           # toolchain entry is needed for it.
           buildInputs = with pkgs; [
             openssl
+            # `actias check` shells out to luau-analyze for typed lua.
+            luau
           ];
 
           # Only greet a human; `nix develop -c ...` and CI stay quiet.

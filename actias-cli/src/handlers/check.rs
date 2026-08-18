@@ -2,7 +2,7 @@ use colored::*;
 use std::path::Path;
 
 use crate::{
-    capabilities,
+    analyze, capabilities,
     errors::{Error, Result},
     script::ScriptConfig,
 };
@@ -28,6 +28,11 @@ pub fn handle(directory: &str) -> Result<()> {
             declared.secrets.join(", ").purple()
         );
     }
+
+    // Strict types over the whole bundle, with the platform surface shadowed
+    // in; diagnostics point at the user's own lines.
+    analyze::analyze(&config).map_err(Error::Script)?;
+    println!("{}", "🔎 Types check out (luau-analyze).".green());
 
     Ok(())
 }

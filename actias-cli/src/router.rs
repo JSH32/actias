@@ -45,9 +45,8 @@ impl Router {
             Commands::Projects { page } => self.handle_list_projects(page).await,
             Commands::Project { id, sub } => self.handle_project(id, sub).await,
             Commands::Script { id, sub } => self.handle_script(id, sub).await,
-            Commands::Check { directory } => self.handle_check(directory),
             // Handled before authentication in main; unreachable here.
-            Commands::Test { .. } => Ok(()),
+            Commands::Check { .. } | Commands::Test { .. } => Ok(()),
         }
     }
 
@@ -87,7 +86,4 @@ impl Router {
     }
 
     // Route to Check handler
-    fn handle_check(&self, directory: String) -> Result<()> {
-        handlers::check::handle(&directory)
-    }
 }
