@@ -19,6 +19,34 @@ service NodeRegistryService {
 
     // Every node considered alive right now; the aged-out are gone.
     rpc ListNodes(google.protobuf.Empty) returns (ListNodesResponse);
+
+    // Claims one object for one node. A lease lives exactly as long as its
+    // holder stays in the registry, so expiry is node age-out; a claim
+    // against a dead holder frees it and wins.
+    rpc AcquireLease(AcquireLeaseRequest) returns (Lease);
+
+    // Releases a lease the node still holds; a rehoming courtesy, never
+    // required for correctness.
+    rpc ReleaseLease(ReleaseLeaseRequest) returns (google.protobuf.Empty);
+}
+
+message AcquireLeaseRequest {
+    // blake3 of the object identity, hex.
+    string object_id = 1;
+    string node_id = 2;
+}
+
+message Lease {
+    string object_id = 1;
+    // Whoever holds it now: the claimant on success, the incumbent on
+    // refusal.
+    string node_id = 2;
+    bool acquired = 3;
+}
+
+message ReleaseLeaseRequest {
+    string object_id = 1;
+    string node_id = 2;
 }
 
 message RegisterNodeRequest {

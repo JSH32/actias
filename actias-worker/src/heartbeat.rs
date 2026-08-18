@@ -18,6 +18,7 @@ pub async fn register_and_heartbeat(
     mut client: NodeRegistryServiceClient<Channel>,
     address: String,
     in_flight: Arc<AtomicU32>,
+    identity: Arc<std::sync::RwLock<Option<String>>>,
 ) {
     loop {
         // Registration retries until it lands; the worker serves requests
@@ -41,6 +42,8 @@ pub async fn register_and_heartbeat(
         let node_id = registration.node_id;
         let interval = Duration::from_secs(registration.heartbeat_interval_secs.max(1).into());
         info!(node_id, "registered with the placement store");
+        // Object claims need to speak as this node; publish the identity.
+        *identity.write().expect("no poisoned lock") = Some(node_id.clone());
 
         loop {
             tokio::time::sleep(interval).await;

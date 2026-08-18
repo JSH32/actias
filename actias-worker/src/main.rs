@@ -71,10 +71,12 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .await?;
     let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let node_identity = std::sync::Arc::new(std::sync::RwLock::new(None));
     tokio::spawn(heartbeat::register_and_heartbeat(
-        registry_client,
+        registry_client.clone(),
         config.node_address.clone(),
         in_flight.clone(),
+        node_identity.clone(),
     ));
 
     let redis = redis::aio::ConnectionManager::new(
@@ -121,6 +123,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             in_flight,
             objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),
             object_data_dir: std::path::PathBuf::from(config.object_data_dir),
+            node_identity,
+            registry: registry_client,
             base_domain: config.base_domain,
         },
         config.max_body_bytes,
