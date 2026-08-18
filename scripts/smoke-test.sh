@@ -118,7 +118,8 @@ on "fetch" (function(request)
                 -- The visits table exists because the migration applied at
                 -- the database's first touch; nothing creates it here.
                 db:exec("INSERT INTO visits VALUES (?)", { 1 })
-                return db:query_one("SELECT COUNT(*) AS n FROM visits").n
+                -- read_one exercises the mailbox bypass end to end.
+                return db:read_one("SELECT COUNT(*) AS n FROM visits").n
             end)(),
         }),
         headers = { ["Content-Type"] = "application/json" },

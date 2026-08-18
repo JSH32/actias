@@ -513,6 +513,25 @@ impl ObjectRouting {
             "{}/{}/{}",
             self.prepared.script.id, target.class, target.name
         );
+
+        // Reads that tolerate bounded staleness skip the mailbox entirely:
+        // a read-only connection beside the owner's file sees every
+        // committed write and waits on nothing. A database that has no
+        // file yet falls through, so first touch still creates and
+        // migrates it through the owner.
+        if target.class == actias_worker_core::extensions::objects::DATABASE_CLASS
+            && matches!(target.method.as_str(), "read" | "read_one")
+        {
+            let file = self
+                .data_dir
+                .join(format!("{}.db", blake3::hash(key.as_bytes()).to_hex()));
+            if file.exists()
+                && let Some(result) = read_bypass(&file, &target).await?
+            {
+                return Ok(result);
+            }
+        }
+
         let chain = actias_worker_core::objects::extend_call_chain(&target.chain, &key)?;
 
         let routing = self.clone();
@@ -599,6 +618,38 @@ impl ObjectRouting {
             .await
             .map_err(|e| e.to_string())
     }
+}
+
+/// One bypassed read: a fresh read-only connection, the query, done.
+/// Returns [`None`] when the arguments do not fit a read, letting the
+/// mailbox path produce its usual error shapes.
+async fn read_bypass(
+    file: &std::path::Path,
+    target: &ObjectTarget,
+) -> Result<Option<serde_json::Value>, String> {
+    let Some(serde_json::Value::String(sql)) = target.arguments.first().cloned() else {
+        return Ok(None);
+    };
+    let params: Vec<serde_json::Value> = match target.arguments.get(1) {
+        Some(serde_json::Value::Array(params)) => params.clone(),
+        Some(serde_json::Value::Null) | None => Vec::new(),
+        Some(_) => return Ok(None),
+    };
+    let one = target.method == "read_one";
+
+    let file = file.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut reader = actias_worker_core::storage::SqliteStorage::open_read_only(&file)?;
+        let rows = reader.query(&sql, &params)?;
+
+        Ok(Some(if one {
+            rows.into_iter().next().unwrap_or(serde_json::Value::Null)
+        } else {
+            serde_json::Value::Array(rows)
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Resolves the script, runs it, and shapes its response.
