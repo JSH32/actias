@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "../protobufs/script_service.proto",
                 "../protobufs/shared/bundle.proto",
                 "../protobufs/kv_service.proto",
+                "../protobufs/node_registry.proto",
             ],
             &["../protobufs"],
         )

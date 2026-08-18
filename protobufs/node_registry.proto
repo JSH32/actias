@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package node_registry;
+
+// Membership half of the placement store: every worker node announces
+// itself here and proves liveness by heartbeat. Object leases will share
+// this store later; today it answers "which nodes are alive and how busy
+// are they".
+service NodeRegistryService {
+    // A booting node introduces itself and receives its identity and the
+    // cadence it must heartbeat at.
+    rpc Register(RegisterNodeRequest) returns (NodeRegistration);
+
+    // Periodic liveness and load report. NOT_FOUND means the node has
+    // already aged out and must register again.
+    rpc Heartbeat(HeartbeatRequest) returns (google.protobuf.Empty);
+
+    // Every node considered alive right now; the aged-out are gone.
+    rpc ListNodes(google.protobuf.Empty) returns (ListNodesResponse);
+}
+
+message RegisterNodeRequest {
+    // Where other platform services reach this node, host:port.
+    string address = 1;
+    // Roles the node serves, e.g. "http"; object hosting arrives later.
+    repeated string capabilities = 2;
+}
+
+message NodeRegistration {
+    string node_id = 1;
+    // Missing several of these in a row ages the node out.
+    uint32 heartbeat_interval_secs = 2;
+}
+
+message HeartbeatRequest {
+    string node_id = 1;
+    // Instantaneous load: requests in flight when the beat was sent.
+    uint32 load = 2;
+}
+
+message Node {
+    string node_id = 1;
+    string address = 2;
+    repeated string capabilities = 3;
+    uint32 load = 4;
+    string registered = 5;
+    string last_heartbeat = 6;
+}
+
+message ListNodesResponse {
+    repeated Node nodes = 1;
+}

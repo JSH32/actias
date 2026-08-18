@@ -25,6 +25,9 @@ pub struct Config {
     pub s3_bucket: String,
     /// Byte budget for the hash-keyed blob cache.
     pub blob_cache_bytes: u64,
+    /// Address other platform services reach this node on, host:port;
+    /// reported to the placement store at registration.
+    pub node_address: String,
     /// Hostnames scripts may never reach, beyond the service uris the worker
     /// already knows; comma separated.
     pub egress_denied_hosts: Vec<String>,
@@ -37,8 +40,10 @@ impl Config {
     pub fn new() -> Self {
         dotenv().ok();
 
+        let port: u16 = get_env_or("PORT", 3000);
+
         Config {
-            port: get_env_or("PORT", 3000),
+            port,
             script_service_uri: get_env("SCRIPT_SERVICE_URI"),
             kv_service_uri: get_env("KV_SERVICE_URI"),
             redis_url: get_env("REDIS_URL"),
@@ -52,6 +57,15 @@ impl Config {
             s3_secret_key: get_env("S3_SECRET_KEY"),
             s3_bucket: get_env_or("S3_BUCKET", "actias-blobs".to_owned()),
             blob_cache_bytes: get_env_or::<u64>("BLOB_CACHE_MB", 256) * 1024 * 1024,
+            // The container hostname resolves within a compose network,
+            // which covers local; a deployment sets NODE_ADDRESS.
+            node_address: get_env_or(
+                "NODE_ADDRESS",
+                format!(
+                    "{}:{port}",
+                    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_owned())
+                ),
+            ),
             egress_denied_hosts: get_env_or("EGRESS_DENIED_HOSTS", String::new())
                 .split(',')
                 .map(str::trim)
