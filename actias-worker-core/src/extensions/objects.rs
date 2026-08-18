@@ -24,8 +24,9 @@ use crate::runtime::{ActiasRuntime, ContractKind};
 const CLASSES_KEY: &str = "object_classes";
 
 /// The built-in class behind `database "name"`; the `__` prefix is
-/// reserved, so no user class can collide with it.
-const DATABASE_CLASS: &str = "__database";
+/// reserved, so no user class can collide with it. Public because the
+/// router special-cases its read methods for the mailbox bypass.
+pub const DATABASE_CLASS: &str = "__database";
 
 /// Registry key of the object's state table; exists only in pinned vms,
 /// created on their first dispatched call.
@@ -315,6 +316,16 @@ fn database_class(lua: &Lua) -> mlua::Result<Table> {
             query_one.call::<mlua::Value>((sql, text, params))
         })?,
     )?;
+
+    // read/read_one: the same queries by another name. The name is the
+    // contract: these tolerate bounded staleness, which lets the router
+    // serve them from a read-only connection without entering the mailbox.
+    // Inside the pinned vm (or when the file does not exist yet) they run
+    // here, where they are simply reads.
+    let query: mlua::Function = body.get("query")?;
+    body.set("read", query)?;
+    let query_one: mlua::Function = body.get("query_one")?;
+    body.set("read_one", query_one)?;
 
     Ok(body)
 }

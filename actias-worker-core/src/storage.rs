@@ -37,6 +37,20 @@ impl SqliteStorage {
         Ok(Self { connection })
     }
 
+    /// Opens the file read-only, for reads that bypass the owner's
+    /// mailbox: they see every committed write and nothing in flight,
+    /// which is the bounded staleness the bypass trades on.
+    ///
+    /// # Errors
+    /// Returns text when the file cannot be opened.
+    pub fn open_read_only(path: &Path) -> Result<Self, String> {
+        let connection =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| e.to_string())?;
+
+        Ok(Self { connection })
+    }
+
     /// An in-memory database, for tests and local fakes.
     ///
     /// # Errors
@@ -521,6 +535,33 @@ mod tests {
         storage
             .query("SELECT COUNT(*) AS n FROM t", &[])
             .expect("reads still work");
+    }
+
+    #[test]
+    fn a_bypassed_read_sees_committed_rows_and_never_blocks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("owner.db");
+
+        let mut owner = SqliteStorage::open(&path).expect("opens");
+        owner.exec("CREATE TABLE t (n INTEGER)", &[]).expect("ddl");
+        owner
+            .exec("INSERT INTO t VALUES (1)", &[])
+            .expect("committed row");
+
+        // The owner holds an open transaction with an uncommitted write,
+        // exactly the state a long-running method would pin.
+        owner.begin().expect("begins");
+        owner
+            .exec("INSERT INTO t VALUES (2)", &[])
+            .expect("in-flight row");
+
+        let mut reader = SqliteStorage::open_read_only(&path).expect("read-only opens");
+        let rows = reader
+            .query("SELECT COUNT(*) AS n FROM t", &[])
+            .expect("the read returns without waiting");
+        assert_eq!(rows, vec![serde_json::json!({ "n": 1 })]);
+
+        owner.rollback().expect("rolls back");
     }
 
     #[test]
