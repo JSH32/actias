@@ -123,6 +123,9 @@ services:
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
       # Development-only key; a deployment must set its own.
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      # Subdomain routing for anything resolving under this base; the
+      # path-prefix forms keep working for direct access.
+      - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
     ports:
       - 3002:3000
 
@@ -212,6 +215,7 @@ services:
       - PORT=3000
       - API_URL=${API_URL:-http://localhost:3001}
       - WORKER_BASE=${WORKER_URL:-http://localhost:3002}/_IDENTIFIER_
+      - WORKER_REVISION_BASE=${WORKER_URL:-http://localhost:3002}/_rev/_IDENTIFIER_/_REVISION_
 
 volumes:
   scylla_data:

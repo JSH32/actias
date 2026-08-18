@@ -90,7 +90,7 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
     );
 
     // Create revision
-    client
+    let revision = client
         .create_revision()
         .id(&script.id)
         .body(
@@ -106,6 +106,17 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         "🚀 Script published to {} {}",
         script.public_identifier.purple(),
         format!("({})", script.id).bright_black(),
+    );
+    // The path form works on any worker; a subdomain deployment also
+    // serves it at <ident>--r-<revision>.<base>.
+    println!(
+        "📌 Revision {} {}",
+        revision.id.purple(),
+        format!(
+            "(preview: /_rev/{}/{})",
+            script.public_identifier, revision.id
+        )
+        .bright_black(),
     );
 
     Ok(())

@@ -21,12 +21,18 @@ import {
   Title,
 } from '@mantine/core';
 import { breadcrumbs } from '@/helpers/util';
-import { IconCheck, IconLink, IconTrash } from '@tabler/icons-react';
+import { IconCheck, IconEye, IconLink, IconTrash } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import getConfig from 'next/config';
 import { CodeHighlightTabs } from '@mantine/code-highlight';
 
 const { publicRuntimeConfig } = getConfig();
+
+/** Where one revision previews, current or not. */
+const previewUrl = (identifier: string, revisionId: string) =>
+  publicRuntimeConfig.workerRevisionBase
+    .replaceAll('_IDENTIFIER_', identifier)
+    .replaceAll('_REVISION_', revisionId);
 
 const Script = () => {
   const router = useRouter();
@@ -128,6 +134,7 @@ const Script = () => {
               <Table.Tr>
                 <Table.Th>Revision ID</Table.Th>
                 <Table.Th>Creation Date</Table.Th>
+                <Table.Th>Preview</Table.Th>
                 <Table.Th>Delete</Table.Th>
                 <Table.Th>Active</Table.Th>
               </Table.Tr>
@@ -137,6 +144,16 @@ const Script = () => {
                 <Table.Tr key={item.id}>
                   <Table.Td>{item.id}</Table.Td>
                   <Table.Td>{item.created}</Table.Td>
+                  <Table.Td>
+                    <Anchor
+                      target="_blank"
+                      href={previewUrl(script.publicIdentifier, item.id)}
+                    >
+                      <ActionIcon variant="default" size={30}>
+                        <IconEye size="1rem" />
+                      </ActionIcon>
+                    </Anchor>
+                  </Table.Td>
                   <Table.Td>
                     <ActionIcon
                       variant="default"
