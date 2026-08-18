@@ -91,6 +91,9 @@ local token = secret "smoke-token"
 
 -- A durable object: one pinned vm owns this state, every request routes
 -- its call through the same mailbox.
+-- The sql product face: durable rows behind one declaration.
+local db = database "main"
+
 local Hits = object "Hits" {
     bump = function(state)
         state.sql:exec("CREATE TABLE IF NOT EXISTS hits (at INTEGER)")
@@ -111,6 +114,11 @@ on "fetch" (function(request)
             secret = token,
             asset = motd,
             hits = Hits:get("global"):bump(),
+            db_rows = (function()
+                db:exec("CREATE TABLE IF NOT EXISTS visits (at INTEGER)")
+                db:exec("INSERT INTO visits VALUES (?)", { 1 })
+                return db:query_one("SELECT COUNT(*) AS n FROM visits").n
+            end)(),
         }),
         headers = { ["Content-Type"] = "application/json" },
     }
@@ -164,6 +172,14 @@ H2=$(curl -sf "$WORKER/$IDENT/" | jq .hits)
 OBJ_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.objects[0]')
 [ "$OBJ_DECLARED" = "Hits" ] \
     || { echo "the object class was not in the stored contract (got '$OBJ_DECLARED')"; exit 1; }
+DB_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.databases[0]')
+[ "$DB_DECLARED" = "main" ] \
+    || { echo "the database was not in the stored contract (got '$DB_DECLARED')"; exit 1; }
+D1=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
+D2=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
+[ "$D2" -gt "$D1" ] 2>/dev/null \
+    || { echo "database rows did not accumulate across requests ($D1 -> $D2)"; exit 1; }
+echo "database counted $D1 then $D2 across requests"
 echo "object counted $H1 then $H2; contract declares class $OBJ_DECLARED"
 
 echo "== object rows survive a worker restart"

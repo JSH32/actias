@@ -94,6 +94,8 @@ pub struct Declarations {
     pub secrets: Vec<String>,
     /// Classes handed to `object "Class"`.
     pub objects: Vec<String>,
+    /// Names handed to `database "name"`.
+    pub databases: Vec<String>,
 }
 
 /// The capability contract a revision was published with.
@@ -106,6 +108,7 @@ pub struct Contract {
     kv: HashSet<String>,
     secrets: HashSet<String>,
     objects: HashSet<String>,
+    databases: HashSet<String>,
 }
 
 /// Which contract list a declaration checks against.
@@ -113,6 +116,7 @@ pub enum ContractKind {
     Kv,
     Secret,
     Object,
+    Database,
 }
 
 /// A revision compiled once and shared by every request that runs it.
@@ -175,6 +179,7 @@ impl PreparedRevision {
                 kv: capabilities.kv.into_iter().collect(),
                 secrets: capabilities.secrets.into_iter().collect(),
                 objects: capabilities.objects.into_iter().collect(),
+                databases: capabilities.databases.into_iter().collect(),
             });
 
         Ok(Self {
@@ -322,6 +327,7 @@ impl ActiasRuntime {
             ContractKind::Kv => (&contract.kv, "Namespace"),
             ContractKind::Secret => (&contract.secrets, "Secret"),
             ContractKind::Object => (&contract.objects, "Object class"),
+            ContractKind::Database => (&contract.databases, "Database"),
         };
 
         if allowed.contains(name) {
@@ -345,6 +351,13 @@ impl ActiasRuntime {
     pub fn record_object_declaration(lua: &Lua, class: &str) {
         if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
             declarations.objects.push(class.to_owned());
+        }
+    }
+
+    /// Notes a `database "name"` declaration for [`Self::declarations`].
+    pub fn record_database_declaration(lua: &Lua, name: &str) {
+        if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+            declarations.databases.push(name.to_owned());
         }
     }
 
@@ -992,6 +1005,7 @@ mod tests {
                     events: vec!["fetch".to_owned()],
                     secrets: secrets.iter().map(|s| s.to_string()).collect(),
                     objects: vec![],
+                    databases: vec![],
                 }),
                 ..Default::default()
             }),

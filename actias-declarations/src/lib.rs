@@ -41,6 +41,9 @@ pub struct Declarations {
     /// Object classes declared with `object "Class" { ... }`.
     #[serde(default)]
     pub objects: Vec<String>,
+    /// Databases declared with `database "name"`.
+    #[serde(default)]
+    pub databases: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -153,6 +156,19 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
 
     lua.globals()
         .set("objects", lua.create_function(|lua, _: String| stub(lua))?)?;
+
+    let database_recorded = recorded.clone();
+    lua.globals().set(
+        "database",
+        lua.create_function(move |lua, name: String| {
+            database_recorded
+                .lock()
+                .expect("no other holder")
+                .databases
+                .push(name);
+            stub(lua)
+        })?,
+    )?;
 
     let on_recorded = recorded.clone();
     lua.globals().set(
@@ -282,6 +298,7 @@ mod tests {
                     end,
                 }
                 local Other = objects "Elsewhere"
+                local db = database "main"
                 "#,
             )]),
             "main.lua",
@@ -293,6 +310,7 @@ mod tests {
         assert_eq!(declarations.secrets, vec!["stripe"]);
         // Declaring records; referencing does not.
         assert_eq!(declarations.objects, vec!["Room"]);
+        assert_eq!(declarations.databases, vec!["main"]);
     }
 
     #[test]

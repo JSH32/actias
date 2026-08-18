@@ -23,6 +23,10 @@ use crate::runtime::{ActiasRuntime, ContractKind};
 /// Registry key of the class-name-to-methods table in this vm.
 const CLASSES_KEY: &str = "object_classes";
 
+/// The built-in class behind `database "name"`; the `__` prefix is
+/// reserved, so no user class can collide with it.
+const DATABASE_CLASS: &str = "__database";
+
 /// Registry key of the object's state table; exists only in pinned vms,
 /// created on their first dispatched call.
 const STATE_KEY: &str = "object_state";
@@ -127,7 +131,21 @@ impl LuaExtension for ObjectExtension {
     }
 
     fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
-        lua.set_named_registry_value(CLASSES_KEY, lua.create_table()?)?;
+        let classes = lua.create_table()?;
+        classes.set(DATABASE_CLASS, database_class(lua)?)?;
+        lua.set_named_registry_value(CLASSES_KEY, classes)?;
+
+        // `database "name"`: the sql product face, sugar over an object of
+        // the built-in class; same lease, same file, same mailbox.
+        lua.globals().set(
+            "database",
+            lua.create_function(|lua, name: String| {
+                ActiasRuntime::assert_declaration_phase(lua, "database")?;
+                ActiasRuntime::assert_contract_allows(lua, ContractKind::Database, &name)?;
+                ActiasRuntime::record_database_declaration(lua, &name);
+                instance_handle(lua, DATABASE_CLASS.to_owned(), name)
+            })?,
+        )?;
 
         // `objects "Class"`: reference a class declared elsewhere. It mints
         // the same handle; whether the class exists is the callee's truth.
@@ -145,6 +163,11 @@ impl LuaExtension for ObjectExtension {
         // recorded, the table becomes the class body in this vm.
         let declaration = lua.create_function(|lua, class: String| {
             ActiasRuntime::assert_declaration_phase(lua, "object")?;
+            if class.starts_with("__") {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Class name '{class}' is reserved for the platform."
+                )));
+            }
             ActiasRuntime::assert_contract_allows(lua, ContractKind::Object, &class)?;
             ActiasRuntime::record_object_declaration(lua, &class);
 
@@ -234,6 +257,44 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
 
     handle.set_metatable(Some(meta))?;
     Ok(handle)
+}
+
+/// The built-in database class body: thin lua over `state.sql`, so a
+/// database is an ordinary object with the storage surface as its methods.
+fn database_class(lua: &Lua) -> mlua::Result<Table> {
+    let body = lua.create_table()?;
+
+    body.set(
+        "exec",
+        lua.create_function(
+            |lua, (state, text, params): (Table, String, Option<Table>)| {
+                let sql: Table = state.get("sql")?;
+                let exec: mlua::Function = sql.get("exec")?;
+                exec.call::<u64>((sql, text, params))?;
+                lua.to_value(&serde_json::Value::Bool(true))
+            },
+        )?,
+    )?;
+
+    body.set(
+        "query",
+        lua.create_function(|_, (state, text, params): (Table, String, Option<Table>)| {
+            let sql: Table = state.get("sql")?;
+            let query: mlua::Function = sql.get("query")?;
+            query.call::<mlua::Value>((sql, text, params))
+        })?,
+    )?;
+
+    body.set(
+        "query_one",
+        lua.create_function(|_, (state, text, params): (Table, String, Option<Table>)| {
+            let sql: Table = state.get("sql")?;
+            let query_one: mlua::Function = sql.get("query_one")?;
+            query_one.call::<mlua::Value>((sql, text, params))
+        })?,
+    )?;
+
+    Ok(body)
 }
 
 /// Which class the pinned vm is currently dispatching for.

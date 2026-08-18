@@ -45,6 +45,8 @@ message Capabilities {
     repeated string secrets = 3;
     // Object classes declared with `object "Class" { ... }`.
     repeated string objects = 4;
+    // Databases declared with `database "name"`.
+    repeated string databases = 5;
 }
 
 message ScriptConfig {

@@ -51,6 +51,12 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
             declared.objects.join(", ").purple()
         );
     }
+    if !declared.databases.is_empty() {
+        println!(
+            "🗄️ Declares databases: {}",
+            declared.databases.join(", ").purple()
+        );
+    }
 
     let mut config_dto: ScriptConfigDto = script_config.clone().into();
     config_dto.capabilities = Some(CapabilitiesDto {
@@ -58,6 +64,7 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         events: declared.events,
         secrets: declared.secrets,
         objects: declared.objects,
+        databases: declared.databases,
     });
 
     let mut bundle = script_config.to_bundle().map_err(Error::Script)?;
