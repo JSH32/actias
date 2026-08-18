@@ -35,6 +35,8 @@ pub struct Config {
     pub object_db_max_bytes: u64,
     /// Idle seconds before a pinned object vm hibernates.
     pub object_idle_secs: u64,
+    /// Seconds between cold-alarm sweeps of the object data dir.
+    pub object_sweep_secs: u64,
     /// Domain scripts hang off as subdomains (`<ident>.<base>`); unset
     /// leaves only the path routing forms.
     pub base_domain: Option<String>,
@@ -79,6 +81,7 @@ impl Config {
             object_data_dir: get_env_or("OBJECT_DATA_DIR", "./objects-data".to_owned()),
             object_db_max_bytes: get_env_or::<u64>("OBJECT_DB_MAX_MB", 64) * 1024 * 1024,
             object_idle_secs: get_env_or("OBJECT_IDLE_SECS", 300),
+            object_sweep_secs: get_env_or("OBJECT_SWEEP_SECS", 30),
             base_domain: std::env::var("BASE_DOMAIN").ok().filter(|d| !d.is_empty()),
             egress_denied_hosts: get_env_or("EGRESS_DENIED_HOSTS", String::new())
                 .split(',')

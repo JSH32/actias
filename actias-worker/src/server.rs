@@ -432,7 +432,7 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
 /// One revision prepared through the cache: the manifest travels over
 /// grpc, the bytes come from the blob store by hash, and the compiled
 /// result is shared by every request that runs it.
-async fn cached_revision(
+pub async fn cached_revision(
     state: &AppState,
     script: Script,
     revision_id: String,
@@ -476,7 +476,7 @@ async fn cached_revision(
 /// Everything routing an object method call needs; one per node, shared
 /// by request vms and pinned vms alike, so objects call objects through
 /// exactly the machinery requests use.
-struct ObjectRouting {
+pub struct ObjectRouting {
     host: Arc<ObjectHost>,
     data_dir: std::path::PathBuf,
     db_max_bytes: u64,
@@ -494,6 +494,23 @@ struct ObjectRouting {
 const OBJECT_CALL_BUDGET_SECS: u64 = 10;
 
 impl ObjectRouting {
+    /// Routing for one prepared revision over this node's shared pieces.
+    pub fn new(state: &AppState, prepared: Arc<PreparedRevision>) -> Arc<Self> {
+        Arc::new(Self {
+            host: state.objects.clone(),
+            data_dir: state.object_data_dir.clone(),
+            db_max_bytes: state.object_db_max_bytes,
+            idle_after: state.object_idle_after,
+            node_identity: state.node_identity.clone(),
+            registry: state.registry.clone(),
+            kv: state.clients.kv.clone(),
+            egress: state.egress.clone(),
+            secrets_key: state.secrets_key.clone(),
+            redis: state.redis.clone(),
+            prepared,
+        })
+    }
+
     /// Wraps this routing as the closure vms carry in app data.
     fn as_router(self: &Arc<Self>) -> ObjectRouter {
         let this = self.clone();
@@ -511,32 +528,14 @@ impl ObjectRouting {
     /// stale vms accumulating. A call whose chain already holds the target
     /// is refused: its mailbox is busy underneath this very call, and
     /// waiting on it would deadlock.
-    async fn route(self: Arc<Self>, target: ObjectTarget) -> Result<serde_json::Value, String> {
-        let key = format!(
-            "{}/{}/{}",
-            self.prepared.script.id, target.class, target.name
-        );
-
-        // Reads that tolerate bounded staleness skip the mailbox entirely:
-        // a read-only connection beside the owner's file sees every
-        // committed write and waits on nothing. A database that has no
-        // file yet falls through, so first touch still creates and
-        // migrates it through the owner.
-        if target.class == actias_worker_core::extensions::objects::DATABASE_CLASS
-            && matches!(target.method.as_str(), "read" | "read_one")
-        {
-            let file = self
-                .data_dir
-                .join(format!("{}.db", blake3::hash(key.as_bytes()).to_hex()));
-            if file.exists()
-                && let Some(result) = read_bypass(&file, &target).await?
-            {
-                return Ok(result);
-            }
-        }
-
-        let chain = actias_worker_core::objects::extend_call_chain(&target.chain, &key)?;
-
+    /// The object's live mailbox, spawning (and thereby reviving) it if
+    /// needed: lease claim, vm, storage, all of it. The cold-alarm sweep
+    /// calls this too; making an object resident is all a wake takes,
+    /// because the spawned task re-arms its persisted alarm itself.
+    pub async fn resolve_handle(
+        self: &Arc<Self>,
+        key: &str,
+    ) -> Result<actias_worker_core::objects::ObjectHandle, String> {
         let routing = self.clone();
         // The hash is the object's platform-wide id: the lease key in the
         // placement store and the file name on disk, because the class and
@@ -544,9 +543,8 @@ impl ObjectRouting {
         let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
         let file = self.data_dir.join(format!("{object_id}.db"));
 
-        let handle = self
-            .host
-            .get_or_spawn(&key, &self.prepared.revision_id, || async move {
+        self.host
+            .get_or_spawn(key, &self.prepared.revision_id, || async move {
                 // One claim per residency, before anything is built: an
                 // object only ever lives where its lease is held, which is
                 // what makes a second node refusing to serve it correct.
@@ -612,7 +610,35 @@ impl ObjectRouting {
                 ))
             })
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+    }
+
+    async fn route(self: Arc<Self>, target: ObjectTarget) -> Result<serde_json::Value, String> {
+        let key = format!(
+            "{}/{}/{}",
+            self.prepared.script.id, target.class, target.name
+        );
+
+        // Reads that tolerate bounded staleness skip the mailbox entirely:
+        // a read-only connection beside the owner's file sees every
+        // committed write and waits on nothing. A database that has no
+        // file yet falls through, so first touch still creates and
+        // migrates it through the owner.
+        if target.class == actias_worker_core::extensions::objects::DATABASE_CLASS
+            && matches!(target.method.as_str(), "read" | "read_one")
+        {
+            let file = self
+                .data_dir
+                .join(format!("{}.db", blake3::hash(key.as_bytes()).to_hex()));
+            if file.exists()
+                && let Some(result) = read_bypass(&file, &target).await?
+            {
+                return Ok(result);
+            }
+        }
+
+        let chain = actias_worker_core::objects::extend_call_chain(&target.chain, &key)?;
+        let handle = self.resolve_handle(&key).await?;
 
         handle
             .call(
@@ -879,20 +905,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // died with mlua 0.9.
     let kv_client = state.clients.kv.clone();
 
-    let router = Arc::new(ObjectRouting {
-        host: state.objects.clone(),
-        data_dir: state.object_data_dir.clone(),
-        db_max_bytes: state.object_db_max_bytes,
-        idle_after: state.object_idle_after,
-        node_identity: state.node_identity.clone(),
-        registry: state.registry.clone(),
-        kv: state.clients.kv.clone(),
-        egress: state.egress.clone(),
-        secrets_key: state.secrets_key.clone(),
-        redis: state.redis.clone(),
-        prepared: prepared.clone(),
-    })
-    .as_router();
+    let router = ObjectRouting::new(&state, prepared.clone()).as_router();
 
     let lua = ActiasRuntime::new(
         prepared,
