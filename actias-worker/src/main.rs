@@ -116,6 +116,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             secrets_key,
             request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
             in_flight,
+            base_domain: config.base_domain,
         },
         config.max_body_bytes,
     );

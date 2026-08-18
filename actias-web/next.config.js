@@ -21,7 +21,12 @@ const nextConfig = {
   rewrites,
   publicRuntimeConfig: {
     apiRoot: API_URL,
-    workerBase: process.env.WORKER_BASE
+    workerBase: process.env.WORKER_BASE,
+    // Same idea with a _REVISION_ placeholder: the path form for local,
+    // or `https://_IDENTIFIER_--r-_REVISION_.<base>` on subdomain deployments.
+    workerRevisionBase:
+      process.env.WORKER_REVISION_BASE ||
+      'http://localhost:3002/_rev/_IDENTIFIER_/_REVISION_'
   }
 }
 

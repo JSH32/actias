@@ -28,6 +28,9 @@ pub struct Config {
     /// Address other platform services reach this node on, host:port;
     /// reported to the placement store at registration.
     pub node_address: String,
+    /// Domain scripts hang off as subdomains (`<ident>.<base>`); unset
+    /// leaves only the path routing forms.
+    pub base_domain: Option<String>,
     /// Hostnames scripts may never reach, beyond the service uris the worker
     /// already knows; comma separated.
     pub egress_denied_hosts: Vec<String>,
@@ -66,6 +69,7 @@ impl Config {
                     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_owned())
                 ),
             ),
+            base_domain: std::env::var("BASE_DOMAIN").ok().filter(|d| !d.is_empty()),
             egress_denied_hosts: get_env_or("EGRESS_DENIED_HOSTS", String::new())
                 .split(',')
                 .map(str::trim)

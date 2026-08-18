@@ -92,6 +92,9 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Requests currently executing; the heartbeat reports it as load.
     pub in_flight: Arc<AtomicU32>,
+    /// Domain subdomain routing hangs off; [`None`] leaves only the path
+    /// forms.
+    pub base_domain: Option<String>,
 }
 
 /// Holds the in-flight gauge up for exactly one request's lifetime;
@@ -112,7 +115,7 @@ impl Drop for InFlight {
     }
 }
 
-/// Where a request path points.
+/// What a request addresses, by path or by subdomain.
 #[derive(Debug, PartialEq)]
 enum Route<'a> {
     /// The current published revision of a script.
@@ -122,14 +125,20 @@ enum Route<'a> {
         identifier: &'a str,
         session: &'a str,
     },
+    /// One specific revision, current or not: a preview url.
+    Revision {
+        identifier: &'a str,
+        revision: &'a str,
+    },
 }
 
 impl Route<'_> {
-    /// Path segments the route consumed, which the script never sees.
+    /// Path segments the path form consumed, which the script never sees.
+    /// Host-routed requests consume none.
     fn consumed_segments(&self) -> usize {
         match self {
             Route::Published { .. } => 1,
-            Route::Live { .. } => 3,
+            Route::Live { .. } | Route::Revision { .. } => 3,
         }
     }
 }
@@ -137,11 +146,13 @@ impl Route<'_> {
 /// Extracts the target a request path addresses.
 ///
 /// The first segment selects the script, so `/my-script/users` runs the
-/// published `my-script` and hands it `/users`. The `_live` prefix is
-/// reserved: `/_live/my-script/<session>/users` runs that script's live
-/// session instead, so no published script named `_live` is reachable.
-/// A path missing any needed segment, such as `/`, addresses nothing.
-fn route(path: &str) -> Option<Route<'_>> {
+/// published `my-script` and hands it `/users`. The `_live` and `_rev`
+/// prefixes are reserved: `/_live/my-script/<session>/users` runs that
+/// script's live session and `/_rev/my-script/<revision>/users` previews
+/// one revision, so no published script named `_live` or `_rev` is
+/// reachable. A path missing any needed segment, such as `/`, addresses
+/// nothing.
+fn route_by_path(path: &str) -> Option<Route<'_>> {
     let mut segments = path.split('/').filter(|segment| !segment.is_empty());
 
     match segments.next()? {
@@ -149,8 +160,68 @@ fn route(path: &str) -> Option<Route<'_>> {
             identifier: segments.next()?,
             session: segments.next()?,
         }),
+        "_rev" => Some(Route::Revision {
+            identifier: segments.next()?,
+            revision: segments.next()?,
+        }),
         identifier => Some(Route::Published { identifier }),
     }
+}
+
+/// Extracts the target a Host header addresses under the base domain.
+///
+/// `my-script.<base>` serves the published script,
+/// `my-script--live-<session>.<base>` one live session and
+/// `my-script--r-<revision>.<base>` a revision preview. `--` never occurs
+/// in a public identifier, so the marker split is unambiguous. A host
+/// outside the base domain, or nested deeper than one label, addresses
+/// nothing and falls back to path routing.
+fn route_by_host<'a>(host: &'a str, base: &str) -> Option<Route<'a>> {
+    // The Host header may carry a port; the base never does.
+    let host = host.split(':').next()?;
+    let label = host.strip_suffix(base)?.strip_suffix('.')?;
+
+    if label.is_empty() || label.contains('.') {
+        return None;
+    }
+
+    if let Some((identifier, session)) = label.split_once("--live-") {
+        return Some(Route::Live {
+            identifier,
+            session,
+        });
+    }
+
+    if let Some((identifier, revision)) = label.split_once("--r-") {
+        return Some(Route::Revision {
+            identifier,
+            revision,
+        });
+    }
+
+    Some(Route::Published { identifier: label })
+}
+
+/// How the addressed script is served, owned past the routing borrow.
+enum Target {
+    Published,
+    Live(String),
+    Preview(String),
+}
+
+/// A preview naming a revision that belongs to a different script; the
+/// loader refuses it before anything is cached.
+const FOREIGN_REVISION: &str = "the revision does not belong to this script";
+
+/// Whether a revision load failed because the revision does not exist for
+/// this script, as opposed to infrastructure failing.
+fn revision_absent(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<tonic::Status>()
+            .is_some_and(|status| status.code() == tonic::Code::NotFound)
+            || cause.to_string() == FOREIGN_REVISION
+    })
 }
 
 /// Builds a response whose body is exactly `body`.
@@ -320,6 +391,50 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
     }
 }
 
+/// One revision prepared through the cache: the manifest travels over
+/// grpc, the bytes come from the blob store by hash, and the compiled
+/// result is shared by every request that runs it.
+async fn cached_revision(
+    state: &AppState,
+    script: Script,
+    revision_id: String,
+) -> Result<Arc<PreparedRevision>, Arc<anyhow::Error>> {
+    state
+        .caches
+        .revisions
+        .try_get_with(revision_id.clone(), {
+            let mut client = state.clients.script.clone();
+            let blobs = state.blobs.clone();
+            async move {
+                let mut revision = client
+                    .get_revision(GetRevisionRequest {
+                        id: revision_id,
+                        with_bundle: true,
+                        manifest_only: true,
+                    })
+                    .await?
+                    .into_inner();
+
+                // A preview could name any revision; only this script's may
+                // serve under its identifier. Failed loads are not cached.
+                if revision.script_id != script.id {
+                    anyhow::bail!(FOREIGN_REVISION);
+                }
+
+                if let Some(bundle) = revision.bundle.as_mut() {
+                    for file in &mut bundle.files {
+                        if file.content.is_empty() && !file.hash.is_empty() {
+                            file.content = blobs.get(&file.hash).await?.as_ref().clone();
+                        }
+                    }
+                }
+
+                Ok::<_, anyhow::Error>(Arc::new(PreparedRevision::prepare(script, revision)?))
+            }
+        })
+        .await
+}
+
 /// Resolves the script, runs it, and shapes its response.
 async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow::Result<Response> {
     // DefaultBodyLimit only takes effect through extractors, so the body is
@@ -329,16 +444,37 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
 
     let (parts, body) = request.into_parts();
 
-    let Some(route) = route(parts.uri.path()) else {
-        return Ok(text_response(StatusCode::NOT_FOUND, "Invalid script."));
+    // Subdomain routing wins when a base domain is configured and the Host
+    // header sits under it; anything else falls back to the path forms, so
+    // compose and direct-ip access keep working.
+    let host_route = state.base_domain.as_deref().and_then(|base| {
+        parts
+            .headers
+            .get(axum::http::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|host| route_by_host(host, base))
+    });
+    let (route, consumed_segments) = match host_route {
+        // The whole path belongs to the script when the host routed.
+        Some(route) => (route, 0),
+        None => match route_by_path(parts.uri.path()) {
+            Some(route) => {
+                let consumed = route.consumed_segments();
+                (route, consumed)
+            }
+            None => return Ok(text_response(StatusCode::NOT_FOUND, "Invalid script.")),
+        },
     };
-    let consumed_segments = route.consumed_segments();
-    let (identifier, live_session) = match route {
-        Route::Published { identifier } => (identifier.to_owned(), None),
+    let (identifier, target) = match route {
+        Route::Published { identifier } => (identifier.to_owned(), Target::Published),
         Route::Live {
             identifier,
             session,
-        } => (identifier.to_owned(), Some(session.to_owned())),
+        } => (identifier.to_owned(), Target::Live(session.to_owned())),
+        Route::Revision {
+            identifier,
+            revision,
+        } => (identifier.to_owned(), Target::Preview(revision.to_owned())),
     };
 
     // The body is read before anything else so the size cap rejects oversized
@@ -357,20 +493,20 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
 
     // Live output goes to the session's channel where `actias dev` tails it;
     // published scripts log to a per-script channel for `actias tail`.
-    let log_channel = match &live_session {
-        Some(session_id) => live_log_channel(session_id),
-        None => script_log_channel(&script.id),
+    let log_channel = match &target {
+        Target::Live(session_id) => live_log_channel(session_id),
+        _ => script_log_channel(&script.id),
     };
     let logs = state
         .redis
         .clone()
         .map(|connection| LogPublisher::new(connection, log_channel));
 
-    let prepared = match live_session {
+    let prepared = match target {
         // A live session is the developer's working tree, updated on every
         // save; serving it stale defeats its purpose, so nothing about it is
         // cached and every request fetches the session's current bundle.
-        Some(session_id) => {
+        Target::Live(session_id) => {
             let mut client = state.clients.script.clone();
 
             let live = match client
@@ -398,7 +534,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                 },
             )?)
         }
-        None => {
+        Target::Published => {
             let Some(revision_id) = script.current_revision_id.clone() else {
                 return Ok(text_response(
                     StatusCode::NOT_FOUND,
@@ -406,41 +542,23 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                 ));
             };
 
-            state
-                .caches
-                .revisions
-                .try_get_with(revision_id.clone(), {
-                    let mut client = state.clients.script.clone();
-                    let blobs = state.blobs.clone();
-                    async move {
-                        // The manifest travels over grpc; the bytes come
-                        // from the blob store, so bundles stop transiting
-                        // script-service on the serving path.
-                        let mut revision = client
-                            .get_revision(GetRevisionRequest {
-                                id: revision_id,
-                                with_bundle: true,
-                                manifest_only: true,
-                            })
-                            .await?
-                            .into_inner();
-
-                        if let Some(bundle) = revision.bundle.as_mut() {
-                            for file in &mut bundle.files {
-                                if file.content.is_empty() && !file.hash.is_empty() {
-                                    file.content = blobs.get(&file.hash).await?.as_ref().clone();
-                                }
-                            }
-                        }
-
-                        Ok::<_, anyhow::Error>(Arc::new(PreparedRevision::prepare(
-                            script, revision,
-                        )?))
-                    }
-                })
+            cached_revision(&state, script, revision_id)
                 .await
                 .map_err(cache_load_error)?
         }
+        // A preview serves one revision, current or not, through the same
+        // immutable cache; only its failure shape differs, because the
+        // revision id came from the url rather than the script row.
+        Target::Preview(revision_id) => match cached_revision(&state, script, revision_id).await {
+            Ok(prepared) => prepared,
+            Err(error) if revision_absent(&error) => {
+                return Ok(text_response(
+                    StatusCode::NOT_FOUND,
+                    "No such revision for this script.",
+                ));
+            }
+            Err(error) => return Err(cache_load_error(error)),
+        },
     };
 
     let relative_path = script_relative_path(parts.uri.path(), consumed_segments);
@@ -552,6 +670,7 @@ mod tests {
             secrets_key: None,
             request_timeout: Duration::from_secs(5),
             in_flight: Arc::default(),
+            base_domain: None,
         }
     }
 
@@ -570,7 +689,7 @@ mod tests {
     fn route_reads_the_first_path_segment_as_the_published_script() {
         for path in ["/my-script", "/my-script/users/1", "/my-script/"] {
             assert_eq!(
-                route(path),
+                route_by_path(path),
                 Some(Route::Published {
                     identifier: "my-script"
                 }),
@@ -583,15 +702,15 @@ mod tests {
     fn route_is_absent_when_the_path_names_nothing() {
         // A bare root addresses the worker itself, not a script, so it must not
         // reach the script service with an empty name.
-        assert_eq!(route("/"), None);
-        assert_eq!(route(""), None);
-        assert_eq!(route("//"), None);
+        assert_eq!(route_by_path("/"), None);
+        assert_eq!(route_by_path(""), None);
+        assert_eq!(route_by_path("//"), None);
     }
 
     #[test]
     fn route_reads_the_live_prefix_as_a_session() {
         assert_eq!(
-            route("/_live/my-script/sess-1/users"),
+            route_by_path("/_live/my-script/sess-1/users"),
             Some(Route::Live {
                 identifier: "my-script",
                 session: "sess-1"
@@ -602,9 +721,9 @@ mod tests {
     #[test]
     fn route_rejects_a_live_path_missing_its_session() {
         // Half a live address must not fall through and run something else.
-        assert_eq!(route("/_live"), None);
-        assert_eq!(route("/_live/my-script"), None);
-        assert_eq!(route("/_live/my-script/"), None);
+        assert_eq!(route_by_path("/_live"), None);
+        assert_eq!(route_by_path("/_live/my-script"), None);
+        assert_eq!(route_by_path("/_live/my-script/"), None);
     }
 
     #[tokio::test]
@@ -749,6 +868,125 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn route_by_path_reads_the_rev_prefix_as_a_preview() {
+        assert_eq!(
+            route_by_path("/_rev/my-script/rev-1/users"),
+            Some(Route::Revision {
+                identifier: "my-script",
+                revision: "rev-1"
+            })
+        );
+        // Half a preview address must not fall through to something else.
+        assert_eq!(route_by_path("/_rev/my-script"), None);
+    }
+
+    #[test]
+    fn route_by_host_reads_the_label_under_the_base_domain() {
+        let base = "scripts.example.com";
+
+        assert_eq!(
+            route_by_host("my-script.scripts.example.com", base),
+            Some(Route::Published {
+                identifier: "my-script"
+            })
+        );
+        assert_eq!(
+            route_by_host("my-script.scripts.example.com:8443", base),
+            Some(Route::Published {
+                identifier: "my-script"
+            })
+        );
+        assert_eq!(
+            route_by_host("my-script--live-sess-1.scripts.example.com", base),
+            Some(Route::Live {
+                identifier: "my-script",
+                session: "sess-1"
+            })
+        );
+        assert_eq!(
+            route_by_host("my-script--r-rev-1.scripts.example.com", base),
+            Some(Route::Revision {
+                identifier: "my-script",
+                revision: "rev-1"
+            })
+        );
+    }
+
+    #[test]
+    fn route_by_host_ignores_hosts_outside_the_base_domain() {
+        let base = "scripts.example.com";
+
+        // The bare base, a foreign domain, a suffix that is not a label
+        // boundary, and a nested label all fall back to path routing.
+        assert_eq!(route_by_host("scripts.example.com", base), None);
+        assert_eq!(route_by_host("example.com", base), None);
+        assert_eq!(route_by_host("evilscripts.example.com", base), None);
+        assert_eq!(route_by_host("a.b.scripts.example.com", base), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_under_the_base_domain_routes_by_subdomain() {
+        let mut state = state_with(caches_with_cached_script().await);
+        state.base_domain = Some("scripts.local".to_owned());
+        let app = router(state, 1024);
+
+        // The path carries no identifier at all: the host alone selects the
+        // script, and the script sees the bare root.
+        let request = axum::http::Request::builder()
+            .uri("/")
+            .header("host", "cached-script.scripts.local")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"served from cache");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_preview_host_serves_a_cached_revision_without_a_backend() {
+        let mut state = state_with(caches_with_cached_script().await);
+        state.base_domain = Some("scripts.local".to_owned());
+        let app = router(state, 1024);
+
+        // revision-1 is warm in the revision cache and the clients are
+        // unconnectable, so a 200 proves the preview route reuses the same
+        // immutable cache the published path fills.
+        let request = axum::http::Request::builder()
+            .uri("/")
+            .header("host", "cached-script--r-revision-1.scripts.local")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"served from cache");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_asset_serves_through_the_subdomain_route() {
+        let mut state = state_with(caches_with_cached_script().await);
+        state.base_domain = Some("scripts.local".to_owned());
+        let app = router(state, 1024);
+
+        let request = axum::http::Request::builder()
+            .uri("/motd.txt")
+            .header("host", "cached-script.scripts.local")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"static bytes");
     }
 
     #[tokio::test(flavor = "multi_thread")]

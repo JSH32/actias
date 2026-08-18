@@ -166,6 +166,45 @@ if curl -sf "$API/project/$PROJECT_ID/kv" -H "$AUTH" | jq -e '.[] | select(.name
     exit 1
 fi
 
+echo "== revision preview urls"
+# Publish a second version, then hit the old revision at its preview url:
+# the path form and the subdomain form (Host header, since nothing here
+# resolves *.scripts.localhost) must both serve the old code.
+OLD_REV=$(curl -sf "$API/script/$SCRIPT_ID" -H "$AUTH" | jq -r .currentRevisionId)
+cat > "$DEVDIR/published/main.lua" <<'LUA'
+local ns = kv "smoke"
+local token = secret "smoke-token"
+
+on "fetch" (function(request)
+    log.info("hello from production")
+    return { body = "version two" }
+end)
+LUA
+"$REPO/target/debug/actias-cli" publish "$DEVDIR/published"
+
+# The worker's pointer cache expires within seconds; wait for the flip.
+CURRENT=""
+for _ in $(seq 1 30); do
+    CURRENT=$(curl -sf "$WORKER/$IDENT/" || true)
+    [ "$CURRENT" = "version two" ] && break
+    sleep 2
+done
+[ "$CURRENT" = "version two" ] || { echo "the new revision never went live (got '$CURRENT')"; exit 1; }
+
+PREVIEW=$(curl -sf "$WORKER/_rev/$IDENT/$OLD_REV/")
+echo "$PREVIEW" | jq -e '.ok == true' >/dev/null \
+    || { echo "the path preview did not serve the old revision: $PREVIEW"; exit 1; }
+
+HOST_PREVIEW=$(curl -sf -H "Host: $IDENT--r-$OLD_REV.scripts.localhost" "$WORKER/")
+echo "$HOST_PREVIEW" | jq -e '.ok == true' >/dev/null \
+    || { echo "the subdomain preview did not serve the old revision: $HOST_PREVIEW"; exit 1; }
+
+# The subdomain form serves the current revision too, straight at the root.
+HOST_CURRENT=$(curl -sf -H "Host: $IDENT.scripts.localhost" "$WORKER/")
+[ "$HOST_CURRENT" = "version two" ] \
+    || { echo "subdomain routing did not serve the script (got '$HOST_CURRENT')"; exit 1; }
+echo "old revision previews at /_rev/ and $IDENT--r-<rev>.scripts.localhost while $IDENT.scripts.localhost serves the new one"
+
 echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket
 # gateway, the worker serves the working tree at the live URL, and a file
