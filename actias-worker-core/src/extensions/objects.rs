@@ -285,6 +285,25 @@ fn database_class(lua: &Lua) -> mlua::Result<Table> {
         })?,
     )?;
 
+    // A batch is nothing special: one call is one transaction already, so
+    // this is a loop with the atomicity coming from the dispatch guard.
+    body.set(
+        "batch",
+        lua.create_function(|_, (state, statements): (Table, Table)| {
+            let sql: Table = state.get("sql")?;
+            let exec: mlua::Function = sql.get("exec")?;
+
+            let mut affected = Vec::new();
+            for entry in statements.sequence_values::<Table>() {
+                let entry = entry?;
+                let text: String = entry.get(1)?;
+                let params: Option<Table> = entry.get(2)?;
+                affected.push(exec.call::<u64>((sql.clone(), text, params))?);
+            }
+            Ok(affected)
+        })?,
+    )?;
+
     body.set(
         "query_one",
         lua.create_function(|_, (state, text, params): (Table, String, Option<Table>)| {

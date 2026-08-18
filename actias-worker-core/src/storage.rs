@@ -73,6 +73,37 @@ impl SqliteStorage {
             .map_err(|e| e.to_string())
     }
 
+    /// Opens the transaction one dispatched call runs inside; the platform
+    /// owns transaction boundaries, scripts never issue their own.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn begin(&mut self) -> Result<(), String> {
+        self.connection
+            .execute_batch("BEGIN")
+            .map_err(|e| e.to_string())
+    }
+
+    /// Commits the call's transaction.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn commit(&mut self) -> Result<(), String> {
+        self.connection
+            .execute_batch("COMMIT")
+            .map_err(|e| e.to_string())
+    }
+
+    /// Rolls the call's transaction back; a failed method persists nothing.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn rollback(&mut self) -> Result<(), String> {
+        self.connection
+            .execute_batch("ROLLBACK")
+            .map_err(|e| e.to_string())
+    }
+
     /// The persisted alarm, if one is set: (due unix ms, class, own key).
     ///
     /// # Errors
