@@ -386,6 +386,17 @@ impl ObjectHost {
         Ok(handle)
     }
 
+    /// How many objects currently have live tasks; hibernated ones do
+    /// not count.
+    pub async fn resident_count(&self) -> usize {
+        self.tasks
+            .lock()
+            .await
+            .values()
+            .filter(|(_, handle)| !handle.sender.is_closed())
+            .count()
+    }
+
     /// Whether the object currently has a live task; a hibernated one
     /// reads as absent.
     pub async fn is_resident(&self, id: &str) -> bool {

@@ -1,6 +1,7 @@
 mod blob_cache;
 mod config;
 mod heartbeat;
+mod metrics;
 mod server;
 mod sweeper;
 
@@ -122,6 +123,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
         in_flight,
         objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),
+        metrics: std::sync::Arc::default(),
         armed_crons: std::sync::Arc::default(),
         object_data_dir: std::path::PathBuf::from(config.object_data_dir),
         object_db_max_bytes: config.object_db_max_bytes,
