@@ -26,30 +26,31 @@ pub struct BlobCache {
     cache: moka::future::Cache<String, Arc<Vec<u8>>>,
 }
 
+/// One configured client for the platform's object storage; shared by the
+/// hash-keyed blob cache and the object snapshot shipper.
+pub fn s3_client(endpoint: &str, access_key: &str, secret_key: &str) -> aws_sdk_s3::Client {
+    let credentials =
+        aws_credential_types::Credentials::new(access_key, secret_key, None, None, "worker");
+
+    let s3_config = aws_sdk_s3::config::Builder::new()
+        .endpoint_url(endpoint)
+        .credentials_provider(credentials)
+        .region(aws_sdk_s3::config::Region::new("us-east-1"))
+        // Bucket-in-path addressing, which minio serves without
+        // wildcard dns.
+        .force_path_style(true)
+        .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+        .build();
+
+    aws_sdk_s3::Client::from_conf(s3_config)
+}
+
 impl BlobCache {
     /// Builds the client without touching the network; the bucket belongs
     /// to script-service, which ensures it exists.
     pub fn new(config: BlobCacheConfig) -> Self {
-        let credentials = aws_credential_types::Credentials::new(
-            config.access_key.clone(),
-            config.secret_key.clone(),
-            None,
-            None,
-            "blob-cache",
-        );
-
-        let s3_config = aws_sdk_s3::config::Builder::new()
-            .endpoint_url(&config.endpoint)
-            .credentials_provider(credentials)
-            .region(aws_sdk_s3::config::Region::new("us-east-1"))
-            // Bucket-in-path addressing, which minio serves without
-            // wildcard dns.
-            .force_path_style(true)
-            .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
-            .build();
-
         Self {
-            client: aws_sdk_s3::Client::from_conf(s3_config),
+            client: s3_client(&config.endpoint, &config.access_key, &config.secret_key),
             bucket: config.bucket,
             cache: moka::future::Cache::builder()
                 .max_capacity(config.cache_bytes)

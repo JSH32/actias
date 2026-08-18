@@ -270,6 +270,23 @@ C2=$(curl -sf "$WORKER/$IDENT/" | jq .crons)
     || { echo "cron did not keep firing ($C1 -> '$C2')"; exit 1; }
 echo "cron fired: $C1 then $C2 marks"
 
+echo "== object state survives losing the data volume"
+# The disk is a leased cache; the blob store is the truth. Wipe every
+# object file while the worker is down, and the counters must continue
+# from their shipped snapshots, not restart from zero.
+HB=$(curl -sf "$WORKER/$IDENT/" | jq .hits)
+compose stop worker_service >/dev/null 2>&1
+docker run --rm -v "${PROJECT}_objects_data:/d" busybox sh -c 'rm -rf /d/*' >/dev/null 2>&1
+compose start worker_service >/dev/null 2>&1
+HV=""
+for _ in $(seq 1 30); do
+    HV=$(curl -sf "$WORKER/$IDENT/" | jq .hits 2>/dev/null) && [ -n "$HV" ] && break
+    sleep 2
+done
+[ -n "$HV" ] && [ "$HV" -gt "$HB" ] 2>/dev/null \
+    || { echo "object state did not survive the volume loss ($HB -> '$HV')"; exit 1; }
+echo "counter continued at $HV after the volume was wiped"
+
 echo "object resumed at $H3 after the worker restart"
 
 echo "== serving a static asset next to the lua handler"

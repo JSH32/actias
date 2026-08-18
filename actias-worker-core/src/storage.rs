@@ -162,6 +162,17 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Total rows changed over this connection's lifetime; advancing
+    /// between two moments is what "this call wrote" means.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn total_changes(&mut self) -> Result<i64, String> {
+        self.connection
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .map_err(|e| e.to_string())
+    }
+
     /// Opens the transaction one dispatched call runs inside; the platform
     /// owns transaction boundaries, scripts never issue their own.
     ///

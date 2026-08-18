@@ -58,6 +58,9 @@ export namespace node_registry {
     // refusal.
         nodeId?: string;
         acquired?: boolean;
+        // Monotonic per-object claim counter; fences storage shipping, so a
+    // zombie ex-owner&#x27;s uploads lose to any newer epoch.
+        epoch?: number;
     }
     export interface ReleaseLeaseRequest {
         objectId?: string;

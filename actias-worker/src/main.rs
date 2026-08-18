@@ -2,6 +2,7 @@ mod blob_cache;
 mod config;
 mod heartbeat;
 mod metrics;
+mod object_store;
 mod server;
 mod sweeper;
 
@@ -111,12 +112,20 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.revision_cache_bytes,
         ),
         blobs: blob_cache::BlobCache::new(blob_cache::BlobCacheConfig {
-            endpoint: config.s3_endpoint,
-            access_key: config.s3_access_key,
-            secret_key: config.s3_secret_key,
-            bucket: config.s3_bucket,
+            endpoint: config.s3_endpoint.clone(),
+            access_key: config.s3_access_key.clone(),
+            secret_key: config.s3_secret_key.clone(),
+            bucket: config.s3_bucket.clone(),
             cache_bytes: config.blob_cache_bytes,
         }),
+        object_store: std::sync::Arc::new(object_store::ObjectStore::new(
+            blob_cache::s3_client(
+                &config.s3_endpoint,
+                &config.s3_access_key,
+                &config.s3_secret_key,
+            ),
+            config.s3_bucket,
+        )),
         egress,
         redis: Some(redis),
         secrets_key,
