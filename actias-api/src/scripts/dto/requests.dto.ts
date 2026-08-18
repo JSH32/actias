@@ -53,3 +53,39 @@ export class MissingBlobsDto {
 export class MissingBlobsResponseDto {
   missing: string[];
 }
+
+/**
+ * Points a named environment alias at a revision; creating and moving are
+ * the same call.
+ */
+export class SetAliasDto {
+  /**
+   * Alias name: 1-64 lowercase letters, digits or single dashes. `live-`
+   * and `r-` prefixes are reserved for routing.
+   */
+  name: string;
+
+  /**
+   * Revision the alias serves; must belong to the script.
+   */
+  revisionId: string;
+}
+
+/**
+ * One named environment alias.
+ */
+export class AliasDto {
+  scriptId: string;
+  name: string;
+  revisionId: string;
+
+  constructor(alias: {
+    scriptId?: string;
+    name?: string;
+    revisionId?: string;
+  }) {
+    this.scriptId = alias.scriptId ?? '';
+    this.name = alias.name ?? '';
+    this.revisionId = alias.revisionId ?? '';
+  }
+}

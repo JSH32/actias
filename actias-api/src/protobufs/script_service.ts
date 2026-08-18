@@ -80,6 +80,28 @@ export namespace script_service {
     export interface DeleteRevisionRequest {
         revisionId?: string;
     }
+    // A named environment: a mutable pointer from (script, name) to one
+    // revision. Rollback is moving the pointer.
+    export interface Alias {
+        scriptId?: string;
+        name?: string;
+        revisionId?: string;
+    }
+    export interface SetAliasRequest {
+        scriptId?: string;
+        name?: string;
+        revisionId?: string;
+    }
+    export interface GetAliasRequest {
+        scriptId?: string;
+        name?: string;
+    }
+    export interface ListAliasesRequest {
+        scriptId?: string;
+    }
+    export interface ListAliasesResponse {
+        aliases?: script_service.Alias[];
+    }
     export interface SetRevisionRequest {
         scriptId?: string;
         // New revision ID.
@@ -235,6 +257,23 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<MissingBlobsResponse>;
+        // Named environments over revisions; set is upsert, so a move and a
+    // create are the same call.
+        setAlias(
+            data: SetAliasRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Alias>;
+        getAlias(
+            data: GetAliasRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Alias>;
+        listAliases(
+            data: ListAliasesRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ListAliasesResponse>;
     }
 }
 export namespace bundle {

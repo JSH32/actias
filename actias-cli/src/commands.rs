@@ -40,6 +40,13 @@ pub enum Commands {
         /// A project directory or a script id
         target: String,
     },
+    /// 🏷️ Manage a script's environment aliases (staging, prod)
+    Alias {
+        /// Script the aliases belong to.
+        script: String,
+        #[clap(subcommand)]
+        sub: AliasOperations,
+    },
     /// 🔐 Manage a project's secrets
     Secret {
         /// Project the secrets belong to.
@@ -70,6 +77,14 @@ pub enum Commands {
         /// Directory of project
         directory: String,
     },
+}
+
+#[derive(Parser, Debug)]
+pub enum AliasOperations {
+    /// 🏷️ Point an alias at a revision; creating and moving are the same call.
+    Set { name: String, revision_id: String },
+    /// 📑 List aliases and the revisions they serve.
+    List,
 }
 
 #[derive(Parser, Debug)]

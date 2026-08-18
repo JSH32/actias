@@ -205,6 +205,34 @@ HOST_CURRENT=$(curl -sf -H "Host: $IDENT.scripts.localhost" "$WORKER/")
     || { echo "subdomain routing did not serve the script (got '$HOST_CURRENT')"; exit 1; }
 echo "old revision previews at /_rev/ and $IDENT--r-<rev>.scripts.localhost while $IDENT.scripts.localhost serves the new one"
 
+echo "== environment aliases (actias alias)"
+# An alias is a movable pointer: aim staging at the old revision, see the
+# old code at its url, then move it to the current one and see the new.
+"$REPO/target/debug/actias-cli" alias "$SCRIPT_ID" set staging "$OLD_REV"
+
+ALIASED=$(curl -sf "$WORKER/_alias/$IDENT/staging/")
+echo "$ALIASED" | jq -e '.ok == true' >/dev/null \
+    || { echo "the alias path form did not serve the old revision: $ALIASED"; exit 1; }
+HOST_ALIASED=$(curl -sf -H "Host: $IDENT--staging.scripts.localhost" "$WORKER/")
+echo "$HOST_ALIASED" | jq -e '.ok == true' >/dev/null \
+    || { echo "the alias subdomain did not serve the old revision: $HOST_ALIASED"; exit 1; }
+
+"$REPO/target/debug/actias-cli" alias "$SCRIPT_ID" list | grep -q "staging" \
+    || { echo "alias list did not show staging"; exit 1; }
+
+# Moving the alias is the rollback primitive; the pointer ttl bounds how
+# long the old target keeps serving.
+CURRENT_REV=$(curl -sf "$API/script/$SCRIPT_ID" -H "$AUTH" | jq -r .currentRevisionId)
+"$REPO/target/debug/actias-cli" alias "$SCRIPT_ID" set staging "$CURRENT_REV"
+MOVED=""
+for _ in $(seq 1 30); do
+    MOVED=$(curl -sf -H "Host: $IDENT--staging.scripts.localhost" "$WORKER/" || true)
+    [ "$MOVED" = "version two" ] && break
+    sleep 2
+done
+[ "$MOVED" = "version two" ] || { echo "the moved alias never served the new revision (got '$MOVED')"; exit 1; }
+echo "staging alias served the old revision, then the new one after the move"
+
 echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket
 # gateway, the worker serves the working tree at the live URL, and a file

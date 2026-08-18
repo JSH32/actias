@@ -90,6 +90,33 @@ message DeleteRevisionRequest {
     string revision_id = 1;
 }
 
+// A named environment: a mutable pointer from (script, name) to one
+// revision. Rollback is moving the pointer.
+message Alias {
+    string script_id = 1;
+    string name = 2;
+    string revision_id = 3;
+}
+
+message SetAliasRequest {
+    string script_id = 1;
+    string name = 2;
+    string revision_id = 3;
+}
+
+message GetAliasRequest {
+    string script_id = 1;
+    string name = 2;
+}
+
+message ListAliasesRequest {
+    string script_id = 1;
+}
+
+message ListAliasesResponse {
+    repeated Alias aliases = 1;
+}
+
 message SetRevisionRequest {
     string script_id = 1;
     // New revision ID.
@@ -200,4 +227,10 @@ service ScriptService {
 
     // Which of these content hashes the blob store does not hold yet.
     rpc MissingBlobs(MissingBlobsRequest) returns (MissingBlobsResponse);
+
+    // Named environments over revisions; set is upsert, so a move and a
+    // create are the same call.
+    rpc SetAlias(SetAliasRequest) returns (Alias);
+    rpc GetAlias(GetAliasRequest) returns (Alias);
+    rpc ListAliases(ListAliasesRequest) returns (ListAliasesResponse);
 }

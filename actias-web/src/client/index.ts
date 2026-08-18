@@ -10,6 +10,7 @@ export { OpenAPI } from './core/OpenAPI';
 export type { OpenAPIConfig } from './core/OpenAPI';
 
 export type { AclListDto } from './models/AclListDto';
+export type { AliasDto } from './models/AliasDto';
 export type { AuthTokenDto } from './models/AuthTokenDto';
 export type { BundleDto } from './models/BundleDto';
 export type { CapabilitiesDto } from './models/CapabilitiesDto';
@@ -34,6 +35,7 @@ export type { RevisionDataDto } from './models/RevisionDataDto';
 export type { RevisionFullDto } from './models/RevisionFullDto';
 export type { ScriptConfigDto } from './models/ScriptConfigDto';
 export type { ScriptDto } from './models/ScriptDto';
+export type { SetAliasDto } from './models/SetAliasDto';
 export type { SetKeyDto } from './models/SetKeyDto';
 export type { SetSecretDto } from './models/SetSecretDto';
 export type { UpdatePasswordDto } from './models/UpdatePasswordDto';

@@ -1,3 +1,4 @@
+pub mod aliases;
 pub mod check;
 pub mod dev;
 pub mod init;
