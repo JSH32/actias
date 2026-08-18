@@ -23,6 +23,8 @@ import { ScriptDto } from './dto/script.dto';
 import {
   CreateRevisionDto,
   CreateScriptDto,
+  MissingBlobsDto,
+  MissingBlobsResponseDto,
   NewRevisionResponseDto,
 } from './dto/requests.dto';
 import { RevisionDataDto, RevisionFullDto } from './dto/revision.dto';
@@ -110,6 +112,29 @@ export class ProjectScriptController implements OnModuleInit {
     );
 
     return new ScriptDto(script);
+  }
+
+  /**
+   * Which of these content hashes the blob store does not hold. A publish
+   * may reference stored hashes without resending their content.
+   */
+  @Post('missing-blobs')
+  @AclByProject(AccessFields.SCRIPT_WRITE)
+  @ApiParam({
+    name: 'project',
+    schema: { type: 'string' },
+    type: 'string',
+  })
+  async missingBlobs(
+    @Body() request: MissingBlobsDto,
+  ): Promise<MissingBlobsResponseDto> {
+    const response = await lastValueFrom(
+      this.scriptService
+        .missingBlobs({ hashes: request.hashes })
+        .pipe(toHttpException()),
+    );
+
+    return { missing: response.missing ?? [] };
   }
 }
 

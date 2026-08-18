@@ -6,7 +6,9 @@ use crate::{
     capabilities,
     client::{
         Client,
-        types::{CapabilitiesDto, CreateRevisionDto, CreateScriptDto, ScriptConfigDto},
+        types::{
+            CapabilitiesDto, CreateRevisionDto, CreateScriptDto, MissingBlobsDto, ScriptConfigDto,
+        },
     },
     errors::{Error, Result, progenitor_error},
     script::ScriptConfig,
@@ -51,13 +53,49 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         secrets: declared.secrets,
     });
 
+    let mut bundle = script_config.to_bundle().map_err(Error::Script)?;
+
+    // The store already holds any blob it has seen from anyone; files whose
+    // hash it knows publish as manifest-only entries with no content.
+    let hashes: Vec<String> = bundle
+        .files
+        .iter()
+        .filter_map(|file| file.hash.clone())
+        .collect();
+
+    let missing: std::collections::HashSet<String> = client
+        .missing_blobs()
+        .project(&script.project_id)
+        .body(MissingBlobsDto::builder().hashes(hashes))
+        .send()
+        .await
+        .map_err(progenitor_error)?
+        .into_inner()
+        .missing
+        .into_iter()
+        .collect();
+
+    let total = bundle.files.len();
+    let mut uploading = 0;
+    for file in bundle.files.iter_mut() {
+        match &file.hash {
+            Some(hash) if !missing.contains(hash) => file.content = String::new(),
+            _ => uploading += 1,
+        }
+    }
+    println!(
+        "⬆️ Uploading {} of {} files",
+        uploading.to_string().purple(),
+        total.to_string().purple()
+    );
+
     // Create revision
     client
         .create_revision()
         .id(&script.id)
         .body(
             CreateRevisionDto::builder()
-                .bundle(script_config.to_bundle().map_err(Error::Script)?)
+                .bundle(bundle)
                 .script_config(config_dto),
         )
         .send()

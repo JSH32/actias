@@ -4,11 +4,8 @@ pub struct Config {
     pub port: u16,
     pub database_url: String,
     pub redis_url: String,
-    /// Object storage endpoint this service reaches directly.
+    /// Object storage endpoint; only platform services reach it.
     pub s3_endpoint: String,
-    /// Endpoint presigned urls are built against; clients outside the
-    /// cluster resolve this one, and the host is part of the signature.
-    pub s3_public_endpoint: String,
     pub s3_access_key: String,
     pub s3_secret_key: String,
     pub s3_bucket: String,
@@ -23,7 +20,6 @@ impl Config {
             database_url: get_env("DATABASE_URL"),
             redis_url: get_env("REDIS_URL"),
             s3_endpoint: get_env("S3_ENDPOINT"),
-            s3_public_endpoint: get_env_or("S3_PUBLIC_ENDPOINT", String::new()),
             s3_access_key: get_env("S3_ACCESS_KEY"),
             s3_secret_key: get_env("S3_SECRET_KEY"),
             s3_bucket: get_env_or("S3_BUCKET", "actias-blobs".to_owned()),

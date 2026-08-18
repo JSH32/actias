@@ -34,11 +34,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live_script_manager = LiveScriptManager::new(&config.redis_url);
 
     let blobs = blob_store::BlobStore::new(blob_store::BlobStoreConfig {
-        public_endpoint: if config.s3_public_endpoint.is_empty() {
-            config.s3_endpoint.clone()
-        } else {
-            config.s3_public_endpoint.clone()
-        },
         endpoint: config.s3_endpoint,
         access_key: config.s3_access_key,
         secret_key: config.s3_secret_key,
