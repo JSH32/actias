@@ -149,6 +149,33 @@ message StreamScriptLogsRequest {
     string script_id = 1;
 }
 
+// Content hashes a client is about to reference.
+message MissingBlobsRequest {
+    // blake3 hashes, lowercase hex.
+    repeated string hashes = 1;
+}
+
+// The subset of the asked-about hashes the store does not hold; a client
+// only needs to upload these.
+message MissingBlobsResponse {
+    repeated string missing = 1;
+}
+
+// Hashes a client wants to upload content for.
+message BlobUploadUrlsRequest {
+    repeated string hashes = 1;
+}
+
+// A presigned url a client PUTs one blob's raw bytes to.
+message BlobUploadUrl {
+    string hash = 1;
+    string url = 2;
+}
+
+message BlobUploadUrlsResponse {
+    repeated BlobUploadUrl urls = 1;
+}
+
 message Script {
     string id = 1;
     // Project that owns the script.
@@ -180,4 +207,9 @@ service ScriptService {
     rpc StreamLiveLogs(LiveScriptSession) returns (stream LogMessage);
     // Follow a script's production log lines as they happen.
     rpc StreamScriptLogs(StreamScriptLogsRequest) returns (stream LogMessage);
+
+    // Which of these content hashes the blob store does not hold yet.
+    rpc MissingBlobs(MissingBlobsRequest) returns (MissingBlobsResponse);
+    // Presigned upload urls for blobs a client is about to push.
+    rpc BlobUploadUrls(BlobUploadUrlsRequest) returns (BlobUploadUrlsResponse);
 }

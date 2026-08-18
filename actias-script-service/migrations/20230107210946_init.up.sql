@@ -24,12 +24,12 @@ CREATE TABLE revisions
     FOREIGN KEY (script_id) REFERENCES scripts (id) ON DELETE CASCADE
 );
 
--- Files in revisions. The path is a file's identity within its bundle; the
--- hash is its content identity, computed here so it is authoritative.
+-- Files in revisions: manifest rows only. The path is a file's identity
+-- within its bundle; the hash is its content identity and the key of its
+-- bytes in the blob store.
 CREATE TABLE files
 (
     revision_id  UUID           NOT NULL,
-    content      bytea          NOT NULL,
     file_path    VARCHAR(32767) NOT NULL,
     hash         CHAR(64)       NOT NULL,
     size         BIGINT         NOT NULL,
