@@ -35,6 +35,7 @@ use actias_worker_core::proto::script_service::script_service_client::ScriptServ
 use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
 
 use crate::blob_cache::BlobCache;
+use crate::metrics::Metrics;
 
 /// The service clients every request handler needs.
 #[derive(Clone)]
@@ -84,6 +85,7 @@ impl WorkerCaches {
 /// deadline.
 pub fn router(state: AppState, max_body_bytes: usize) -> Router {
     Router::new()
+        .route("/_metrics", axum::routing::get(metrics_handler))
         .fallback(handle)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
@@ -110,6 +112,8 @@ pub struct AppState {
     pub object_data_dir: std::path::PathBuf,
     /// Size cap per object database, bytes.
     pub object_db_max_bytes: u64,
+    /// Per-script request counters, served at /_metrics.
+    pub metrics: Arc<Metrics>,
     /// Revisions whose cron events were already armed by this process;
     /// arming is idempotent, this only spares the calls.
     pub armed_crons: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -413,23 +417,64 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
     Ok(response)
 }
 
+/// The prometheus exposition; gauges are measured at scrape time.
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let resident = state.objects.resident_count().await;
+    let mut response = Response::new(Body::from(state.metrics.render(resident)));
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/plain; version=0.0.4"),
+    );
+    response
+}
+
+/// The script a request addresses, as a metrics label; parsed the same
+/// way run_script routes, but never failing.
+fn metrics_label(state: &AppState, request: &axum::extract::Request) -> String {
+    let host_route = state.base_domain.as_deref().and_then(|base| {
+        request
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|host| route_by_host(host, base))
+    });
+
+    let route = host_route.or_else(|| route_by_path(request.uri().path()));
+    match route {
+        Some(
+            Route::Published { identifier }
+            | Route::Live { identifier, .. }
+            | Route::Revision { identifier, .. }
+            | Route::Aliased { identifier, .. },
+        ) => identifier.to_owned(),
+        None => "(none)".to_owned(),
+    }
+}
+
 /// Handles every inbound request by running the addressed script.
 async fn handle(State(state): State<AppState>, request: axum::extract::Request) -> Response {
     let span = span!(Level::DEBUG, "lua_http_request");
     let _enter = span.enter();
     let _in_flight = InFlight::enter(&state.in_flight);
 
+    let label = metrics_label(&state, &request);
+    let metrics = state.metrics.clone();
+    let started = std::time::Instant::now();
+
     let deadline = state.request_timeout;
     let result = tokio::time::timeout(deadline, run_script(state, request)).await;
 
-    match result {
+    let response = match result {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => internal_error_response(&error),
         Err(_elapsed) => text_response(
             StatusCode::GATEWAY_TIMEOUT,
             "Script did not respond in time.",
         ),
-    }
+    };
+
+    metrics.record(&label, started.elapsed(), response.status().is_success());
+    response
 }
 
 /// One revision prepared through the cache: the manifest travels over
@@ -1014,6 +1059,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             in_flight: Arc::default(),
             objects: Arc::default(),
+            metrics: Arc::default(),
             object_data_dir: std::env::temp_dir(),
             object_db_max_bytes: 64 * 1024 * 1024,
             armed_crons: Arc::default(),
@@ -1399,6 +1445,32 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(&body[..], b"served from cache");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_served_request_shows_up_in_the_metrics() {
+        let app = router(state_with(caches_with_cached_script().await), 1024);
+
+        let request = axum::http::Request::builder()
+            .uri("/cached-script/")
+            .body(Body::empty())
+            .unwrap();
+        app.clone().oneshot(request).await.unwrap();
+
+        let scrape = axum::http::Request::builder()
+            .uri("/_metrics")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(scrape).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            text.contains(r#"actias_requests_total{script="cached-script"} 1"#),
+            "{text}"
+        );
+        assert!(text.contains("actias_objects_resident 0"), "{text}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
