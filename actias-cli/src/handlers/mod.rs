@@ -8,3 +8,4 @@ pub mod revisions;
 pub mod scripts;
 pub mod secrets;
 pub mod tail;
+pub mod test;

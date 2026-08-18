@@ -5,6 +5,7 @@
     "**/*.lua"
   ],
   "ignore": [
-    "definitions/**"
+    "definitions/**",
+    "tests/**"
   ]
 }

@@ -260,6 +260,16 @@ if XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias-cli" publish "$D
 fi
 echo "service token published; revoked token refused"
 
+echo "== local tests (actias test)"
+# Fully local: the template's shipped test runs on the embedded runtime
+# with in-memory fakes, no stack and no login involved.
+UNIT="$DEVDIR/unit"
+mkdir -p "$UNIT"
+cp -r "$REPO/actias-cli/template/templates/basic/." "$UNIT/"
+"$REPO/target/debug/actias-cli" test "$UNIT" \
+    || { echo "the template's shipped test failed"; exit 1; }
+echo "template test passed on the local runtime"
+
 echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket
 # gateway, the worker serves the working tree at the live URL, and a file

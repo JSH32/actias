@@ -77,6 +77,11 @@ pub enum Commands {
         /// Directory of project
         directory: String,
     },
+    /// 🧪 Run tests/*.lua on the local runtime with in-memory fakes.
+    Test {
+        /// Directory of project; defaults to the current one.
+        directory: Option<String>,
+    },
 }
 
 #[derive(Parser, Debug)]
