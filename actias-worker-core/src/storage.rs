@@ -193,12 +193,30 @@ impl SqliteStorage {
             .map_err(|e| e.to_string())
     }
 
+    /// Like [`Self::load_alarm`] but safe on read-only connections: a file
+    /// that never held an alarm simply has no table, which reads as none.
+    ///
+    /// # Errors
+    /// Returns SQLite's message for anything but the missing table.
+    pub fn peek_alarm(&mut self) -> Result<Option<(i64, String, String)>, String> {
+        match self.load_alarm_row() {
+            Ok(alarm) => Ok(alarm),
+            Err(error) if error.contains("no such table") => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// The persisted alarm, if one is set: (due unix ms, class, own key).
     ///
     /// # Errors
     /// Returns SQLite's message.
     pub fn load_alarm(&mut self) -> Result<Option<(i64, String, String)>, String> {
         self.ensure_meta()?;
+        self.load_alarm_row()
+    }
+
+    /// The alarm row itself, assuming the table exists.
+    fn load_alarm_row(&mut self) -> Result<Option<(i64, String, String)>, String> {
         let mut statement = self
             .connection
             .prepare("SELECT due_ms, class, own_key FROM __actias_alarm")

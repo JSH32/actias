@@ -11,6 +11,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PROJECT=actias-smoke
+# Tight object timings so the cold-alarm section fits a test run: fast
+# sweeps, and leases free quickly after the worker restart.
+export OBJECT_SWEEP_SECS=3
+export NODE_TTL_SECS=10
 API=http://127.0.0.1:3001/api
 WORKER=http://127.0.0.1:3002
 FAILED=1
@@ -102,7 +106,23 @@ local Hits = object "Hits" {
     end,
 }
 
+-- Armed once before the worker restarts and never touched again: only
+-- the cold-alarm sweep can fire this, and the mark it writes into the
+-- shared database is the proof.
+local AlarmKeeper = object "AlarmKeeper" {
+    arm = function(state, duration)
+        state:set_alarm(duration)
+        return true
+    end,
+    alarm = function(state)
+        db:exec("INSERT INTO alarm_marks VALUES (?)", { state.now() })
+    end,
+}
+
 on "fetch" (function(request)
+    if string.find(request.context_uri or "", "/arm") then
+        AlarmKeeper:get("watchdog"):arm("15s")
+    end
     ns:set("visited", true)
     log.info("hello from production")
     -- getfile hands back raw bytes; decode them for the assertion.
@@ -114,6 +134,7 @@ on "fetch" (function(request)
             secret = token,
             asset = motd,
             hits = Hits:get("global"):bump(),
+            marks = db:read_one("SELECT COUNT(*) AS n FROM alarm_marks").n,
             db_rows = (function()
                 -- The visits table exists because the migration applied at
                 -- the database's first touch; nothing creates it here.
@@ -134,6 +155,10 @@ printf 'hello from an asset' > "$DEVDIR/published/motd.txt"
 "$REPO/target/debug/actias-cli" sql main create visits --directory "$DEVDIR/published"
 cat > "$DEVDIR/published/migrations/main/0001_visits.sql" <<'SQL'
 CREATE TABLE visits (at INTEGER);
+SQL
+"$REPO/target/debug/actias-cli" sql main create alarm_marks --directory "$DEVDIR/published"
+cat > "$DEVDIR/published/migrations/main/0002_alarm_marks.sql" <<'SQL'
+CREATE TABLE alarm_marks (at INTEGER);
 SQL
 printf '<h1>served without a vm</h1>' > "$DEVDIR/published/page.html"
 
@@ -192,6 +217,10 @@ D2=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
 echo "database counted $D1 then $D2 across requests"
 echo "object counted $H1 then $H2; contract declares class $OBJ_DECLARED"
 
+# Arm the watchdog now: its 15s alarm outlives the restart below, and
+# nothing after this line touches AlarmKeeper again.
+curl -sf "$WORKER/$IDENT/arm" -o /dev/null
+
 echo "== object rows survive a worker restart"
 # The counter lives in the object's own sqlite file on a volume; kill the
 # worker and the next bump must continue the same count, not restart it.
@@ -206,6 +235,20 @@ done
 D3=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
 [ -n "$D3" ] && [ "$D3" -gt "$D2" ] 2>/dev/null \
     || { echo "the migrated database broke across the restart ($D2 -> '$D3'), migrations may have reapplied"; exit 1; }
+
+echo "== cold alarm fires through the sweep"
+# The watchdog was armed before the restart and nothing touches it after;
+# the sweep must revive it (once the dead node's lease ages out) and its
+# alarm writes the mark we poll for.
+MARKS=0
+for _ in $(seq 1 30); do
+    MARKS=$(curl -sf "$WORKER/$IDENT/" | jq .marks 2>/dev/null || echo 0)
+    [ "$MARKS" -ge 1 ] 2>/dev/null && break
+    sleep 2
+done
+[ "$MARKS" -ge 1 ] 2>/dev/null \
+    || { echo "the cold alarm never fired (marks: '$MARKS')"; exit 1; }
+echo "cold alarm fired via the sweep; $MARKS mark(s) written"
 echo "object resumed at $H3 after the worker restart"
 
 echo "== serving a static asset next to the lua handler"

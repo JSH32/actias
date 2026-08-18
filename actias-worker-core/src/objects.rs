@@ -386,6 +386,16 @@ impl ObjectHost {
         Ok(handle)
     }
 
+    /// Whether the object currently has a live task; a hibernated one
+    /// reads as absent.
+    pub async fn is_resident(&self, id: &str) -> bool {
+        self.tasks
+            .lock()
+            .await
+            .get(id)
+            .is_some_and(|(_, handle)| !handle.sender.is_closed())
+    }
+
     /// Drops an object's registry entry; its task ends once in-flight
     /// callers finish. The next access builds a fresh vm.
     pub async fn evict(&self, id: &str) {

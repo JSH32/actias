@@ -2,6 +2,7 @@ mod blob_cache;
 mod config;
 mod heartbeat;
 mod server;
+mod sweeper;
 
 use std::net::SocketAddr;
 
@@ -99,38 +100,44 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     std::fs::create_dir_all(&config.object_data_dir)?;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    let app = server::router(
-        server::AppState {
-            clients: server::Clients {
-                script: script_client,
-                kv: kv_client,
-            },
-            caches: server::WorkerCaches::new(
-                std::time::Duration::from_secs(config.pointer_ttl_secs),
-                config.revision_cache_bytes,
-            ),
-            blobs: blob_cache::BlobCache::new(blob_cache::BlobCacheConfig {
-                endpoint: config.s3_endpoint,
-                access_key: config.s3_access_key,
-                secret_key: config.s3_secret_key,
-                bucket: config.s3_bucket,
-                cache_bytes: config.blob_cache_bytes,
-            }),
-            egress,
-            redis: Some(redis),
-            secrets_key,
-            request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
-            in_flight,
-            objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),
-            object_data_dir: std::path::PathBuf::from(config.object_data_dir),
-            object_db_max_bytes: config.object_db_max_bytes,
-            object_idle_after: std::time::Duration::from_secs(config.object_idle_secs),
-            node_identity,
-            registry: registry_client,
-            base_domain: config.base_domain,
+    let state = server::AppState {
+        clients: server::Clients {
+            script: script_client,
+            kv: kv_client,
         },
-        config.max_body_bytes,
-    );
+        caches: server::WorkerCaches::new(
+            std::time::Duration::from_secs(config.pointer_ttl_secs),
+            config.revision_cache_bytes,
+        ),
+        blobs: blob_cache::BlobCache::new(blob_cache::BlobCacheConfig {
+            endpoint: config.s3_endpoint,
+            access_key: config.s3_access_key,
+            secret_key: config.s3_secret_key,
+            bucket: config.s3_bucket,
+            cache_bytes: config.blob_cache_bytes,
+        }),
+        egress,
+        redis: Some(redis),
+        secrets_key,
+        request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
+        in_flight,
+        objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),
+        object_data_dir: std::path::PathBuf::from(config.object_data_dir),
+        object_db_max_bytes: config.object_db_max_bytes,
+        object_idle_after: std::time::Duration::from_secs(config.object_idle_secs),
+        node_identity,
+        registry: registry_client,
+        base_domain: config.base_domain,
+    };
+
+    // Due alarms in cold files fire without anyone asking; the sweep is
+    // what makes hibernation and crashes indistinguishable to an alarm.
+    tokio::spawn(sweeper::run(
+        state.clone(),
+        std::time::Duration::from_secs(config.object_sweep_secs),
+    ));
+
+    let app = server::router(state, config.max_body_bytes);
 
     info!("Serving on {}", addr);
 
