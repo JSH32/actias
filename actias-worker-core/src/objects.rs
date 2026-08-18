@@ -84,14 +84,22 @@ impl ObjectHandle {
 /// Moves `runtime` onto its own task forever and hands back its mailbox.
 ///
 /// The task ends when every handle is dropped; the vm drops with it.
-pub fn spawn_object_task(runtime: ActiasRuntime) -> ObjectHandle {
+pub fn spawn_object_task(runtime: ActiasRuntime, call_budget: Option<u64>) -> ObjectHandle {
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
 
     tokio::spawn(async move {
         // Popping only after the previous call finished is the input gate;
         // there is deliberately no concurrency inside this loop.
         while let Some(call) = receiver.recv().await {
+            // Each call gets its own budget: a runaway method times out and
+            // the vm survives for the next caller, instead of a lifetime
+            // limit eventually killing a healthy object.
+            if let Some(seconds) = call_budget {
+                runtime.begin_call_budget(seconds);
+            }
             let result = dispatch(&runtime, &call.method, call.payload).await;
+            runtime.end_call_budget();
+
             // A caller that stopped waiting is its own problem; the state
             // change it asked for has already happened either way.
             let _ = call.reply.send(result);
@@ -99,6 +107,27 @@ pub fn spawn_object_task(runtime: ActiasRuntime) -> ObjectHandle {
     });
 
     ObjectHandle { sender }
+}
+
+/// Extends a call chain onto `key`, refusing cycles.
+///
+/// Every routed call carries the keys already on its stack; a target that
+/// appears there would deadlock on its own busy mailbox, so it is refused
+/// loudly instead.
+///
+/// # Errors
+/// Returns the cycle spelled out, for the script author.
+pub fn extend_call_chain(chain: &[String], key: &str) -> Result<Vec<String>, String> {
+    if chain.iter().any(|entry| entry == key) {
+        return Err(format!(
+            "Reentrant object call refused: {} -> {key} would deadlock.",
+            chain.join(" -> "),
+        ));
+    }
+
+    let mut child = chain.to_vec();
+    child.push(key.to_owned());
+    Ok(child)
 }
 
 /// Runs one method against the vm: json in, json out.
@@ -126,14 +155,18 @@ async fn dispatch(
         .map_err(|e| ObjectError::Call(e.to_string()))
 }
 
-/// The registry of live objects on this node, keyed by object id.
+/// The registry of live objects on this node, keyed by object identity
+/// (never by revision: identity is what storage will hang off).
 #[derive(Default)]
 pub struct ObjectHost {
-    tasks: Mutex<HashMap<String, ObjectHandle>>,
+    tasks: Mutex<HashMap<String, (String, ObjectHandle)>>,
 }
 
 impl ObjectHost {
-    /// The handle for `id`, spawning its task on first use.
+    /// The handle for `id`, spawning its task on first use. A changed
+    /// `marker` (the revision the vm should embody) evicts the old task
+    /// and builds a fresh one, so a republish never serves stale code and
+    /// retired vms do not accumulate.
     ///
     /// The factory runs under the registry lock, so two racing callers can
     /// never both build a vm for one object; correctness first, and object
@@ -141,20 +174,27 @@ impl ObjectHost {
     ///
     /// # Errors
     /// Returns whatever the factory failed with; nothing is registered.
-    pub async fn get_or_spawn<F, Fut>(&self, id: &str, factory: F) -> mlua::Result<ObjectHandle>
+    pub async fn get_or_spawn<F, Fut>(
+        &self,
+        id: &str,
+        marker: &str,
+        factory: F,
+    ) -> mlua::Result<ObjectHandle>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = mlua::Result<ActiasRuntime>>,
+        Fut: Future<Output = mlua::Result<(ActiasRuntime, Option<u64>)>>,
     {
         let mut tasks = self.tasks.lock().await;
 
-        if let Some(handle) = tasks.get(id) {
+        if let Some((held, handle)) = tasks.get(id)
+            && held == marker
+        {
             return Ok(handle.clone());
         }
 
-        let runtime = factory().await?;
-        let handle = spawn_object_task(runtime);
-        tasks.insert(id.to_owned(), handle.clone());
+        let (runtime, call_budget) = factory().await?;
+        let handle = spawn_object_task(runtime, call_budget);
+        tasks.insert(id.to_owned(), (marker.to_owned(), handle.clone()));
 
         Ok(handle)
     }
@@ -242,7 +282,7 @@ mod tests {
             "#,
         )
         .await;
-        let handle = spawn_object_task(runtime);
+        let handle = spawn_object_task(runtime, None);
 
         let (a, b) = tokio::join!(
             handle.call("slow", serde_json::json!("a")),
@@ -278,7 +318,7 @@ mod tests {
             "#,
         )
         .await;
-        let handle = spawn_object_task(runtime);
+        let handle = spawn_object_task(runtime, None);
 
         for expected in 1..=3 {
             let value = handle
@@ -292,7 +332,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn an_unknown_method_is_a_call_error() {
         let runtime = runtime_with("x = 1").await;
-        let handle = spawn_object_task(runtime);
+        let handle = spawn_object_task(runtime, None);
 
         let error = handle
             .call("nope", serde_json::Value::Null)
@@ -307,11 +347,12 @@ mod tests {
         let host = ObjectHost::default();
 
         let first = host
-            .get_or_spawn("obj-1", || async {
-                Ok(
+            .get_or_spawn("obj-1", "r1", || async {
+                Ok((
                     runtime_with("count = 0 function bump() count = count + 1 return count end")
                         .await,
-                )
+                    None,
+                ))
             })
             .await
             .expect("spawns");
@@ -322,7 +363,7 @@ mod tests {
 
         // The second resolve must reach the same vm, not a fresh one.
         let second = host
-            .get_or_spawn("obj-1", || async { panic!("factory must not rerun") })
+            .get_or_spawn("obj-1", "r1", || async { panic!("factory must not rerun") })
             .await
             .expect("reuses");
         let value = second
@@ -358,7 +399,9 @@ mod tests {
             Box::pin(async move {
                 let id = format!("{}/{}", target.class, target.name);
                 let handle = host
-                    .get_or_spawn(&id, || async { Ok(runtime_with(SOURCE).await) })
+                    .get_or_spawn(&id, "r1", || async {
+                        Ok((runtime_with(SOURCE).await, None))
+                    })
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -454,12 +497,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_changed_marker_respawns_the_vm() {
+        let host = ObjectHost::default();
+        let source = "count = 0 function bump() count = count + 1 return count end";
+
+        let first = host
+            .get_or_spawn("obj-1", "rev-1", || async {
+                Ok((runtime_with(source).await, None))
+            })
+            .await
+            .expect("spawns");
+        first
+            .call("bump", serde_json::Value::Null)
+            .await
+            .expect("bump");
+
+        // A new revision must reach fresh code (here: fresh state), not
+        // the retired vm.
+        let second = host
+            .get_or_spawn("obj-1", "rev-2", || async {
+                Ok((runtime_with(source).await, None))
+            })
+            .await
+            .expect("respawns");
+        let value = second
+            .call("bump", serde_json::Value::Null)
+            .await
+            .expect("bump");
+        assert_eq!(value, serde_json::json!(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runaway_method_times_out_and_the_vm_survives() {
+        let runtime = runtime_with(
+            r#"
+            function spin() while true do end end
+            function ping() return 1 end
+            "#,
+        )
+        .await;
+        let handle = spawn_object_task(runtime, Some(1));
+
+        let error = handle
+            .call("spin", serde_json::Value::Null)
+            .await
+            .expect_err("the runaway must time out");
+        assert!(matches!(error, ObjectError::Call(_)), "{error}");
+
+        // The budget was per call: the vm answers the next caller.
+        let value = handle
+            .call("ping", serde_json::Value::Null)
+            .await
+            .expect("the vm survives its runaway");
+        assert_eq!(value, serde_json::json!(1));
+    }
+
+    #[test]
+    fn a_cycle_in_the_call_chain_is_refused() {
+        let chain = extend_call_chain(&[], "a").expect("first hop");
+        let chain = extend_call_chain(&chain, "b").expect("second hop");
+
+        assert_eq!(chain, vec!["a".to_owned(), "b".to_owned()]);
+
+        let refused = extend_call_chain(&chain, "a").expect_err("a -> b -> a must refuse");
+        assert!(refused.contains("a -> b -> a"), "{refused}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn mailbox_overhead_is_visible() {
         // Not an assertion, a measurement: the per-call cost of the mailbox
         // plus mlua's send-feature locking, recorded so the !Send-vm option
         // stays a data question. Run with --nocapture to read it.
         let runtime = runtime_with("function ping() return 1 end").await;
-        let handle = spawn_object_task(runtime);
+        let handle = spawn_object_task(runtime, None);
 
         let rounds = 10_000u32;
         let start = std::time::Instant::now();

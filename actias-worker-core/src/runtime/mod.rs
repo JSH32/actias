@@ -609,6 +609,23 @@ impl ActiasRuntime {
 
     /// Start the timer. This only works if `time_limit` is set.
     /// This will stop the runtime with an error once the time limit has passed since the timer has been started.
+    /// Arms the interrupt for one bounded piece of work; pair with
+    /// [`Self::end_call_budget`]. Pinned vms live indefinitely, so their
+    /// budget is per call, never per lifetime.
+    pub fn begin_call_budget(&self, seconds: u64) {
+        let mut timer = self.timer.write().expect("no poisoned lock");
+        timer.time_limit = Some(seconds);
+        timer.start_time = Some(Instant::now());
+    }
+
+    /// Disarms the per-call budget; the vm idles unbounded until the next
+    /// call arms it again.
+    pub fn end_call_budget(&self) {
+        let mut timer = self.timer.write().expect("no poisoned lock");
+        timer.time_limit = None;
+        timer.start_time = None;
+    }
+
     pub fn start_timer(&self) {
         let mut timer = self.timer.write().unwrap();
         if timer.time_limit.is_some() {

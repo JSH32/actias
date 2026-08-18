@@ -460,62 +460,87 @@ async fn cached_revision(
         .await
 }
 
-/// How method calls on object handles leave a request vm: resolve the
-/// pinned vm (spawning it from the same prepared revision on first touch)
-/// and push one mailbox message.
-///
-/// The vm-cache key carries the revision id, so a republish gets fresh
-/// code on first touch; in-memory state resets with it, until durable
-/// storage lands underneath. Pinned vms get no router of their own yet:
-/// object-to-object calls are refused rather than allowed to deadlock on
-/// each other's mailboxes.
-fn object_router(state: &AppState, prepared: Arc<PreparedRevision>) -> ObjectRouter {
-    let host = state.objects.clone();
-    let kv = state.clients.kv.clone();
-    let egress = state.egress.clone();
-    let secrets_key = state.secrets_key.clone();
-    let redis = state.redis.clone();
+/// Everything routing an object method call needs; one per node, shared
+/// by request vms and pinned vms alike, so objects call objects through
+/// exactly the machinery requests use.
+struct ObjectRouting {
+    host: Arc<ObjectHost>,
+    kv: KvServiceClient<Channel>,
+    egress: EgressClient,
+    secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
+    redis: Option<redis::aio::ConnectionManager>,
+    prepared: Arc<PreparedRevision>,
+}
 
-    Arc::new(move |target: ObjectTarget| {
-        let host = host.clone();
-        let kv = kv.clone();
-        let egress = egress.clone();
-        let secrets_key = secrets_key.clone();
-        let redis = redis.clone();
-        let prepared = prepared.clone();
+/// Per-call budget for one object method, mirroring the request deadline.
+const OBJECT_CALL_BUDGET_SECS: u64 = 10;
 
-        Box::pin(async move {
-            let key = format!(
-                "{}/{}/{}/{}",
-                prepared.script.id, prepared.revision_id, target.class, target.name
-            );
-
-            let handle = host
-                .get_or_spawn(&key, || async {
-                    // Object logs join the script's production channel, so
-                    // `actias tail` sees them like any handler line.
-                    let logs = redis.map(|connection| {
-                        LogPublisher::new(connection, script_log_channel(&prepared.script.id))
-                    });
-
-                    ActiasRuntime::new(prepared.clone(), kv, egress, logs, secrets_key, None).await
-                })
-                .await
-                .map_err(|e| e.to_string())?;
-
-            handle
-                .call(
-                    "__dispatch",
-                    serde_json::json!({
-                        "class": target.class,
-                        "method": target.method,
-                        "args": target.arguments,
-                    }),
-                )
-                .await
-                .map_err(|e| e.to_string())
+impl ObjectRouting {
+    /// Wraps this routing as the closure vms carry in app data.
+    fn as_router(self: &Arc<Self>) -> ObjectRouter {
+        let this = self.clone();
+        Arc::new(move |target: ObjectTarget| {
+            let this = this.clone();
+            Box::pin(async move { this.route(target).await })
         })
-    })
+    }
+
+    /// Resolves the pinned vm (spawning it from the same prepared revision
+    /// on first touch) and pushes one mailbox message.
+    ///
+    /// The vm registry is keyed by object identity and marked with the
+    /// revision, so a republish gets fresh code on first touch instead of
+    /// stale vms accumulating. A call whose chain already holds the target
+    /// is refused: its mailbox is busy underneath this very call, and
+    /// waiting on it would deadlock.
+    async fn route(self: Arc<Self>, target: ObjectTarget) -> Result<serde_json::Value, String> {
+        let key = format!(
+            "{}/{}/{}",
+            self.prepared.script.id, target.class, target.name
+        );
+        let chain = actias_worker_core::objects::extend_call_chain(&target.chain, &key)?;
+
+        let routing = self.clone();
+        let handle = self
+            .host
+            .get_or_spawn(&key, &self.prepared.revision_id, || async move {
+                // Object logs join the script's production channel, so
+                // `actias tail` sees them like any handler line.
+                let logs = routing.redis.clone().map(|connection| {
+                    LogPublisher::new(connection, script_log_channel(&routing.prepared.script.id))
+                });
+
+                let runtime = ActiasRuntime::new(
+                    routing.prepared.clone(),
+                    routing.kv.clone(),
+                    routing.egress.clone(),
+                    logs,
+                    routing.secrets_key.clone(),
+                    None,
+                )
+                .await?;
+                // The pinned vm routes its own outbound calls too; the
+                // chain it hands them is what makes cycles refusable.
+                runtime.set_app_data::<ObjectRouter>(routing.as_router());
+
+                Ok((runtime, Some(OBJECT_CALL_BUDGET_SECS)))
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+
+        handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": target.class,
+                    "method": target.method,
+                    "args": target.arguments,
+                    "chain": chain,
+                }),
+            )
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Resolves the script, runs it, and shapes its response.
@@ -735,7 +760,15 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // died with mlua 0.9.
     let kv_client = state.clients.kv.clone();
 
-    let router = object_router(&state, prepared.clone());
+    let router = Arc::new(ObjectRouting {
+        host: state.objects.clone(),
+        kv: state.clients.kv.clone(),
+        egress: state.egress.clone(),
+        secrets_key: state.secrets_key.clone(),
+        redis: state.redis.clone(),
+        prepared: prepared.clone(),
+    })
+    .as_router();
 
     let lua = ActiasRuntime::new(
         prepared,
