@@ -1,5 +1,6 @@
 mod blob_cache;
 mod config;
+mod heartbeat;
 mod server;
 
 use std::net::SocketAddr;
@@ -58,8 +59,23 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         actias_worker_core::egress::EgressPolicy::new(denied_hosts, config.egress_allow_private),
     )?;
 
-    let script_client = ScriptServiceClient::connect(config.script_service_uri).await?;
+    let script_client = ScriptServiceClient::connect(config.script_service_uri.clone()).await?;
     let kv_client = KvServiceClient::connect(config.kv_service_uri).await?;
+
+    // The registry rides in the script-service binary, so it answers on the
+    // same channel. Membership is not on the request path: the loop retries
+    // forever and the worker serves regardless.
+    let registry_client =
+        actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient::connect(
+            config.script_service_uri.clone(),
+        )
+        .await?;
+    let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    tokio::spawn(heartbeat::register_and_heartbeat(
+        registry_client,
+        config.node_address.clone(),
+        in_flight.clone(),
+    ));
 
     let redis = redis::aio::ConnectionManager::new(
         redis::Client::open(config.redis_url).expect("REDIS_URL is not a valid redis url"),
@@ -99,6 +115,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             redis: Some(redis),
             secrets_key,
             request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
+            in_flight,
         },
         config.max_body_bytes,
     );

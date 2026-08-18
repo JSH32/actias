@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use actias_common::tracing::Level;
@@ -89,6 +90,26 @@ pub struct AppState {
     /// Decrypts stored secrets; without it `secret` declarations error.
     pub secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
     pub request_timeout: Duration,
+    /// Requests currently executing; the heartbeat reports it as load.
+    pub in_flight: Arc<AtomicU32>,
+}
+
+/// Holds the in-flight gauge up for exactly one request's lifetime;
+/// dropping on any exit path, including panics and timeouts, keeps the
+/// gauge honest.
+struct InFlight(Arc<AtomicU32>);
+
+impl InFlight {
+    fn enter(gauge: &Arc<AtomicU32>) -> Self {
+        gauge.fetch_add(1, Ordering::Relaxed);
+        Self(gauge.clone())
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Where a request path points.
@@ -284,6 +305,7 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
 async fn handle(State(state): State<AppState>, request: axum::extract::Request) -> Response {
     let span = span!(Level::DEBUG, "lua_http_request");
     let _enter = span.enter();
+    let _in_flight = InFlight::enter(&state.in_flight);
 
     let deadline = state.request_timeout;
     let result = tokio::time::timeout(deadline, run_script(state, request)).await;
@@ -529,6 +551,7 @@ mod tests {
             redis: None,
             secrets_key: None,
             request_timeout: Duration::from_secs(5),
+            in_flight: Arc::default(),
         }
     }
 
@@ -726,6 +749,22 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_in_flight_gauge_returns_to_zero_after_a_request() {
+        let state = state_with(caches_with_cached_script().await);
+        let gauge = state.in_flight.clone();
+        let app = router(state, 1024);
+
+        let request = axum::http::Request::builder()
+            .uri("/cached-script/")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(gauge.load(Ordering::Relaxed), 0);
     }
 
     #[test]

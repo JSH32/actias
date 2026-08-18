@@ -21,4 +21,8 @@ pub mod proto {
     pub mod kv_service {
         tonic::include_proto!("kv_service");
     }
+
+    pub mod node_registry {
+        tonic::include_proto!("node_registry");
+    }
 }
