@@ -44,6 +44,57 @@ pub struct ObjectTarget {
 /// vm runs exactly one call at a time.
 pub struct CallChain(pub Vec<String>);
 
+/// The one alarm an object may hold; setting replaces. The task loop reads
+/// it after every call to know when to wake.
+pub struct AlarmCell(pub std::cell::RefCell<Option<PendingAlarm>>);
+
+#[derive(Clone)]
+pub struct PendingAlarm {
+    /// Unix milliseconds the alarm is due at.
+    pub due_ms: i64,
+    /// Class whose `alarm` method runs.
+    pub class: String,
+    /// The object's own key, seeding the alarm dispatch's call chain.
+    pub own_key: String,
+}
+
+/// Milliseconds since the unix epoch, the clock `state.now()` exposes and
+/// the alarm loop schedules against.
+pub fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// A duration written the way scripts write them: "500ms", "30s", "10m",
+/// "24h", "7d", or a bare number of seconds.
+fn parse_duration_ms(raw: &str) -> Result<i64, String> {
+    let raw = raw.trim();
+    if let Ok(seconds) = raw.parse::<f64>() {
+        return Ok((seconds * 1000.0) as i64);
+    }
+
+    let split = raw
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .ok_or_else(|| format!("'{raw}' is not a duration."))?;
+    let (number, unit) = raw.split_at(split);
+    let number: f64 = number
+        .parse()
+        .map_err(|_| format!("'{raw}' is not a duration."))?;
+
+    let factor = match unit.trim() {
+        "ms" => 1.0,
+        "s" => 1000.0,
+        "m" => 60.0 * 1000.0,
+        "h" => 3600.0 * 1000.0,
+        "d" => 86400.0 * 1000.0,
+        other => return Err(format!("Unknown duration unit '{other}'.")),
+    };
+
+    Ok((number * factor) as i64)
+}
+
 /// What `__dispatch` receives from the mailbox, mirroring [`ObjectTarget`]
 /// minus the name, which the pinned vm embodies rather than reads.
 #[derive(Deserialize)]
@@ -185,6 +236,62 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
     Ok(handle)
 }
 
+/// Which class the pinned vm is currently dispatching for.
+struct CurrentDispatch {
+    class: String,
+}
+
+/// `state:set_alarm(duration)`: at most one alarm per object; setting
+/// replaces. Persisted alongside the object's rows when storage exists, so
+/// it survives a restart once the object is next resident.
+fn set_alarm(lua: &Lua, (_this, duration): (Table, mlua::Value)) -> mlua::Result<()> {
+    let delay_ms = match &duration {
+        mlua::Value::String(raw) => {
+            parse_duration_ms(&raw.to_str()?).map_err(mlua::Error::RuntimeError)?
+        }
+        mlua::Value::Integer(seconds) => seconds * 1000,
+        mlua::Value::Number(seconds) => (seconds * 1000.0) as i64,
+        _ => {
+            return Err(mlua::Error::RuntimeError(
+                "set_alarm takes a duration: \"30s\", \"24h\" or seconds.".to_owned(),
+            ));
+        }
+    };
+
+    let class = lua
+        .app_data_ref::<CurrentDispatch>()
+        .map(|current| current.class.clone())
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("set_alarm only works inside an object method.".to_owned())
+        })?;
+    let own_key = lua
+        .app_data_ref::<CallChain>()
+        .and_then(|chain| chain.0.last().cloned())
+        .unwrap_or_default();
+
+    let alarm = PendingAlarm {
+        due_ms: unix_now_ms() + delay_ms,
+        class,
+        own_key,
+    };
+
+    if let Some(cell) = lua.app_data_ref::<crate::storage::StorageCell>() {
+        cell.0
+            .borrow_mut()
+            .save_alarm(alarm.due_ms, &alarm.class, &alarm.own_key)
+            .map_err(mlua::Error::RuntimeError)?;
+    }
+
+    match lua.app_data_ref::<AlarmCell>() {
+        Some(cell) => *cell.0.borrow_mut() = Some(alarm),
+        None => {
+            lua.set_app_data(AlarmCell(std::cell::RefCell::new(Some(alarm))));
+        }
+    }
+
+    Ok(())
+}
+
 /// Sequence-table parameters as plain values for the storage layer.
 fn sql_params(lua: &Lua, params: Option<Table>) -> mlua::Result<Vec<serde_json::Value>> {
     let Some(params) = params else {
@@ -266,8 +373,12 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
 
             // The method's own outbound calls extend this stack; installing
             // it per dispatch is safe because this vm runs one call at a
-            // time by construction.
+            // time by construction. The class rides along for `set_alarm`,
+            // which needs to know whose `alarm` method to schedule.
             lua.set_app_data(CallChain(call.chain.clone()));
+            lua.set_app_data(CurrentDispatch {
+                class: call.class.clone(),
+            });
 
             let classes: Table = lua.named_registry_value(CLASSES_KEY)?;
             let class: Table = classes.get(call.class.as_str()).map_err(|_| {
@@ -283,17 +394,42 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
             // The state table is the object's identity surface: plain keys
             // are in-memory and live as long as the pinned vm; `state.sql`
             // is the durable half, present when the host opened storage.
-            let state: Table = match lua.named_registry_value(STATE_KEY) {
-                Ok(state) => state,
+            let (state, state_is_new) = match lua.named_registry_value::<Table>(STATE_KEY) {
+                Ok(state) => (state, false),
                 Err(_) => {
                     let state = lua.create_table()?;
                     if lua.app_data_ref::<crate::storage::StorageCell>().is_some() {
                         state.set("sql", sql_surface(&lua)?)?;
                     }
+                    state.set("now", lua.create_function(|_, ()| Ok(unix_now_ms()))?)?;
+                    state.set("set_alarm", lua.create_function(set_alarm)?)?;
                     lua.set_named_registry_value(STATE_KEY, state.clone())?;
-                    state
+                    (state, true)
                 }
             };
+
+            // `init` runs exactly once per object: for stored objects the
+            // file is the record (a failed init retries next call); without
+            // storage, once per vm life, which is when state is fresh too.
+            if state_is_new && call.method != "init" {
+                let fresh = match lua.app_data_ref::<crate::storage::StorageCell>() {
+                    Some(cell) => {
+                        let fresh = cell.0.borrow_mut().is_fresh();
+                        fresh.map_err(mlua::Error::RuntimeError)?
+                    }
+                    None => true,
+                };
+
+                if fresh && let Ok(init) = class.get::<mlua::Function>("init") {
+                    init.call_async::<()>(state.clone()).await?;
+                    if let Some(cell) = lua.app_data_ref::<crate::storage::StorageCell>() {
+                        cell.0
+                            .borrow_mut()
+                            .mark_initialized()
+                            .map_err(mlua::Error::RuntimeError)?;
+                    }
+                }
+            }
 
             let mut multi = mlua::MultiValue::new();
             multi.push_back(mlua::Value::Table(state));
@@ -306,4 +442,24 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations_read_the_way_scripts_write_them() {
+        assert_eq!(parse_duration_ms("500ms").unwrap(), 500);
+        assert_eq!(parse_duration_ms("30s").unwrap(), 30_000);
+        assert_eq!(parse_duration_ms("10m").unwrap(), 600_000);
+        assert_eq!(parse_duration_ms("24h").unwrap(), 86_400_000);
+        assert_eq!(parse_duration_ms("7d").unwrap(), 604_800_000);
+        assert_eq!(parse_duration_ms("1.5s").unwrap(), 1500);
+        // A bare number is seconds.
+        assert_eq!(parse_duration_ms("2").unwrap(), 2000);
+
+        assert!(parse_duration_ms("soon").is_err());
+        assert!(parse_duration_ms("10 fortnights").is_err());
+    }
 }

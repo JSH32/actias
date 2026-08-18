@@ -48,6 +48,96 @@ impl SqliteStorage {
     }
 }
 
+impl SqliteStorage {
+    /// Whether this file has never been initialized: `init` runs exactly
+    /// once per object, and the file itself is the record of that.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn is_fresh(&mut self) -> Result<bool, String> {
+        let version: i64 = self
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(version == 0)
+    }
+
+    /// Marks `init` as having completed; runs after a successful init so a
+    /// failed one retries on the next call.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn mark_initialized(&mut self) -> Result<(), String> {
+        self.connection
+            .pragma_update(None, "user_version", 1)
+            .map_err(|e| e.to_string())
+    }
+
+    /// The persisted alarm, if one is set: (due unix ms, class, own key).
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn load_alarm(&mut self) -> Result<Option<(i64, String, String)>, String> {
+        self.ensure_meta()?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT due_ms, class, own_key FROM __actias_alarm")
+            .map_err(|e| e.to_string())?;
+        let mut rows = statement.query([]).map_err(|e| e.to_string())?;
+
+        match rows.next().map_err(|e| e.to_string())? {
+            Some(row) => Ok(Some((
+                row.get(0).map_err(|e| e.to_string())?,
+                row.get(1).map_err(|e| e.to_string())?,
+                row.get(2).map_err(|e| e.to_string())?,
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    /// Persists the one alarm (an object has at most one; setting replaces).
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn save_alarm(&mut self, due_ms: i64, class: &str, own_key: &str) -> Result<(), String> {
+        self.ensure_meta()?;
+        self.connection
+            .execute("DELETE FROM __actias_alarm", [])
+            .map_err(|e| e.to_string())?;
+        self.connection
+            .execute(
+                "INSERT INTO __actias_alarm (due_ms, class, own_key) VALUES (?, ?, ?)",
+                rusqlite::params![due_ms, class, own_key],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Drops the persisted alarm; called the moment it fires, so a handler
+    /// that sets a new one is not clobbered afterwards.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn clear_alarm(&mut self) -> Result<(), String> {
+        self.ensure_meta()?;
+        self.connection
+            .execute("DELETE FROM __actias_alarm", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The reserved platform table; `__` prefixes are refused to scripts.
+    fn ensure_meta(&mut self) -> Result<(), String> {
+        self.connection
+            .execute(
+                "CREATE TABLE IF NOT EXISTS __actias_alarm                  (due_ms INTEGER NOT NULL, class TEXT NOT NULL, own_key TEXT NOT NULL)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
 /// One json parameter as something SQLite can bind.
 fn bind(value: &serde_json::Value) -> Result<rusqlite::types::Value, String> {
     use rusqlite::types::Value;

@@ -89,9 +89,24 @@ pub fn spawn_object_task(
     call_budget: Option<u64>,
     storage: Option<crate::storage::SqliteStorage>,
 ) -> ObjectHandle {
+    use crate::extensions::objects::{AlarmCell, PendingAlarm};
+
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
 
-    if let Some(storage) = storage {
+    if let Some(mut storage) = storage {
+        // A persisted alarm re-arms the moment the object is resident
+        // again; past-due fires immediately. (A cold object with a due
+        // alarm still needs a touch to wake, until placement can scan.)
+        let pending = storage
+            .load_alarm()
+            .ok()
+            .flatten()
+            .map(|(due_ms, class, own_key)| PendingAlarm {
+                due_ms,
+                class,
+                own_key,
+            });
+        runtime.set_app_data(AlarmCell(std::cell::RefCell::new(pending)));
         runtime.set_app_data(crate::storage::StorageCell(std::cell::RefCell::new(
             storage,
         )));
@@ -99,8 +114,33 @@ pub fn spawn_object_task(
 
     tokio::spawn(async move {
         // Popping only after the previous call finished is the input gate;
-        // there is deliberately no concurrency inside this loop.
-        while let Some(call) = receiver.recv().await {
+        // there is deliberately no concurrency inside this loop. A due
+        // alarm is just one more message source, so it serializes with
+        // calls exactly like they serialize with each other.
+        loop {
+            let pending = runtime
+                .app_data_ref::<AlarmCell>()
+                .and_then(|cell| cell.0.borrow().clone());
+
+            let call = if let Some(alarm) = pending {
+                let wait = (alarm.due_ms - crate::extensions::objects::unix_now_ms()).max(0);
+                tokio::select! {
+                    call = receiver.recv() => match call {
+                        Some(call) => call,
+                        None => break,
+                    },
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(wait as u64)) => {
+                        fire_alarm(&runtime, alarm, call_budget).await;
+                        continue;
+                    }
+                }
+            } else {
+                match receiver.recv().await {
+                    Some(call) => call,
+                    None => break,
+                }
+            };
+
             // Each call gets its own budget: a runaway method times out and
             // the vm survives for the next caller, instead of a lifetime
             // limit eventually killing a healthy object.
@@ -125,6 +165,50 @@ pub fn spawn_object_task(
     });
 
     ObjectHandle { sender }
+}
+
+/// Runs one due alarm: cleared before dispatch, so a handler that sets the
+/// next alarm is not clobbered afterwards. An alarm is best-effort work the
+/// object asked itself for; its failure is logged, never propagated.
+async fn fire_alarm(
+    runtime: &ActiasRuntime,
+    alarm: crate::extensions::objects::PendingAlarm,
+    call_budget: Option<u64>,
+) {
+    if let Some(cell) = runtime.app_data_ref::<crate::extensions::objects::AlarmCell>() {
+        *cell.0.borrow_mut() = None;
+    }
+    if let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
+        && let Err(error) = cell.0.borrow_mut().clear_alarm()
+    {
+        actias_common::tracing::warn!(%error, "alarm could not be cleared");
+    }
+
+    if let Some(seconds) = call_budget {
+        runtime.begin_call_budget(seconds);
+    }
+    let result = dispatch(
+        runtime,
+        "__dispatch",
+        serde_json::json!({
+            "class": alarm.class,
+            "method": "alarm",
+            "args": [],
+            "chain": [alarm.own_key],
+        }),
+    )
+    .await;
+    runtime.end_call_budget();
+
+    if let Err(error) = result {
+        actias_common::tracing::warn!(%error, "object alarm failed");
+    }
+
+    if let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
+        && let Err(error) = cell.0.borrow_mut().checkpoint()
+    {
+        actias_common::tracing::warn!(%error, "object storage checkpoint failed");
+    }
 }
 
 /// Extends a call chain onto `key`, refusing cycles.
@@ -631,6 +715,146 @@ mod tests {
         assert_eq!(
             second.call("__dispatch", call.clone()).await.expect("bump"),
             serde_json::json!(3)
+        );
+    }
+
+    const LIFECYCLE_SOURCE: &str = r#"
+        local Keeper = object "Keeper" {
+            init = function(state)
+                state.sql:exec("CREATE TABLE births (at INTEGER)")
+                state.sql:exec("INSERT INTO births VALUES (1)")
+                state.sql:exec("CREATE TABLE IF NOT EXISTS alarms (at INTEGER)")
+            end,
+
+            poke = function(state, duration)
+                state:set_alarm(duration)
+                return true
+            end,
+
+            alarm = function(state)
+                state.sql:exec("INSERT INTO alarms VALUES (?)", { state.now() })
+            end,
+
+            births = function(state)
+                return state.sql:query_one("SELECT COUNT(*) AS n FROM births").n
+            end,
+
+            alarms = function(state)
+                return state.sql:query_one("SELECT COUNT(*) AS n FROM alarms").n
+            end,
+        }
+    "#;
+
+    fn keeper_call(method: &str, args: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "class": "Keeper", "method": method, "args": args })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn init_runs_exactly_once_per_object() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keeper.db");
+
+        let first = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                first
+                    .call("__dispatch", keeper_call("births", serde_json::json!([])))
+                    .await
+                    .expect("births"),
+                serde_json::json!(1),
+                "init must run once, not per call"
+            );
+        }
+        drop(first);
+
+        // A replacement task over the same file must see the file as
+        // initialized, never rerunning init.
+        let second = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+        );
+        assert_eq!(
+            second
+                .call("__dispatch", keeper_call("births", serde_json::json!([])))
+                .await
+                .expect("births"),
+            serde_json::json!(1),
+            "init must not rerun after a restart"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_alarm_fires_without_any_request() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keeper.db");
+
+        let handle = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+        );
+
+        handle
+            .call(
+                "__dispatch",
+                keeper_call("poke", serde_json::json!(["200ms"])),
+            )
+            .await
+            .expect("poke");
+
+        // No calls happen here; only the object's own clock.
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+
+        assert_eq!(
+            handle
+                .call("__dispatch", keeper_call("alarms", serde_json::json!([])))
+                .await
+                .expect("alarms"),
+            serde_json::json!(1),
+            "the alarm must have fired on its own"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_persisted_alarm_survives_a_task_replacement() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keeper.db");
+
+        let first = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+        );
+        first
+            .call(
+                "__dispatch",
+                keeper_call("poke", serde_json::json!(["300ms"])),
+            )
+            .await
+            .expect("poke");
+        // The task dies before the alarm is due; only the file remembers.
+        drop(first);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let second = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+
+        assert_eq!(
+            second
+                .call("__dispatch", keeper_call("alarms", serde_json::json!([])))
+                .await
+                .expect("alarms"),
+            serde_json::json!(1),
+            "the re-armed alarm must fire after the replacement"
         );
     }
 
