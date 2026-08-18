@@ -5,6 +5,7 @@ members = [
     "actias-worker",
     "actias-worker-core",
     "actias-common",
+    "actias-declarations",
     "actias-script-service",
     "actias-cli",
     "actias-kv",

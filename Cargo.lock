@@ -6,6 +6,7 @@ version = 4
 name = "actias-cli"
 version = "0.1.0"
 dependencies = [
+ "actias-declarations",
  "base64 0.22.1",
  "blake3",
  "bytes",
@@ -16,7 +17,6 @@ dependencies = [
  "futures",
  "include_dir",
  "inquire",
- "mlua",
  "notify",
  "pathdiff",
  "prettytable-rs",
@@ -45,6 +45,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "actias-declarations"
+version = "0.1.0"
+dependencies = [
+ "mlua",
+ "serde",
+]
+
+[[package]]
 name = "actias-kv"
 version = "0.1.0"
 dependencies = [
@@ -68,6 +76,7 @@ name = "actias-script-service"
 version = "0.1.0"
 dependencies = [
  "actias-common",
+ "actias-declarations",
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
