@@ -138,18 +138,6 @@ export namespace script_service {
     export interface MissingBlobsResponse {
         missing?: string[];
     }
-    // Hashes a client wants to upload content for.
-    export interface BlobUploadUrlsRequest {
-        hashes?: string[];
-    }
-    // A presigned url a client PUTs one blob&#x27;s raw bytes to.
-    export interface BlobUploadUrl {
-        hash?: string;
-        url?: string;
-    }
-    export interface BlobUploadUrlsResponse {
-        urls?: script_service.BlobUploadUrl[];
-    }
     export interface Script {
         id?: string;
         // Project that owns the script.
@@ -243,12 +231,6 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<MissingBlobsResponse>;
-        // Presigned upload urls for blobs a client is about to push.
-        blobUploadUrls(
-            data: BlobUploadUrlsRequest,
-            metadata?: Metadata,
-            ...rest: any[]
-        ): Observable<BlobUploadUrlsResponse>;
     }
 }
 export namespace bundle {
