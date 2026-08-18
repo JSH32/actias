@@ -8,6 +8,7 @@ import { Projects } from 'src/entities/Projects';
 import { Users } from 'src/entities/Users';
 import { AccessFields, getListFromBitfield } from './accessFields';
 import { Access } from 'src/entities/Access';
+import { ServiceTokens } from 'src/entities/ServiceTokens';
 import { AclListDto } from './dto/acl.dto';
 import { EntityManager } from '@mikro-orm/core';
 import { UserDto } from 'src/users/dto/user.dto';
@@ -21,6 +22,26 @@ export class AclService {
    * Get access bitfield for a user within a project scope.
    * This raises {@link ForbiddenException} if the user can't access the project.
    */
+  /**
+   * Access for whoever authenticated: a user resolves through membership,
+   * a service token carries its own bitfield and is valid only inside the
+   * project it belongs to.
+   */
+  async getPrincipalAccess(
+    principal: { user?: Users; serviceToken?: ServiceTokens },
+    project: Projects,
+  ): Promise<BitSet<AccessFields>> {
+    if (principal.serviceToken) {
+      if (principal.serviceToken.project.id !== project.id) {
+        throw new ForbiddenException(`You can't access this project.`);
+      }
+
+      return BitField.deserialize(principal.serviceToken.permissionBitfield);
+    }
+
+    return this.getProjectAccess(principal.user, project);
+  }
+
   async getProjectAccess(
     user: Users,
     project: Projects,

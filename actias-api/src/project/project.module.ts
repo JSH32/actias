@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ProjectController } from './project.controller';
+import { ServiceTokensController } from './service-tokens.controller';
 import { AclModule } from './acl/acl.module';
 import { ProjectService } from './project.service';
 import { AuthModule } from 'src/auth/auth.module';
@@ -9,7 +10,7 @@ import { ScriptModule } from 'src/scripts/scripts.module';
 import { KvModule } from 'src/kv/kv.module';
 
 @Module({
-  controllers: [ProjectController],
+  controllers: [ProjectController, ServiceTokensController],
   imports: [
     AclModule,
     AuthModule,
