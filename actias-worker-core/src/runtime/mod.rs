@@ -109,6 +109,9 @@ pub struct Contract {
     secrets: HashSet<String>,
     objects: HashSet<String>,
     databases: HashSet<String>,
+    /// Kept as declared (ordered, duplicates meaningless but harmless);
+    /// cron arming reads these.
+    events: Vec<String>,
 }
 
 /// Which contract list a declaration checks against.
@@ -180,6 +183,7 @@ impl PreparedRevision {
                 secrets: capabilities.secrets.into_iter().collect(),
                 objects: capabilities.objects.into_iter().collect(),
                 databases: capabilities.databases.into_iter().collect(),
+                events: capabilities.events,
             });
 
         Ok(Self {
@@ -226,6 +230,22 @@ impl PreparedRevision {
         }
 
         None
+    }
+
+    /// The cron events this revision's contract declares; the worker arms
+    /// a `__cron` object for each at first touch.
+    pub fn cron_events(&self) -> Vec<String> {
+        self.contract
+            .as_ref()
+            .map(|contract| {
+                contract
+                    .events
+                    .iter()
+                    .filter(|event| event.starts_with("cron:"))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Migration files for one database, in application order: every
@@ -312,6 +332,13 @@ impl ActiasRuntime {
     ///
     /// # Errors
     /// Returns [`mlua::Error`] when the script registered no listener for it.
+    /// The registered listener for `event`, resolved from any code that
+    /// holds the [`Lua`], not just the runtime wrapper; the cron class
+    /// fires listeners from inside a pinned vm through this.
+    pub fn listener_in(lua: &Lua, event: &str) -> mlua::Result<mlua::Function> {
+        lua.named_registry_value(&Self::listener_key(event))
+    }
+
     pub fn listener(&self, event: &str) -> mlua::Result<mlua::Function> {
         self.lua.named_registry_value(&Self::listener_key(event))
     }
@@ -414,7 +441,13 @@ impl ActiasRuntime {
             lua.create_function(|lua, event: String| {
                 Self::assert_declaration_phase(lua, "on")?;
 
-                if !Self::EVENTS.contains(&event.as_str()) {
+                // Fixed names, plus `cron:<expr>` schedules, whose
+                // expression must parse or the publish-time pass (and this
+                // vm) refuses the declaration outright.
+                if let Some(_expr) = event.strip_prefix("cron:") {
+                    crate::extensions::objects::cron_delay_ms(&event)
+                        .map_err(mlua::Error::RuntimeError)?;
+                } else if !Self::EVENTS.contains(&event.as_str()) {
                     return Err(mlua::Error::RuntimeError(format!(
                         "Invalid event '{event}', expected one of: {}.",
                         Self::EVENTS.join(", ")

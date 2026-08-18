@@ -174,6 +174,11 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
     lua.globals().set(
         "on",
         lua.create_function(move |lua, event: String| {
+            // A cron schedule that cannot parse must die here, at publish,
+            // not on the first request the revision ever serves.
+            if let Some(expr) = event.strip_prefix("cron:") {
+                validate_cron(expr).map_err(mlua::Error::RuntimeError)?;
+            }
             on_recorded
                 .lock()
                 .expect("no other holder")
@@ -186,6 +191,23 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
     )?;
 
     Ok(())
+}
+
+/// A cron expression scripts may schedule on: five classic fields or six
+/// with seconds; the parser wants six, so five gain a zero.
+fn validate_cron(expr: &str) -> Result<(), String> {
+    use std::str::FromStr;
+
+    let expr = expr.trim();
+    let normalized = if expr.split_whitespace().count() == 5 {
+        format!("0 {expr}")
+    } else {
+        expr.to_owned()
+    };
+
+    cron::Schedule::from_str(&normalized)
+        .map(|_| ())
+        .map_err(|e| format!("'{expr}' is not a cron expression: {e}"))
 }
 
 /// Installs inert stubs for every ambient global, so top-level code that
@@ -355,6 +377,22 @@ mod tests {
         let error = extract(files(&[("other.lua", "return 1")]), "main.lua")
             .expect_err("a bundle without its entry point must fail");
         assert!(error.contains("Entry point"), "{error}");
+    }
+
+    #[test]
+    fn a_bad_cron_expression_fails_at_extraction() {
+        let error = extract(
+            files(&[("main.lua", r#"on "cron:whenever" (function() end)"#)]),
+            "main.lua",
+        )
+        .expect_err("a bad schedule must fail the pass");
+        assert!(error.contains("cron expression"), "{error}");
+
+        extract(
+            files(&[("main.lua", r#"on "cron:*/5 * * * *" (function() end)"#)]),
+            "main.lua",
+        )
+        .expect("a real schedule extracts");
     }
 
     #[test]

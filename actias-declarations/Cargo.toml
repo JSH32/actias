@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cron = "0.12"
 mlua = { version = "0.11", features = ["luau"] }
 serde = { version = "1.0.152", features = ["derive"] }

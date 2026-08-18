@@ -28,6 +28,9 @@ http = "1.5.0"
 url = "2.5.8"
 redis = { version = "0.23", features = ["tokio-comp", "connection-manager"] }
 aes-gcm = "0.11.0"
+# Cron expression parsing for `on "cron:<expr>"` schedules.
+cron = "0.12"
+chrono = "0.4"
 # Per-object durable storage; bundled so the image needs no system sqlite.
 rusqlite = { version = "0.29", features = ["bundled", "hooks"] }
 base64 = "0.23.1"

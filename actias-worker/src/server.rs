@@ -110,6 +110,9 @@ pub struct AppState {
     pub object_data_dir: std::path::PathBuf,
     /// Size cap per object database, bytes.
     pub object_db_max_bytes: u64,
+    /// Revisions whose cron events were already armed by this process;
+    /// arming is idempotent, this only spares the calls.
+    pub armed_crons: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Idle time before a pinned vm hibernates.
     pub object_idle_after: Duration,
     /// This node's registry identity, filled in once registration lands;
@@ -907,6 +910,50 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
 
     let router = ObjectRouting::new(&state, prepared.clone()).as_router();
 
+    // First touch of a revision on this worker arms its cron events: each
+    // becomes a __cron object whose alarm re-arms itself forever after,
+    // through hibernation and restarts via the sweep.
+    let cron_events = prepared.cron_events();
+    if !cron_events.is_empty() && !prepared.revision_id.is_empty() {
+        let fresh = state
+            .armed_crons
+            .lock()
+            .expect("no poisoned lock")
+            .insert(prepared.revision_id.clone());
+        if fresh {
+            let routing = ObjectRouting::new(&state, prepared.clone());
+            tokio::spawn(async move {
+                for event in cron_events {
+                    let key = format!(
+                        "{}/{}/{}",
+                        routing.prepared.script.id,
+                        actias_worker_core::extensions::objects::CRON_CLASS,
+                        event
+                    );
+                    let armed = match routing.resolve_handle(&key).await {
+                        Ok(handle) => handle
+                            .call(
+                                "__dispatch",
+                                serde_json::json!({
+                                    "class": actias_worker_core::extensions::objects::CRON_CLASS,
+                                    "name": event,
+                                    "method": "ensure",
+                                    "args": [event],
+                                }),
+                            )
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| e.to_string()),
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = armed {
+                        error!(%error, event, "cron event could not be armed");
+                    }
+                }
+            });
+        }
+    }
+
     let lua = ActiasRuntime::new(
         prepared,
         kv_client,
@@ -969,6 +1016,7 @@ mod tests {
             objects: Arc::default(),
             object_data_dir: std::env::temp_dir(),
             object_db_max_bytes: 64 * 1024 * 1024,
+            armed_crons: Arc::default(),
             object_idle_after: Duration::from_secs(300),
             node_identity: Arc::default(),
             registry: NodeRegistryServiceClient::new(

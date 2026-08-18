@@ -1371,6 +1371,63 @@ mod tests {
         assert_eq!(rows, vec![serde_json::json!({ "n": 1 })]);
     }
 
+    /// The cron machinery end to end in one vm: ensure arms, the alarm
+    /// fires the listener and re-arms itself, forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cron_object_fires_its_listener_on_schedule() {
+        const EVENT: &str = "cron:* * * * * *";
+        const SOURCE: &str = r#"
+            marks = 0
+            on "cron:* * * * * *" (function(event)
+                marks = marks + 1
+            end)
+            function get_marks() return marks end
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("cron.db"))
+                        .expect("opens"),
+                ),
+                ..Default::default()
+            },
+        );
+
+        handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "__cron", "name": EVENT, "method": "ensure", "args": [EVENT],
+                }),
+            )
+            .await
+            .expect("ensure arms");
+
+        // An every-second schedule (clamped to 1s minimum) must have fired
+        // at least twice in 2.6s, proving the alarm re-arms itself.
+        tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+        let marks = handle
+            .call("get_marks", serde_json::Value::Null)
+            .await
+            .expect("marks read");
+        let marks = marks.as_i64().unwrap_or(0);
+        assert!(marks >= 2, "the schedule must self-perpetuate: {marks}");
+    }
+
+    #[test]
+    fn cron_expressions_read_both_shapes() {
+        use crate::extensions::objects::cron_delay_ms;
+
+        // Six-field (with seconds) and classic five-field both parse; the
+        // clamp keeps even every-second schedules a real sleep.
+        assert!(cron_delay_ms("cron:* * * * * *").expect("six-field") >= 1000);
+        assert!(cron_delay_ms("cron:*/5 * * * *").expect("five-field") >= 1000);
+        assert!(cron_delay_ms("cron:not a schedule").is_err());
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn mailbox_overhead_is_visible() {
         // Not an assertion, a measurement: the per-call cost of the mailbox
