@@ -3,13 +3,7 @@
 //! revisions and projects. Postgres keeps only manifests.
 
 use actias_common::thiserror;
-use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::primitives::ByteStream;
-use std::time::Duration;
-
-/// How long a presigned upload or download url stays valid: long enough for
-/// a slow publish, short enough not to be a bearer credential.
-const PRESIGN_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Errors leaving the blob store; the payload never includes bucket names or
 /// endpoints, which the wire mapper would otherwise leak.
@@ -35,22 +29,17 @@ impl From<BlobStoreError> for tonic::Status {
     }
 }
 
-/// Object storage scoped to one bucket of hash-keyed blobs.
-///
-/// Two clients on purpose: `client` talks to the endpoint this service
-/// reaches (the compose-internal hostname), while `presign_client` signs
-/// urls against the public endpoint, because the host is part of the
-/// signature and the urls are used from outside the cluster.
+/// Object storage scoped to one bucket of hash-keyed blobs. Only platform
+/// services reach it; client bytes arrive through the api, which is what
+/// keeps every stored hash server-computed.
 pub struct BlobStore {
     client: aws_sdk_s3::Client,
-    presign_client: aws_sdk_s3::Client,
     bucket: String,
 }
 
 /// Connection settings, read from the environment by `Config`.
 pub struct BlobStoreConfig {
     pub endpoint: String,
-    pub public_endpoint: String,
     pub access_key: String,
     pub secret_key: String,
     pub bucket: String,
@@ -64,7 +53,6 @@ impl BlobStore {
     /// startup, where dying loudly is the right outcome.
     pub async fn new(config: BlobStoreConfig) -> Self {
         let client = Self::client_for(&config, &config.endpoint);
-        let presign_client = Self::client_for(&config, &config.public_endpoint);
 
         // Creating an existing bucket is a conflict, not a failure; anything
         // else is a real connectivity or credential problem.
@@ -79,7 +67,6 @@ impl BlobStore {
 
         Self {
             client,
-            presign_client,
             bucket: config.bucket,
         }
     }
@@ -182,22 +169,5 @@ impl BlobStore {
             }
         }
         Ok(missing)
-    }
-
-    /// A url an external client can PUT one blob's raw bytes to.
-    pub async fn presign_put(&self, hash: &str) -> Result<String, BlobStoreError> {
-        let presigned = self
-            .presign_client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(hash)
-            .presigned(
-                PresigningConfig::expires_in(PRESIGN_TTL)
-                    .map_err(|e| BlobStoreError::Storage(e.to_string()))?,
-            )
-            .await
-            .map_err(|e| BlobStoreError::Storage(e.to_string()))?;
-
-        Ok(presigned.uri().to_string())
     }
 }

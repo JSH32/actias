@@ -35,3 +35,21 @@ export class CreateRevisionDto {
    */
   scriptConfig: ScriptConfigDto;
 }
+
+/**
+ * Content hashes a publish is about to reference.
+ */
+export class MissingBlobsDto {
+  /**
+   * blake3 hashes of the files, lowercase hex.
+   */
+  hashes: string[];
+}
+
+/**
+ * The subset of asked-about hashes the store does not hold; a publish only
+ * needs to carry content for these.
+ */
+export class MissingBlobsResponseDto {
+  missing: string[];
+}

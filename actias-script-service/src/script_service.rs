@@ -644,21 +644,6 @@ impl script_service_server::ScriptService for ScriptService {
 
         Ok(Response::new(MissingBlobsResponse { missing }))
     }
-
-    async fn blob_upload_urls(
-        &self,
-        request: tonic::Request<BlobUploadUrlsRequest>,
-    ) -> Result<tonic::Response<BlobUploadUrlsResponse>, tonic::Status> {
-        let mut urls = Vec::new();
-        for hash in &request.get_ref().hashes {
-            urls.push(BlobUploadUrl {
-                hash: hash.clone(),
-                url: self.blobs.presign_put(hash).await?,
-            });
-        }
-
-        Ok(Response::new(BlobUploadUrlsResponse { urls }))
-    }
 }
 
 /// The boxed stream both log rpcs return.
@@ -733,8 +718,7 @@ mod tests {
         let minio_endpoint = format!("http://127.0.0.1:{minio_port}");
 
         let blobs = crate::blob_store::BlobStore::new(crate::blob_store::BlobStoreConfig {
-            endpoint: minio_endpoint.clone(),
-            public_endpoint: minio_endpoint,
+            endpoint: minio_endpoint,
             access_key: "minioadmin".to_owned(),
             secret_key: "minioadmin".to_owned(),
             bucket: "test-blobs".to_owned(),

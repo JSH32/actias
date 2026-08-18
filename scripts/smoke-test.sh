@@ -112,6 +112,13 @@ echo "== setting a secret (actias secret put)"
 
 "$REPO/target/debug/actias-cli" publish "$DEVDIR/published"
 
+echo "== republishing unchanged (incremental publish)"
+# Every hash is now stored, so the same tree must upload nothing.
+REPUBLISH=$("$REPO/target/debug/actias-cli" publish "$DEVDIR/published")
+echo "$REPUBLISH" | grep -q "Uploading 0 of" \
+    || { echo "an unchanged republish resent content"; echo "$REPUBLISH"; exit 1; }
+echo "republish uploaded zero files"
+
 echo "== checking the stored capability contract"
 REV_ID=$(curl -sf "$API/script/$SCRIPT_ID" -H "$AUTH" | jq -r .currentRevisionId)
 DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.kv[0]')

@@ -77,6 +77,9 @@ export class BundleDto {
         ({
           filePath: file.filePath,
           content: Buffer.from(file.content as any, 'base64'),
+          // A hash with no content references an already-stored blob; the
+          // store refuses unknown hashes and rehashes anything inline.
+          hash: file.hash ?? '',
           contentType: file.contentType ?? '',
           kind:
             file.kind === 'asset'

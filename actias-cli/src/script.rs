@@ -82,9 +82,10 @@ impl ScriptConfig {
                 .unwrap()
                 .to_string();
 
+            let bytes = fs::read(file.clone()).map_err(|e| format!("{file_path}: {e}"))?;
+
             files.push(FileDto {
-                content: base64::engine::general_purpose::STANDARD_NO_PAD
-                    .encode(fs::read(file.clone()).unwrap()),
+                content: base64::engine::general_purpose::STANDARD_NO_PAD.encode(&bytes),
                 content_type: Some(content_type_for(&file).to_owned()),
                 kind: Some(if file_path.ends_with(".lua") {
                     FileDtoKind::Module
@@ -92,8 +93,9 @@ impl ScriptConfig {
                     FileDtoKind::Asset
                 }),
                 file_path,
-                // Computed by the store; nothing to claim from here.
-                hash: None,
+                // The same blake3 the store computes; publish negotiates with
+                // it so unchanged files never resend their content.
+                hash: Some(blake3::hash(&bytes).to_hex().to_string()),
                 size: None,
             })
         }
