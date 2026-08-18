@@ -63,10 +63,16 @@ export class RevisionFullDto {
     this.scriptId = revision.scriptId;
     // The grpc layer omits empty repeated fields, but the openapi contract
     // promises the arrays, so clients decoding strictly need them present.
+    const config = revision.scriptConfig as ScriptConfigDto;
     this.scriptConfig = {
-      ...(revision.scriptConfig as ScriptConfigDto),
-      includes: revision.scriptConfig.includes ?? [],
-      ignore: revision.scriptConfig.ignore ?? [],
+      ...config,
+      includes: config.includes ?? [],
+      ignore: config.ignore ?? [],
+      capabilities: config.capabilities && {
+        kv: config.capabilities.kv ?? [],
+        events: config.capabilities.events ?? [],
+        secrets: config.capabilities.secrets ?? [],
+      },
     };
     this.bundle =
       revision.bundle && BundleDto.fromServiceBundle(revision.bundle);

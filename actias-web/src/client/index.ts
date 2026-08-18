@@ -21,6 +21,8 @@ export { FileDto } from './models/FileDto';
 export type { ListNamespaceDto } from './models/ListNamespaceDto';
 export type { LoginDto } from './models/LoginDto';
 export type { MessageResponseDto } from './models/MessageResponseDto';
+export type { MissingBlobsDto } from './models/MissingBlobsDto';
+export type { MissingBlobsResponseDto } from './models/MissingBlobsResponseDto';
 export type { NamespaceDto } from './models/NamespaceDto';
 export type { NewRevisionResponseDto } from './models/NewRevisionResponseDto';
 export type { PaginatedResponseDto } from './models/PaginatedResponseDto';

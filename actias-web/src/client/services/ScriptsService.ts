@@ -4,6 +4,8 @@
 import type { CreateRevisionDto } from '../models/CreateRevisionDto';
 import type { CreateScriptDto } from '../models/CreateScriptDto';
 import type { MessageResponseDto } from '../models/MessageResponseDto';
+import type { MissingBlobsDto } from '../models/MissingBlobsDto';
+import type { MissingBlobsResponseDto } from '../models/MissingBlobsResponseDto';
 import type { NewRevisionResponseDto } from '../models/NewRevisionResponseDto';
 import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
 import type { RevisionDataDto } from '../models/RevisionDataDto';
@@ -155,6 +157,29 @@ export class ScriptsService {
         return this.httpRequest.request({
             method: 'POST',
             url: '/api/project/{project}/scripts',
+            path: {
+                'project': project,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+        });
+    }
+
+    /**
+     * Which of these content hashes the blob store does not hold. A publish
+     * may reference stored hashes without resending their content.
+     * @param project
+     * @param requestBody
+     * @returns MissingBlobsResponseDto
+     * @throws ApiError
+     */
+    public missingBlobs(
+        project: string,
+        requestBody: MissingBlobsDto,
+    ): CancelablePromise<MissingBlobsResponseDto> {
+        return this.httpRequest.request({
+            method: 'POST',
+            url: '/api/project/{project}/scripts/missing-blobs',
             path: {
                 'project': project,
             },
