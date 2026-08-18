@@ -84,12 +84,28 @@ impl ObjectHandle {
 /// Moves `runtime` onto its own task forever and hands back its mailbox.
 ///
 /// The task ends when every handle is dropped; the vm drops with it.
-pub fn spawn_object_task(
-    runtime: ActiasRuntime,
-    call_budget: Option<u64>,
-    storage: Option<crate::storage::SqliteStorage>,
-) -> ObjectHandle {
+/// Everything configurable about one pinned task; the runtime is the
+/// only required piece.
+#[derive(Default)]
+pub struct TaskOptions {
+    /// Seconds one dispatched call may run; [`None`] leaves calls unbounded.
+    pub call_budget: Option<u64>,
+    /// The object's durable half; [`None`] leaves state in-memory only.
+    pub storage: Option<crate::storage::SqliteStorage>,
+    /// Idle time after which the task hibernates: it simply ends, state
+    /// already on disk, and the host revives it on the next touch. An
+    /// object holding a pending alarm stays warm until it fires.
+    pub hibernate_after: Option<std::time::Duration>,
+}
+
+pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> ObjectHandle {
     use crate::extensions::objects::{AlarmCell, PendingAlarm};
+
+    let TaskOptions {
+        call_budget,
+        storage,
+        hibernate_after,
+    } = options;
 
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
 
@@ -123,6 +139,8 @@ pub fn spawn_object_task(
                 .and_then(|cell| cell.0.borrow().clone());
 
             let call = if let Some(alarm) = pending {
+                // A pending alarm keeps the vm warm: hibernating past it
+                // would silently drop work the object asked itself for.
                 let wait = (alarm.due_ms - crate::extensions::objects::unix_now_ms()).max(0);
                 tokio::select! {
                     call = receiver.recv() => match call {
@@ -133,6 +151,16 @@ pub fn spawn_object_task(
                         fire_alarm(&runtime, alarm, call_budget).await;
                         continue;
                     }
+                }
+            } else if let Some(idle) = hibernate_after {
+                tokio::select! {
+                    call = receiver.recv() => match call {
+                        Some(call) => call,
+                        None => break,
+                    },
+                    // Hibernation is just ending: the file is the state,
+                    // and the host revives on the next touch.
+                    _ = tokio::time::sleep(idle) => break,
                 }
             } else {
                 match receiver.recv().await {
@@ -338,24 +366,21 @@ impl ObjectHost {
     ) -> mlua::Result<ObjectHandle>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<
-            Output = mlua::Result<(
-                ActiasRuntime,
-                Option<u64>,
-                Option<crate::storage::SqliteStorage>,
-            )>,
-        >,
+        Fut: Future<Output = mlua::Result<(ActiasRuntime, TaskOptions)>>,
     {
         let mut tasks = self.tasks.lock().await;
 
+        // A hibernated task's sender reads closed; it respawns exactly
+        // like a retired revision would.
         if let Some((held, handle)) = tasks.get(id)
             && held == marker
+            && !handle.sender.is_closed()
         {
             return Ok(handle.clone());
         }
 
-        let (runtime, call_budget, storage) = factory().await?;
-        let handle = spawn_object_task(runtime, call_budget, storage);
+        let (runtime, options) = factory().await?;
+        let handle = spawn_object_task(runtime, options);
         tasks.insert(id.to_owned(), (marker.to_owned(), handle.clone()));
 
         Ok(handle)
@@ -452,7 +477,7 @@ mod tests {
             "#,
         )
         .await;
-        let handle = spawn_object_task(runtime, None, None);
+        let handle = spawn_object_task(runtime, TaskOptions::default());
 
         let (a, b) = tokio::join!(
             handle.call("slow", serde_json::json!("a")),
@@ -488,7 +513,7 @@ mod tests {
             "#,
         )
         .await;
-        let handle = spawn_object_task(runtime, None, None);
+        let handle = spawn_object_task(runtime, TaskOptions::default());
 
         for expected in 1..=3 {
             let value = handle
@@ -502,7 +527,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn an_unknown_method_is_a_call_error() {
         let runtime = runtime_with("x = 1").await;
-        let handle = spawn_object_task(runtime, None, None);
+        let handle = spawn_object_task(runtime, TaskOptions::default());
 
         let error = handle
             .call("nope", serde_json::Value::Null)
@@ -521,8 +546,7 @@ mod tests {
                 Ok((
                     runtime_with("count = 0 function bump() count = count + 1 return count end")
                         .await,
-                    None,
-                    None,
+                    TaskOptions::default(),
                 ))
             })
             .await
@@ -571,7 +595,7 @@ mod tests {
                 let id = format!("{}/{}", target.class, target.name);
                 let handle = host
                     .get_or_spawn(&id, "r1", || async {
-                        Ok((runtime_with(SOURCE).await, None, None))
+                        Ok((runtime_with(SOURCE).await, TaskOptions::default()))
                     })
                     .await
                     .map_err(|e| e.to_string())?;
@@ -675,7 +699,7 @@ mod tests {
 
         let first = host
             .get_or_spawn("obj-1", "rev-1", || async {
-                Ok((runtime_with(source).await, None, None))
+                Ok((runtime_with(source).await, TaskOptions::default()))
             })
             .await
             .expect("spawns");
@@ -688,7 +712,7 @@ mod tests {
         // the retired vm.
         let second = host
             .get_or_spawn("obj-1", "rev-2", || async {
-                Ok((runtime_with(source).await, None, None))
+                Ok((runtime_with(source).await, TaskOptions::default()))
             })
             .await
             .expect("respawns");
@@ -708,7 +732,13 @@ mod tests {
             "#,
         )
         .await;
-        let handle = spawn_object_task(runtime, Some(1), None);
+        let handle = spawn_object_task(
+            runtime,
+            TaskOptions {
+                call_budget: Some(1),
+                ..Default::default()
+            },
+        );
 
         let error = handle
             .call("spin", serde_json::Value::Null)
@@ -756,8 +786,10 @@ mod tests {
 
         let first = spawn_object_task(
             runtime_with(SOURCE).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                ..Default::default()
+            },
         );
         assert_eq!(
             first.call("__dispatch", call.clone()).await.expect("bump"),
@@ -772,8 +804,10 @@ mod tests {
         // "The worker restarted": nothing survives but the file.
         let second = spawn_object_task(
             runtime_with(SOURCE).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+                ..Default::default()
+            },
         );
         assert_eq!(
             second.call("__dispatch", call.clone()).await.expect("bump"),
@@ -811,7 +845,13 @@ mod tests {
                     .get_or_spawn(&id, "r1", || async {
                         let storage = crate::storage::SqliteStorage::open(&file)
                             .map_err(mlua::Error::RuntimeError)?;
-                        Ok((runtime_with(SOURCE).await, None, Some(storage)))
+                        Ok((
+                            runtime_with(SOURCE).await,
+                            TaskOptions {
+                                storage: Some(storage),
+                                ..Default::default()
+                            },
+                        ))
                     })
                     .await
                     .map_err(|e| e.to_string())?;
@@ -888,8 +928,10 @@ mod tests {
 
         let first = spawn_object_task(
             runtime_with(LIFECYCLE_SOURCE).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                ..Default::default()
+            },
         );
         for _ in 0..2 {
             assert_eq!(
@@ -907,8 +949,10 @@ mod tests {
         // initialized, never rerunning init.
         let second = spawn_object_task(
             runtime_with(LIFECYCLE_SOURCE).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+                ..Default::default()
+            },
         );
         assert_eq!(
             second
@@ -927,8 +971,10 @@ mod tests {
 
         let handle = spawn_object_task(
             runtime_with(LIFECYCLE_SOURCE).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                ..Default::default()
+            },
         );
 
         handle
@@ -959,8 +1005,10 @@ mod tests {
 
         let first = spawn_object_task(
             runtime_with(LIFECYCLE_SOURCE).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                ..Default::default()
+            },
         );
         first
             .call(
@@ -975,8 +1023,10 @@ mod tests {
 
         let second = spawn_object_task(
             runtime_with(LIFECYCLE_SOURCE).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+                ..Default::default()
+            },
         );
         tokio::time::sleep(std::time::Duration::from_millis(900)).await;
 
@@ -1013,8 +1063,10 @@ mod tests {
 
         let first = spawn_object_task(
             runtime_with_files(&files).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                ..Default::default()
+            },
         );
         // The migrated table exists on the very first statement.
         first
@@ -1030,8 +1082,10 @@ mod tests {
         // reapply would fail on the bare CREATE.
         let second = spawn_object_task(
             runtime_with_files(&files).await,
-            None,
-            Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+                ..Default::default()
+            },
         );
         let count = second
             .call(
@@ -1077,10 +1131,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let handle = spawn_object_task(
             runtime_with(SOURCE).await,
-            None,
-            Some(
-                crate::storage::SqliteStorage::open(&dir.path().join("ledger.db")).expect("opens"),
-            ),
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("ledger.db"))
+                        .expect("opens"),
+                ),
+                ..Default::default()
+            },
         );
 
         handle.call("__dispatch", call("good")).await.expect("good");
@@ -1147,7 +1204,13 @@ mod tests {
                     .get_or_spawn(&id, "r1", || async {
                         let storage = crate::storage::SqliteStorage::open(&file)
                             .map_err(mlua::Error::RuntimeError)?;
-                        Ok((runtime_with(SOURCE).await, None, Some(storage)))
+                        Ok((
+                            runtime_with(SOURCE).await,
+                            TaskOptions {
+                                storage: Some(storage),
+                                ..Default::default()
+                            },
+                        ))
                     })
                     .await
                     .map_err(|e| e.to_string())?;
@@ -1194,13 +1257,117 @@ mod tests {
         );
     }
 
+    /// Hibernation: an idle task ends itself, and the host revives the
+    /// object from its file on the next touch, state intact.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_idle_object_hibernates_and_revives_with_its_state() {
+        const SOURCE: &str = r#"
+            local Keeper = object "Keeper" {
+                init = function(state)
+                    state.sql:exec("CREATE TABLE hits (at INTEGER)")
+                end,
+                bump = function(state)
+                    state.sql:exec("INSERT INTO hits VALUES (1)")
+                    return state.sql:query_one("SELECT COUNT(*) AS n FROM hits").n
+                end,
+            }
+        "#;
+        let call = serde_json::json!({ "class": "Keeper", "method": "bump", "args": [] });
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keeper.db");
+        let host = ObjectHost::default();
+
+        let spawn = |path: std::path::PathBuf| async move {
+            Ok((
+                runtime_with(SOURCE).await,
+                TaskOptions {
+                    storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                    hibernate_after: Some(std::time::Duration::from_millis(150)),
+                    ..Default::default()
+                },
+            ))
+        };
+
+        let first = host
+            .get_or_spawn("keeper", "r1", || spawn(path.clone()))
+            .await
+            .expect("spawns");
+        assert_eq!(
+            first.call("__dispatch", call.clone()).await.expect("bump"),
+            serde_json::json!(1)
+        );
+
+        // Long past the idle window: the task must have ended itself.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let gone = first.call("__dispatch", call.clone()).await;
+        assert!(
+            matches!(gone, Err(ObjectError::Gone)),
+            "the idle task must be gone: {gone:?}"
+        );
+
+        // The next touch through the host revives from the file.
+        let revived = host
+            .get_or_spawn("keeper", "r1", || spawn(path.clone()))
+            .await
+            .expect("revives");
+        assert_eq!(
+            revived.call("__dispatch", call).await.expect("bump"),
+            serde_json::json!(2),
+            "revival must resume the durable state"
+        );
+    }
+
+    /// An object holding a pending alarm refuses to sleep: hibernating
+    /// past the alarm would silently drop it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_alarm_holding_object_refuses_to_sleep() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keeper.db");
+
+        let handle = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                hibernate_after: Some(std::time::Duration::from_millis(100)),
+                ..Default::default()
+            },
+        );
+
+        // The alarm is due at 400ms, well past the 100ms idle window; the
+        // vm must stay warm to fire it rather than sleeping first. Once
+        // fired there is nothing keeping it awake, so by 700ms it has both
+        // fired the alarm and hibernated.
+        handle
+            .call(
+                "__dispatch",
+                keeper_call("poke", serde_json::json!(["400ms"])),
+            )
+            .await
+            .expect("poke");
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+        let gone = handle
+            .call("__dispatch", keeper_call("alarms", serde_json::json!([])))
+            .await;
+        assert!(matches!(gone, Err(ObjectError::Gone)), "{gone:?}");
+
+        // The file is the witness: one alarm row means the vm was still
+        // warm at 400ms; sleeping at 100ms would have left zero.
+        let mut storage = crate::storage::SqliteStorage::open(&path).expect("reopens");
+        let rows = storage
+            .query("SELECT COUNT(*) AS n FROM alarms", &[])
+            .expect("reads");
+        assert_eq!(rows, vec![serde_json::json!({ "n": 1 })]);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn mailbox_overhead_is_visible() {
         // Not an assertion, a measurement: the per-call cost of the mailbox
         // plus mlua's send-feature locking, recorded so the !Send-vm option
         // stays a data question. Run with --nocapture to read it.
         let runtime = runtime_with("function ping() return 1 end").await;
-        let handle = spawn_object_task(runtime, None, None);
+        let handle = spawn_object_task(runtime, TaskOptions::default());
 
         let rounds = 10_000u32;
         let start = std::time::Instant::now();
