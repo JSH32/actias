@@ -46,6 +46,8 @@ impl Router {
             Commands::Project { id, sub } => self.handle_project(id, sub).await,
             Commands::Script { id, sub } => self.handle_script(id, sub).await,
             Commands::Check { directory } => self.handle_check(directory),
+            // Handled before authentication in main; unreachable here.
+            Commands::Test { .. } => Ok(()),
         }
     }
 

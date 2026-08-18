@@ -32,5 +32,18 @@ notify = "8.2.0"
 blake3 = "1.8.6"
 actias-declarations = { version = "0.1.0", path = "../actias-declarations" }
 
+# `actias test` runs bundles on the same runtime the platform uses, with
+# the kv service faked in-process behind the same grpc surface.
+actias-worker-core = { path = "../actias-worker-core" }
+actias-common = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tokio-stream = { version = "0.1", features = ["net"] }
+aes-gcm = "0.11.0"
+mlua = { version = "0.11", features = ["luau-jit", "serialize", "send", "async"] }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3.27.0"

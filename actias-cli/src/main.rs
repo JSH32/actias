@@ -7,6 +7,7 @@ mod handlers;
 mod router;
 mod script;
 mod settings;
+mod testing;
 mod util;
 
 use clap::Parser;
@@ -29,6 +30,12 @@ async fn main() {
 
 async fn run() -> errors::Result<()> {
     let cli = Cli::parse();
+
+    // Fully local commands never touch the api, so they must not demand a
+    // login; ci runs them on machines with no session at all.
+    if let Commands::Test { directory } = cli.command {
+        return handlers::test::handle(&directory.unwrap_or_else(|| ".".to_owned())).await;
+    }
 
     // Parsing settings should trigger a re-auth.
     let relog = if let Commands::Login = cli.command {
