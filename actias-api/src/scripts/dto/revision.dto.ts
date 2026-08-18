@@ -19,6 +19,11 @@ export class CapabilitiesDto {
    * Secrets declared with `secret "name"`.
    */
   secrets: string[];
+
+  /**
+   * Object classes declared with `object "Class" { ... }`.
+   */
+  objects: string[];
 }
 
 export class ScriptConfigDto {
@@ -72,6 +77,7 @@ export class RevisionFullDto {
         kv: config.capabilities.kv ?? [],
         events: config.capabilities.events ?? [],
         secrets: config.capabilities.secrets ?? [],
+        objects: config.capabilities.objects ?? [],
       },
     };
     this.bundle =

@@ -332,6 +332,127 @@ mod tests {
         assert_eq!(value, serde_json::json!(2));
     }
 
+    /// The whole object story in one process: two separate "request" vms
+    /// route method calls through one host, whose pinned vm holds state.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn object_state_is_shared_across_request_vms() {
+        use crate::extensions::objects::{ObjectRouter, ObjectTarget};
+
+        const SOURCE: &str = r#"
+            local Counter = object "Counter" {
+                bump = function(state, amount)
+                    state.total = (state.total or 0) + amount
+                    return state.total
+                end,
+            }
+
+            on "fetch" (function(request)
+                local counter = Counter:get("main")
+                return { body = counter:bump(request.amount) }
+            end)
+        "#;
+
+        let host = Arc::new(ObjectHost::default());
+        let router: ObjectRouter = Arc::new(move |target: ObjectTarget| {
+            let host = host.clone();
+            Box::pin(async move {
+                let id = format!("{}/{}", target.class, target.name);
+                let handle = host
+                    .get_or_spawn(&id, || async { Ok(runtime_with(SOURCE).await) })
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                handle
+                    .call(
+                        "__dispatch",
+                        serde_json::json!({
+                            "class": target.class,
+                            "method": target.method,
+                            "args": target.arguments,
+                        }),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        });
+
+        let mut bodies = Vec::new();
+        for amount in [3i64, 4] {
+            // A fresh vm per request, exactly like the worker's hot path.
+            let runtime = runtime_with(SOURCE).await;
+            runtime.set_app_data::<ObjectRouter>(router.clone());
+
+            let listener = runtime
+                .listener(ActiasRuntime::FETCH_EVENT)
+                .expect("handler registered");
+            let response: mlua::Value = listener
+                .call_async(
+                    runtime
+                        .to_value(&serde_json::json!({ "amount": amount }))
+                        .expect("request converts"),
+                )
+                .await
+                .expect("handler runs");
+
+            let response: serde_json::Value =
+                runtime.from_value(response).expect("response converts");
+            bodies.push(response["body"].clone());
+        }
+
+        // The second request observed the first one's mutation.
+        assert_eq!(bodies, vec![serde_json::json!(3), serde_json::json!(7)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_contract_without_the_class_refuses_the_declaration() {
+        use crate::proto::script_service::{Capabilities, ScriptConfig};
+
+        let revision = Revision {
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files: vec![File {
+                    file_path: "main.lua".to_owned(),
+                    content: br#"local C = object "Sneaky" {}"#.to_vec(),
+                    ..Default::default()
+                }],
+            }),
+            script_config: Some(ScriptConfig {
+                id: String::new(),
+                entry_point: "main.lua".to_owned(),
+                includes: vec![],
+                ignore: vec![],
+                capabilities: Some(Capabilities {
+                    kv: vec![],
+                    events: vec![],
+                    secrets: vec![],
+                    objects: vec![],
+                }),
+            }),
+            ..Default::default()
+        };
+        let prepared =
+            Arc::new(PreparedRevision::prepare(Script::default(), revision).expect("prepares"));
+
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+        let egress = crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
+            .expect("egress builds");
+
+        let result = ActiasRuntime::new(
+            prepared,
+            KvServiceClient::new(channel),
+            egress,
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        let Err(error) = result else {
+            panic!("a class outside the contract must be refused");
+        };
+        assert!(error.to_string().contains("Object class"), "{error}");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn mailbox_overhead_is_visible() {
         // Not an assertion, a measurement: the per-call cost of the mailbox

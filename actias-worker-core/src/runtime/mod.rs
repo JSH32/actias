@@ -92,6 +92,8 @@ pub struct Declarations {
     pub events: Vec<String>,
     /// Names handed to `secret "name"`.
     pub secrets: Vec<String>,
+    /// Classes handed to `object "Class"`.
+    pub objects: Vec<String>,
 }
 
 /// The capability contract a revision was published with.
@@ -103,12 +105,14 @@ pub struct Declarations {
 pub struct Contract {
     kv: HashSet<String>,
     secrets: HashSet<String>,
+    objects: HashSet<String>,
 }
 
 /// Which contract list a declaration checks against.
 pub enum ContractKind {
     Kv,
     Secret,
+    Object,
 }
 
 /// A revision compiled once and shared by every request that runs it.
@@ -119,6 +123,8 @@ pub enum ContractKind {
 pub struct PreparedRevision {
     /// The script the revision belongs to, for identity and kv scoping.
     pub script: Script,
+    /// Id of the revision this was prepared from; empty for live sessions.
+    pub revision_id: String,
     bundle: Bundle,
     /// Compiled bytecode per lua file, keyed by exact file path.
     bytecode: HashMap<String, Arc<Vec<u8>>>,
@@ -137,6 +143,7 @@ impl PreparedRevision {
     /// # Errors
     /// Returns [`mlua::Error`] when the revision carries no bundle.
     pub fn prepare(script: Script, revision: Revision) -> mlua::Result<Self> {
+        let revision_id = revision.id.clone();
         let bundle = revision.bundle.ok_or_else(|| {
             mlua::Error::RuntimeError("Revision was fetched without its bundle.".into())
         })?;
@@ -167,10 +174,12 @@ impl PreparedRevision {
             .map(|capabilities| Contract {
                 kv: capabilities.kv.into_iter().collect(),
                 secrets: capabilities.secrets.into_iter().collect(),
+                objects: capabilities.objects.into_iter().collect(),
             });
 
         Ok(Self {
             script,
+            revision_id,
             bundle,
             bytecode,
             contract,
@@ -312,6 +321,7 @@ impl ActiasRuntime {
         let (allowed, what) = match kind {
             ContractKind::Kv => (&contract.kv, "Namespace"),
             ContractKind::Secret => (&contract.secrets, "Secret"),
+            ContractKind::Object => (&contract.objects, "Object class"),
         };
 
         if allowed.contains(name) {
@@ -331,6 +341,13 @@ impl ActiasRuntime {
     }
 
     /// Records one `secret` declaration into the vm's [`Declarations`].
+    /// Notes an `object "Class"` declaration for [`Self::declarations`].
+    pub fn record_object_declaration(lua: &Lua, class: &str) {
+        if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+            declarations.objects.push(class.to_owned());
+        }
+    }
+
     pub fn record_secret_declaration(lua: &Lua, name: &str) {
         if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
             declarations.secrets.push(name.to_owned());
@@ -550,6 +567,7 @@ impl ActiasRuntime {
             &crate::extensions::log::LogExtension { publisher: logs },
             &JwtExtension,
             &CryptoExtension,
+            &crate::extensions::objects::ObjectExtension,
         ])?;
 
         lua.globals().set(
@@ -956,6 +974,7 @@ mod tests {
                     kv: kv.iter().map(|s| s.to_string()).collect(),
                     events: vec!["fetch".to_owned()],
                     secrets: secrets.iter().map(|s| s.to_string()).collect(),
+                    objects: vec![],
                 }),
                 ..Default::default()
             }),

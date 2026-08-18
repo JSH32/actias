@@ -38,6 +38,9 @@ pub struct Declarations {
     pub events: Vec<String>,
     /// Secrets declared with `secret "name"`.
     pub secrets: Vec<String>,
+    /// Object classes declared with `object "Class" { ... }`.
+    #[serde(default)]
+    pub objects: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -131,6 +134,25 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
             Ok(String::new())
         })?,
     )?;
+
+    // `object "Class" { methods }` is curried: the name records the class,
+    // the table is absorbed and a class-handle stub comes back. `objects`
+    // only references a class declared elsewhere, so it records nothing.
+    let object_recorded = recorded.clone();
+    lua.globals().set(
+        "object",
+        lua.create_function(move |lua, class: String| {
+            object_recorded
+                .lock()
+                .expect("no other holder")
+                .objects
+                .push(class);
+            lua.create_function(|lua, _: mlua::Table| stub(lua))
+        })?,
+    )?;
+
+    lua.globals()
+        .set("objects", lua.create_function(|lua, _: String| stub(lua))?)?;
 
     let on_recorded = recorded.clone();
     lua.globals().set(
@@ -253,6 +275,13 @@ mod tests {
                 on "fetch" (function(request)
                     error("handlers must never run during extraction")
                 end)
+
+                local Room = object "Room" {
+                    announce = function(state, text)
+                        error("methods must never run during extraction")
+                    end,
+                }
+                local Other = objects "Elsewhere"
                 "#,
             )]),
             "main.lua",
@@ -262,6 +291,8 @@ mod tests {
         assert_eq!(declarations.kv, vec!["visits", "sessions"]);
         assert_eq!(declarations.events, vec!["fetch"]);
         assert_eq!(declarations.secrets, vec!["stripe"]);
+        // Declaring records; referencing does not.
+        assert_eq!(declarations.objects, vec!["Room"]);
     }
 
     #[test]

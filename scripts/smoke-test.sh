@@ -89,6 +89,15 @@ cat > "$DEVDIR/published/main.lua" <<'LUA'
 local ns = kv "smoke"
 local token = secret "smoke-token"
 
+-- A durable object: one pinned vm owns this state, every request routes
+-- its call through the same mailbox.
+local Hits = object "Hits" {
+    bump = function(state)
+        state.count = (state.count or 0) + 1
+        return state.count
+    end,
+}
+
 on "fetch" (function(request)
     ns:set("visited", true)
     log.info("hello from production")
@@ -100,6 +109,7 @@ on "fetch" (function(request)
             visited = ns:get("visited"),
             secret = token,
             asset = motd,
+            hits = Hits:get("global"):bump(),
         }),
         headers = { ["Content-Type"] = "application/json" },
     }
@@ -142,6 +152,18 @@ echo "$BODY" | jq -e '.secret == "hunter2-from-secrets"' >/dev/null \
     || { echo "the secret did not decrypt through the worker"; exit 1; }
 echo "$BODY" | jq -e '.asset == "hello from an asset"' >/dev/null \
     || { echo "the asset file did not round-trip through the bundle"; exit 1; }
+
+echo "== durable object state across requests"
+# Each request runs in a fresh vm; the counter lives in the object's own
+# pinned vm, so consecutive requests must observe each other's bumps.
+H1=$(curl -sf "$WORKER/$IDENT/" | jq .hits)
+H2=$(curl -sf "$WORKER/$IDENT/" | jq .hits)
+[ "$H2" -gt "$H1" ] 2>/dev/null \
+    || { echo "object state did not carry across requests ($H1 -> $H2)"; exit 1; }
+OBJ_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.objects[0]')
+[ "$OBJ_DECLARED" = "Hits" ] \
+    || { echo "the object class was not in the stored contract (got '$OBJ_DECLARED')"; exit 1; }
+echo "object counted $H1 then $H2; contract declares class $OBJ_DECLARED"
 
 echo "== serving a static asset next to the lua handler"
 # The html file publishes as kind: asset, so the worker answers it from the

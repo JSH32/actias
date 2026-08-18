@@ -15,5 +15,9 @@ export type CapabilitiesDto = {
      * Secrets declared with `secret "name"`.
      */
     secrets: Array<string>;
+    /**
+     * Object classes declared with `object "Class" { ... }`.
+     */
+    objects: Array<string>;
 };
 

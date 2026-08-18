@@ -28,6 +28,8 @@ pub struct Capabilities {
     pub events: Vec<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
+    #[serde(default)]
+    pub objects: Vec<String>,
 }
 
 impl From<crate::proto_script_service::Capabilities> for Capabilities {
@@ -36,6 +38,7 @@ impl From<crate::proto_script_service::Capabilities> for Capabilities {
             kv: val.kv,
             events: val.events,
             secrets: val.secrets,
+            objects: val.objects,
         }
     }
 }
@@ -46,6 +49,7 @@ impl From<Capabilities> for crate::proto_script_service::Capabilities {
             kv: val.kv,
             events: val.events,
             secrets: val.secrets,
+            objects: val.objects,
         }
     }
 }

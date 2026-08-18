@@ -40,6 +40,8 @@ export namespace script_service {
         events?: string[];
         // Secrets declared with &#x60;secret &quot;name&quot;&#x60;.
         secrets?: string[];
+        // Object classes declared with &#x60;object &quot;Class&quot; { ... }&#x60;.
+        objects?: string[];
     }
     export interface ScriptConfig {
         id?: string;
