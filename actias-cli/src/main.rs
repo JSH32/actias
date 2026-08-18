@@ -1,3 +1,4 @@
+mod analyze;
 mod capabilities;
 mod client;
 mod commands;
@@ -33,8 +34,14 @@ async fn run() -> errors::Result<()> {
 
     // Fully local commands never touch the api, so they must not demand a
     // login; ci runs them on machines with no session at all.
-    if let Commands::Test { directory } = cli.command {
-        return handlers::test::handle(&directory.unwrap_or_else(|| ".".to_owned())).await;
+    match cli.command {
+        Commands::Test { directory } => {
+            return handlers::test::handle(&directory.unwrap_or_else(|| ".".to_owned())).await;
+        }
+        Commands::Check { ref directory } => {
+            return handlers::check::handle(directory);
+        }
+        _ => {}
     }
 
     // Parsing settings should trigger a re-auth.

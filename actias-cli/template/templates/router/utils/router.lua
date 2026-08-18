@@ -70,7 +70,7 @@ end
 local function match_path(request_path, route_path)
     -- e.g.: request_path = "/user/123", route_path = "/user/<id>"
 
-    local route_segments, route_parameters = parse_path(route_path)
+    local route_segments, _route_parameters = parse_path(route_path)
     local request_segments = {}
     for segment in string.gmatch(request_path, "/([^/]+)") do
         table.insert(request_segments, segment)
@@ -165,7 +165,10 @@ end
 ---@param request Request raw HTTP request.
 ---@return Response # from the respective handler.
 function Router:route_request(request)
-    local uri_parts = Uri.parse(request.context_uri)
+    -- The context uri is path?query; nothing else reaches a script.
+    local path = string.match(request.context_uri, "^[^?]*") or ""
+    local query = string.match(request.context_uri, "%?(.*)$")
+    local uri_parts = { path = path, query = query }
     for _, route in pairs(self.routes) do
         if route.method == request.method then
             local match, parameters = match_path(uri_parts.path, route.path)
