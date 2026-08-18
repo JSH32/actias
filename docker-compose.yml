@@ -31,6 +31,24 @@ services:
       timeout: 5s
       retries: 10
 
+  minio:
+    image: minio/minio:latest
+    restart: always
+    command: server /data
+    volumes:
+      - minio_data:/data
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      # Published because presigned urls resolve this host from outside.
+      - 9000:9000
+    healthcheck:
+      test: [ "CMD", "mc", "ready", "local" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   scylla:
     image: scylladb/scylla
     container_name: scylla
@@ -50,6 +68,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_healthy
       script_service_migration:
         condition: service_completed_successfully
     build:
@@ -61,6 +81,11 @@ services:
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
       - REDIS_URL=redis://redis:6379
+      - S3_ENDPOINT=http://minio:9000
+      # Presigned urls are used from the host, which reaches minio here.
+      - S3_PUBLIC_ENDPOINT=${S3_PUBLIC_ENDPOINT:-http://127.0.0.1:9000}
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
 
   script_service_migration:
     image: ghcr.io/jsh32/actias_script_service_migration:latest
@@ -187,3 +212,4 @@ volumes:
   scylla_data:
   postgres_data:
   redis_data:
+  minio_data:

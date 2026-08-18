@@ -128,6 +128,28 @@ export namespace script_service {
     export interface StreamScriptLogsRequest {
         scriptId?: string;
     }
+    // Content hashes a client is about to reference.
+    export interface MissingBlobsRequest {
+        // blake3 hashes, lowercase hex.
+        hashes?: string[];
+    }
+    // The subset of the asked-about hashes the store does not hold; a client
+    // only needs to upload these.
+    export interface MissingBlobsResponse {
+        missing?: string[];
+    }
+    // Hashes a client wants to upload content for.
+    export interface BlobUploadUrlsRequest {
+        hashes?: string[];
+    }
+    // A presigned url a client PUTs one blob&#x27;s raw bytes to.
+    export interface BlobUploadUrl {
+        hash?: string;
+        url?: string;
+    }
+    export interface BlobUploadUrlsResponse {
+        urls?: script_service.BlobUploadUrl[];
+    }
     export interface Script {
         id?: string;
         // Project that owns the script.
@@ -215,6 +237,18 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<LogMessage>;
+        // Which of these content hashes the blob store does not hold yet.
+        missingBlobs(
+            data: MissingBlobsRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<MissingBlobsResponse>;
+        // Presigned upload urls for blobs a client is about to push.
+        blobUploadUrls(
+            data: BlobUploadUrlsRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<BlobUploadUrlsResponse>;
     }
 }
 export namespace bundle {

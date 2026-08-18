@@ -3,11 +3,11 @@ use std::str::FromStr;
 use actias_common::logging::{live_log_channel, script_log_channel};
 use futures::StreamExt;
 use futures::future::join_all;
-use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 use sqlx::types::Uuid;
 use sqlx::{Pool, Postgres};
 use tonic::{Response, Status};
 
+use crate::blob_store::BlobStore;
 use crate::bundle::{Bundle, File};
 use crate::database_types::{DbFile, DbRevision, DbScript, ScriptConfig};
 use crate::live_script::LiveScriptManager;
@@ -26,13 +26,19 @@ use crate::util::safe_divide;
 pub struct ScriptService {
     database: Pool<Postgres>,
     live_script_manager: LiveScriptManager,
+    blobs: BlobStore,
 }
 
 impl ScriptService {
-    pub fn new(database: Pool<Postgres>, live_script_manager: LiveScriptManager) -> Self {
+    pub fn new(
+        database: Pool<Postgres>,
+        live_script_manager: LiveScriptManager,
+        blobs: BlobStore,
+    ) -> Self {
         Self {
             database,
             live_script_manager,
+            blobs,
         }
     }
 
@@ -95,12 +101,26 @@ impl ScriptService {
             ));
         }
 
-        // Hash and size are computed here over the raw content, so the store
-        // is authoritative whatever the client claimed.
+        // Files arrive either inline (content present, hashed and stored
+        // here so the hash is authoritative) or manifest-only (a claimed
+        // hash whose blob must already be stored). An empty file with no
+        // claimed hash is still inline: empty content hashes fine.
         for file in bundle.files.iter_mut() {
-            file.hash = blake3::hash(&file.content).to_hex().to_string();
-            file.size = file.content.len() as u64;
-            file.content = compress_prepend_size(&file.clone().content);
+            if file.hash.is_empty() || !file.content.is_empty() {
+                file.hash = blake3::hash(&file.content).to_hex().to_string();
+                file.size = file.content.len() as u64;
+                self.blobs
+                    .put(&file.hash, std::mem::take(&mut file.content))
+                    .await?;
+            } else {
+                let Some(size) = self.blobs.head(&file.hash).await? else {
+                    return Err(Status::failed_precondition(format!(
+                        "Blob for '{}' is not stored; upload it first.",
+                        file.file_path
+                    )));
+                };
+                file.size = size;
+            }
         }
 
         let mut tx = self
@@ -121,11 +141,10 @@ impl ScriptService {
 
         for file in bundle.files.iter() {
             sqlx::query(
-                "INSERT INTO files (revision_id, content, file_path, hash, size, content_type, kind) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                "INSERT INTO files (revision_id, file_path, hash, size, content_type, kind) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(revision_info.id)
-            .bind(&file.content)
             .bind(&file.file_path)
             .bind(&file.hash)
             .bind(file.size as i64)
@@ -249,7 +268,7 @@ impl script_service_server::ScriptService for ScriptService {
         if request.with_bundle {
             let files = sqlx::query_as::<_, DbFile>(
                 r#"
-                SELECT f.file_path, f.content, f.hash, f.size, f.content_type, f.kind
+                SELECT f.file_path, f.hash, f.size, f.content_type, f.kind
                 FROM files f, revisions r
                 WHERE revision_id = $1 AND r.id = f.revision_id
                 "#,
@@ -261,19 +280,13 @@ impl script_service_server::ScriptService for ScriptService {
 
             let mut bundle_files = Vec::with_capacity(files.len());
             for file in &files {
-                // A file that will not decompress is a corrupt row, not a reason
-                // to take the request thread down with it.
-                let content = decompress_size_prepended(&file.content).map_err(|e| {
-                    Status::internal(format!(
-                        "stored file '{}' could not be decompressed: {e}",
-                        file.file_path
-                    ))
-                })?;
+                let hash = file.hash.trim().to_string();
+                let content = self.blobs.get(&hash).await?;
 
                 bundle_files.push(File {
                     content,
                     file_path: file.file_path.clone(),
-                    hash: file.hash.trim().to_string(),
+                    hash,
                     size: file.size as u64,
                     content_type: file.content_type.clone(),
                     kind: file.kind as i32,
@@ -622,6 +635,30 @@ impl script_service_server::ScriptService for ScriptService {
 
         Ok(Response::new(Box::pin(stream.map(Ok))))
     }
+
+    async fn missing_blobs(
+        &self,
+        request: tonic::Request<MissingBlobsRequest>,
+    ) -> Result<tonic::Response<MissingBlobsResponse>, tonic::Status> {
+        let missing = self.blobs.missing(&request.get_ref().hashes).await?;
+
+        Ok(Response::new(MissingBlobsResponse { missing }))
+    }
+
+    async fn blob_upload_urls(
+        &self,
+        request: tonic::Request<BlobUploadUrlsRequest>,
+    ) -> Result<tonic::Response<BlobUploadUrlsResponse>, tonic::Status> {
+        let mut urls = Vec::new();
+        for hash in &request.get_ref().hashes {
+            urls.push(BlobUploadUrl {
+                hash: hash.clone(),
+                url: self.blobs.presign_put(hash).await?,
+            });
+        }
+
+        Ok(Response::new(BlobUploadUrlsResponse { urls }))
+    }
 }
 
 /// The boxed stream both log rpcs return.
@@ -636,6 +673,7 @@ type LogMessageStream =
 mod tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
+    use testcontainers_modules::minio::MinIO;
     use testcontainers_modules::postgres::Postgres as PostgresImage;
     use testcontainers_modules::redis::Redis;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -652,6 +690,7 @@ mod tests {
     struct TestService {
         _postgres: ContainerAsync<PostgresImage>,
         _redis: ContainerAsync<Redis>,
+        _minio: ContainerAsync<MinIO>,
         database: Pool<Postgres>,
         redis_url: String,
         service: ScriptService,
@@ -686,12 +725,30 @@ mod tests {
             .await
             .expect("migrations apply");
 
+        let minio = MinIO::default().start().await.expect("minio starts");
+        let minio_port = minio
+            .get_host_port_ipv4(9000)
+            .await
+            .expect("minio port is published");
+        let minio_endpoint = format!("http://127.0.0.1:{minio_port}");
+
+        let blobs = crate::blob_store::BlobStore::new(crate::blob_store::BlobStoreConfig {
+            endpoint: minio_endpoint.clone(),
+            public_endpoint: minio_endpoint,
+            access_key: "minioadmin".to_owned(),
+            secret_key: "minioadmin".to_owned(),
+            bucket: "test-blobs".to_owned(),
+        })
+        .await;
+
         let redis_url = format!("redis://127.0.0.1:{redis_port}");
-        let service = ScriptService::new(database.clone(), LiveScriptManager::new(&redis_url));
+        let service =
+            ScriptService::new(database.clone(), LiveScriptManager::new(&redis_url), blobs);
 
         TestService {
             _postgres: postgres,
             _redis: redis,
+            _minio: minio,
             database,
             redis_url,
             service,
@@ -847,5 +904,92 @@ mod tests {
         assert_eq!(received.level, "info");
         assert_eq!(received.message, "hello logs");
         assert_eq!(received.timestamp_ms, 123);
+    }
+
+    #[tokio::test]
+    async fn bundles_round_trip_through_the_blob_store() {
+        let harness = service().await;
+        let project = Uuid::new_v4();
+        let script_id = insert_script(&harness.database, "blobbed", project).await;
+
+        let source = b"on \"fetch\" (function() end)".to_vec();
+        let make_request = |content: Vec<u8>, hash: String| CreateRevisionRequest {
+            script_id: script_id.to_string(),
+            script_config: Some(crate::proto_script_service::ScriptConfig {
+                id: script_id.to_string(),
+                entry_point: "main.lua".to_owned(),
+                includes: vec![],
+                ignore: vec![],
+                capabilities: None,
+            }),
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files: vec![File {
+                    file_path: "main.lua".to_owned(),
+                    content,
+                    hash,
+                    ..Default::default()
+                }],
+            }),
+        };
+
+        // First publish carries content inline; the store hashes and keeps it.
+        let created = harness
+            .service
+            .create_revision(tonic::Request::new(make_request(
+                source.clone(),
+                String::new(),
+            )))
+            .await
+            .expect("revision creates")
+            .into_inner();
+
+        let stored_hash = blake3::hash(&source).to_hex().to_string();
+
+        // The negotiation must now consider the hash present, and an unknown
+        // hash missing.
+        let missing = harness
+            .service
+            .missing_blobs(tonic::Request::new(MissingBlobsRequest {
+                hashes: vec![stored_hash.clone(), "0".repeat(64)],
+            }))
+            .await
+            .expect("negotiation answers")
+            .into_inner()
+            .missing;
+        assert_eq!(missing, vec!["0".repeat(64)]);
+
+        // A manifest-only publish referencing the stored hash succeeds
+        // without any content, which is what makes republish near-free.
+        harness
+            .service
+            .create_revision(tonic::Request::new(make_request(
+                vec![],
+                stored_hash.clone(),
+            )))
+            .await
+            .expect("manifest-only revision creates");
+
+        // A manifest-only publish of an unstored hash is refused.
+        let refused = harness
+            .service
+            .create_revision(tonic::Request::new(make_request(vec![], "1".repeat(64))))
+            .await;
+        assert!(refused.is_err(), "an unstored hash must be refused");
+
+        // Reading back hydrates the content from the blob store.
+        let revision = harness
+            .service
+            .get_revision(tonic::Request::new(GetRevisionRequest {
+                id: created.id,
+                with_bundle: true,
+            }))
+            .await
+            .expect("revision reads")
+            .into_inner();
+
+        let files = revision.bundle.expect("bundle present").files;
+        assert_eq!(files[0].content, source);
+        assert_eq!(files[0].hash, stored_hash);
     }
 }

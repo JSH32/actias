@@ -87,7 +87,6 @@ pub struct DbRevision {
 
 #[derive(sqlx::FromRow)]
 pub struct DbFile {
-    pub content: Vec<u8>,
     pub file_path: String,
     pub hash: String,
     pub size: i64,
