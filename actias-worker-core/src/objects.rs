@@ -1387,9 +1387,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_cron_object_fires_its_listener_on_schedule() {
         const EVENT: &str = "cron:* * * * * *";
+        // The listener yields (an async platform call) on purpose: firing
+        // must survive handlers that await, which a lua pcall cannot.
         const SOURCE: &str = r#"
             marks = 0
             on "cron:* * * * * *" (function(event)
+                sleep_ms(5)
                 marks = marks + 1
             end)
             function get_marks() return marks end

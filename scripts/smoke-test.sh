@@ -259,6 +259,17 @@ done
 [ "$MARKS" -ge 1 ] 2>/dev/null \
     || { echo "the cold alarm never fired (marks: '$MARKS')"; exit 1; }
 echo "cold alarm fired via the sweep; $MARKS mark(s) written"
+
+echo "== cron handler runs on schedule"
+# Armed at the script's first touch, firing every two seconds since; two
+# consecutive reads must show the count still climbing.
+C1=$(curl -sf "$WORKER/$IDENT/" | jq .crons)
+sleep 5
+C2=$(curl -sf "$WORKER/$IDENT/" | jq .crons)
+[ -n "$C1" ] && [ "$C2" -gt "$C1" ] 2>/dev/null \
+    || { echo "cron did not keep firing ($C1 -> '$C2')"; exit 1; }
+echo "cron fired: $C1 then $C2 marks"
+
 echo "object resumed at $H3 after the worker restart"
 
 echo "== serving a static asset next to the lua handler"
@@ -390,15 +401,10 @@ cp -r "$REPO/actias-cli/template/templates/basic/." "$UNIT/"
     || { echo "the template failed actias check"; exit 1; }
 echo "template test and typed check passed on the local runtime"
 
-echo "== cron handler runs on schedule"
-# Armed at the script's first touch, firing every two seconds since; two
-# consecutive reads must show the count still climbing.
-C1=$(curl -sf "$WORKER/$IDENT/" | jq .crons)
-sleep 5
-C2=$(curl -sf "$WORKER/$IDENT/" | jq .crons)
-[ -n "$C1" ] && [ "$C2" -gt "$C1" ] 2>/dev/null \
-    || { echo "cron did not keep firing ($C1 -> '$C2')"; exit 1; }
-echo "cron fired: $C1 then $C2 marks"
+echo "== worker metrics expose the traffic"
+curl -sf "$WORKER/_metrics" | grep -q "actias_requests_total{script=\"$IDENT\"}" \
+    || { echo "the script's requests are missing from /_metrics"; exit 1; }
+echo "metrics show $IDENT traffic"
 
 echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket
