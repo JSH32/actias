@@ -77,10 +77,29 @@ pub enum Commands {
         /// Directory of project
         directory: String,
     },
+    /// 🗄️ Manage a project's sql databases
+    Sql {
+        /// Database name as declared in code (`database "name"`).
+        database: String,
+        #[clap(subcommand)]
+        sub: SqlOperations,
+    },
     /// 🧪 Run tests/*.lua on the local runtime with in-memory fakes.
     Test {
         /// Directory of project; defaults to the current one.
         directory: Option<String>,
+    },
+}
+
+#[derive(Parser, Debug)]
+pub enum SqlOperations {
+    /// 📝 Scaffold the next numbered migration file.
+    Create {
+        /// Short name, becomes part of the file name.
+        name: String,
+        /// Project directory; defaults to the current one.
+        #[clap(long, default_value = ".")]
+        directory: String,
     },
 }
 

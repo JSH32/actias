@@ -105,6 +105,9 @@ fn parse_duration_ms(raw: &str) -> Result<i64, String> {
 struct DispatchCall {
     class: String,
     method: String,
+    /// The instance name; databases use it to find their migration files.
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     args: Vec<serde_json::Value>,
     /// The stack this call rides on, own key included, installed for the
@@ -487,6 +490,48 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
                     (state, true)
                 }
             };
+
+            // A database applies its pending migrations before anything
+            // else, once per vm life: the tracking rows ride the call's
+            // transaction, so a failed migration applies nothing and
+            // records nothing, and retries on the next touch.
+            if state_is_new && call.class == DATABASE_CLASS {
+                let Some(prepared) =
+                    lua.app_data_ref::<std::sync::Arc<crate::runtime::PreparedRevision>>()
+                else {
+                    return Err(mlua::Error::RuntimeError(
+                        "Runtime has no revision loaded.".to_owned(),
+                    ));
+                };
+                let migrations = prepared.migrations(&call.name);
+                drop(prepared);
+
+                if !migrations.is_empty() {
+                    let cell = lua
+                        .app_data_ref::<crate::storage::StorageCell>()
+                        .ok_or_else(|| {
+                            mlua::Error::RuntimeError(
+                                "This database has no durable storage.".to_owned(),
+                            )
+                        })?;
+                    let mut storage = cell.0.borrow_mut();
+
+                    let applied = storage
+                        .applied_migrations()
+                        .map_err(mlua::Error::RuntimeError)?;
+                    for (name, sql) in migrations {
+                        if applied.contains(&name) {
+                            continue;
+                        }
+                        storage.exec_script(&sql).map_err(|error| {
+                            mlua::Error::RuntimeError(format!("Migration {name} failed: {error}"))
+                        })?;
+                        storage
+                            .record_migration(&name)
+                            .map_err(mlua::Error::RuntimeError)?;
+                    }
+                }
+            }
 
             // `init` runs exactly once per object: for stored objects the
             // file is the record (a failed init retries next call); without

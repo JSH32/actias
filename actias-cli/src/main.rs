@@ -41,6 +41,12 @@ async fn run() -> errors::Result<()> {
         Commands::Check { ref directory } => {
             return handlers::check::handle(directory);
         }
+        Commands::Sql {
+            ref database,
+            ref sub,
+        } => {
+            return handlers::sql::handle(database, sub);
+        }
         _ => {}
     }
 

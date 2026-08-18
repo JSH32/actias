@@ -590,6 +590,7 @@ impl ObjectRouting {
                 "__dispatch",
                 serde_json::json!({
                     "class": target.class,
+                    "name": target.name,
                     "method": target.method,
                     "args": target.arguments,
                     "chain": chain,
