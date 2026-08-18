@@ -104,6 +104,8 @@ pub struct AppState {
     pub in_flight: Arc<AtomicU32>,
     /// Live durable objects on this node, one pinned vm each.
     pub objects: Arc<ObjectHost>,
+    /// One SQLite file per object identity lives here.
+    pub object_data_dir: std::path::PathBuf,
     /// Domain subdomain routing hangs off; [`None`] leaves only the path
     /// forms.
     pub base_domain: Option<String>,
@@ -465,6 +467,7 @@ async fn cached_revision(
 /// exactly the machinery requests use.
 struct ObjectRouting {
     host: Arc<ObjectHost>,
+    data_dir: std::path::PathBuf,
     kv: KvServiceClient<Channel>,
     egress: EgressClient,
     secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
@@ -501,6 +504,13 @@ impl ObjectRouting {
         let chain = actias_worker_core::objects::extend_call_chain(&target.chain, &key)?;
 
         let routing = self.clone();
+        // The file is the object's identity on disk: keyed by the same
+        // string as the vm registry minus the revision, hashed because the
+        // class and name are user-chosen text, not path material.
+        let file = self
+            .data_dir
+            .join(format!("{}.db", blake3::hash(key.as_bytes()).to_hex()));
+
         let handle = self
             .host
             .get_or_spawn(&key, &self.prepared.revision_id, || async move {
@@ -523,7 +533,10 @@ impl ObjectRouting {
                 // chain it hands them is what makes cycles refusable.
                 runtime.set_app_data::<ObjectRouter>(routing.as_router());
 
-                Ok((runtime, Some(OBJECT_CALL_BUDGET_SECS)))
+                let storage = actias_worker_core::storage::SqliteStorage::open(&file)
+                    .map_err(mlua::Error::RuntimeError)?;
+
+                Ok((runtime, Some(OBJECT_CALL_BUDGET_SECS), Some(storage)))
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -762,6 +775,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
 
     let router = Arc::new(ObjectRouting {
         host: state.objects.clone(),
+        data_dir: state.object_data_dir.clone(),
         kv: state.clients.kv.clone(),
         egress: state.egress.clone(),
         secrets_key: state.secrets_key.clone(),
@@ -830,6 +844,7 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             in_flight: Arc::default(),
             objects: Arc::default(),
+            object_data_dir: std::env::temp_dir(),
             base_domain: None,
         }
     }

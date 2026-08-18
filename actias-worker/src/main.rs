@@ -93,6 +93,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::sync::Arc::new(key)
     });
 
+    // Object storage must exist before the first object call needs it.
+    std::fs::create_dir_all(&config.object_data_dir)?;
+
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let app = server::router(
         server::AppState {
@@ -117,6 +120,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
             in_flight,
             objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),
+            object_data_dir: std::path::PathBuf::from(config.object_data_dir),
             base_domain: config.base_domain,
         },
         config.max_body_bytes,

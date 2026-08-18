@@ -9,6 +9,7 @@ pub mod egress;
 pub mod extensions;
 pub mod objects;
 pub mod runtime;
+pub mod storage;
 
 pub mod proto {
     pub mod bundle {

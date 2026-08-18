@@ -93,8 +93,9 @@ local token = secret "smoke-token"
 -- its call through the same mailbox.
 local Hits = object "Hits" {
     bump = function(state)
-        state.count = (state.count or 0) + 1
-        return state.count
+        state.sql:exec("CREATE TABLE IF NOT EXISTS hits (at INTEGER)")
+        state.sql:exec("INSERT INTO hits VALUES (?)", { 1 })
+        return state.sql:query_one("SELECT COUNT(*) AS n FROM hits").n
     end,
 }
 
@@ -164,6 +165,19 @@ OBJ_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConf
 [ "$OBJ_DECLARED" = "Hits" ] \
     || { echo "the object class was not in the stored contract (got '$OBJ_DECLARED')"; exit 1; }
 echo "object counted $H1 then $H2; contract declares class $OBJ_DECLARED"
+
+echo "== object rows survive a worker restart"
+# The counter lives in the object's own sqlite file on a volume; kill the
+# worker and the next bump must continue the same count, not restart it.
+compose restart worker_service >/dev/null 2>&1
+H3=""
+for _ in $(seq 1 30); do
+    H3=$(curl -sf "$WORKER/$IDENT/" | jq .hits 2>/dev/null) && [ -n "$H3" ] && break
+    sleep 2
+done
+[ -n "$H3" ] && [ "$H3" -gt "$H2" ] 2>/dev/null \
+    || { echo "object state did not survive the restart ($H2 -> '$H3')"; exit 1; }
+echo "object resumed at $H3 after the worker restart"
 
 echo "== serving a static asset next to the lua handler"
 # The html file publishes as kind: asset, so the worker answers it from the

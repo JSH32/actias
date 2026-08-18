@@ -185,6 +185,77 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
     Ok(handle)
 }
 
+/// Sequence-table parameters as plain values for the storage layer.
+fn sql_params(lua: &Lua, params: Option<Table>) -> mlua::Result<Vec<serde_json::Value>> {
+    let Some(params) = params else {
+        return Ok(Vec::new());
+    };
+
+    let mut values = Vec::new();
+    for value in params.sequence_values::<mlua::Value>() {
+        values.push(lua.from_value(value?)?);
+    }
+    Ok(values)
+}
+
+/// Runs one storage operation against this vm's cell.
+fn with_storage<T>(
+    lua: &Lua,
+    operation: impl FnOnce(&mut crate::storage::SqliteStorage) -> Result<T, String>,
+) -> mlua::Result<T> {
+    let cell = lua
+        .app_data_ref::<crate::storage::StorageCell>()
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("This object has no durable storage.".to_owned())
+        })?;
+    let mut storage = cell.0.borrow_mut();
+    operation(&mut storage).map_err(mlua::Error::RuntimeError)
+}
+
+/// The `state.sql` handle: exec/query/query_one over the object's own
+/// database. Synchronous on purpose: the calls run on the object's pinned
+/// task against a local file, and one call owns the vm anyway.
+fn sql_surface(lua: &Lua) -> mlua::Result<Table> {
+    let sql = lua.create_table()?;
+
+    sql.set(
+        "exec",
+        lua.create_function(
+            |lua, (_this, text, params): (Table, String, Option<Table>)| {
+                let params = sql_params(lua, params)?;
+                with_storage(lua, |storage| storage.exec(&text, &params))
+            },
+        )?,
+    )?;
+
+    sql.set(
+        "query",
+        lua.create_function(
+            |lua, (_this, text, params): (Table, String, Option<Table>)| {
+                let params = sql_params(lua, params)?;
+                let rows = with_storage(lua, |storage| storage.query(&text, &params))?;
+                lua.to_value(&rows)
+            },
+        )?,
+    )?;
+
+    sql.set(
+        "query_one",
+        lua.create_function(
+            |lua, (_this, text, params): (Table, String, Option<Table>)| {
+                let params = sql_params(lua, params)?;
+                let rows = with_storage(lua, |storage| storage.query(&text, &params))?;
+                match rows.into_iter().next() {
+                    Some(row) => lua.to_value(&row),
+                    None => Ok(mlua::Value::Nil),
+                }
+            },
+        )?,
+    )?;
+
+    Ok(sql)
+}
+
 /// Installs the receiving side: resolve the class method in this vm and
 /// run it with the object's state table first.
 fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
@@ -209,13 +280,16 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
                 ))
             })?;
 
-            // The state table is the object's in-memory identity; it lives
-            // exactly as long as the pinned vm. Durable storage arrives
-            // underneath it separately.
+            // The state table is the object's identity surface: plain keys
+            // are in-memory and live as long as the pinned vm; `state.sql`
+            // is the durable half, present when the host opened storage.
             let state: Table = match lua.named_registry_value(STATE_KEY) {
                 Ok(state) => state,
                 Err(_) => {
                     let state = lua.create_table()?;
+                    if lua.app_data_ref::<crate::storage::StorageCell>().is_some() {
+                        state.set("sql", sql_surface(&lua)?)?;
+                    }
                     lua.set_named_registry_value(STATE_KEY, state.clone())?;
                     state
                 }
