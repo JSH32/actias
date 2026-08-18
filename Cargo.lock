@@ -56,6 +56,7 @@ dependencies = [
 name = "actias-declarations"
 version = "0.1.0"
 dependencies = [
+ "cron",
  "mlua",
  "serde",
 ]
@@ -135,6 +136,8 @@ dependencies = [
  "argon2",
  "axum",
  "base64 0.23.1",
+ "chrono",
+ "cron",
  "http 1.5.0",
  "jsonwebtoken",
  "mlua",
@@ -1420,6 +1423,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "cron"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f8c3e73077b4b4a6ab1ea5047c37c57aee77657bc8ecd6f29b0af082d0b0c07"
+dependencies = [
+ "chrono",
+ "nom",
+ "once_cell",
 ]
 
 [[package]]

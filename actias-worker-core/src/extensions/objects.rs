@@ -28,6 +28,33 @@ const CLASSES_KEY: &str = "object_classes";
 /// router special-cases its read methods for the mailbox bypass.
 pub const DATABASE_CLASS: &str = "__database";
 
+/// The built-in class behind `on "cron:<expr>"`: one instance per cron
+/// event, whose alarm re-arms the next occurrence and fires the listener.
+pub const CRON_CLASS: &str = "__cron";
+
+/// Milliseconds until a cron event's next occurrence. The expression is
+/// whatever follows `cron:`; classic five-field expressions gain a seconds
+/// column, since the parser wants six.
+pub fn cron_delay_ms(event: &str) -> Result<i64, String> {
+    use std::str::FromStr;
+
+    let expr = event.strip_prefix("cron:").unwrap_or(event).trim();
+    let normalized = if expr.split_whitespace().count() == 5 {
+        format!("0 {expr}")
+    } else {
+        expr.to_owned()
+    };
+
+    let schedule = cron::Schedule::from_str(&normalized)
+        .map_err(|e| format!("'{expr}' is not a cron expression: {e}"))?;
+    let next = schedule
+        .upcoming(chrono::Utc)
+        .next()
+        .ok_or_else(|| format!("'{expr}' never occurs"))?;
+
+    Ok((next.timestamp_millis() - unix_now_ms()).max(1000))
+}
+
 /// Registry key of the object's state table; exists only in pinned vms,
 /// created on their first dispatched call.
 const STATE_KEY: &str = "object_state";
@@ -137,6 +164,7 @@ impl LuaExtension for ObjectExtension {
     fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
         let classes = lua.create_table()?;
         classes.set(DATABASE_CLASS, database_class(lua)?)?;
+        classes.set(CRON_CLASS, cron_class(lua)?)?;
         lua.set_named_registry_value(CLASSES_KEY, classes)?;
 
         // `database "name"`: the sql product face, sugar over an object of
@@ -153,10 +181,16 @@ impl LuaExtension for ObjectExtension {
 
         // `objects "Class"`: reference a class declared elsewhere. It mints
         // the same handle; whether the class exists is the callee's truth.
+        // Platform classes are not addressable this way.
         lua.globals().set(
             "objects",
             lua.create_function(|lua, class: String| {
                 ActiasRuntime::assert_declaration_phase(lua, "objects")?;
+                if class.starts_with("__") {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Class name '{class}' is reserved for the platform."
+                    )));
+                }
                 class_handle(lua, class)
             })?,
         )?;
@@ -328,6 +362,57 @@ fn database_class(lua: &Lua) -> mlua::Result<Table> {
     body.set("read_one", query_one)?;
 
     Ok(body)
+}
+
+/// The built-in cron class: `ensure` records the event and arms the first
+/// occurrence, `alarm` re-arms the next one and fires the listener. The
+/// re-arm happens before the fire and the fire is pcall-guarded, so a
+/// failing handler can never kill the schedule.
+fn cron_class(lua: &Lua) -> mlua::Result<Table> {
+    lua.globals().set(
+        "__cron_next_ms",
+        lua.create_function(|_, event: String| {
+            cron_delay_ms(&event).map_err(mlua::Error::RuntimeError)
+        })?,
+    )?;
+
+    lua.globals().set(
+        "__fire_event",
+        lua.create_async_function(|lua, (event, payload): (String, mlua::Value)| async move {
+            let listener = ActiasRuntime::listener_in(&lua, &event).map_err(|_| {
+                mlua::Error::RuntimeError(format!("No listener registered for '{event}'."))
+            })?;
+            listener.call_async::<mlua::Value>(payload).await
+        })?,
+    )?;
+
+    lua.load(
+        r#"
+        return {
+            ensure = function(state, event)
+                state.sql:exec("CREATE TABLE IF NOT EXISTS cron_state (event TEXT)")
+                state.sql:exec("DELETE FROM cron_state")
+                state.sql:exec("INSERT INTO cron_state VALUES (?)", { event })
+                state:set_alarm(__cron_next_ms(event) / 1000)
+            end,
+
+            alarm = function(state)
+                local row = state.sql:query_one("SELECT event FROM cron_state")
+                if not row then return end
+                state:set_alarm(__cron_next_ms(row.event) / 1000)
+                local ok, err = pcall(__fire_event, row.event, {
+                    cron = row.event,
+                    scheduled_at = state.now(),
+                })
+                if not ok then
+                    log.warn("cron handler failed: " .. tostring(err))
+                end
+            end,
+        }
+        "#,
+    )
+    .set_name("__cron")
+    .eval()
 }
 
 /// Which class the pinned vm is currently dispatching for.

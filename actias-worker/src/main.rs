@@ -122,6 +122,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
         in_flight,
         objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),
+        armed_crons: std::sync::Arc::default(),
         object_data_dir: std::path::PathBuf::from(config.object_data_dir),
         object_db_max_bytes: config.object_db_max_bytes,
         object_idle_after: std::time::Duration::from_secs(config.object_idle_secs),

@@ -119,6 +119,11 @@ local AlarmKeeper = object "AlarmKeeper" {
     end,
 }
 
+-- Every two seconds, forever, from the script's first touch on.
+on "cron:*/2 * * * * *" (function(event)
+    db:exec("INSERT INTO cron_marks VALUES (?)", { event.scheduled_at })
+end)
+
 on "fetch" (function(request)
     if string.find(request.context_uri or "", "/arm") then
         AlarmKeeper:get("watchdog"):arm("15s")
@@ -135,6 +140,7 @@ on "fetch" (function(request)
             asset = motd,
             hits = Hits:get("global"):bump(),
             marks = db:read_one("SELECT COUNT(*) AS n FROM alarm_marks").n,
+            crons = db:read_one("SELECT COUNT(*) AS n FROM cron_marks").n,
             db_rows = (function()
                 -- The visits table exists because the migration applied at
                 -- the database's first touch; nothing creates it here.
@@ -159,6 +165,10 @@ SQL
 "$REPO/target/debug/actias-cli" sql main create alarm_marks --directory "$DEVDIR/published"
 cat > "$DEVDIR/published/migrations/main/0002_alarm_marks.sql" <<'SQL'
 CREATE TABLE alarm_marks (at INTEGER);
+SQL
+"$REPO/target/debug/actias-cli" sql main create cron_marks --directory "$DEVDIR/published"
+cat > "$DEVDIR/published/migrations/main/0003_cron_marks.sql" <<'SQL'
+CREATE TABLE cron_marks (at INTEGER);
 SQL
 printf '<h1>served without a vm</h1>' > "$DEVDIR/published/page.html"
 
@@ -379,6 +389,16 @@ cp -r "$REPO/actias-cli/template/templates/basic/." "$UNIT/"
 "$REPO/target/debug/actias-cli" check "$UNIT" \
     || { echo "the template failed actias check"; exit 1; }
 echo "template test and typed check passed on the local runtime"
+
+echo "== cron handler runs on schedule"
+# Armed at the script's first touch, firing every two seconds since; two
+# consecutive reads must show the count still climbing.
+C1=$(curl -sf "$WORKER/$IDENT/" | jq .crons)
+sleep 5
+C2=$(curl -sf "$WORKER/$IDENT/" | jq .crons)
+[ -n "$C1" ] && [ "$C2" -gt "$C1" ] 2>/dev/null \
+    || { echo "cron did not keep firing ($C1 -> '$C2')"; exit 1; }
+echo "cron fired: $C1 then $C2 marks"
 
 echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket
