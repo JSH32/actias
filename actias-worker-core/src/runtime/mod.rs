@@ -3,7 +3,7 @@ pub mod extension;
 use crate::{
     extensions::{crypto::CryptoExtension, jwt::JwtExtension, kv::KvExtension},
     proto::{
-        bundle::{Bundle, File},
+        bundle::{Bundle, File, FileKind},
         kv_service::kv_service_client::KvServiceClient,
         script_service::{Revision, Script},
     },
@@ -187,6 +187,31 @@ impl PreparedRevision {
     /// File at exactly `path`, if the bundle has one.
     fn file(&self, path: &str) -> Option<&File> {
         self.bundle.files.iter().find(|file| file.file_path == path)
+    }
+
+    /// Asset served for `path`, if the bundle carries one.
+    ///
+    /// Only `kind: asset` files are eligible, so lua source is never handed
+    /// out raw. A directory path (empty or trailing slash) falls back to its
+    /// index.html, which is what makes a bundle of nothing but assets
+    /// servable at its root.
+    pub fn asset(&self, path: &str) -> Option<&File> {
+        let find = |target: &str| {
+            self.bundle
+                .files
+                .iter()
+                .find(|file| file.kind == FileKind::Asset as i32 && file.file_path == target)
+        };
+
+        if let Some(file) = find(path) {
+            return Some(file);
+        }
+
+        if path.is_empty() || path.ends_with('/') {
+            return find(&format!("{path}index.html"));
+        }
+
+        None
     }
 
     /// Loadable module for the bundle file at exactly `path`.
@@ -690,6 +715,42 @@ mod tests {
         };
 
         Arc::new(PreparedRevision::prepare(Script::default(), revision).expect("prepares"))
+    }
+
+    #[test]
+    fn assets_resolve_by_exact_path_and_directory_index() {
+        let asset = |path: &str| File {
+            file_path: path.to_owned(),
+            content: b"<h1>hi</h1>".to_vec(),
+            kind: FileKind::Asset as i32,
+            ..Default::default()
+        };
+        let prepared = prepared_with(vec![
+            File {
+                file_path: "main.lua".to_owned(),
+                content: b"return 1".to_vec(),
+                ..Default::default()
+            },
+            asset("index.html"),
+            asset("docs/index.html"),
+            asset("docs/guide.html"),
+        ]);
+
+        // Exact paths resolve; directory paths fall back to their index.
+        assert!(prepared.asset("docs/guide.html").is_some());
+        assert_eq!(
+            prepared.asset("").map(|f| f.file_path.as_str()),
+            Some("index.html")
+        );
+        assert_eq!(
+            prepared.asset("docs/").map(|f| f.file_path.as_str()),
+            Some("docs/index.html")
+        );
+
+        // A module is never handed out as an asset, and a directory path
+        // does not match its index without the separator.
+        assert!(prepared.asset("main.lua").is_none());
+        assert!(prepared.asset("docs").is_none());
     }
 
     /// Builds a lua state carrying `files` as its prepared revision, with the

@@ -59,6 +59,10 @@ export namespace script_service {
         // Should bundle be included with revision.
     // If false then this will only include revision info.
         withBundle?: boolean;
+        // With with_bundle, return the manifest without file content: hashes,
+    // sizes and kinds only. Callers with blob store access pull the bytes
+    // themselves, so bundles stop transiting this service.
+        manifestOnly?: boolean;
     }
     // Return revision info.
     export interface ListRevisionsRequest {

@@ -97,9 +97,14 @@ services:
     image: ghcr.io/jsh32/actias_worker_service:latest
     restart: unless-stopped
     depends_on:
-      - script_service
-      - kv_service
-      - redis
+      minio:
+        condition: service_healthy
+      script_service:
+        condition: service_started
+      kv_service:
+        condition: service_started
+      redis:
+        condition: service_started
     build:
       context: .
       dockerfile: ./docker/Dockerfile.rust
@@ -111,6 +116,11 @@ services:
       - KV_SERVICE_URI=http://kv_service:3000
       # Carries script log lines to the live tail subscribers.
       - REDIS_URL=redis://redis:6379
+      # Bundle bytes are pulled straight from the blob store by hash;
+      # only manifests travel through script-service.
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
       # Development-only key; a deployment must set its own.
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
     ports:

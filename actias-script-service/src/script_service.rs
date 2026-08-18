@@ -316,7 +316,15 @@ impl script_service_server::ScriptService for ScriptService {
             let mut bundle_files = Vec::with_capacity(files.len());
             for file in &files {
                 let hash = file.hash.trim().to_string();
-                let content = self.blobs.get(&hash).await?;
+
+                // A manifest-only caller holds blob store access and pulls
+                // the bytes itself; hydrating here would move every bundle
+                // through this service twice.
+                let content = if request.manifest_only {
+                    Vec::new()
+                } else {
+                    self.blobs.get(&hash).await?
+                };
 
                 bundle_files.push(File {
                     content,
@@ -1000,8 +1008,9 @@ mod tests {
         let revision = harness
             .service
             .get_revision(tonic::Request::new(GetRevisionRequest {
-                id: created.id,
+                id: created.id.clone(),
                 with_bundle: true,
+                manifest_only: false,
             }))
             .await
             .expect("revision reads")
@@ -1010,6 +1019,24 @@ mod tests {
         let files = revision.bundle.expect("bundle present").files;
         assert_eq!(files[0].content, source);
         assert_eq!(files[0].hash, stored_hash);
+
+        // A manifest-only read carries everything but the bytes; callers
+        // with blob store access pull those themselves.
+        let manifest = harness
+            .service
+            .get_revision(tonic::Request::new(GetRevisionRequest {
+                id: created.id,
+                with_bundle: true,
+                manifest_only: true,
+            }))
+            .await
+            .expect("manifest reads")
+            .into_inner();
+
+        let files = manifest.bundle.expect("bundle present").files;
+        assert!(files[0].content.is_empty(), "manifest must not carry bytes");
+        assert_eq!(files[0].hash, stored_hash);
+        assert_eq!(files[0].size, source.len() as u64);
     }
 
     #[tokio::test]

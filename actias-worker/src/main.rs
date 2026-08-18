@@ -1,3 +1,4 @@
+mod blob_cache;
 mod config;
 mod server;
 
@@ -78,19 +79,28 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let app = server::router(
-        server::Clients {
-            script: script_client,
-            kv: kv_client,
+        server::AppState {
+            clients: server::Clients {
+                script: script_client,
+                kv: kv_client,
+            },
+            caches: server::WorkerCaches::new(
+                std::time::Duration::from_secs(config.pointer_ttl_secs),
+                config.revision_cache_bytes,
+            ),
+            blobs: blob_cache::BlobCache::new(blob_cache::BlobCacheConfig {
+                endpoint: config.s3_endpoint,
+                access_key: config.s3_access_key,
+                secret_key: config.s3_secret_key,
+                bucket: config.s3_bucket,
+                cache_bytes: config.blob_cache_bytes,
+            }),
+            egress,
+            redis: Some(redis),
+            secrets_key,
+            request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
         },
-        server::WorkerCaches::new(
-            std::time::Duration::from_secs(config.pointer_ttl_secs),
-            config.revision_cache_bytes,
-        ),
-        egress,
-        Some(redis),
-        secrets_key,
         config.max_body_bytes,
-        std::time::Duration::from_secs(config.request_timeout_secs),
     );
 
     info!("Serving on {}", addr);
