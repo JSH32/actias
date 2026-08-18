@@ -984,6 +984,10 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                                     "name": event,
                                     "method": "ensure",
                                     "args": [event],
+                                    // The object's own key: set_alarm persists
+                                    // it, and the sweep needs it to revive this
+                                    // cron after a restart.
+                                    "chain": [key],
                                 }),
                             )
                             .await
