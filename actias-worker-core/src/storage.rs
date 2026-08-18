@@ -73,6 +73,24 @@ impl SqliteStorage {
             .map_err(|e| e.to_string())
     }
 
+    /// Caps the file at `bytes`: SQLite's own page limit, so a write past
+    /// the quota fails at the statement ("database or disk is full") while
+    /// everything already stored stays readable.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn set_size_limit(&mut self, bytes: u64) -> Result<(), String> {
+        let page_size: i64 = self
+            .connection
+            .pragma_query_value(None, "page_size", |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let pages = (bytes as i64 / page_size.max(1)).max(1);
+
+        self.connection
+            .pragma_update(None, "max_page_count", pages)
+            .map_err(|e| e.to_string())
+    }
+
     /// Opens the transaction one dispatched call runs inside; the platform
     /// owns transaction boundaries, scripts never issue their own.
     ///
@@ -169,6 +187,44 @@ impl SqliteStorage {
     }
 }
 
+/// What script-issued SQL may do. Platform paths (the dispatch
+/// transaction, meta tables, pragmas at open) run without this guard;
+/// everything a script writes runs under it.
+fn script_authorizer(context: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
+    use rusqlite::hooks::{AuthAction, Authorization};
+
+    let table = match &context.action {
+        // Other files and other databases are not this object's world.
+        AuthAction::Attach { .. } | AuthAction::Detach { .. } => return Authorization::Deny,
+        // The platform owns transaction boundaries; a script BEGIN would
+        // corrupt the all-or-nothing guarantee of its own call.
+        AuthAction::Transaction { .. } => return Authorization::Deny,
+        // Pragmas can flip durability off or reset the init marker.
+        AuthAction::Pragma { .. } => return Authorization::Deny,
+
+        AuthAction::Read { table_name, .. } => table_name,
+        AuthAction::Insert { table_name } => table_name,
+        AuthAction::Update { table_name, .. } => table_name,
+        AuthAction::Delete { table_name } => table_name,
+        AuthAction::CreateTable { table_name } => table_name,
+        AuthAction::CreateIndex { table_name, .. } => table_name,
+        AuthAction::CreateTrigger { table_name, .. } => table_name,
+        AuthAction::DropTable { table_name } => table_name,
+        AuthAction::DropIndex { table_name, .. } => table_name,
+        AuthAction::DropTrigger { table_name, .. } => table_name,
+        AuthAction::AlterTable { table_name, .. } => table_name,
+
+        _ => return Authorization::Allow,
+    };
+
+    // Reserved rows (alarms, and migrations later) belong to the platform.
+    if table.starts_with("__actias_") {
+        return Authorization::Deny;
+    }
+
+    Authorization::Allow
+}
+
 /// One json parameter as something SQLite can bind.
 fn bind(value: &serde_json::Value) -> Result<rusqlite::types::Value, String> {
     use rusqlite::types::Value;
@@ -219,10 +275,17 @@ impl SqliteStorage {
         let bound: Vec<rusqlite::types::Value> =
             params.iter().map(bind).collect::<Result<_, _>>()?;
 
-        self.connection
+        self.connection.authorizer(Some(script_authorizer));
+        let result = self
+            .connection
             .execute(sql, rusqlite::params_from_iter(bound))
             .map(|rows| rows as u64)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        self.connection.authorizer(
+            None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+        );
+
+        result
     }
 
     /// Runs a query; every row becomes a name-to-value object.
@@ -237,7 +300,12 @@ impl SqliteStorage {
         let bound: Vec<rusqlite::types::Value> =
             params.iter().map(bind).collect::<Result<_, _>>()?;
 
-        let mut statement = self.connection.prepare(sql).map_err(|e| e.to_string())?;
+        self.connection.authorizer(Some(script_authorizer));
+        let prepared = self.connection.prepare(sql);
+        self.connection.authorizer(
+            None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+        );
+        let mut statement = prepared.map_err(|e| e.to_string())?;
         let names: Vec<String> = statement
             .column_names()
             .into_iter()
@@ -330,6 +398,72 @@ mod tests {
             .query("SELECT COUNT(*) AS n FROM hits", &[])
             .expect("queries");
         assert_eq!(rows, vec![serde_json::json!({ "n": 1 })]);
+    }
+
+    #[test]
+    fn script_sql_cannot_escape_its_world() {
+        let mut storage = SqliteStorage::in_memory().expect("opens");
+        storage
+            .exec("CREATE TABLE t (n INTEGER)", &[])
+            .expect("plain ddl is allowed");
+
+        for refused in [
+            "ATTACH DATABASE '/etc/passwd' AS other",
+            "BEGIN",
+            "COMMIT",
+            "PRAGMA user_version = 0",
+            "PRAGMA journal_mode = OFF",
+            "SELECT * FROM __actias_alarm",
+            "DROP TABLE __actias_alarm",
+        ] {
+            // The reserved table must exist for the reads to even parse.
+            storage.ensure_meta().expect("meta ensured");
+            let error = storage
+                .exec(refused, &[])
+                .expect_err(&format!("{refused:?} must be refused"));
+            assert!(
+                error.contains("authoriz") || error.contains("prohibited"),
+                "{refused:?}: {error}"
+            );
+        }
+
+        // The guard is scoped to script sql: the platform still owns its
+        // transactions and meta afterwards.
+        storage.begin().expect("platform begin still works");
+        storage.rollback().expect("platform rollback still works");
+        storage.load_alarm().expect("platform meta still reachable");
+    }
+
+    #[test]
+    fn a_database_over_quota_refuses_writes_but_still_reads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut storage = SqliteStorage::open(&dir.path().join("small.db")).expect("opens");
+        // A handful of pages: room for the schema, not for the flood.
+        storage.set_size_limit(16 * 4096).expect("limit sets");
+
+        storage
+            .exec("CREATE TABLE t (blob TEXT)", &[])
+            .expect("creates");
+
+        let filler = "x".repeat(4096);
+        let mut refused = None;
+        for _ in 0..64 {
+            if let Err(error) = storage.exec(
+                "INSERT INTO t VALUES (?)",
+                &[serde_json::json!(filler.clone())],
+            ) {
+                refused = Some(error);
+                break;
+            }
+        }
+
+        let refused = refused.expect("the quota must eventually refuse");
+        assert!(refused.contains("full"), "{refused}");
+
+        // Stored rows stay readable past the quota.
+        storage
+            .query("SELECT COUNT(*) AS n FROM t", &[])
+            .expect("reads still work");
     }
 
     #[test]

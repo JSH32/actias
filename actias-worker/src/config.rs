@@ -31,6 +31,8 @@ pub struct Config {
     /// Directory holding one SQLite file per durable object; a volume in
     /// any real deployment, since it is the objects' persistence.
     pub object_data_dir: String,
+    /// Size cap per object database, bytes.
+    pub object_db_max_bytes: u64,
     /// Domain scripts hang off as subdomains (`<ident>.<base>`); unset
     /// leaves only the path routing forms.
     pub base_domain: Option<String>,
@@ -73,6 +75,7 @@ impl Config {
                 ),
             ),
             object_data_dir: get_env_or("OBJECT_DATA_DIR", "./objects-data".to_owned()),
+            object_db_max_bytes: get_env_or::<u64>("OBJECT_DB_MAX_MB", 64) * 1024 * 1024,
             base_domain: std::env::var("BASE_DOMAIN").ok().filter(|d| !d.is_empty()),
             egress_denied_hosts: get_env_or("EGRESS_DENIED_HOSTS", String::new())
                 .split(',')
