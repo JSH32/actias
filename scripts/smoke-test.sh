@@ -83,7 +83,7 @@ printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$TOKEN" \
     > "$XDG_CONFIG_HOME/actias-cli/settings.json"
 
 cat > "$DEVDIR/published/script.json" <<EOF
-{"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua","**/*.txt"],"ignore":[]}
+{"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua","**/*.txt","**/*.html"],"ignore":[]}
 EOF
 cat > "$DEVDIR/published/main.lua" <<'LUA'
 local ns = kv "smoke"
@@ -106,6 +106,7 @@ on "fetch" (function(request)
 end)
 LUA
 printf 'hello from an asset' > "$DEVDIR/published/motd.txt"
+printf '<h1>served without a vm</h1>' > "$DEVDIR/published/page.html"
 
 echo "== setting a secret (actias secret put)"
 "$REPO/target/debug/actias-cli" secret "$PROJECT_ID" put smoke-token hunter2-from-secrets
@@ -141,6 +142,23 @@ echo "$BODY" | jq -e '.secret == "hunter2-from-secrets"' >/dev/null \
     || { echo "the secret did not decrypt through the worker"; exit 1; }
 echo "$BODY" | jq -e '.asset == "hello from an asset"' >/dev/null \
     || { echo "the asset file did not round-trip through the bundle"; exit 1; }
+
+echo "== serving a static asset next to the lua handler"
+# The html file publishes as kind: asset, so the worker answers it from the
+# bundle without creating a vm: manifest content type, blake3 etag, 304 on
+# revalidation.
+ASSET_HEADERS=$(curl -sfD - -o "$DEVDIR/page.html.out" "$WORKER/$IDENT/page.html")
+diff -q "$DEVDIR/page.html.out" "$DEVDIR/published/page.html" >/dev/null \
+    || { echo "the asset body did not survive the blob path"; exit 1; }
+echo "$ASSET_HEADERS" | grep -qi '^content-type: text/html' \
+    || { echo "the asset lost its content type"; echo "$ASSET_HEADERS"; exit 1; }
+
+ETAG=$(echo "$ASSET_HEADERS" | tr -d '\r' | sed -n 's/^[Ee][Tt][Aa][Gg]: //p')
+[ -n "$ETAG" ] || { echo "the asset carried no etag"; echo "$ASSET_HEADERS"; exit 1; }
+REVALIDATED=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $ETAG" "$WORKER/$IDENT/page.html")
+[ "$REVALIDATED" = "304" ] \
+    || { echo "a held etag did not revalidate (got $REVALIDATED)"; exit 1; }
+echo "asset served with etag $ETAG and a 304 on revalidation"
 
 # The encrypted store is platform-internal: the kv api must not list it.
 if curl -sf "$API/project/$PROJECT_ID/kv" -H "$AUTH" | jq -e '.[] | select(.name == "__secrets")' >/dev/null 2>&1; then

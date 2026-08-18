@@ -17,6 +17,14 @@ pub struct Config {
     pub pointer_ttl_secs: u64,
     /// Byte budget for the prepared revision cache.
     pub revision_cache_bytes: u64,
+    /// Object storage holding bundle blobs; the worker pulls file bytes
+    /// from here by hash instead of through script-service.
+    pub s3_endpoint: String,
+    pub s3_access_key: String,
+    pub s3_secret_key: String,
+    pub s3_bucket: String,
+    /// Byte budget for the hash-keyed blob cache.
+    pub blob_cache_bytes: u64,
     /// Hostnames scripts may never reach, beyond the service uris the worker
     /// already knows; comma separated.
     pub egress_denied_hosts: Vec<String>,
@@ -39,6 +47,11 @@ impl Config {
             request_timeout_secs: get_env_or("REQUEST_TIMEOUT_SECS", 30),
             pointer_ttl_secs: get_env_or("POINTER_TTL_SECS", 5),
             revision_cache_bytes: get_env_or::<u64>("REVISION_CACHE_MB", 128) * 1024 * 1024,
+            s3_endpoint: get_env("S3_ENDPOINT"),
+            s3_access_key: get_env("S3_ACCESS_KEY"),
+            s3_secret_key: get_env("S3_SECRET_KEY"),
+            s3_bucket: get_env_or("S3_BUCKET", "actias-blobs".to_owned()),
+            blob_cache_bytes: get_env_or::<u64>("BLOB_CACHE_MB", 256) * 1024 * 1024,
             egress_denied_hosts: get_env_or("EGRESS_DENIED_HOSTS", String::new())
                 .split(',')
                 .map(str::trim)

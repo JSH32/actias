@@ -10,7 +10,6 @@ use axum::http::{StatusCode, Uri};
 use axum::response::Response;
 use core::result::Result::Ok;
 use mlua::LuaSerdeExt;
-use std::path;
 use tonic::transport::Channel;
 
 use actias_common::logging::{live_log_channel, script_log_channel};
@@ -18,6 +17,7 @@ use actias_worker_core::egress::EgressClient;
 use actias_worker_core::extensions;
 use actias_worker_core::extensions::http::Request as LuaRequest;
 use actias_worker_core::extensions::log::LogPublisher;
+use actias_worker_core::proto::bundle::File;
 use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
 use actias_worker_core::proto::script_service::FindScriptRequest;
 use actias_worker_core::proto::script_service::GetRevisionRequest;
@@ -27,6 +27,8 @@ use actias_worker_core::proto::script_service::Script;
 use actias_worker_core::proto::script_service::find_script_request::Query;
 use actias_worker_core::proto::script_service::script_service_client::ScriptServiceClient;
 use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
+
+use crate::blob_cache::BlobCache;
 
 /// The service clients every request handler needs.
 #[derive(Clone)]
@@ -67,38 +69,26 @@ impl WorkerCaches {
 /// Builds the worker's http surface: every path and method funnels into the
 /// script handler, bodies are capped, and the whole request carries a
 /// deadline.
-pub fn router(
-    clients: Clients,
-    caches: WorkerCaches,
-    egress: EgressClient,
-    redis: Option<redis::aio::ConnectionManager>,
-    secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
-    max_body_bytes: usize,
-    request_timeout: Duration,
-) -> Router {
+pub fn router(state: AppState, max_body_bytes: usize) -> Router {
     Router::new()
         .fallback(handle)
         .layer(DefaultBodyLimit::max(max_body_bytes))
-        .with_state(AppState {
-            clients,
-            caches,
-            egress,
-            redis,
-            secrets_key,
-            request_timeout,
-        })
+        .with_state(state)
 }
 
+/// Everything a request handler reaches for.
 #[derive(Clone)]
-struct AppState {
-    clients: Clients,
-    caches: WorkerCaches,
-    egress: EgressClient,
+pub struct AppState {
+    pub clients: Clients,
+    pub caches: WorkerCaches,
+    /// Bundle bytes by hash; published revisions hydrate through it.
+    pub blobs: BlobCache,
+    pub egress: EgressClient,
     /// Carries script log lines out; without it they stay in worker tracing.
-    redis: Option<redis::aio::ConnectionManager>,
+    pub redis: Option<redis::aio::ConnectionManager>,
     /// Decrypts stored secrets; without it `secret` declarations error.
-    secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
-    request_timeout: Duration,
+    pub secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
+    pub request_timeout: Duration,
 }
 
 /// Where a request path points.
@@ -202,6 +192,70 @@ async fn resolve_script(
         })
         .await
         .map_err(cache_load_error)
+}
+
+/// Path the script or asset lookup sees: the request path with the routing
+/// segments the route consumed removed. A trailing slash survives because it
+/// selects a directory's index asset.
+fn script_relative_path(path: &str, consumed_segments: usize) -> String {
+    let relative = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .skip(consumed_segments)
+        .collect::<Vec<_>>()
+        .join("/");
+
+    if !relative.is_empty() && path.ends_with('/') {
+        format!("{relative}/")
+    } else {
+        relative
+    }
+}
+
+/// Serves one bundle asset: content type from the manifest, the blake3 hash
+/// as a strong etag, and a 304 when the client already holds these bytes.
+fn asset_response(
+    file: &File,
+    if_none_match: Option<&axum::http::HeaderValue>,
+) -> anyhow::Result<Response> {
+    use axum::http::header;
+
+    // Live sessions may carry hashless files; those simply serve uncached.
+    let etag = (!file.hash.is_empty()).then(|| format!("\"{}\"", file.hash));
+
+    let revalidated = match (&etag, if_none_match) {
+        (Some(etag), Some(held)) => held
+            .to_str()
+            .map(|held| {
+                held.split(',')
+                    .map(|candidate| candidate.trim().trim_start_matches("W/"))
+                    .any(|candidate| candidate == etag || candidate == "*")
+            })
+            .unwrap_or(false),
+        _ => false,
+    };
+
+    let mut response = Response::new(if revalidated {
+        Body::empty()
+    } else {
+        Body::from(file.content.clone())
+    });
+    if revalidated {
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+    }
+
+    let headers = response.headers_mut();
+    let content_type = if file.content_type.is_empty() {
+        "application/octet-stream"
+    } else {
+        file.content_type.as_str()
+    };
+    headers.insert(header::CONTENT_TYPE, content_type.parse()?);
+    if let Some(etag) = etag {
+        headers.insert(header::ETAG, etag.parse()?);
+    }
+
+    Ok(response)
 }
 
 /// Converts a lua response table into the wire response.
@@ -335,14 +389,27 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                 .revisions
                 .try_get_with(revision_id.clone(), {
                     let mut client = state.clients.script.clone();
+                    let blobs = state.blobs.clone();
                     async move {
-                        let revision = client
+                        // The manifest travels over grpc; the bytes come
+                        // from the blob store, so bundles stop transiting
+                        // script-service on the serving path.
+                        let mut revision = client
                             .get_revision(GetRevisionRequest {
                                 id: revision_id,
                                 with_bundle: true,
+                                manifest_only: true,
                             })
                             .await?
                             .into_inner();
+
+                        if let Some(bundle) = revision.bundle.as_mut() {
+                            for file in &mut bundle.files {
+                                if file.content.is_empty() && !file.hash.is_empty() {
+                                    file.content = blobs.get(&file.hash).await?.as_ref().clone();
+                                }
+                            }
+                        }
 
                         Ok::<_, anyhow::Error>(Arc::new(PreparedRevision::prepare(
                             script, revision,
@@ -354,14 +421,25 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         }
     };
 
+    let relative_path = script_relative_path(parts.uri.path(), consumed_segments);
+
+    // A GET or HEAD naming an asset is answered from the bundle itself: no
+    // vm is created and the script never observes the request. Any other
+    // method falls through to the script.
+    if matches!(
+        parts.method,
+        axum::http::Method::GET | axum::http::Method::HEAD
+    ) && let Some(file) = prepared.asset(&relative_path)
+    {
+        return asset_response(file, parts.headers.get(axum::http::header::IF_NONE_MATCH));
+    }
+
     // Create a context URI without the routing segments, used for better
-    // routing inside the script. The +1 skips the leading "/" component.
+    // routing inside the script.
     let old_uri = &parts.uri;
-    let path = path::Path::new(old_uri.path());
-    let without_identifier: path::PathBuf = path.iter().skip(1 + consumed_segments).collect();
     let mut context_uri = Uri::builder().path_and_query(format!(
         "/{}{}",
-        without_identifier.as_path().to_str().unwrap_or(""),
+        relative_path,
         match old_uri.query() {
             Some(v) => format!("?{}", v),
             None => "".to_string(),
@@ -440,6 +518,31 @@ mod tests {
         EgressClient::new(actias_worker_core::egress::EgressPolicy::new([], false)).unwrap()
     }
 
+    /// State over `caches` whose every client is unreachable, so a test
+    /// passes only when its path never needs a backend.
+    fn state_with(caches: WorkerCaches) -> AppState {
+        AppState {
+            clients: lazy_clients(),
+            caches,
+            blobs: unreachable_blobs(),
+            egress: test_egress(),
+            redis: None,
+            secrets_key: None,
+            request_timeout: Duration::from_secs(5),
+        }
+    }
+
+    /// A blob cache whose store is unreachable; anything hitting it fails.
+    fn unreachable_blobs() -> BlobCache {
+        BlobCache::new(crate::blob_cache::BlobCacheConfig {
+            endpoint: "http://127.0.0.1:1".to_owned(),
+            access_key: "unused".to_owned(),
+            secret_key: "unused".to_owned(),
+            bucket: "unused".to_owned(),
+            cache_bytes: 1024 * 1024,
+        })
+    }
+
     #[test]
     fn route_reads_the_first_path_segment_as_the_published_script() {
         for path in ["/my-script", "/my-script/users/1", "/my-script/"] {
@@ -502,15 +605,7 @@ mod tests {
     async fn an_oversized_body_is_rejected_before_any_backend_call() {
         // 1 KiB cap; the clients are unconnectable, so reaching them would
         // turn this 413 into a 500 and fail the assertion.
-        let app = router(
-            lazy_clients(),
-            empty_caches(),
-            test_egress(),
-            None,
-            None,
-            1024,
-            Duration::from_secs(5),
-        );
+        let app = router(state_with(empty_caches()), 1024);
 
         let request = axum::http::Request::builder()
             .method("POST")
@@ -525,15 +620,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn the_bare_root_is_a_404_without_any_backend_call() {
-        let app = router(
-            lazy_clients(),
-            empty_caches(),
-            test_egress(),
-            None,
-            None,
-            1024,
-            Duration::from_secs(5),
-        );
+        let app = router(state_with(empty_caches()), 1024);
 
         let request = axum::http::Request::builder()
             .uri("/")
@@ -544,6 +631,9 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+
+    /// Hash the fixture asset claims, standing in for its blake3.
+    const ASSET_HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     /// Caches holding `cached-script` fully resolved: pointer and prepared
     /// revision both warm, so the published path needs no backend at all.
@@ -567,11 +657,21 @@ mod tests {
         let revision = Revision {
             bundle: Some(Bundle {
                 entry_point: "main.lua".to_owned(),
-                files: vec![File {
-                    file_path: "main.lua".to_owned(),
-                    content: source.to_vec(),
-                    ..Default::default()
-                }],
+                files: vec![
+                    File {
+                        file_path: "main.lua".to_owned(),
+                        content: source.to_vec(),
+                        ..Default::default()
+                    },
+                    File {
+                        file_path: "motd.txt".to_owned(),
+                        content: b"static bytes".to_vec(),
+                        content_type: "text/plain; charset=utf-8".to_owned(),
+                        kind: actias_worker_core::proto::bundle::FileKind::Asset as i32,
+                        hash: ASSET_HASH.to_owned(),
+                        ..Default::default()
+                    },
+                ],
             }),
             ..Default::default()
         };
@@ -595,15 +695,7 @@ mod tests {
     async fn a_cached_revision_serves_without_any_backend_call() {
         // Both caches are seeded by hand and the clients are unconnectable,
         // so this 200 proves a warm request spends zero grpc calls.
-        let app = router(
-            lazy_clients(),
-            caches_with_cached_script().await,
-            test_egress(),
-            None,
-            None,
-            1024,
-            Duration::from_secs(5),
-        );
+        let app = router(state_with(caches_with_cached_script().await), 1024);
 
         let request = axum::http::Request::builder()
             .uri("/cached-script/")
@@ -624,15 +716,7 @@ mod tests {
         // must fetch the session's current bundle; with unconnectable
         // clients that fetch fails, so a 200 here means the live path served
         // the published revision, which is exactly the bug this guards.
-        let app = router(
-            lazy_clients(),
-            caches_with_cached_script().await,
-            test_egress(),
-            None,
-            None,
-            1024,
-            Duration::from_secs(5),
-        );
+        let app = router(state_with(caches_with_cached_script().await), 1024);
 
         let request = axum::http::Request::builder()
             .uri("/_live/cached-script/some-session/")
@@ -642,5 +726,79 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn the_script_relative_path_keeps_a_trailing_slash() {
+        // The trailing slash selects a directory's index asset, so the
+        // routing strip must not eat it.
+        assert_eq!(script_relative_path("/my-script", 1), "");
+        assert_eq!(script_relative_path("/my-script/", 1), "");
+        assert_eq!(script_relative_path("/my-script/motd.txt", 1), "motd.txt");
+        assert_eq!(script_relative_path("/my-script/docs/", 1), "docs/");
+        assert_eq!(script_relative_path("/_live/s/sess/a/b", 3), "a/b");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_get_naming_an_asset_is_served_without_a_vm() {
+        let app = router(state_with(caches_with_cached_script().await), 1024);
+
+        let request = axum::http::Request::builder()
+            .uri("/cached-script/motd.txt")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(
+            response.headers().get("etag").unwrap(),
+            &format!("\"{ASSET_HASH}\"")
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"static bytes");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_held_etag_revalidates_to_a_304() {
+        let app = router(state_with(caches_with_cached_script().await), 1024);
+
+        let request = axum::http::Request::builder()
+            .uri("/cached-script/motd.txt")
+            .header("if-none-match", format!("\"{ASSET_HASH}\""))
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(body.is_empty(), "a 304 must not carry the bytes");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_post_to_an_asset_path_reaches_the_script() {
+        // Assets answer GET and HEAD only; anything else belongs to the
+        // script's own routing.
+        let app = router(state_with(caches_with_cached_script().await), 1024);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/cached-script/motd.txt")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"served from cache");
     }
 }
