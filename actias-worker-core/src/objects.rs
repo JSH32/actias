@@ -578,6 +578,7 @@ mod tests {
                     events: vec![],
                     secrets: vec![],
                     objects: vec![],
+                    databases: vec![],
                 }),
             }),
             ..Default::default()
@@ -716,6 +717,75 @@ mod tests {
             second.call("__dispatch", call.clone()).await.expect("bump"),
             serde_json::json!(3)
         );
+    }
+
+    /// The sql product face: `database "name"` reads and writes durably
+    /// through the same machinery objects use.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_database_is_an_object_wearing_sql() {
+        use crate::extensions::objects::{ObjectRouter, ObjectTarget};
+
+        const SOURCE: &str = r#"
+            local db = database "main"
+
+            on "fetch" (function(request)
+                db:exec("CREATE TABLE IF NOT EXISTS visits (at INTEGER)")
+                db:exec("INSERT INTO visits VALUES (?)", { 1 })
+                return { body = db:query_one("SELECT COUNT(*) AS n FROM visits").n }
+            end)
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data = dir.path().to_path_buf();
+        let host = Arc::new(ObjectHost::default());
+
+        let router: ObjectRouter = Arc::new(move |target: ObjectTarget| {
+            let host = host.clone();
+            let data = data.clone();
+            Box::pin(async move {
+                let id = format!("{}/{}", target.class, target.name);
+                let file = data.join("db.sqlite");
+                let handle = host
+                    .get_or_spawn(&id, "r1", || async {
+                        let storage = crate::storage::SqliteStorage::open(&file)
+                            .map_err(mlua::Error::RuntimeError)?;
+                        Ok((runtime_with(SOURCE).await, None, Some(storage)))
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                handle
+                    .call(
+                        "__dispatch",
+                        serde_json::json!({
+                            "class": target.class,
+                            "method": target.method,
+                            "args": target.arguments,
+                        }),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        });
+
+        let mut counts = Vec::new();
+        for _ in 0..2 {
+            let runtime = runtime_with(SOURCE).await;
+            runtime.set_app_data::<ObjectRouter>(router.clone());
+
+            let listener = runtime
+                .listener(ActiasRuntime::FETCH_EVENT)
+                .expect("handler registered");
+            let response: mlua::Value = listener
+                .call_async(runtime.to_value(&serde_json::json!({})).expect("converts"))
+                .await
+                .expect("handler runs");
+            let response: serde_json::Value =
+                runtime.from_value(response).expect("response converts");
+            counts.push(response["body"].clone());
+        }
+
+        assert_eq!(counts, vec![serde_json::json!(1), serde_json::json!(2)]);
     }
 
     const LIFECYCLE_SOURCE: &str = r#"

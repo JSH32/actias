@@ -42,6 +42,8 @@ export namespace script_service {
         secrets?: string[];
         // Object classes declared with &#x60;object &quot;Class&quot; { ... }&#x60;.
         objects?: string[];
+        // Databases declared with &#x60;database &quot;name&quot;&#x60;.
+        databases?: string[];
     }
     export interface ScriptConfig {
         id?: string;

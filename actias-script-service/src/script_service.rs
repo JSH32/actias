@@ -135,6 +135,7 @@ impl ScriptService {
             events: derived.events,
             secrets: derived.secrets,
             objects: derived.objects,
+            databases: derived.databases,
         });
 
         // Files arrive either inline (content present, hashed and stored
@@ -1186,6 +1187,7 @@ mod tests {
                     events: vec![],
                     secrets: vec!["also-a-lie".to_owned()],
                     objects: vec!["a-lied-class".to_owned()],
+                    databases: vec![],
                 }),
             }),
             bundle: Some(Bundle {

@@ -19,5 +19,9 @@ export type CapabilitiesDto = {
      * Object classes declared with `object "Class" { ... }`.
      */
     objects: Array<string>;
+    /**
+     * Databases declared with `database "name"`.
+     */
+    databases: Array<string>;
 };
 

@@ -24,6 +24,11 @@ export class CapabilitiesDto {
    * Object classes declared with `object "Class" { ... }`.
    */
   objects: string[];
+
+  /**
+   * Databases declared with `database "name"`.
+   */
+  databases: string[];
 }
 
 export class ScriptConfigDto {
@@ -78,6 +83,7 @@ export class RevisionFullDto {
         events: config.capabilities.events ?? [],
         secrets: config.capabilities.secrets ?? [],
         objects: config.capabilities.objects ?? [],
+        databases: config.capabilities.databases ?? [],
       },
     };
     this.bundle =
