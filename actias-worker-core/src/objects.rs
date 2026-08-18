@@ -141,22 +141,7 @@ pub fn spawn_object_task(
                 }
             };
 
-            // Each call gets its own budget: a runaway method times out and
-            // the vm survives for the next caller, instead of a lifetime
-            // limit eventually killing a healthy object.
-            if let Some(seconds) = call_budget {
-                runtime.begin_call_budget(seconds);
-            }
-            let result = dispatch(&runtime, &call.method, call.payload).await;
-            runtime.end_call_budget();
-
-            // The handler is done; give storage its flush moment before the
-            // caller hears anything (the output-gate seed).
-            if let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
-                && let Err(error) = cell.0.borrow_mut().checkpoint()
-            {
-                actias_common::tracing::warn!(%error, "object storage checkpoint failed");
-            }
+            let result = guarded_dispatch(&runtime, &call.method, call.payload, call_budget).await;
 
             // A caller that stopped waiting is its own problem; the state
             // change it asked for has already happened either way.
@@ -184,10 +169,7 @@ async fn fire_alarm(
         actias_common::tracing::warn!(%error, "alarm could not be cleared");
     }
 
-    if let Some(seconds) = call_budget {
-        runtime.begin_call_budget(seconds);
-    }
-    let result = dispatch(
+    let result = guarded_dispatch(
         runtime,
         "__dispatch",
         serde_json::json!({
@@ -196,19 +178,91 @@ async fn fire_alarm(
             "args": [],
             "chain": [alarm.own_key],
         }),
+        call_budget,
     )
     .await;
-    runtime.end_call_budget();
 
     if let Err(error) = result {
         actias_common::tracing::warn!(%error, "object alarm failed");
     }
+}
 
+/// One dispatched call, fully guarded: its own budget, its own
+/// transaction (a failed method persists nothing partial), and the
+/// checkpoint before any caller hears the result.
+async fn guarded_dispatch(
+    runtime: &ActiasRuntime,
+    method: &str,
+    payload: serde_json::Value,
+    call_budget: Option<u64>,
+) -> Result<serde_json::Value, ObjectError> {
+    let has_storage = runtime
+        .app_data_ref::<crate::storage::StorageCell>()
+        .is_some();
+
+    if has_storage
+        && let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
+        && let Err(error) = cell.0.borrow_mut().begin()
+    {
+        return Err(ObjectError::Call(format!(
+            "The call's transaction could not open: {error}"
+        )));
+    }
+
+    if let Some(seconds) = call_budget {
+        runtime.begin_call_budget(seconds);
+    }
+    let result = dispatch(runtime, method, payload).await;
+    runtime.end_call_budget();
+
+    if has_storage && let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>() {
+        let mut storage = cell.0.borrow_mut();
+
+        match &result {
+            Ok(_) => {
+                if let Err(error) = storage.commit() {
+                    return Err(ObjectError::Call(format!(
+                        "The call's writes could not commit: {error}"
+                    )));
+                }
+            }
+            Err(_) => {
+                if let Err(error) = storage.rollback() {
+                    actias_common::tracing::warn!(%error, "rollback failed");
+                }
+
+                // The rolled-back row is the truth; the in-memory alarm
+                // must not outlive an alarm the failed method set.
+                let persisted =
+                    storage
+                        .load_alarm()
+                        .ok()
+                        .flatten()
+                        .map(
+                            |(due_ms, class, own_key)| crate::extensions::objects::PendingAlarm {
+                                due_ms,
+                                class,
+                                own_key,
+                            },
+                        );
+                drop(storage);
+                if let Some(cell) = runtime.app_data_ref::<crate::extensions::objects::AlarmCell>()
+                {
+                    *cell.0.borrow_mut() = persisted;
+                }
+            }
+        }
+    }
+
+    // The handler is done; give storage its flush moment before the
+    // caller hears anything (the output-gate seed).
     if let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
         && let Err(error) = cell.0.borrow_mut().checkpoint()
     {
         actias_common::tracing::warn!(%error, "object storage checkpoint failed");
     }
+
+    result
 }
 
 /// Extends a call chain onto `key`, refusing cycles.
@@ -925,6 +979,154 @@ mod tests {
                 .expect("alarms"),
             serde_json::json!(1),
             "the re-armed alarm must fire after the replacement"
+        );
+    }
+
+    /// The transaction guard: a method that errors after writing must
+    /// leave nothing behind.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_method_persists_nothing_partial() {
+        const SOURCE: &str = r#"
+            local Ledger = object "Ledger" {
+                init = function(state)
+                    state.sql:exec("CREATE TABLE entries (n INTEGER)")
+                end,
+
+                good = function(state)
+                    state.sql:exec("INSERT INTO entries VALUES (1)")
+                    return true
+                end,
+
+                bad = function(state)
+                    state.sql:exec("INSERT INTO entries VALUES (2)")
+                    error("halfway failure")
+                end,
+
+                count = function(state)
+                    return state.sql:query_one("SELECT COUNT(*) AS n FROM entries").n
+                end,
+            }
+        "#;
+        let call =
+            |method: &str| serde_json::json!({ "class": "Ledger", "method": method, "args": [] });
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            None,
+            Some(
+                crate::storage::SqliteStorage::open(&dir.path().join("ledger.db")).expect("opens"),
+            ),
+        );
+
+        handle.call("__dispatch", call("good")).await.expect("good");
+        handle
+            .call("__dispatch", call("bad"))
+            .await
+            .expect_err("the failure must surface");
+
+        // The failed method's insert rolled back; only the good one stands.
+        assert_eq!(
+            handle
+                .call("__dispatch", call("count"))
+                .await
+                .expect("count"),
+            serde_json::json!(1)
+        );
+
+        // The vm is healthy after the rollback.
+        handle
+            .call("__dispatch", call("good"))
+            .await
+            .expect("good again");
+        assert_eq!(
+            handle
+                .call("__dispatch", call("count"))
+                .await
+                .expect("count"),
+            serde_json::json!(2)
+        );
+    }
+
+    /// db:batch is atomic because a batch is one call, one transaction.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_batch_with_a_bad_statement_is_all_or_nothing() {
+        const SOURCE: &str = r#"
+            local db = database "main"
+
+            on "fetch" (function(request)
+                if request.mode == "bad" then
+                    db:batch({
+                        { "CREATE TABLE IF NOT EXISTS t (n INTEGER)" },
+                        { "INSERT INTO t VALUES (?)", { 1 } },
+                        { "INSERT INTO no_such_table VALUES (1)" },
+                    })
+                    return { body = "unreachable" }
+                end
+                db:exec("CREATE TABLE IF NOT EXISTS t (n INTEGER)")
+                return { body = db:query_one("SELECT COUNT(*) AS n FROM t").n }
+            end)
+        "#;
+
+        use crate::extensions::objects::{ObjectRouter, ObjectTarget};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data = dir.path().to_path_buf();
+        let host = Arc::new(ObjectHost::default());
+
+        let router: ObjectRouter = Arc::new(move |target: ObjectTarget| {
+            let host = host.clone();
+            let data = data.clone();
+            Box::pin(async move {
+                let id = format!("{}/{}", target.class, target.name);
+                let file = data.join("main.db");
+                let handle = host
+                    .get_or_spawn(&id, "r1", || async {
+                        let storage = crate::storage::SqliteStorage::open(&file)
+                            .map_err(mlua::Error::RuntimeError)?;
+                        Ok((runtime_with(SOURCE).await, None, Some(storage)))
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                handle
+                    .call(
+                        "__dispatch",
+                        serde_json::json!({
+                            "class": target.class,
+                            "method": target.method,
+                            "args": target.arguments,
+                        }),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        });
+
+        let run = |mode: &'static str, router: ObjectRouter| async move {
+            let runtime = runtime_with(SOURCE).await;
+            runtime.set_app_data::<ObjectRouter>(router);
+            let listener = runtime
+                .listener(ActiasRuntime::FETCH_EVENT)
+                .expect("handler registered");
+            let value: Result<mlua::Value, _> = listener
+                .call_async(
+                    runtime
+                        .to_value(&serde_json::json!({ "mode": mode }))
+                        .expect("converts"),
+                )
+                .await;
+            value.map(|value| {
+                let response: serde_json::Value = runtime.from_value(value).expect("converts");
+                response["body"].clone()
+            })
+        };
+
+        run("bad", router.clone())
+            .await
+            .expect_err("the bad batch must fail");
+        // Nothing from the failed batch survived, including its insert.
+        assert_eq!(
+            run("count", router.clone()).await.expect("count"),
+            serde_json::json!(0)
         );
     }
 
