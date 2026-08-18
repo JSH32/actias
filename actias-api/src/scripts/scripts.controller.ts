@@ -35,8 +35,9 @@ import {
   ApiOkResponsePaginated,
 } from 'src/shared/dto/paginated';
 import { AuthGuard } from 'src/auth/auth.guard';
-import { User } from 'src/auth/user.decorator';
+import { Principal } from 'src/auth/user.decorator';
 import { Users } from 'src/entities/Users';
+import { ServiceTokens } from 'src/entities/ServiceTokens';
 import { AclByFinder, AclByProject, AclGuard } from 'src/project/acl/acl.guard';
 import { AclService } from 'src/project/acl/acl.service';
 import { EntityParam } from 'src/util/entitydecorator';
@@ -225,7 +226,8 @@ export class ScriptsController implements OnModuleInit {
     @Param('id') scriptId: string,
     @Body()
     request: CreateRevisionDto,
-    @User() user: Users,
+    @Principal()
+    principal: { user?: Users; serviceToken?: ServiceTokens },
   ): Promise<RevisionDataDto> {
     const revision = new RevisionFullDto(
       await lastValueFrom(
@@ -257,7 +259,10 @@ export class ScriptsController implements OnModuleInit {
         id: script.projectId,
       });
 
-      const access = await this.aclService.getProjectAccess(user, project);
+      const access = await this.aclService.getPrincipalAccess(
+        principal,
+        project,
+      );
       if (!access.test(AccessFields.KV_WRITE)) {
         await lastValueFrom(
           this.scriptService

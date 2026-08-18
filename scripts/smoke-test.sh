@@ -233,6 +233,33 @@ done
 [ "$MOVED" = "version two" ] || { echo "the moved alias never served the new revision (got '$MOVED')"; exit 1; }
 echo "staging alias served the old revision, then the new one after the move"
 
+echo "== service tokens (machine deploys)"
+# A machine credential deploys like a member and dies by deletion: the
+# secret is shown once, its hash is all the api keeps.
+TOKEN_JSON=$(curl -sf -X POST "$API/project/$PROJECT_ID/tokens" -H "$AUTH" \
+    -H 'Content-Type: application/json' -d '{"name":"smoke deploy"}')
+SVC_TOKEN=$(echo "$TOKEN_JSON" | jq -r .token)
+SVC_ID=$(echo "$TOKEN_JSON" | jq -r .id)
+[ -n "$SVC_TOKEN" ] && [ "$SVC_TOKEN" != "null" ] \
+    || { echo "token creation returned no secret: $TOKEN_JSON"; exit 1; }
+
+# The CLI authenticates with whatever bearer its settings carry; hand it
+# the machine token instead of the user session.
+MACHINE_CONFIG="$DEVDIR/machine-config"
+mkdir -p "$MACHINE_CONFIG/actias-cli"
+printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$SVC_TOKEN" \
+    > "$MACHINE_CONFIG/actias-cli/settings.json"
+
+XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias-cli" publish "$DEVDIR/published" \
+    || { echo "a service token could not publish"; exit 1; }
+
+curl -sf -X DELETE "$API/project/$PROJECT_ID/tokens/$SVC_ID" -H "$AUTH" >/dev/null
+if XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias-cli" publish "$DEVDIR/published" >/dev/null 2>&1; then
+    echo "a revoked token still published"
+    exit 1
+fi
+echo "service token published; revoked token refused"
+
 echo "== live development loop (actias dev)"
 # The whole flagship path: the CLI opens a session over the websocket
 # gateway, the worker serves the working tree at the live URL, and a file

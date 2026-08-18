@@ -6,6 +6,7 @@ import {
   SetMetadata,
 } from '@nestjs/common';
 import { Users } from 'src/entities/Users';
+import { ServiceTokens } from 'src/entities/ServiceTokens';
 import { AclService } from './acl.service';
 import { ModuleRef, Reflector } from '@nestjs/core';
 import { EntityManager } from '@mikro-orm/core';
@@ -69,9 +70,13 @@ export class AclGuard implements CanActivate {
         );
       }
 
-      if (project.owner === user) return true;
+      const serviceToken = request['serviceToken'] as ServiceTokens | undefined;
+      if (!serviceToken && project.owner === user) return true;
 
-      const access = await this.aclService.getProjectAccess(user, project);
+      const access = await this.aclService.getPrincipalAccess(
+        { user, serviceToken },
+        project,
+      );
 
       if (!access.test(aclData.bitfield)) {
         throw new ExceptionClass({

@@ -4,7 +4,7 @@ import { ScriptsController } from './scripts.controller';
 
 const SCRIPT_ID = 'script-1';
 const REVISION_ID = 'revision-1';
-const USER = { id: 'user-1' } as any;
+const PRINCIPAL = { user: { id: 'user-1' } } as any;
 
 /** A controller whose service derives the given contract at publish. */
 function controller(options: { derivedKv: string[]; aclAllows: boolean }) {
@@ -35,7 +35,7 @@ function controller(options: { derivedKv: string[]; aclAllows: boolean }) {
     {} as any,
     { findOneOrFail: jest.fn(async () => ({ id: 'project-1' })) } as any,
     {
-      getProjectAccess: jest.fn(async () => ({
+      getPrincipalAccess: jest.fn(async () => ({
         test: () => options.aclAllows,
       })),
     } as any,
@@ -60,7 +60,11 @@ describe('ScriptsController.createRevision', () => {
       aclAllows: true,
     });
 
-    const revision = await subject.createRevision(SCRIPT_ID, request(), USER);
+    const revision = await subject.createRevision(
+      SCRIPT_ID,
+      request(),
+      PRINCIPAL,
+    );
 
     expect(revision.id).toBe(REVISION_ID);
     expect(deleteRevision).not.toHaveBeenCalled();
@@ -75,7 +79,7 @@ describe('ScriptsController.createRevision', () => {
     });
 
     await expect(
-      subject.createRevision(SCRIPT_ID, request(), USER),
+      subject.createRevision(SCRIPT_ID, request(), PRINCIPAL),
     ).rejects.toBeInstanceOf(ForbiddenException);
 
     expect(deleteRevision).toHaveBeenCalledWith({ revisionId: REVISION_ID });
@@ -87,7 +91,11 @@ describe('ScriptsController.createRevision', () => {
       aclAllows: false,
     });
 
-    const revision = await subject.createRevision(SCRIPT_ID, request(), USER);
+    const revision = await subject.createRevision(
+      SCRIPT_ID,
+      request(),
+      PRINCIPAL,
+    );
 
     expect(revision.id).toBe(REVISION_ID);
     expect(deleteRevision).not.toHaveBeenCalled();

@@ -5,7 +5,7 @@ import {
   SetMetadata,
   UnauthorizedException,
 } from '@nestjs/common';
-import { AuthService } from './auth.service';
+import { AuthService, SERVICE_TOKEN_PREFIX } from './auth.service';
 import { Reflector } from '@nestjs/core';
 import { WsException } from '@nestjs/websockets';
 
@@ -35,6 +35,17 @@ export class AuthGuard implements CanActivate {
     if (!token) throw exception;
 
     try {
+      if (token.startsWith(SERVICE_TOKEN_PREFIX)) {
+        // A machine credential: project-scoped by its ACL and never an
+        // admin, so admin-only routes stay human-only.
+        if (this.reflector.get<boolean>('isAdmin', context.getHandler())) {
+          return false;
+        }
+
+        request['serviceToken'] = await this.authService.getServiceToken(token);
+        return true;
+      }
+
       const user = await this.authService.getUserFromToken(token);
       // Assigning the payload to the request object here
       request['user'] = user;
