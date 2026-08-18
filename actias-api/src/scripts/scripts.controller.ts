@@ -225,27 +225,7 @@ export class ScriptsController implements OnModuleInit {
     request: CreateRevisionDto,
     @User() user: Users,
   ): Promise<RevisionDataDto> {
-    // The declared capability contract is checked here, at publish: a script
-    // declaring kv namespaces needs its publisher to hold kv access.
-    if (request.scriptConfig.capabilities?.kv?.length) {
-      const script = await lastValueFrom(
-        this.scriptService
-          .queryScript({ id: scriptId })
-          .pipe(toHttpException()),
-      );
-      const project = await this.em.findOneOrFail(Projects, {
-        id: script.projectId,
-      });
-
-      const access = await this.aclService.getProjectAccess(user, project);
-      if (!access.test(AccessFields.KV_WRITE)) {
-        throw new ForbiddenException(
-          'This script declares kv namespaces, which needs kv access on the project.',
-        );
-      }
-    }
-
-    return new RevisionFullDto(
+    const revision = new RevisionFullDto(
       await lastValueFrom(
         this.scriptService
           .createRevision({
@@ -260,6 +240,36 @@ export class ScriptsController implements OnModuleInit {
           .pipe(toHttpException()),
       ),
     );
+
+    // The stored contract is derived from the code by the platform, so only
+    // the response knows the truth: a script whose code declares kv needs
+    // its publisher to hold kv access, and a violation rolls the revision
+    // back rather than leaving it live.
+    if (revision.scriptConfig.capabilities?.kv?.length) {
+      const script = await lastValueFrom(
+        this.scriptService
+          .queryScript({ id: scriptId })
+          .pipe(toHttpException()),
+      );
+      const project = await this.em.findOneOrFail(Projects, {
+        id: script.projectId,
+      });
+
+      const access = await this.aclService.getProjectAccess(user, project);
+      if (!access.test(AccessFields.KV_WRITE)) {
+        await lastValueFrom(
+          this.scriptService
+            .deleteRevision({ revisionId: revision.id })
+            .pipe(toHttpException()),
+        );
+
+        throw new ForbiddenException(
+          'This script declares kv namespaces, which needs kv access on the project.',
+        );
+      }
+    }
+
+    return revision;
   }
 
   /**

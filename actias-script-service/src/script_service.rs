@@ -92,7 +92,7 @@ impl ScriptService {
     async fn create_db_revision(
         &self,
         script_id: &Uuid,
-        script_config: ScriptConfig,
+        mut script_config: ScriptConfig,
         mut bundle: Bundle,
     ) -> Result<Revision, tonic::Status> {
         if &script_config.id != script_id {
@@ -100,6 +100,41 @@ impl ScriptService {
                 "Script config contains a different ID than the target.",
             ));
         }
+
+        // The declaration pass runs over the code as it will execute, so the
+        // stored contract is derived here, never taken from the client.
+        // Manifest-only lua files are read back from the blob store first.
+        let mut sources: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for file in bundle.files.iter() {
+            if !file.file_path.ends_with(".lua") {
+                continue;
+            }
+
+            let bytes = if file.hash.is_empty() || !file.content.is_empty() {
+                file.content.clone()
+            } else {
+                self.blobs.get(&file.hash).await?
+            };
+
+            if let Ok(source) = String::from_utf8(bytes) {
+                sources.insert(file.file_path.clone(), source);
+            }
+        }
+
+        let entry_point = bundle.entry_point.clone();
+        let derived = tokio::task::spawn_blocking(move || {
+            actias_declarations::extract(sources, &entry_point)
+        })
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?
+        .map_err(Status::invalid_argument)?;
+
+        script_config.capabilities = Some(crate::database_types::Capabilities {
+            kv: derived.kv,
+            events: derived.events,
+            secrets: derived.secrets,
+        });
 
         // Files arrive either inline (content present, hashed and stored
         // here so the hash is authoritative) or manifest-only (a claimed
@@ -975,5 +1010,61 @@ mod tests {
         let files = revision.bundle.expect("bundle present").files;
         assert_eq!(files[0].content, source);
         assert_eq!(files[0].hash, stored_hash);
+    }
+
+    #[tokio::test]
+    async fn the_stored_contract_is_derived_from_the_code_not_the_claim() {
+        let harness = service().await;
+        let project = Uuid::new_v4();
+        let script_id = insert_script(&harness.database, "derived", project).await;
+
+        let request = |content: &[u8]| CreateRevisionRequest {
+            script_id: script_id.to_string(),
+            script_config: Some(crate::proto_script_service::ScriptConfig {
+                id: script_id.to_string(),
+                entry_point: "main.lua".to_owned(),
+                includes: vec![],
+                ignore: vec![],
+                // The claim lies; the stored contract must not.
+                capabilities: Some(crate::proto_script_service::Capabilities {
+                    kv: vec!["a-lie".to_owned()],
+                    events: vec![],
+                    secrets: vec!["also-a-lie".to_owned()],
+                }),
+            }),
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files: vec![File {
+                    file_path: "main.lua".to_owned(),
+                    content: content.to_vec(),
+                    ..Default::default()
+                }],
+            }),
+        };
+
+        let created = harness
+            .service
+            .create_revision(tonic::Request::new(request(
+                br#"local t = kv "truth" on "fetch" (function() end)"#,
+            )))
+            .await
+            .expect("revision creates")
+            .into_inner();
+
+        let contract = created
+            .script_config
+            .expect("config present")
+            .capabilities
+            .expect("contract present");
+        assert_eq!(contract.kv, vec!["truth"]);
+        assert_eq!(contract.events, vec!["fetch"]);
+        assert!(contract.secrets.is_empty(), "the claimed secret survived");
+
+        // Code that does not parse cannot publish at all.
+        let refused = harness
+            .service
+            .create_revision(tonic::Request::new(request(b"this is ((( not lua")))
+            .await;
+        assert!(refused.is_err(), "unparseable code must be refused");
     }
 }
