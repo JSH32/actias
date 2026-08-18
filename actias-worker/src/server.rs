@@ -21,6 +21,7 @@ use actias_worker_core::extensions::log::LogPublisher;
 use actias_worker_core::proto::bundle::File;
 use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
 use actias_worker_core::proto::script_service::FindScriptRequest;
+use actias_worker_core::proto::script_service::GetAliasRequest;
 use actias_worker_core::proto::script_service::GetRevisionRequest;
 use actias_worker_core::proto::script_service::LiveScriptSession;
 use actias_worker_core::proto::script_service::Revision;
@@ -48,12 +49,19 @@ pub struct Clients {
 pub struct WorkerCaches {
     pointers: moka::future::Cache<String, Script>,
     revisions: moka::future::Cache<String, Arc<PreparedRevision>>,
+    /// Alias pointers (`script_id/name` to revision id); mutable like the
+    /// script pointer, so it expires on the same ttl.
+    aliases: moka::future::Cache<String, String>,
 }
 
 impl WorkerCaches {
     pub fn new(pointer_ttl: Duration, revision_cache_bytes: u64) -> Self {
         Self {
             pointers: moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(pointer_ttl)
+                .build(),
+            aliases: moka::future::Cache::builder()
                 .max_capacity(10_000)
                 .time_to_live(pointer_ttl)
                 .build(),
@@ -130,6 +138,8 @@ enum Route<'a> {
         identifier: &'a str,
         revision: &'a str,
     },
+    /// A named environment: the revision its alias points at.
+    Aliased { identifier: &'a str, alias: &'a str },
 }
 
 impl Route<'_> {
@@ -138,7 +148,7 @@ impl Route<'_> {
     fn consumed_segments(&self) -> usize {
         match self {
             Route::Published { .. } => 1,
-            Route::Live { .. } | Route::Revision { .. } => 3,
+            Route::Live { .. } | Route::Revision { .. } | Route::Aliased { .. } => 3,
         }
     }
 }
@@ -163,6 +173,10 @@ fn route_by_path(path: &str) -> Option<Route<'_>> {
         "_rev" => Some(Route::Revision {
             identifier: segments.next()?,
             revision: segments.next()?,
+        }),
+        "_alias" => Some(Route::Aliased {
+            identifier: segments.next()?,
+            alias: segments.next()?,
         }),
         identifier => Some(Route::Published { identifier }),
     }
@@ -199,6 +213,12 @@ fn route_by_host<'a>(host: &'a str, base: &str) -> Option<Route<'a>> {
         });
     }
 
+    // Any other `--` names an environment alias; `live-` and `r-` prefixes
+    // are refused at alias creation, so the markers above cannot collide.
+    if let Some((identifier, alias)) = label.split_once("--") {
+        return Some(Route::Aliased { identifier, alias });
+    }
+
     Some(Route::Published { identifier: label })
 }
 
@@ -207,15 +227,16 @@ enum Target {
     Published,
     Live(String),
     Preview(String),
+    Aliased(String),
 }
 
 /// A preview naming a revision that belongs to a different script; the
 /// loader refuses it before anything is cached.
 const FOREIGN_REVISION: &str = "the revision does not belong to this script";
 
-/// Whether a revision load failed because the revision does not exist for
+/// Whether a load failed because the addressed thing does not exist for
 /// this script, as opposed to infrastructure failing.
-fn revision_absent(error: &anyhow::Error) -> bool {
+fn target_absent(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<tonic::Status>()
@@ -475,6 +496,9 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             identifier,
             revision,
         } => (identifier.to_owned(), Target::Preview(revision.to_owned())),
+        Route::Aliased { identifier, alias } => {
+            (identifier.to_owned(), Target::Aliased(alias.to_owned()))
+        }
     };
 
     // The body is read before anything else so the size cap rejects oversized
@@ -551,7 +575,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         // revision id came from the url rather than the script row.
         Target::Preview(revision_id) => match cached_revision(&state, script, revision_id).await {
             Ok(prepared) => prepared,
-            Err(error) if revision_absent(&error) => {
+            Err(error) if target_absent(&error) => {
                 return Ok(text_response(
                     StatusCode::NOT_FOUND,
                     "No such revision for this script.",
@@ -559,6 +583,43 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             }
             Err(error) => return Err(cache_load_error(error)),
         },
+        // An alias is one pointer lookup away from the preview path: the
+        // pointer expires like the script pointer, the revision it names
+        // rides the immutable cache.
+        Target::Aliased(alias) => {
+            let looked_up = state
+                .caches
+                .aliases
+                .try_get_with(format!("{}/{}", script.id, alias), {
+                    let mut client = state.clients.script.clone();
+                    let script_id = script.id.clone();
+                    async move {
+                        let alias = client
+                            .get_alias(GetAliasRequest {
+                                script_id,
+                                name: alias,
+                            })
+                            .await?;
+                        Ok::<_, anyhow::Error>(alias.into_inner().revision_id)
+                    }
+                })
+                .await;
+
+            let revision_id = match looked_up {
+                Ok(revision_id) => revision_id,
+                Err(error) if target_absent(&error) => {
+                    return Ok(text_response(
+                        StatusCode::NOT_FOUND,
+                        "No such alias for this script.",
+                    ));
+                }
+                Err(error) => return Err(cache_load_error(error)),
+            };
+
+            cached_revision(&state, script, revision_id)
+                .await
+                .map_err(cache_load_error)?
+        }
     };
 
     let relative_path = script_relative_path(parts.uri.path(), consumed_segments);
@@ -987,6 +1048,66 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(&body[..], b"static bytes");
+    }
+
+    #[test]
+    fn route_parsers_read_alias_forms() {
+        assert_eq!(
+            route_by_path("/_alias/my-script/staging/users"),
+            Some(Route::Aliased {
+                identifier: "my-script",
+                alias: "staging"
+            })
+        );
+        assert_eq!(
+            route_by_host(
+                "my-script--staging.scripts.example.com",
+                "scripts.example.com"
+            ),
+            Some(Route::Aliased {
+                identifier: "my-script",
+                alias: "staging"
+            })
+        );
+        // The reserved markers still win over the generic alias split.
+        assert_eq!(
+            route_by_host(
+                "my-script--live-s1.scripts.example.com",
+                "scripts.example.com"
+            ),
+            Some(Route::Live {
+                identifier: "my-script",
+                session: "s1"
+            })
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_alias_serves_its_revision_through_the_caches() {
+        let mut state = state_with(caches_with_cached_script().await);
+        state.base_domain = Some("scripts.local".to_owned());
+
+        // The alias pointer is warm and names the cached revision, so the
+        // whole chain resolves without any backend.
+        state
+            .caches
+            .aliases
+            .insert("script-1/staging".to_owned(), "revision-1".to_owned())
+            .await;
+
+        let app = router(state, 1024);
+
+        let request = axum::http::Request::builder()
+            .uri("/")
+            .header("host", "cached-script--staging.scripts.local")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"served from cache");
     }
 
     #[tokio::test(flavor = "multi_thread")]

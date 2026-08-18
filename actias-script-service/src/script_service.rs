@@ -687,6 +687,133 @@ impl script_service_server::ScriptService for ScriptService {
 
         Ok(Response::new(MissingBlobsResponse { missing }))
     }
+
+    async fn set_alias(
+        &self,
+        request: tonic::Request<SetAliasRequest>,
+    ) -> Result<tonic::Response<Alias>, tonic::Status> {
+        let request = request.get_ref();
+        if let Some(reason) = alias_name_error(&request.name) {
+            return Err(Status::invalid_argument(reason));
+        }
+
+        let script_id =
+            Uuid::from_str(&request.script_id).map_err(|e| Status::internal(e.to_string()))?;
+        let revision_id = Uuid::from_str(&request.revision_id)
+            .map_err(|_| Status::invalid_argument("Revision id is not a uuid."))?;
+
+        // An alias may only point inside its own script; checked here so the
+        // upsert can never install a pointer the router would refuse.
+        let owner: Option<Uuid> =
+            sqlx::query_scalar("SELECT script_id FROM revisions WHERE id = $1")
+                .bind(revision_id)
+                .fetch_optional(&self.database)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        if owner != Some(script_id) {
+            return Err(Status::failed_precondition(
+                "Revision does not exist for this script.",
+            ));
+        }
+
+        sqlx::query(
+            "INSERT INTO aliases (script_id, name, revision_id) VALUES ($1, $2, $3)
+             ON CONFLICT (script_id, name)
+             DO UPDATE SET revision_id = $3, last_updated = now()",
+        )
+        .bind(script_id)
+        .bind(&request.name)
+        .bind(revision_id)
+        .execute(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(Alias {
+            script_id: script_id.to_string(),
+            name: request.name.clone(),
+            revision_id: revision_id.to_string(),
+        }))
+    }
+
+    async fn get_alias(
+        &self,
+        request: tonic::Request<GetAliasRequest>,
+    ) -> Result<tonic::Response<Alias>, tonic::Status> {
+        let request = request.get_ref();
+        let script_id =
+            Uuid::from_str(&request.script_id).map_err(|e| Status::internal(e.to_string()))?;
+
+        let revision_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT revision_id FROM aliases WHERE script_id = $1 AND name = $2",
+        )
+        .bind(script_id)
+        .bind(&request.name)
+        .fetch_optional(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        match revision_id {
+            Some(revision_id) => Ok(Response::new(Alias {
+                script_id: script_id.to_string(),
+                name: request.name.clone(),
+                revision_id: revision_id.to_string(),
+            })),
+            None => Err(Status::not_found("No alias with that name.")),
+        }
+    }
+
+    async fn list_aliases(
+        &self,
+        request: tonic::Request<ListAliasesRequest>,
+    ) -> Result<tonic::Response<ListAliasesResponse>, tonic::Status> {
+        let script_id = Uuid::from_str(&request.get_ref().script_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let rows: Vec<(String, Uuid)> = sqlx::query_as(
+            "SELECT name, revision_id FROM aliases WHERE script_id = $1 ORDER BY name",
+        )
+        .bind(script_id)
+        .fetch_all(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(ListAliasesResponse {
+            aliases: rows
+                .into_iter()
+                .map(|(name, revision_id)| Alias {
+                    script_id: script_id.to_string(),
+                    name,
+                    revision_id: revision_id.to_string(),
+                })
+                .collect(),
+        }))
+    }
+}
+
+/// Why an alias name cannot be addressed by the router, if it cannot.
+///
+/// The subdomain form is `<ident>--<alias>`, so a name must never contain
+/// the `--` marker, and the `live-`/`r-` prefixes belong to sessions and
+/// revision previews.
+fn alias_name_error(name: &str) -> Option<&'static str> {
+    let shaped = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && !name.contains("--");
+
+    if !shaped {
+        return Some("An alias is 1-64 lowercase letters, digits or single dashes.");
+    }
+
+    if name.starts_with("live-") || name.starts_with("r-") {
+        return Some("Alias names starting with 'live-' or 'r-' are reserved for routing.");
+    }
+
+    None
 }
 
 /// The boxed stream both log rpcs return.
@@ -1093,5 +1220,97 @@ mod tests {
             .create_revision(tonic::Request::new(request(b"this is ((( not lua")))
             .await;
         assert!(refused.is_err(), "unparseable code must be refused");
+    }
+
+    #[tokio::test]
+    async fn an_alias_is_a_movable_pointer_within_one_script() {
+        let harness = service().await;
+        let project = Uuid::new_v4();
+        let script_id = insert_script(&harness.database, "aliased", project).await;
+        let other_script = insert_script(&harness.database, "other", project).await;
+
+        let publish = |script: Uuid, body: &'static [u8]| {
+            let service = &harness.service;
+            async move {
+                service
+                    .create_revision(tonic::Request::new(CreateRevisionRequest {
+                        script_id: script.to_string(),
+                        script_config: Some(crate::proto_script_service::ScriptConfig {
+                            id: script.to_string(),
+                            entry_point: "main.lua".to_owned(),
+                            includes: vec![],
+                            ignore: vec![],
+                            capabilities: None,
+                        }),
+                        bundle: Some(Bundle {
+                            entry_point: "main.lua".to_owned(),
+                            files: vec![File {
+                                file_path: "main.lua".to_owned(),
+                                content: body.to_vec(),
+                                ..Default::default()
+                            }],
+                        }),
+                    }))
+                    .await
+                    .expect("revision creates")
+                    .into_inner()
+            }
+        };
+
+        let first = publish(script_id, b"on \"fetch\" (function() return 1 end)").await;
+        let second = publish(script_id, b"on \"fetch\" (function() return 2 end)").await;
+        let foreign = publish(other_script, b"on \"fetch\" (function() end)").await;
+
+        let set = |name: &str, revision: String| {
+            let service = &harness.service;
+            let script = script_id.to_string();
+            let name = name.to_owned();
+            async move {
+                service
+                    .set_alias(tonic::Request::new(SetAliasRequest {
+                        script_id: script,
+                        name,
+                        revision_id: revision,
+                    }))
+                    .await
+            }
+        };
+
+        // Create, then move: the same upsert call.
+        set("staging", first.id.clone()).await.expect("alias sets");
+        set("staging", second.id.clone())
+            .await
+            .expect("alias moves");
+
+        let resolved = harness
+            .service
+            .get_alias(tonic::Request::new(GetAliasRequest {
+                script_id: script_id.to_string(),
+                name: "staging".to_owned(),
+            }))
+            .await
+            .expect("alias resolves")
+            .into_inner();
+        assert_eq!(resolved.revision_id, second.id);
+
+        let listed = harness
+            .service
+            .list_aliases(tonic::Request::new(ListAliasesRequest {
+                script_id: script_id.to_string(),
+            }))
+            .await
+            .expect("aliases list")
+            .into_inner()
+            .aliases;
+        assert_eq!(listed.len(), 1, "the move must not create a second row");
+
+        // A pointer outside the script, and names the router cannot
+        // address, are refused.
+        let refused = set("staging", foreign.id).await;
+        assert!(refused.is_err(), "a foreign revision must be refused");
+        for name in ["live-x", "r-1", "has--marker", "-lead", "Upper"] {
+            let refused = set(name, second.id.clone()).await;
+            assert!(refused.is_err(), "name {name:?} must be refused");
+        }
     }
 }

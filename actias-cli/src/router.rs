@@ -35,6 +35,9 @@ impl Router {
             Commands::Tail { target } => {
                 handlers::tail::handle(&self.client, &self.settings, &target).await
             }
+            Commands::Alias { script, sub } => {
+                handlers::aliases::handle(&self.client, &script, &sub).await
+            }
             Commands::Secret { project, sub } => {
                 handlers::secrets::handle(&self.client, &project, &sub).await
             }

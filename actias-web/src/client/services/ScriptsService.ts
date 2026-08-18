@@ -1,6 +1,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { AliasDto } from '../models/AliasDto';
 import type { CreateRevisionDto } from '../models/CreateRevisionDto';
 import type { CreateScriptDto } from '../models/CreateScriptDto';
 import type { MessageResponseDto } from '../models/MessageResponseDto';
@@ -10,6 +11,7 @@ import type { NewRevisionResponseDto } from '../models/NewRevisionResponseDto';
 import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
 import type { RevisionDataDto } from '../models/RevisionDataDto';
 import type { ScriptDto } from '../models/ScriptDto';
+import type { SetAliasDto } from '../models/SetAliasDto';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
 import type { BaseHttpRequest } from '../core/BaseHttpRequest';
@@ -78,6 +80,47 @@ export class ScriptsService {
         return this.httpRequest.request({
             method: 'PUT',
             url: '/api/script/{id}/revisions',
+            path: {
+                'id': id,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+        });
+    }
+
+    /**
+     * List a script's environment aliases.
+     * @param id
+     * @returns AliasDto
+     * @throws ApiError
+     */
+    public listAliases(
+        id: string,
+    ): CancelablePromise<Array<AliasDto>> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/script/{id}/aliases',
+            path: {
+                'id': id,
+            },
+        });
+    }
+
+    /**
+     * Point an environment alias at a revision. Creating and moving an alias
+     * are the same call; rollback is moving it back.
+     * @param id
+     * @param requestBody
+     * @returns AliasDto
+     * @throws ApiError
+     */
+    public setAlias(
+        id: string,
+        requestBody: SetAliasDto,
+    ): CancelablePromise<AliasDto> {
+        return this.httpRequest.request({
+            method: 'PUT',
+            url: '/api/script/{id}/aliases',
             path: {
                 'id': id,
             },

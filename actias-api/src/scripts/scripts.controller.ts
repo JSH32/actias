@@ -21,11 +21,13 @@ import { script_service } from 'src/protobufs/script_service';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { ScriptDto } from './dto/script.dto';
 import {
+  AliasDto,
   CreateRevisionDto,
   CreateScriptDto,
   MissingBlobsDto,
   MissingBlobsResponseDto,
   NewRevisionResponseDto,
+  SetAliasDto,
 } from './dto/requests.dto';
 import { RevisionDataDto, RevisionFullDto } from './dto/revision.dto';
 import {
@@ -270,6 +272,42 @@ export class ScriptsController implements OnModuleInit {
     }
 
     return revision;
+  }
+
+  /**
+   * List a script's environment aliases.
+   */
+  @Get(':id/aliases')
+  @AclByFinder(AccessFields.SCRIPT_READ, 'projectFinder')
+  async listAliases(@Param('id') scriptId: string): Promise<AliasDto[]> {
+    const response = await lastValueFrom(
+      this.scriptService.listAliases({ scriptId }).pipe(toHttpException()),
+    );
+
+    return (response.aliases ?? []).map((alias) => new AliasDto(alias));
+  }
+
+  /**
+   * Point an environment alias at a revision. Creating and moving an alias
+   * are the same call; rollback is moving it back.
+   */
+  @Put(':id/aliases')
+  @AclByFinder(AccessFields.SCRIPT_WRITE, 'projectFinder')
+  async setAlias(
+    @Param('id') scriptId: string,
+    @Body() request: SetAliasDto,
+  ): Promise<AliasDto> {
+    const alias = await lastValueFrom(
+      this.scriptService
+        .setAlias({
+          scriptId,
+          name: request.name,
+          revisionId: request.revisionId,
+        })
+        .pipe(toHttpException()),
+    );
+
+    return new AliasDto(alias);
   }
 
   /**
