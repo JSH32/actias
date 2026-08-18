@@ -84,8 +84,18 @@ impl ObjectHandle {
 /// Moves `runtime` onto its own task forever and hands back its mailbox.
 ///
 /// The task ends when every handle is dropped; the vm drops with it.
-pub fn spawn_object_task(runtime: ActiasRuntime, call_budget: Option<u64>) -> ObjectHandle {
+pub fn spawn_object_task(
+    runtime: ActiasRuntime,
+    call_budget: Option<u64>,
+    storage: Option<crate::storage::SqliteStorage>,
+) -> ObjectHandle {
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
+
+    if let Some(storage) = storage {
+        runtime.set_app_data(crate::storage::StorageCell(std::cell::RefCell::new(
+            storage,
+        )));
+    }
 
     tokio::spawn(async move {
         // Popping only after the previous call finished is the input gate;
@@ -99,6 +109,14 @@ pub fn spawn_object_task(runtime: ActiasRuntime, call_budget: Option<u64>) -> Ob
             }
             let result = dispatch(&runtime, &call.method, call.payload).await;
             runtime.end_call_budget();
+
+            // The handler is done; give storage its flush moment before the
+            // caller hears anything (the output-gate seed).
+            if let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
+                && let Err(error) = cell.0.borrow_mut().checkpoint()
+            {
+                actias_common::tracing::warn!(%error, "object storage checkpoint failed");
+            }
 
             // A caller that stopped waiting is its own problem; the state
             // change it asked for has already happened either way.
@@ -182,7 +200,13 @@ impl ObjectHost {
     ) -> mlua::Result<ObjectHandle>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = mlua::Result<(ActiasRuntime, Option<u64>)>>,
+        Fut: Future<
+            Output = mlua::Result<(
+                ActiasRuntime,
+                Option<u64>,
+                Option<crate::storage::SqliteStorage>,
+            )>,
+        >,
     {
         let mut tasks = self.tasks.lock().await;
 
@@ -192,8 +216,8 @@ impl ObjectHost {
             return Ok(handle.clone());
         }
 
-        let (runtime, call_budget) = factory().await?;
-        let handle = spawn_object_task(runtime, call_budget);
+        let (runtime, call_budget, storage) = factory().await?;
+        let handle = spawn_object_task(runtime, call_budget, storage);
         tasks.insert(id.to_owned(), (marker.to_owned(), handle.clone()));
 
         Ok(handle)
@@ -282,7 +306,7 @@ mod tests {
             "#,
         )
         .await;
-        let handle = spawn_object_task(runtime, None);
+        let handle = spawn_object_task(runtime, None, None);
 
         let (a, b) = tokio::join!(
             handle.call("slow", serde_json::json!("a")),
@@ -318,7 +342,7 @@ mod tests {
             "#,
         )
         .await;
-        let handle = spawn_object_task(runtime, None);
+        let handle = spawn_object_task(runtime, None, None);
 
         for expected in 1..=3 {
             let value = handle
@@ -332,7 +356,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn an_unknown_method_is_a_call_error() {
         let runtime = runtime_with("x = 1").await;
-        let handle = spawn_object_task(runtime, None);
+        let handle = spawn_object_task(runtime, None, None);
 
         let error = handle
             .call("nope", serde_json::Value::Null)
@@ -351,6 +375,7 @@ mod tests {
                 Ok((
                     runtime_with("count = 0 function bump() count = count + 1 return count end")
                         .await,
+                    None,
                     None,
                 ))
             })
@@ -400,7 +425,7 @@ mod tests {
                 let id = format!("{}/{}", target.class, target.name);
                 let handle = host
                     .get_or_spawn(&id, "r1", || async {
-                        Ok((runtime_with(SOURCE).await, None))
+                        Ok((runtime_with(SOURCE).await, None, None))
                     })
                     .await
                     .map_err(|e| e.to_string())?;
@@ -503,7 +528,7 @@ mod tests {
 
         let first = host
             .get_or_spawn("obj-1", "rev-1", || async {
-                Ok((runtime_with(source).await, None))
+                Ok((runtime_with(source).await, None, None))
             })
             .await
             .expect("spawns");
@@ -516,7 +541,7 @@ mod tests {
         // the retired vm.
         let second = host
             .get_or_spawn("obj-1", "rev-2", || async {
-                Ok((runtime_with(source).await, None))
+                Ok((runtime_with(source).await, None, None))
             })
             .await
             .expect("respawns");
@@ -536,7 +561,7 @@ mod tests {
             "#,
         )
         .await;
-        let handle = spawn_object_task(runtime, Some(1));
+        let handle = spawn_object_task(runtime, Some(1), None);
 
         let error = handle
             .call("spin", serde_json::Value::Null)
@@ -563,13 +588,59 @@ mod tests {
         assert!(refused.contains("a -> b -> a"), "{refused}");
     }
 
+    /// The restart story end to end at unit scale: a fresh task over the
+    /// same file resumes exactly where the dead one stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sql_state_survives_a_task_replacement() {
+        const SOURCE: &str = r#"
+            local Keeper = object "Keeper" {
+                bump = function(state)
+                    state.sql:exec("CREATE TABLE IF NOT EXISTS hits (at INTEGER)")
+                    state.sql:exec("INSERT INTO hits VALUES (?)", { 1 })
+                    return state.sql:query_one("SELECT COUNT(*) AS n FROM hits").n
+                end,
+            }
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keeper.db");
+
+        let call = serde_json::json!({ "class": "Keeper", "method": "bump", "args": [] });
+
+        let first = spawn_object_task(
+            runtime_with(SOURCE).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+        );
+        assert_eq!(
+            first.call("__dispatch", call.clone()).await.expect("bump"),
+            serde_json::json!(1)
+        );
+        assert_eq!(
+            first.call("__dispatch", call.clone()).await.expect("bump"),
+            serde_json::json!(2)
+        );
+        drop(first);
+
+        // "The worker restarted": nothing survives but the file.
+        let second = spawn_object_task(
+            runtime_with(SOURCE).await,
+            None,
+            Some(crate::storage::SqliteStorage::open(&path).expect("reopens")),
+        );
+        assert_eq!(
+            second.call("__dispatch", call.clone()).await.expect("bump"),
+            serde_json::json!(3)
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn mailbox_overhead_is_visible() {
         // Not an assertion, a measurement: the per-call cost of the mailbox
         // plus mlua's send-feature locking, recorded so the !Send-vm option
         // stays a data question. Run with --nocapture to read it.
         let runtime = runtime_with("function ping() return 1 end").await;
-        let handle = spawn_object_task(runtime, None);
+        let handle = spawn_object_task(runtime, None, None);
 
         let rounds = 10_000u32;
         let start = std::time::Instant::now();

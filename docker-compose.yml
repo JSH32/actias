@@ -126,6 +126,10 @@ services:
       # Subdomain routing for anything resolving under this base; the
       # path-prefix forms keep working for direct access.
       - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
+      # One SQLite file per durable object; the volume IS their persistence.
+      - OBJECT_DATA_DIR=/data/objects
+    volumes:
+      - objects_data:/data/objects
     ports:
       - 3002:3000
 
@@ -218,6 +222,7 @@ services:
       - WORKER_REVISION_BASE=${WORKER_URL:-http://localhost:3002}/_rev/_IDENTIFIER_/_REVISION_
 
 volumes:
+  objects_data:
   scylla_data:
   postgres_data:
   redis_data:
