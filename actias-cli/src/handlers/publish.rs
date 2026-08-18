@@ -45,12 +45,19 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
             declared.secrets.join(", ").purple()
         );
     }
+    if !declared.objects.is_empty() {
+        println!(
+            "🧩 Declares objects: {}",
+            declared.objects.join(", ").purple()
+        );
+    }
 
     let mut config_dto: ScriptConfigDto = script_config.clone().into();
     config_dto.capabilities = Some(CapabilitiesDto {
         kv: declared.kv,
         events: declared.events,
         secrets: declared.secrets,
+        objects: declared.objects,
     });
 
     let mut bundle = script_config.to_bundle().map_err(Error::Script)?;

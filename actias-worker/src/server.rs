@@ -18,6 +18,8 @@ use actias_worker_core::egress::EgressClient;
 use actias_worker_core::extensions;
 use actias_worker_core::extensions::http::Request as LuaRequest;
 use actias_worker_core::extensions::log::LogPublisher;
+use actias_worker_core::extensions::objects::{ObjectRouter, ObjectTarget};
+use actias_worker_core::objects::ObjectHost;
 use actias_worker_core::proto::bundle::File;
 use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
 use actias_worker_core::proto::script_service::FindScriptRequest;
@@ -100,6 +102,8 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Requests currently executing; the heartbeat reports it as load.
     pub in_flight: Arc<AtomicU32>,
+    /// Live durable objects on this node, one pinned vm each.
+    pub objects: Arc<ObjectHost>,
     /// Domain subdomain routing hangs off; [`None`] leaves only the path
     /// forms.
     pub base_domain: Option<String>,
@@ -456,6 +460,64 @@ async fn cached_revision(
         .await
 }
 
+/// How method calls on object handles leave a request vm: resolve the
+/// pinned vm (spawning it from the same prepared revision on first touch)
+/// and push one mailbox message.
+///
+/// The vm-cache key carries the revision id, so a republish gets fresh
+/// code on first touch; in-memory state resets with it, until durable
+/// storage lands underneath. Pinned vms get no router of their own yet:
+/// object-to-object calls are refused rather than allowed to deadlock on
+/// each other's mailboxes.
+fn object_router(state: &AppState, prepared: Arc<PreparedRevision>) -> ObjectRouter {
+    let host = state.objects.clone();
+    let kv = state.clients.kv.clone();
+    let egress = state.egress.clone();
+    let secrets_key = state.secrets_key.clone();
+    let redis = state.redis.clone();
+
+    Arc::new(move |target: ObjectTarget| {
+        let host = host.clone();
+        let kv = kv.clone();
+        let egress = egress.clone();
+        let secrets_key = secrets_key.clone();
+        let redis = redis.clone();
+        let prepared = prepared.clone();
+
+        Box::pin(async move {
+            let key = format!(
+                "{}/{}/{}/{}",
+                prepared.script.id, prepared.revision_id, target.class, target.name
+            );
+
+            let handle = host
+                .get_or_spawn(&key, || async {
+                    // Object logs join the script's production channel, so
+                    // `actias tail` sees them like any handler line.
+                    let logs = redis.map(|connection| {
+                        LogPublisher::new(connection, script_log_channel(&prepared.script.id))
+                    });
+
+                    ActiasRuntime::new(prepared.clone(), kv, egress, logs, secrets_key, None).await
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+
+            handle
+                .call(
+                    "__dispatch",
+                    serde_json::json!({
+                        "class": target.class,
+                        "method": target.method,
+                        "args": target.arguments,
+                    }),
+                )
+                .await
+                .map_err(|e| e.to_string())
+        })
+    })
+}
+
 /// Resolves the script, runs it, and shapes its response.
 async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow::Result<Response> {
     // DefaultBodyLimit only takes effect through extractors, so the body is
@@ -673,6 +735,8 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // died with mlua 0.9.
     let kv_client = state.clients.kv.clone();
 
+    let router = object_router(&state, prepared.clone());
+
     let lua = ActiasRuntime::new(
         prepared,
         kv_client,
@@ -682,6 +746,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         Some(10),
     )
     .await?;
+    lua.set_app_data::<ObjectRouter>(router);
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
@@ -731,6 +796,7 @@ mod tests {
             secrets_key: None,
             request_timeout: Duration::from_secs(5),
             in_flight: Arc::default(),
+            objects: Arc::default(),
             base_domain: None,
         }
     }

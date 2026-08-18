@@ -117,6 +117,7 @@ dependencies = [
  "mlua",
  "moka",
  "redis",
+ "serde_json",
  "tokio",
  "tonic 0.13.0",
  "tower",

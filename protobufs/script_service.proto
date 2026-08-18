@@ -43,6 +43,8 @@ message Capabilities {
     repeated string events = 2;
     // Secrets declared with `secret "name"`.
     repeated string secrets = 3;
+    // Object classes declared with `object "Class" { ... }`.
+    repeated string objects = 4;
 }
 
 message ScriptConfig {
