@@ -17,6 +17,7 @@ export OBJECT_SWEEP_SECS=3
 export NODE_TTL_SECS=10
 API=http://127.0.0.1:3001/api
 WORKER=http://127.0.0.1:3002
+WORKER2=http://127.0.0.1:3003
 FAILED=1
 
 compose() { docker compose -p "$PROJECT" "$@"; }
@@ -286,6 +287,43 @@ done
 [ -n "$HV" ] && [ "$HV" -gt "$HB" ] 2>/dev/null \
     || { echo "object state did not survive the volume loss ($HB -> '$HV')"; exit 1; }
 echo "counter continued at $HV after the volume was wiped"
+
+echo "== two nodes serve one object"
+# The object is homed on worker one; a request through worker two must
+# forward its calls there and continue the same count.
+HA=$(curl -sf "$WORKER/$IDENT/" | jq .hits)
+HB=$(curl -sf "$WORKER2/$IDENT/" | jq .hits)
+[ -n "$HB" ] && [ "$HB" -gt "$HA" ] 2>/dev/null \
+    || { echo "the second node did not continue the count ($HA -> '$HB'); forwarding broke"; exit 1; }
+echo "worker two forwarded into the same object: $HA then $HB"
+
+echo "== the survivor takes over when the holder dies"
+# Kill the holder outright. Once its lease ages out, the survivor claims,
+# restores the shipped snapshot onto its own empty volume, and the count
+# continues; failover and rehoming are the same code path.
+compose stop worker_service >/dev/null 2>&1
+HC=""
+for _ in $(seq 1 40); do
+    HC=$(curl -sf "$WORKER2/$IDENT/" | jq .hits 2>/dev/null) || { sleep 2; continue; }
+    [ -n "$HC" ] && [ "$HC" -gt "$HB" ] 2>/dev/null && break
+    sleep 2
+done
+[ -n "$HC" ] && [ "$HC" -gt "$HB" ] 2>/dev/null \
+    || { echo "the survivor never took the object over ($HB -> '$HC')"; exit 1; }
+echo "survivor took over and continued: $HC"
+
+# The old holder returns as a stranger: its stale local file must lose to
+# the lease, so its requests forward to the new home.
+compose start worker_service >/dev/null 2>&1
+HD=""
+for _ in $(seq 1 30); do
+    HD=$(curl -sf "$WORKER/$IDENT/" | jq .hits 2>/dev/null) || { sleep 2; continue; }
+    [ -n "$HD" ] && [ "$HD" -gt "$HC" ] 2>/dev/null && break
+    sleep 2
+done
+[ -n "$HD" ] && [ "$HD" -gt "$HC" ] 2>/dev/null \
+    || { echo "the returned node did not forward to the new holder ($HC -> '$HD')"; exit 1; }
+echo "returned node forwards to the new home: $HD"
 
 echo "object resumed at $H3 after the worker restart"
 
