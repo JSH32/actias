@@ -526,6 +526,38 @@ setTimeout(() => process.exit(1), 10000);
 ' || { echo "query-token websocket tail failed"; exit 1; }
 echo "browser tail handshake completed"
 
+echo "== playground protocol round-trips (browser live session)"
+# The playground page speaks exactly this: start a session with a base64
+# bundle over the query-token socket, then the live url serves it.
+curl -sf "http://127.0.0.1:3000/script/shell/playground" -o /dev/null \
+    || { echo "the playground page did not render"; exit 1; }
+PLAY_SESSION=$(WS_URL="ws://127.0.0.1:3001/liveScript?token=$TOKEN" SID="$SCRIPT_ID" \
+NODE_PATH="$REPO/actias-api/node_modules" node -e '
+const WebSocket = require("ws");
+const ws = new WebSocket(process.env.WS_URL);
+const source = Buffer.from(
+  `on "fetch" (function(r) return { body = "from the playground" } end)`
+).toString("base64");
+const payload = {
+  scriptId: process.env.SID,
+  revision: {
+    scriptConfig: { id: process.env.SID, entryPoint: "main.lua", includes: ["**/*.lua"], ignore: [] },
+    bundle: { entryPoint: "main.lua", files: [{ filePath: "main.lua", content: source }] },
+  },
+};
+ws.on("message", (raw) => {
+  const message = JSON.parse(raw);
+  if (message.status === "ready") ws.send(JSON.stringify({ event: "start", data: payload }));
+  if (message.status === "created") { console.log(message.sessionId); process.exit(0); }
+});
+ws.on("error", () => process.exit(1));
+setTimeout(() => process.exit(1), 10000);
+') || { echo "the playground session did not start"; exit 1; }
+PLAY_BODY=$(curl -sf "$WORKER/_live/$IDENT/$PLAY_SESSION/")
+[ "$PLAY_BODY" = "from the playground" ] \
+    || { echo "the playground session did not serve (got '$PLAY_BODY')"; exit 1; }
+echo "playground session served: $PLAY_BODY"
+
 echo "== regenerating clients against the live api (drift coverage)"
 ( cd actias-web && npm run generateClient >/dev/null 2>&1 )
 curl -sf "$API/docs/openapi.json" -o actias-cli/src/actias-api.json
