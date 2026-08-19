@@ -11,6 +11,9 @@ use std::time::Duration;
 #[derive(Default)]
 pub struct Metrics {
     scripts: Mutex<HashMap<String, ScriptStats>>,
+    /// Reads served from a restored snapshot replica instead of the
+    /// owner's mailbox; the multi-node read story in one number.
+    pub replica_reads: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default, Clone)]
@@ -59,6 +62,12 @@ impl Metrics {
                 stats.duration_ms_total
             ));
         }
+        out.push_str("# TYPE actias_replica_reads_total counter\n");
+        out.push_str(&format!(
+            "actias_replica_reads_total {}\n",
+            self.replica_reads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        ));
         out.push_str("# TYPE actias_objects_resident gauge\n");
         out.push_str(&format!("actias_objects_resident {objects_resident}\n"));
 

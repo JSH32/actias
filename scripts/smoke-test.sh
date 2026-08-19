@@ -15,6 +15,8 @@ PROJECT=actias-smoke
 # sweeps, and leases free quickly after the worker restart.
 export OBJECT_SWEEP_SECS=3
 export NODE_TTL_SECS=10
+export OBJECT_REPLICA_TTL_SECS=2
+export OBJECT_REPLICA_TTL_SECS=2
 API=http://127.0.0.1:3001/api
 WORKER=http://127.0.0.1:3002
 WORKER2=http://127.0.0.1:3003
@@ -324,6 +326,24 @@ done
 [ -n "$HD" ] && [ "$HD" -gt "$HC" ] 2>/dev/null \
     || { echo "the returned node did not forward to the new holder ($HC -> '$HD')"; exit 1; }
 echo "returned node forwards to the new home: $HD"
+
+echo "== reads on the non-holder serve from the replica"
+# The object now lives on worker two; worker one's db reads must answer
+# locally from a restored snapshot, never entering the owner's mailbox.
+# The request above already exercised them; the counter is the witness.
+REPLICA_READS=$(curl -sf "$WORKER/_metrics" | sed -n 's/^actias_replica_reads_total //p')
+[ -n "$REPLICA_READS" ] && [ "$REPLICA_READS" -ge 1 ] 2>/dev/null \
+    || { echo "the non-holder served no replica reads (got '$REPLICA_READS')"; exit 1; }
+echo "worker one answered $REPLICA_READS read(s) from its replica"
+
+echo "== reads on the non-holder serve from the replica"
+# The object now lives on worker two; worker one's db reads must answer
+# locally from a restored snapshot, never entering the owner's mailbox.
+# The request above already exercised them; the counter is the witness.
+REPLICA_READS=$(curl -sf "$WORKER/_metrics" | sed -n 's/^actias_replica_reads_total //p')
+[ -n "$REPLICA_READS" ] && [ "$REPLICA_READS" -ge 1 ] 2>/dev/null \
+    || { echo "the non-holder served no replica reads (got '$REPLICA_READS')"; exit 1; }
+echo "worker one answered $REPLICA_READS read(s) from its replica"
 
 echo "object resumed at $H3 after the worker restart"
 

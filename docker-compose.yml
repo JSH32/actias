@@ -132,6 +132,8 @@ services:
       - OBJECT_DATA_DIR=/data/objects
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
+      - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
+      - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
     volumes:
       - objects_data:/data/objects
     ports:
@@ -169,6 +171,8 @@ services:
       - OBJECT_DATA_DIR=/data/objects
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
+      - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
+      - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
     volumes:
       - objects_data_2:/data/objects
     ports:
