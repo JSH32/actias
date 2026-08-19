@@ -18,6 +18,7 @@ import {
   Pagination,
   Stack,
   Table,
+  Text,
   Title,
 } from '@mantine/core';
 import { breadcrumbs } from '@/helpers/util';
@@ -25,6 +26,8 @@ import { IconCheck, IconEye, IconLink, IconTrash } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import getConfig from 'next/config';
 import { CodeHighlightTabs } from '@mantine/code-highlight';
+import LogTail from '@/components/LogTail';
+import { Badge, Card, SimpleGrid } from '@mantine/core';
 
 const { publicRuntimeConfig } = getConfig();
 
@@ -55,6 +58,21 @@ const Script = () => {
   const { data: revisions } = useQuery<PaginatedResponseDto>({
     queryKey: ['revisions', script?.id, page],
     queryFn: () => api.scripts.revisionList(script?.id as string, page),
+    enabled: !!script,
+  });
+
+  // The stored contract: derived from the code at publish, so this card
+  // is what the platform enforces, not what anyone claimed.
+  const { data: currentRevision } = useQuery({
+    queryKey: ['revision', script?.currentRevisionId],
+    queryFn: () =>
+      api.revisions.getRevision(script?.currentRevisionId as string, false),
+    enabled: !!script?.currentRevisionId,
+  });
+
+  const { data: aliases } = useQuery({
+    queryKey: ['aliases', script?.id],
+    queryFn: () => api.scripts.listAliases(script?.id as string),
     enabled: !!script,
   });
 
@@ -126,6 +144,67 @@ const Script = () => {
         </Stack>
         <Details script={script} />
       </Group>
+
+      {currentRevision?.scriptConfig?.capabilities && (
+        <Card withBorder mt="md" p="md">
+          <Title order={4} mb="xs">
+            Capability contract
+          </Title>
+          <Text c="dimmed" size="sm" mb="sm">
+            Derived from the code at publish; the platform enforces exactly
+            this.
+          </Text>
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
+            {(
+              [
+                ['kv', 'KV namespaces'],
+                ['databases', 'Databases'],
+                ['objects', 'Object classes'],
+                ['events', 'Events'],
+                ['secrets', 'Secrets'],
+              ] as const
+            ).map(([key, label]) => {
+              const values = (currentRevision.scriptConfig.capabilities as any)[
+                key
+              ] as string[];
+              return values?.length ? (
+                <div key={key}>
+                  <Text fw={600} size="sm">
+                    {label}
+                  </Text>
+                  <Group gap={4} mt={4}>
+                    {values.map((value) => (
+                      <Badge key={value} variant="light">
+                        {value}
+                      </Badge>
+                    ))}
+                  </Group>
+                </div>
+              ) : null;
+            })}
+          </SimpleGrid>
+        </Card>
+      )}
+
+      {aliases && aliases.length > 0 && (
+        <Card withBorder mt="md" p="md">
+          <Title order={4} mb="xs">
+            Environment aliases
+          </Title>
+          <Group gap="xs">
+            {aliases.map((alias: { name: string; revisionId: string }) => (
+              <Badge key={alias.name} variant="outline">
+                {alias.name} → {alias.revisionId.slice(0, 8)}
+              </Badge>
+            ))}
+          </Group>
+        </Card>
+      )}
+
+      <div style={{ marginTop: 'var(--mantine-spacing-md)' }}>
+        <LogTail scriptId={script.id} />
+      </div>
+
       {revisions ? (
         <Stack>
           <Title>Revisions</Title>

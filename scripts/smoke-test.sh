@@ -50,7 +50,7 @@ done
 echo "== web pages render"
 # Server-side rendering runs the react tree, so a crash in the state layer
 # turns these into 500s.
-for page in / /login /projects; do
+for page in / /login /projects /settings /download /script/shell /project/shell; do
     curl -sf "http://127.0.0.1:3000$page" -o /dev/null \
         || { echo "web page $page did not render"; exit 1; }
 done
@@ -505,6 +505,26 @@ echo "production log line reached the tail"
 
 kill "$DEV_PID" 2>/dev/null || true
 DEV_PID=""
+
+echo "== websocket tail authenticates via query token (browser path)"
+# Browsers cannot set upgrade headers; the dashboard's live tail rides a
+# ?token= query instead. Prove the whole handshake: ready, tail, tailing.
+WS_URL="ws://127.0.0.1:3001/liveScript?token=$TOKEN" SID="$SCRIPT_ID" \
+NODE_PATH="$REPO/actias-api/node_modules" node -e '
+const WebSocket = require("ws");
+const ws = new WebSocket(process.env.WS_URL);
+let ok = false;
+ws.on("message", (raw) => {
+  const message = JSON.parse(raw);
+  if (message.status === "ready")
+    ws.send(JSON.stringify({ event: "tail", data: { scriptId: process.env.SID } }));
+  if (message.status === "tailing") { ok = true; ws.close(); }
+});
+ws.on("close", () => process.exit(ok ? 0 : 1));
+ws.on("error", () => process.exit(1));
+setTimeout(() => process.exit(1), 10000);
+' || { echo "query-token websocket tail failed"; exit 1; }
+echo "browser tail handshake completed"
 
 echo "== regenerating clients against the live api (drift coverage)"
 ( cd actias-web && npm run generateClient >/dev/null 2>&1 )

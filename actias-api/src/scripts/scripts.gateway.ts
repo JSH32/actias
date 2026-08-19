@@ -129,7 +129,13 @@ export class ScriptsGateway
    * map, so no message handler will serve it.
    */
   async handleConnection(client: WebSocket, request: IncomingMessage) {
-    const token = AuthGuard.extractTokenFromHeader(request as any);
+    // Browsers cannot set headers on a websocket upgrade, so the token may
+    // also arrive as a query parameter; same bearer, same checks.
+    const token =
+      AuthGuard.extractTokenFromHeader(request as any) ??
+      new URL(request.url ?? '', 'http://placeholder').searchParams.get(
+        'token',
+      );
     if (!token) {
       client.close(4401, 'Authentication required');
       return;
