@@ -140,6 +140,9 @@ const Script = () => {
                 <IconLink size="1rem" />
               </ActionIcon>
             </Anchor>
+            <Anchor href={`/script/${script.id}/playground`} size="sm">
+              Playground
+            </Anchor>
           </Group>
         </Stack>
         <Details script={script} />
