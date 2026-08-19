@@ -19,14 +19,10 @@ const rewrites = async () => {
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   rewrites,
+  // Runtime config travels through /api/config (window.PUBLIC_CONFIG),
+  // never publicRuntimeConfig: the latter is unreliable on the client.
   publicRuntimeConfig: {
-    apiRoot: API_URL,
-    workerBase: process.env.WORKER_BASE,
-    // Same idea with a _REVISION_ placeholder: the path form for local,
-    // or `https://_IDENTIFIER_--r-_REVISION_.<base>` on subdomain deployments.
-    workerRevisionBase:
-      process.env.WORKER_REVISION_BASE ||
-      'http://localhost:3002/_rev/_IDENTIFIER_/_REVISION_'
+    apiRoot: API_URL
   }
 }
 
