@@ -24,16 +24,14 @@ import {
 import { breadcrumbs } from '@/helpers/util';
 import { IconCheck, IconEye, IconLink, IconTrash } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
-import getConfig from 'next/config';
+import { getPublicConfig } from '@/pages/api/config';
 import { CodeHighlightTabs } from '@mantine/code-highlight';
 import LogTail from '@/components/LogTail';
 import { Badge, Card, SimpleGrid } from '@mantine/core';
 
-const { publicRuntimeConfig } = getConfig();
-
 /** Where one revision previews, current or not. */
 const previewUrl = (identifier: string, revisionId: string) =>
-  publicRuntimeConfig.workerRevisionBase
+  (getPublicConfig('workerRevisionBase') as string)
     .replaceAll('_IDENTIFIER_', identifier)
     .replaceAll('_REVISION_', revisionId);
 
@@ -131,7 +129,7 @@ const Script = () => {
           <Group>
             <Anchor
               target="_blank"
-              href={publicRuntimeConfig.workerBase.replaceAll(
+              href={(getPublicConfig('workerBase') as string).replaceAll(
                 '_IDENTIFIER_',
                 script.publicIdentifier,
               )}
