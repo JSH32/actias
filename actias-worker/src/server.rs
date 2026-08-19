@@ -118,6 +118,8 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     /// Where object snapshots ship to and restore from.
     pub object_store: Arc<ObjectStore>,
+    /// How long a snapshot replica serves reads before refreshing.
+    pub replica_ttl: Duration,
     /// Node-to-node calls ride this client with this token.
     pub internal_http: reqwest::Client,
     pub internal_token: String,
@@ -624,6 +626,8 @@ pub struct ObjectRouting {
     data_dir: std::path::PathBuf,
     db_max_bytes: u64,
     store: Arc<ObjectStore>,
+    metrics: Arc<Metrics>,
+    replica_ttl: Duration,
     internal_http: reqwest::Client,
     internal_token: String,
     idle_after: Duration,
@@ -654,6 +658,8 @@ impl ObjectRouting {
             data_dir: state.object_data_dir.clone(),
             db_max_bytes: state.object_db_max_bytes,
             store: state.object_store.clone(),
+            metrics: state.metrics.clone(),
+            replica_ttl: state.replica_ttl,
             internal_http: state.internal_http.clone(),
             internal_token: state.internal_token.clone(),
             idle_after: state.object_idle_after,
@@ -853,6 +859,31 @@ impl ObjectRouting {
         self.route_inner(target, true).await
     }
 
+    /// The replica file for one database, restored from the last shipped
+    /// snapshot and reused until it ages past the ttl. [`None`] when
+    /// nothing was ever shipped: the caller falls through to the owner.
+    async fn fresh_replica(&self, object_id: &str) -> Result<Option<std::path::PathBuf>, String> {
+        let dir = self.data_dir.join("replicas");
+        let replica = dir.join(format!("{object_id}.db"));
+
+        let fresh = std::fs::metadata(&replica)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age < self.replica_ttl);
+
+        if !fresh {
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .map_err(|e| e.to_string())?;
+            if !self.store.restore(object_id, &replica).await? {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(replica))
+    }
+
     /// One hop to the lease holder's /_object endpoint; its answer is the
     /// answer.
     async fn forward(
@@ -918,20 +949,29 @@ impl ObjectRouting {
             self.prepared.script.id, target.class, target.name
         );
 
-        // Reads that tolerate bounded staleness skip the mailbox entirely:
-        // a read-only connection beside the owner's file sees every
-        // committed write and waits on nothing. A database that has no
-        // file yet falls through, so first touch still creates and
-        // migrates it through the owner.
+        // Reads that tolerate bounded staleness skip the mailbox entirely.
+        // A resident object's own file is the freshest copy there is; a
+        // non-resident one reads from a snapshot replica restored beside
+        // it, refreshed past its ttl, which is the whole multi-node read
+        // story: reads never need the home. A database nothing has shipped
+        // yet falls through, so first touch still creates and migrates it
+        // through the owner.
         if target.class == actias_worker_core::extensions::objects::DATABASE_CLASS
             && matches!(target.method.as_str(), "read" | "read_one")
         {
-            let file = self
-                .data_dir
-                .join(format!("{}.db", blake3::hash(key.as_bytes()).to_hex()));
-            if file.exists()
-                && let Some(result) = read_bypass(&file, &target).await?
+            let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
+            let file = self.data_dir.join(format!("{object_id}.db"));
+
+            if self.host.is_resident(&key).await && file.exists() {
+                if let Some(result) = read_bypass(&file, &target).await? {
+                    return Ok(result);
+                }
+            } else if let Some(replica) = self.fresh_replica(&object_id).await?
+                && let Some(result) = read_bypass(&replica, &target).await?
             {
+                self.metrics
+                    .replica_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Ok(result);
             }
         }
@@ -1349,6 +1389,7 @@ mod tests {
             in_flight: Arc::default(),
             objects: Arc::default(),
             metrics: Arc::default(),
+            replica_ttl: Duration::from_secs(30),
             internal_http: reqwest::Client::new(),
             internal_token: "test-internal".to_owned(),
             object_store: Arc::new(ObjectStore::new(
