@@ -429,6 +429,11 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
 #[serde(rename_all = "camelCase")]
 struct ForwardedCall {
     script_id: String,
+    /// The caller's revision: the vm a forwarded call lands in runs the
+    /// same code it would have locally (previews included). Empty means
+    /// the current revision, which is what live sessions resolve to.
+    #[serde(default)]
+    revision_id: String,
     class: String,
     name: String,
     method: String,
@@ -464,10 +469,16 @@ async fn object_handler(
             .await
             .map_err(|e| e.to_string())?
             .into_inner();
-        let revision_id = script
-            .current_revision_id
-            .clone()
-            .ok_or("script has no current revision")?;
+        // The caller's revision travels with the call; falling back to
+        // current covers live sessions, whose revisions have no id.
+        let revision_id = if call.revision_id.is_empty() {
+            script
+                .current_revision_id
+                .clone()
+                .ok_or("script has no current revision")?
+        } else {
+            call.revision_id.clone()
+        };
         let prepared = cached_revision(&state, script, revision_id)
             .await
             .map_err(|e| e.to_string())?;
@@ -866,6 +877,7 @@ impl ObjectRouting {
             .header("x-actias-internal", self.internal_token.clone())
             .json(&serde_json::json!({
                 "scriptId": self.prepared.script.id,
+                "revisionId": self.prepared.revision_id,
                 "class": target.class,
                 "name": target.name,
                 "method": target.method,
@@ -1224,7 +1236,10 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             .insert(prepared.revision_id.clone());
         if fresh {
             let routing = ObjectRouting::new(&state, prepared.clone());
+            let armed_crons = state.armed_crons.clone();
+            let revision_id = prepared.revision_id.clone();
             tokio::spawn(async move {
+                let mut all_armed = true;
                 for event in cron_events {
                     let key = format!(
                         "{}/{}/{}",
@@ -1256,8 +1271,18 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                             .map_err(|e| e.to_string()),
                     };
                     if let Err(error) = armed {
+                        // Not armed here does not mean armed nowhere; but a
+                        // skip must not be permanent, so the next request
+                        // retries (the incumbent may die).
+                        all_armed = false;
                         error!(%error, event, "cron event could not be armed");
                     }
+                }
+                if !all_armed {
+                    armed_crons
+                        .lock()
+                        .expect("no poisoned lock")
+                        .remove(&revision_id);
                 }
             });
         }

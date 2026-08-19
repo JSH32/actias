@@ -131,10 +131,48 @@ services:
       # One SQLite file per durable object; the volume IS their persistence.
       - OBJECT_DATA_DIR=/data/objects
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
     volumes:
       - objects_data:/data/objects
     ports:
       - 3002:3000
+
+  # A second node: same image, its own object volume. Two nodes is what
+  # makes leases, forwarding and failover observable locally.
+  worker_service_2:
+    image: ghcr.io/jsh32/actias_worker_service:latest
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+      script_service:
+        condition: service_started
+      kv_service:
+        condition: service_started
+      redis:
+        condition: service_started
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-worker
+    environment:
+      - PORT=3000
+      - SCRIPT_SERVICE_URI=http://script_service:3000
+      - KV_SERVICE_URI=http://kv_service:3000
+      - REDIS_URL=redis://redis:6379
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
+      - OBJECT_DATA_DIR=/data/objects
+      - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
+    volumes:
+      - objects_data_2:/data/objects
+    ports:
+      - 3003:3000
 
   # The service image is its own migrator, so the schema can never drift from
   # the binary that applies it.
@@ -226,6 +264,7 @@ services:
 
 volumes:
   objects_data:
+  objects_data_2:
   scylla_data:
   postgres_data:
   redis_data:
