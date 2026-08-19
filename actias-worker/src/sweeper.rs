@@ -106,6 +106,13 @@ async fn wake(state: &AppState, own_key: &str) -> Result<(), String> {
         .resolve_handle(own_key)
         .await
         .map(|_| ())
+        .map_err(|error| match error {
+            // Someone else holds it now; their sweep is responsible.
+            crate::server::ResolveError::Elsewhere(holder) => {
+                format!("homed on {holder}; not ours to wake")
+            }
+            crate::server::ResolveError::Other(error) => error,
+        })
 }
 
 #[cfg(test)]

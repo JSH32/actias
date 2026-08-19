@@ -118,6 +118,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             bucket: config.s3_bucket.clone(),
             cache_bytes: config.blob_cache_bytes,
         }),
+        internal_http: reqwest::Client::new(),
+        internal_token: config.internal_token,
         object_store: std::sync::Arc::new(object_store::ObjectStore::new(
             blob_cache::s3_client(
                 &config.s3_endpoint,

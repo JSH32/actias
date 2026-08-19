@@ -31,6 +31,13 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ListNodesResponse>;
+        // One node by id, alive or NOT_FOUND; the address a forwarded object
+    // call travels to.
+        getNode(
+            data: GetNodeRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Node>;
         // Claims one object for one node. A lease lives exactly as long as its
     // holder stays in the registry, so expiry is node age-out; a claim
     // against a dead holder frees it and wins.
@@ -46,6 +53,9 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;
+    }
+    export interface GetNodeRequest {
+        nodeId?: string;
     }
     export interface AcquireLeaseRequest {
         // blake3 of the object identity, hex.

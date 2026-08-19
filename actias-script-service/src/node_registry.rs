@@ -11,8 +11,9 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::proto_node_registry::{
-    AcquireLeaseRequest, HeartbeatRequest, Lease, ListNodesResponse, Node, NodeRegistration,
-    RegisterNodeRequest, ReleaseLeaseRequest, node_registry_service_server::NodeRegistryService,
+    AcquireLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListNodesResponse, Node,
+    NodeRegistration, RegisterNodeRequest, ReleaseLeaseRequest,
+    node_registry_service_server::NodeRegistryService,
 };
 
 /// One registry row.
@@ -133,6 +134,23 @@ impl NodeRegistryService for NodeRegistry {
         Ok(Response::new(ListNodesResponse {
             nodes: nodes.into_iter().map(Node::from).collect(),
         }))
+    }
+
+    async fn get_node(&self, request: Request<GetNodeRequest>) -> Result<Response<Node>, Status> {
+        let id = Uuid::from_str(&request.get_ref().node_id)
+            .map_err(|_| Status::invalid_argument("Node id is not a uuid."))?;
+
+        let node = sqlx::query_as::<_, DbNode>(
+            "SELECT * FROM nodes WHERE id = $1 AND last_heartbeat > $2",
+        )
+        .bind(id)
+        .bind(self.cutoff())
+        .fetch_optional(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?
+        .ok_or_else(|| Status::not_found("No live node with that id."))?;
+
+        Ok(Response::new(node.into()))
     }
 
     async fn acquire_lease(
