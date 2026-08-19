@@ -86,6 +86,7 @@ impl WorkerCaches {
 /// deadline.
 pub fn router(state: AppState, max_body_bytes: usize) -> Router {
     Router::new()
+        .route("/_object", axum::routing::post(object_handler))
         .route("/_metrics", axum::routing::get(metrics_handler))
         .fallback(handle)
         .layer(DefaultBodyLimit::max(max_body_bytes))
@@ -117,6 +118,9 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     /// Where object snapshots ship to and restore from.
     pub object_store: Arc<ObjectStore>,
+    /// Node-to-node calls ride this client with this token.
+    pub internal_http: reqwest::Client,
+    pub internal_token: String,
     /// Revisions whose cron events were already armed by this process;
     /// arming is idempotent, this only spares the calls.
     pub armed_crons: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -420,6 +424,83 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
     Ok(response)
 }
 
+/// What one forwarded object call carries.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardedCall {
+    script_id: String,
+    class: String,
+    name: String,
+    method: String,
+    #[serde(default)]
+    arguments: Vec<serde_json::Value>,
+    #[serde(default)]
+    chain: Vec<String>,
+}
+
+/// The internal transport: another node's object call lands here, runs
+/// locally, and never forwards again.
+async fn object_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::Json(call): axum::Json<ForwardedCall>,
+) -> Response {
+    let authorized = headers
+        .get("x-actias-internal")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|token| token == state.internal_token);
+    if !authorized {
+        return text_response(StatusCode::UNAUTHORIZED, "Internal transport only.");
+    }
+
+    let answer = async {
+        let script = state
+            .clients
+            .script
+            .clone()
+            .query_script(FindScriptRequest {
+                query: Some(Query::Id(call.script_id.clone())),
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .into_inner();
+        let revision_id = script
+            .current_revision_id
+            .clone()
+            .ok_or("script has no current revision")?;
+        let prepared = cached_revision(&state, script, revision_id)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        ObjectRouting::new(&state, prepared)
+            .route_inner(
+                ObjectTarget {
+                    class: call.class,
+                    name: call.name,
+                    method: call.method,
+                    arguments: call.arguments,
+                    // The sender already extended the chain through the
+                    // target; dispatch reads it as-is.
+                    chain: call.chain.clone(),
+                },
+                false,
+            )
+            .await
+    }
+    .await;
+
+    let body = match answer {
+        Ok(result) => serde_json::json!({ "result": result }),
+        Err(error) => serde_json::json!({ "error": error }),
+    };
+    let mut response = Response::new(Body::from(body.to_string()));
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
 /// The prometheus exposition; gauges are measured at scrape time.
 async fn metrics_handler(State(state): State<AppState>) -> Response {
     let resident = state.objects.resident_count().await;
@@ -532,6 +613,8 @@ pub struct ObjectRouting {
     data_dir: std::path::PathBuf,
     db_max_bytes: u64,
     store: Arc<ObjectStore>,
+    internal_http: reqwest::Client,
+    internal_token: String,
     idle_after: Duration,
     node_identity: Arc<std::sync::RwLock<Option<String>>>,
     registry: NodeRegistryServiceClient<Channel>,
@@ -545,6 +628,13 @@ pub struct ObjectRouting {
 /// Per-call budget for one object method, mirroring the request deadline.
 const OBJECT_CALL_BUDGET_SECS: u64 = 10;
 
+/// Why an object could not be made resident here.
+pub enum ResolveError {
+    /// A live incumbent holds the lease; forward the call to it.
+    Elsewhere(String),
+    Other(String),
+}
+
 impl ObjectRouting {
     /// Routing for one prepared revision over this node's shared pieces.
     pub fn new(state: &AppState, prepared: Arc<PreparedRevision>) -> Arc<Self> {
@@ -553,6 +643,8 @@ impl ObjectRouting {
             data_dir: state.object_data_dir.clone(),
             db_max_bytes: state.object_db_max_bytes,
             store: state.object_store.clone(),
+            internal_http: state.internal_http.clone(),
+            internal_token: state.internal_token.clone(),
             idle_after: state.object_idle_after,
             node_identity: state.node_identity.clone(),
             registry: state.registry.clone(),
@@ -585,7 +677,46 @@ impl ObjectRouting {
     /// needed: lease claim, vm, storage, all of it. The cold-alarm sweep
     /// calls this too; making an object resident is all a wake takes,
     /// because the spawned task re-arms its persisted alarm itself.
+    ///
+    /// A refusal surfaces the incumbent, so the caller can forward there
+    /// instead of failing.
     pub async fn resolve_handle(
+        self: &Arc<Self>,
+        key: &str,
+    ) -> Result<actias_worker_core::objects::ObjectHandle, ResolveError> {
+        // A non-resident object needs the lease before anything spawns;
+        // a resident one already holds it (leases live as long as we do).
+        if !self.host.is_resident(key).await {
+            let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
+            let node_id = self
+                .node_identity
+                .read()
+                .expect("no poisoned lock")
+                .clone()
+                .ok_or_else(|| {
+                    ResolveError::Other(
+                        "This node has not finished registering; try again.".to_owned(),
+                    )
+                })?;
+
+            let lease = self
+                .registry
+                .clone()
+                .acquire_lease(AcquireLeaseRequest { object_id, node_id })
+                .await
+                .map_err(|e| ResolveError::Other(e.to_string()))?
+                .into_inner();
+            if !lease.acquired {
+                return Err(ResolveError::Elsewhere(lease.node_id));
+            }
+        }
+
+        self.resolve_local(key).await.map_err(ResolveError::Other)
+    }
+
+    /// The spawn itself, lease already settled (or re-settled by the
+    /// factory for the resident-revision-bump edge, where it is our own).
+    async fn resolve_local(
         self: &Arc<Self>,
         key: &str,
     ) -> Result<actias_worker_core::objects::ObjectHandle, String> {
@@ -708,6 +839,68 @@ impl ObjectRouting {
     }
 
     async fn route(self: Arc<Self>, target: ObjectTarget) -> Result<serde_json::Value, String> {
+        self.route_inner(target, true).await
+    }
+
+    /// One hop to the lease holder's /_object endpoint; its answer is the
+    /// answer.
+    async fn forward(
+        &self,
+        holder: &str,
+        target: &ObjectTarget,
+        chain: Vec<String>,
+    ) -> Result<serde_json::Value, String> {
+        let node = self
+            .registry
+            .clone()
+            .get_node(actias_worker_core::proto::node_registry::GetNodeRequest {
+                node_id: holder.to_owned(),
+            })
+            .await
+            .map_err(|e| format!("The object's home could not be resolved: {e}"))?
+            .into_inner();
+
+        let response = self
+            .internal_http
+            .post(format!("http://{}/_object", node.address))
+            .header("x-actias-internal", self.internal_token.clone())
+            .json(&serde_json::json!({
+                "scriptId": self.prepared.script.id,
+                "class": target.class,
+                "name": target.name,
+                "method": target.method,
+                "arguments": target.arguments,
+                // The chain already includes the target; the receiver
+                // dispatches without extending again.
+                "chain": chain,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("The object's home did not answer: {e}"))?;
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("The object's home answered garbage: {e}"))?;
+        match body.get("error") {
+            Some(error) if !error.is_null() => {
+                Err(error.as_str().unwrap_or("forwarded call failed").to_owned())
+            }
+            _ => Ok(body
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)),
+        }
+    }
+
+    /// The routing body; `allow_forward` is false for calls that already
+    /// arrived over the internal transport, so a stale lease view can
+    /// never bounce a call between nodes.
+    pub async fn route_inner(
+        self: Arc<Self>,
+        target: ObjectTarget,
+        allow_forward: bool,
+    ) -> Result<serde_json::Value, String> {
         let key = format!(
             "{}/{}/{}",
             self.prepared.script.id, target.class, target.name
@@ -731,8 +924,26 @@ impl ObjectRouting {
             }
         }
 
-        let chain = actias_worker_core::objects::extend_call_chain(&target.chain, &key)?;
-        let handle = self.resolve_handle(&key).await?;
+        // A forwarded call arrives with its chain already extended through
+        // this target; extending again would refuse it as its own cycle.
+        let chain = if target.chain.last().map(String::as_str) == Some(key.as_str()) {
+            target.chain.clone()
+        } else {
+            actias_worker_core::objects::extend_call_chain(&target.chain, &key)?
+        };
+        let handle = match self.resolve_handle(&key).await {
+            Ok(handle) => handle,
+            // The incumbent lives: the call belongs on its node, one hop.
+            Err(ResolveError::Elsewhere(holder)) if allow_forward => {
+                return self.forward(&holder, &target, chain).await;
+            }
+            Err(ResolveError::Elsewhere(holder)) => {
+                return Err(format!(
+                    "Object is homed on {holder}, but this call may not forward again."
+                ));
+            }
+            Err(ResolveError::Other(error)) => return Err(error),
+        };
 
         handle
             .call(
@@ -1022,6 +1233,10 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                         event
                     );
                     let armed = match routing.resolve_handle(&key).await {
+                        Err(ResolveError::Elsewhere(holder)) => {
+                            Err(format!("homed on {holder}; its node arms it"))
+                        }
+                        Err(ResolveError::Other(error)) => Err(error),
                         Ok(handle) => handle
                             .call(
                                 "__dispatch",
@@ -1039,7 +1254,6 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                             .await
                             .map(|_| ())
                             .map_err(|e| e.to_string()),
-                        Err(error) => Err(error),
                     };
                     if let Err(error) = armed {
                         error!(%error, event, "cron event could not be armed");
@@ -1110,6 +1324,8 @@ mod tests {
             in_flight: Arc::default(),
             objects: Arc::default(),
             metrics: Arc::default(),
+            internal_http: reqwest::Client::new(),
+            internal_token: "test-internal".to_owned(),
             object_store: Arc::new(ObjectStore::new(
                 crate::blob_cache::s3_client("http://127.0.0.1:1", "unused", "unused"),
                 "unused".to_owned(),
@@ -1525,6 +1741,24 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("actias_objects_resident 0"), "{text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_internal_transport_refuses_strangers() {
+        let app = router(state_with(empty_caches()), 4096);
+
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/_object")
+            .header("content-type", "application/json")
+            .header("x-actias-internal", "wrong-token")
+            .body(Body::from(
+                r#"{"scriptId":"s","class":"C","name":"n","method":"m"}"#,
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test(flavor = "multi_thread")]
