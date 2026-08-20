@@ -237,8 +237,8 @@ export class ResourcesController {
         'x-actias-internal': this.config.get<string>('worker.internalToken'),
       },
       body: JSON.stringify({
-        script_id: scriptId,
-        first_hop: true,
+        scriptId,
+        firstHop: true,
         class: '__database',
         name: database,
         method,
@@ -254,6 +254,8 @@ export class ResourcesController {
         typeof answer === 'string' ? answer : 'The query failed.',
       );
     }
-    return { rows: Array.isArray(answer) ? answer : [answer] };
+    // The object transport wraps its value: { result: rows }.
+    const rows = (answer as { result?: unknown })?.result;
+    return { rows: Array.isArray(rows) ? rows : rows == null ? [] : [rows] };
   }
 }
