@@ -110,7 +110,7 @@ pub fn unix_now_ms() -> i64 {
 
 /// A duration written the way scripts write them: "500ms", "30s", "10m",
 /// "24h", "7d", or a bare number of seconds.
-fn parse_duration_ms(raw: &str) -> Result<i64, String> {
+pub(crate) fn parse_duration_ms(raw: &str) -> Result<i64, String> {
     let raw = raw.trim();
     if let Ok(seconds) = raw.parse::<f64>() {
         return Ok((seconds * 1000.0) as i64);
