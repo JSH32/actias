@@ -47,6 +47,7 @@ export type { RevisionDataDto } from './models/RevisionDataDto';
 export type { RevisionFullDto } from './models/RevisionFullDto';
 export type { RunCancelDto } from './models/RunCancelDto';
 export type { RunSignalDto } from './models/RunSignalDto';
+export type { RunStartDto } from './models/RunStartDto';
 export type { ScriptConfigDto } from './models/ScriptConfigDto';
 export type { ScriptDto } from './models/ScriptDto';
 export type { ServiceTokenDto } from './models/ServiceTokenDto';

@@ -123,8 +123,15 @@ impl PlatformRead {
             Self::WorkflowStatus => {
                 let entries = workflow::read_journal_readonly(&mut storage)?;
                 let status = workflow::run_status(&entries);
+                let input = entries
+                    .first()
+                    .filter(|e| e.kind == workflow::EntryKind::Started)
+                    .map(|e| e.data["input"].clone())
+                    .unwrap_or(serde_json::Value::Null);
                 return Ok(serde_json::json!({
                     "status": status,
+                    "at": workflow::at_step(&entries),
+                    "input": input,
                     "entries": entries.len(),
                     "started_at": entries.first().map(|e| e.at),
                     "updated_at": entries.last().map(|e| e.at),

@@ -7,9 +7,11 @@ import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { ResourcesService } from './resources.service';
+import { randomUUID } from 'crypto';
 import {
   RunSignalDto,
   RunCancelDto,
+  RunStartDto,
   WorkflowDefinitionDto,
   WorkflowRunDetailDto,
   WorkflowRunDto,
@@ -104,6 +106,8 @@ export class WorkflowsController {
           status: String(head?.status?.status ?? 'unstarted'),
           detail: head?.status ?? {},
           entries: Number(head?.entries ?? 0),
+          atStep: String((head as { at?: unknown })?.at ?? ''),
+          input: (head as { input?: unknown })?.input ?? null,
           startedAt: head?.started_at ?? undefined,
           updatedAt: head?.updated_at ?? undefined,
         };
@@ -141,6 +145,27 @@ export class WorkflowsController {
       detail: head?.status ?? {},
       journal: rows as WorkflowRunDetailDto['journal'],
     };
+  }
+
+  /** Starts (or joins) a run; the id is the idempotency key, minted
+   * here when the caller has none. */
+  @Post(':definition/runs')
+  @AclByProject(AccessFields.SCRIPT_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async startRun(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('definition') definition: string,
+    @Body() body: RunStartDto,
+  ): Promise<Record<string, unknown>> {
+    const id = body.id?.trim() || `run-${randomUUID().slice(0, 8)}`;
+    const outcome = await this.resources.dispatchObject(
+      project,
+      WORKFLOW_CLASS,
+      `${definition}/${id}`,
+      'start',
+      [body.payload ?? null],
+    );
+    return { id, ...((outcome ?? {}) as Record<string, unknown>) };
   }
 
   /** Delivers a named signal into the run; a parked await resumes. */
