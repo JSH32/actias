@@ -4,7 +4,7 @@ import api from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
 import AccessControl from '@/components/AccessControl';
 import ScriptsPanel from '@/components/ScriptsPanel';
-import KvControl from '@/components/KvControl';
+import KvPanel from '@/components/KvPanel';
 import { TabPanel, Tabs } from '@/ui';
 
 const Project = () => {
@@ -55,9 +55,9 @@ const Project = () => {
         )}
         {permissions.permissions['KV_READ'] && (
           <TabPanel value="kv">
-            <KvControl
+            <KvPanel
               project={project}
-              write={permissions.permissions['KV_WRITE']}
+              write={!!permissions.permissions['KV_WRITE']}
             />
           </TabPanel>
         )}
