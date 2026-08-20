@@ -53,7 +53,9 @@
 }
 
 .navLink {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 8px;
   border-radius: var(--r2);
   color: var(--ink-2);
@@ -167,4 +169,21 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Narrow viewports: the sidebar collapses to its icons. */
+@media (max-width: 820px) {
+  .sidebar {
+    width: 52px;
+  }
+  .navLink span,
+  .navLabel,
+  .user > div,
+  .logout,
+  .brand span {
+    display: none;
+  }
+  .content {
+    padding: 12px;
+  }
 }

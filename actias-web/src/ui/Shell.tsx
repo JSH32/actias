@@ -8,16 +8,25 @@ import React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useLogout, useUser } from '@/helpers/auth';
+import { Icon, IconName } from './icons';
 import { Mark } from './Mark';
 import classes from './Shell.module.css';
 
 /** Routes outside the portal: they get the public chrome, not the shell. */
 const publicRoutes = [/^\/$/, /^\/login/, /^\/register/, /^\/blog/, /^\/posts/, /^\/404/];
 
-const globalNav = [
-  { label: 'All projects', href: '/projects' },
-  { label: 'Download', href: '/download' },
-  { label: 'Settings', href: '/settings' },
+const globalNav: { label: string; href: string; icon: IconName }[] = [
+  { label: 'All projects', href: '/projects', icon: 'projects' },
+  { label: 'Download', href: '/download', icon: 'download' },
+  { label: 'Settings', href: '/settings', icon: 'settings' },
+];
+
+/** Sections inside one project, as the design's sidebar draws them. */
+const projectNav: { label: string; slug: string; icon: IconName }[] = [
+  { label: 'Overview', slug: '', icon: 'overview' },
+  { label: 'Scripts', slug: 'scripts', icon: 'scripts' },
+  { label: 'KV', slug: 'kv', icon: 'kv' },
+  { label: 'Members', slug: 'members', icon: 'members' },
 ];
 
 /** Minimal chrome for public pages: wordmark, log in, nothing else. */
@@ -65,6 +74,30 @@ export function Shell({ children }: React.PropsWithChildren) {
           <span>ACTIAS</span>
         </Link>
         <nav className={classes.nav}>
+          {typeof router.query.id === 'string' &&
+            router.pathname.startsWith('/project/') && (
+              <>
+                <div className={classes.navLabel}>Project</div>
+                {projectNav.map((item) => {
+                  const href = `/project/${router.query.id}${
+                    item.slug ? `/${item.slug}` : ''
+                  }`;
+                  const active = item.slug
+                    ? router.asPath.split('?')[0].endsWith(`/${item.slug}`)
+                    : router.asPath.split('?')[0].endsWith(String(router.query.id));
+                  return (
+                    <Link
+                      key={item.slug}
+                      href={href}
+                      className={active ? classes.navLinkActive : classes.navLink}
+                    >
+                      <Icon name={item.icon} />
+                      <span>{item.label}</span>
+                    </Link>
+                  );
+                })}
+              </>
+            )}
           <div className={classes.navLabel}>Workspace</div>
           {globalNav.map((item) => (
             <Link
@@ -76,7 +109,8 @@ export function Shell({ children }: React.PropsWithChildren) {
                   : classes.navLink
               }
             >
-              {item.label}
+              <Icon name={item.icon} />
+              <span>{item.label}</span>
             </Link>
           ))}
           {user?.admin && (
