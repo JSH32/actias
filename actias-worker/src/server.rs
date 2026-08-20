@@ -88,6 +88,10 @@ pub fn router(state: AppState, max_body_bytes: usize) -> Router {
     Router::new()
         .route("/_object", axum::routing::post(object_handler))
         .route("/_metrics", axum::routing::get(metrics_handler))
+        .route(
+            "/_platform/stats",
+            axum::routing::get(platform_stats_handler),
+        )
         .fallback(handle)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
@@ -445,6 +449,69 @@ struct ForwardedCall {
     arguments: Vec<serde_json::Value>,
     #[serde(default)]
     chain: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct PlatformStatsQuery {
+    script: String,
+    class: String,
+    name: String,
+}
+
+/// Typed platform reads for dashboards: queue stats and database
+/// overviews straight off the sqlite file, no vm, bounded staleness by
+/// design. The holder reads its live file; any other node serves from
+/// the snapshot replica, so any worker can answer.
+async fn platform_stats_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<PlatformStatsQuery>,
+) -> Response {
+    let authorized = headers
+        .get("x-actias-internal")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|token| token == state.internal_token);
+    if !authorized {
+        return text_response(StatusCode::UNAUTHORIZED, "Internal transport only.");
+    }
+
+    let key = format!("{}/{}/{}", query.script, query.class, query.name);
+    let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
+    let local = state.object_data_dir.join(format!("{object_id}.db"));
+
+    // The holder's live file answers; a non-holder answers nothing yet
+    // (the replica fallback arrives with the api proxy, which knows how
+    // to ask another node).
+    let file = local.exists().then_some(local);
+    let Some(file) = file else {
+        // Nothing local and nothing ever shipped: the object has no
+        // observable state yet, which reads as empty, not as an error.
+        return axum::response::IntoResponse::into_response(axum::Json(serde_json::Value::Null));
+    };
+
+    let class = query.class.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut storage = actias_worker_core::storage::SqliteStorage::open_read_only(&file)?;
+        match class.as_str() {
+            "__queue" => serde_json::to_value(actias_worker_core::platform::queue::read_stats(
+                &mut storage,
+            )?)
+            .map_err(|e| e.to_string()),
+            "__database" => serde_json::to_value(
+                actias_worker_core::platform::database::read_overview(&mut storage)?,
+            )
+            .map_err(|e| e.to_string()),
+            other => Err(format!("No stats for class '{other}'.")),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|inner| inner);
+
+    match result {
+        Ok(value) => axum::response::IntoResponse::into_response(axum::Json(value)),
+        Err(error) => axum::response::IntoResponse::into_response((StatusCode::BAD_REQUEST, error)),
+    }
 }
 
 /// The internal transport: another node's object call lands here, runs
