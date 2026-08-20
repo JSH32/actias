@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import api, { showError } from '@/helpers/api';
 import { ProjectDto, ResourceInstanceDto, TableInfoDto } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
-import { Button, Card, Chip } from '@/ui';
+import { Button, Card, Chip, EmptyState } from '@/ui';
 import classes from '../../../components/KvPanel.module.css';
 import shared from '../../projects.module.css';
 
@@ -170,14 +170,12 @@ function Databases({
           </Card>
         </div>
       ) : (
-        <Card className={shared.empty}>
-          <p>
-            No databases yet. Declare one in a script; migrations apply at its
-            first touch.
-          </p>
-          <code className={shared.cli}>
-            local db = database &quot;main&quot;
-          </code>
+        <Card>
+          <EmptyState
+            title="No databases here"
+            body="Declare one in a script and publish; migrations apply at its first touch, and the tables show up right here."
+            cli={'local db = database "main"'}
+          />
         </Card>
       )}
     </div>

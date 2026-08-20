@@ -10,7 +10,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { ProjectDto, ScriptDto } from '@/client';
-import { Button, Card, Field } from '@/ui';
+import { Button, Card, EmptyState, Field } from '@/ui';
 import classes from '../pages/projects.module.css';
 
 export default function ScriptsPanel({
@@ -113,12 +113,12 @@ export default function ScriptsPanel({
       )}
 
       {scripts && scripts.length === 0 ? (
-        <Card className={classes.empty}>
-          <p>
-            No scripts yet. A script gets a URL the moment its first revision
-            publishes.
-          </p>
-          <code className={classes.cli}>actias init && actias publish</code>
+        <Card>
+          <EmptyState
+            title="No scripts yet"
+            body="A script gets a URL the moment its first revision publishes."
+            cli="actias init && actias publish"
+          />
         </Card>
       ) : (
         <Card>

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import api from '@/helpers/api';
 import { ProjectDto, ResourceInstanceDto } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
-import { Card, Chip } from '@/ui';
+import { Card, Chip, EmptyState } from '@/ui';
 import classes from '../../../components/KvPanel.module.css';
 import shared from '../../projects.module.css';
 
@@ -117,12 +117,12 @@ function Queues({ project }: { project: ProjectDto }) {
           </div>
         </div>
       ) : (
-        <Card className={shared.empty}>
-          <p>
-            No queues yet. Declare one in a script and publish; it exists from
-            the first send.
-          </p>
-          <code className={shared.cli}>local jobs = queue &quot;jobs&quot;</code>
+        <Card>
+          <EmptyState
+            title="No queues here"
+            body="A queue exists because a script declared it. Declare one and publish; it exists from the first send."
+            cli={'local jobs = queue "jobs"'}
+          />
         </Card>
       )}
     </div>
