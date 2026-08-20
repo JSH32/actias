@@ -9,9 +9,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
 import { ProjectDto, ScriptDto } from '@/client';
-import { Button, Card, EmptyState, Field } from '@/ui';
-import classes from '../pages/projects.module.css';
+import { EmptyState, Field } from '@/ui';
+import { StatePill } from '@/components/inspector';
+import dialogClasses from '../pages/projects.module.css';
+import classes from './inspector.module.css';
 import { toast } from '@/ui/toast';
+
+const COLUMNS = '1fr 110px 170px 110px 60px';
 
 export default function ScriptsPanel({
   project,
@@ -77,92 +81,130 @@ export default function ScriptsPanel({
   );
 
   return (
-    <div>
-      {write && (
+    <div className={classes.frame}>
+      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
         <div
           style={{
+            maxWidth: 1200,
+            padding: '22px 20px',
             display: 'flex',
-            justifyContent: 'flex-end',
-            marginBottom: 12,
+            flexDirection: 'column',
+            gap: 16,
           }}
         >
-          <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
-            <Dialog.Trigger asChild>
-              <Button variant="primary">New script</Button>
-            </Dialog.Trigger>
-            <Dialog.Portal>
-              <Dialog.Overlay className={classes.overlay} />
-              <Dialog.Content className={classes.dialog}>
-                <Dialog.Title className={classes.dialogTitle}>
-                  New script
-                </Dialog.Title>
-                <form onSubmit={createScript}>
-                  <Field
-                    label="Public identifier"
-                    name="publicIdentifier"
-                    required
-                    autoFocus
-                  />
-                  <div className={classes.dialogActions}>
-                    <Dialog.Close asChild>
-                      <Button type="button">Cancel</Button>
-                    </Dialog.Close>
-                    <Button type="submit" variant="primary">
-                      Create
-                    </Button>
-                  </div>
-                </form>
-              </Dialog.Content>
-            </Dialog.Portal>
-          </Dialog.Root>
-        </div>
-      )}
+          <div className={classes.headTop}>
+            <div className={classes.headMain} style={{ gap: 7 }}>
+              <h1
+                style={{
+                  margin: 0,
+                  fontSize: 20,
+                  fontWeight: 650,
+                  letterSpacing: '-0.01em',
+                }}
+              >
+                Scripts
+              </h1>
+              <p className={classes.lede} style={{ maxWidth: '76ch' }}>
+                A script gets a URL the moment its first revision publishes.
+                Identifiers are immutable and become the subdomain.
+              </p>
+            </div>
+            {write && (
+              <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
+                <Dialog.Trigger asChild>
+                  <button className={classes.accentButton}>New script</button>
+                </Dialog.Trigger>
+                <Dialog.Portal>
+                  <Dialog.Overlay className={dialogClasses.overlay} />
+                  <Dialog.Content className={dialogClasses.dialog}>
+                    <Dialog.Title className={dialogClasses.dialogTitle}>
+                      New script
+                    </Dialog.Title>
+                    <form onSubmit={createScript}>
+                      <Field
+                        label="Public identifier"
+                        name="publicIdentifier"
+                        required
+                        autoFocus
+                      />
+                      <div className={dialogClasses.dialogActions}>
+                        <Dialog.Close asChild>
+                          <button className={classes.ghostButton} type="button">
+                            Cancel
+                          </button>
+                        </Dialog.Close>
+                        <button className={classes.accentButton} type="submit">
+                          Create
+                        </button>
+                      </div>
+                    </form>
+                  </Dialog.Content>
+                </Dialog.Portal>
+              </Dialog.Root>
+            )}
+          </div>
 
-      {scripts && scripts.length === 0 ? (
-        <EmptyState
-          title="No scripts yet"
-          body="A script gets a URL the moment its first revision publishes."
-          cli="actias init && actias publish"
-        />
-      ) : (
-        <Card>
-          <table className={classes.table}>
-            <thead>
-              <tr>
-                <th>identifier</th>
-                <th>last updated</th>
-                {write && <th />}
-              </tr>
-            </thead>
-            <tbody>
+          {scripts && scripts.length === 0 ? (
+            <EmptyState
+              title="No scripts yet"
+              body="A script gets a URL the moment its first revision publishes."
+              cli="actias init && actias publish"
+            />
+          ) : (
+            <div className={classes.card}>
+              <div
+                className={classes.tableHead}
+                style={{ gridTemplateColumns: COLUMNS, position: 'static' }}
+              >
+                <span>identifier</span>
+                <span>revision</span>
+                <span>updated</span>
+                <span>state</span>
+                <span />
+              </div>
               {(scripts ?? []).map((script: ScriptDto) => (
-                <tr
+                <div
                   key={script.id}
+                  className={classes.row}
+                  style={{ gridTemplateColumns: COLUMNS, cursor: 'pointer' }}
                   onClick={() => router.push(`/script/${script.id}`)}
                 >
-                  <td className={classes.name}>{script.publicIdentifier}</td>
-                  <td className={classes.meta}>
+                  <span className={classes.cellMono}>
+                    {script.publicIdentifier}
+                  </span>
+                  <span className={classes.cellDim}>
+                    {script.currentRevisionId?.slice(0, 8) ?? '\u2014'}
+                  </span>
+                  <span className={classes.cellDim}>
                     {new Date(script.lastUpdated).toLocaleString()}
-                  </td>
-                  {write && (
-                    <td style={{ textAlign: 'right' }}>
-                      <Button
-                        variant="danger"
+                  </span>
+                  <span>
+                    {script.currentRevisionId ? (
+                      <StatePill state="live" color="var(--luna)" />
+                    ) : (
+                      <span className={classes.cellDim}>no revision</span>
+                    )}
+                  </span>
+                  <span className={classes.cellRight}>
+                    {write && (
+                      <button
+                        className={classes.smallButton}
+                        style={{ color: 'var(--err)' }}
                         onClick={(event) => {
                           event.stopPropagation();
                           deleteScript(script);
                         }}
                       >
-                        Delete
-                      </Button>
-                    </td>
-                  )}
-                </tr>
+                        delete
+                      </button>
+                    )}
+                  </span>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -865,3 +865,266 @@
   color: var(--ink-3);
   line-height: 1.5;
 }
+
+/* Design 02/05's framed card: an r3 region with a titled 38px header.
+ * Frames follow the design; nothing else gets one. */
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  background: var(--night-1);
+  overflow: hidden;
+}
+.cardHead {
+  height: 38px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.cardTitle {
+  font-size: 15px;
+  font-weight: 650;
+}
+.cardMeta {
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
+.cardBody {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* One declared capability: kind dot, kind word, quoted name. */
+.kindChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: var(--r1);
+  border: 1px solid var(--line);
+  background: var(--night-2);
+  font: 500 12px var(--mono);
+  color: var(--ink-1);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.kindDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.kindName {
+  color: var(--ink-2);
+}
+
+/* Environments rows: name, target revision, and how it points. */
+.envRow {
+  display: grid;
+  grid-template-columns: 1fr 84px 64px;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+.envRow:last-child {
+  border-bottom: 0;
+}
+.envName {
+  font-family: var(--mono);
+  color: var(--ink-1);
+}
+.envTarget {
+  font-family: var(--mono);
+  color: var(--ink-2);
+}
+.envHint {
+  text-align: right;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
+.envOpen {
+  text-align: right;
+  font: 400 11px var(--mono);
+  color: var(--luna);
+  text-decoration: none;
+}
+.envOpen:hover {
+  text-decoration: underline;
+}
+
+/* Design 05's overview stat cards: a number a click goes somewhere. */
+.overviewCard {
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  background: var(--night-1);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-decoration: none;
+  color: inherit;
+}
+.overviewCard:hover {
+  border-color: var(--luna-edge);
+}
+.overviewLabel {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.overviewValue {
+  font: 650 24px var(--mono);
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.overviewSub {
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
+
+/* The tiny bordered word beside a name (owner, immutable). */
+.wordChip {
+  font: 400 10px var(--mono);
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r1);
+  padding: 1px 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Design 07's access matrix: member column, one 16px bit box per
+ * permission, owner bits locked luna. */
+.matrixHeadCell {
+  padding: 8px 16px;
+  display: flex;
+  align-items: flex-end;
+  font: 500 11px var(--ui);
+  color: var(--ink-2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.matrixGroupHead {
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  padding: 8px 0 6px;
+}
+.matrixGroupName {
+  font: 500 10px var(--mono);
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.matrixBitNames {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  font: 400 10px var(--mono);
+  color: var(--ink-3);
+  text-align: center;
+}
+.matrixRow {
+  display: grid;
+  height: 44px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line-soft);
+}
+.matrixRow:last-child {
+  border-bottom: 0;
+}
+.matrixMember {
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.matrixAvatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 650 10px var(--mono);
+  background: rgba(167, 139, 250, 0.14);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  color: var(--kind-obj);
+}
+.matrixAvatarOwner {
+  composes: matrixAvatar;
+  background: var(--luna-tint);
+  border-color: var(--luna-edge);
+  color: var(--luna);
+}
+.matrixName {
+  font: 500 12px var(--mono);
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ownerChip {
+  margin-left: auto;
+  font: 400 10px var(--mono);
+  color: var(--luna);
+  border: 1px solid var(--luna-edge);
+  background: var(--luna-tint);
+  border-radius: var(--r1);
+  padding: 1px 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.matrixCell {
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.matrixCellGroupStart {
+  composes: matrixCell;
+  border-left-color: var(--line);
+}
+.bitBox {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--night-2);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.bitBoxOn {
+  composes: bitBox;
+  background: var(--luna);
+  border-color: var(--luna);
+}
+.bitBoxLocked {
+  composes: bitBox;
+  background: var(--luna-tint);
+  border-color: var(--luna-edge);
+  cursor: not-allowed;
+}
+.matrixRemove {
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

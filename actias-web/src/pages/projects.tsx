@@ -3,15 +3,19 @@ import { useRouter } from 'next/router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
-import { AuthGuard } from '@/helpers/auth';
+import { AuthGuard, useUser } from '@/helpers/auth';
 import { ProjectDto } from '@/client';
-import { Button, Card, EmptyState, Field, PageBody } from '@/ui';
-import classes from './projects.module.css';
+import { EmptyState, Field } from '@/ui';
+import dialogClasses from './projects.module.css';
+import classes from '../components/inspector.module.css';
 import { toast } from '@/ui/toast';
+
+const COLUMNS = '1fr 116px 40px';
 
 function Projects() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { data: user } = useUser();
   const [createOpen, setCreateOpen] = React.useState(false);
 
   const { data: projects } = useQuery({
@@ -46,73 +50,117 @@ function Projects() {
   );
 
   return (
-    <div className={classes.page}>
-      <div className={classes.head}>
-        <div>
-          <h1 className={classes.title}>Projects</h1>
-          <p className={classes.lede}>
-            A project owns scripts, KV namespaces, databases and an access list.
-            Everything a script can reach is scoped to the project that holds
-            it.
-          </p>
-        </div>
-        <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
-          <Dialog.Trigger asChild>
-            <Button variant="primary">New project</Button>
-          </Dialog.Trigger>
-          <Dialog.Portal>
-            <Dialog.Overlay className={classes.overlay} />
-            <Dialog.Content className={classes.dialog}>
-              <Dialog.Title className={classes.dialogTitle}>
-                New project
-              </Dialog.Title>
-              <form onSubmit={createProject}>
-                <Field label="Name" name="name" required autoFocus />
-                <div className={classes.dialogActions}>
-                  <Dialog.Close asChild>
-                    <Button type="button">Cancel</Button>
-                  </Dialog.Close>
-                  <Button type="submit" variant="primary">
-                    Create
-                  </Button>
-                </div>
-              </form>
-            </Dialog.Content>
-          </Dialog.Portal>
-        </Dialog.Root>
-      </div>
+    <div className={classes.frame}>
+      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        <div
+          style={{
+            maxWidth: 1200,
+            padding: '22px 20px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 16,
+          }}
+        >
+          <div className={classes.headTop}>
+            <div className={classes.headMain} style={{ gap: 7 }}>
+              <h1
+                style={{
+                  margin: 0,
+                  fontSize: 20,
+                  fontWeight: 650,
+                  letterSpacing: '-0.01em',
+                }}
+              >
+                Projects
+              </h1>
+              <p className={classes.lede} style={{ maxWidth: '76ch' }}>
+                A project owns scripts, KV namespaces, databases and an access
+                list. Everything a script can reach is scoped to the project
+                that holds it.
+              </p>
+            </div>
+            <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
+              <Dialog.Trigger asChild>
+                <button className={classes.accentButton}>New project</button>
+              </Dialog.Trigger>
+              <Dialog.Portal>
+                <Dialog.Overlay className={dialogClasses.overlay} />
+                <Dialog.Content className={dialogClasses.dialog}>
+                  <Dialog.Title className={dialogClasses.dialogTitle}>
+                    New project
+                  </Dialog.Title>
+                  <form onSubmit={createProject}>
+                    <Field label="Name" name="name" required autoFocus />
+                    <div className={dialogClasses.dialogActions}>
+                      <Dialog.Close asChild>
+                        <button className={classes.ghostButton} type="button">
+                          Cancel
+                        </button>
+                      </Dialog.Close>
+                      <button className={classes.accentButton} type="submit">
+                        Create
+                      </button>
+                    </div>
+                  </form>
+                </Dialog.Content>
+              </Dialog.Portal>
+            </Dialog.Root>
+          </div>
 
-      {projects && projects.length === 0 ? (
-        <EmptyState
-          title="No projects yet"
-          body="A project is the box everything else lives in. Make one, then publish a script into it: the script gets a URL the moment the first revision lands."
-          cli="actias project create"
-        />
-      ) : (
-        <Card>
-          <table className={classes.table}>
-            <thead>
-              <tr>
-                <th>name</th>
-                <th>created</th>
-              </tr>
-            </thead>
-            <tbody>
+          {projects && projects.length === 0 ? (
+            <EmptyState
+              title="No projects yet"
+              body="A project is the box everything else lives in. Make one, then publish a script into it: the script gets a URL the moment the first revision lands."
+              cli="actias project create"
+            />
+          ) : (
+            <div className={classes.card}>
+              <div
+                className={classes.tableHead}
+                style={{ gridTemplateColumns: COLUMNS, position: 'static' }}
+              >
+                <span>name</span>
+                <span style={{ textAlign: 'right' }}>created</span>
+                <span />
+              </div>
               {(projects ?? []).map((project: ProjectDto) => (
-                <tr
+                <div
                   key={project.id}
+                  className={classes.row}
+                  style={{ gridTemplateColumns: COLUMNS, cursor: 'pointer' }}
                   onClick={() => router.push(`/project/${project.id}`)}
                 >
-                  <td className={classes.name}>{project.name}</td>
-                  <td className={classes.meta}>
+                  <span
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 9,
+                      minWidth: 0,
+                    }}
+                  >
+                    <span className={classes.cellMono}>{project.name}</span>
+                    {user?.id === project.ownerId && (
+                      <span className={classes.wordChip}>owner</span>
+                    )}
+                  </span>
+                  <span
+                    className={classes.cellDim}
+                    style={{ textAlign: 'right' }}
+                  >
                     {new Date(project.createdAt).toLocaleDateString()}
-                  </td>
-                </tr>
+                  </span>
+                  <span
+                    className={classes.cellDim}
+                    style={{ textAlign: 'right' }}
+                  >
+                    ›
+                  </span>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -120,9 +168,7 @@ function Projects() {
 export default function ProjectsPage() {
   return (
     <AuthGuard>
-      <PageBody>
-        <Projects />
-      </PageBody>
+      <Projects />
     </AuthGuard>
   );
 }

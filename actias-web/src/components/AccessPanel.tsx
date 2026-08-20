@@ -8,9 +8,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
 import { AclListDto, ProjectDto, UserDto } from '@/client';
-import { Button, Card } from '@/ui';
-import shared from '../pages/projects.module.css';
-import classes from './KvPanel.module.css';
+import dialogClasses from '../pages/projects.module.css';
+import classes from './inspector.module.css';
 import { toast } from '@/ui/toast';
 
 /** Permission strings group as RESOURCE_BIT; the matrix renders groups. */
@@ -103,106 +102,233 @@ export default function AccessPanel({
   };
 
   const groups = groupPermissions(allPermissions ?? []);
+  const bits = groups.flatMap(([, permissions]) => permissions);
+  const columns = `260px repeat(${Math.max(bits.length, 1)}, 1fr) 44px`;
 
   return (
-    <div>
-      <div className={classes.head}>
-        <p className={classes.lede}>
-          Read and write are separate bits per resource, so read-without-write
-          is the normal case rather than an edge case. Granting KV_WRITE lets a
-          member change values production reads on the next request; it does not
-          let them publish, that is SCRIPT_WRITE.
-        </p>
-        {write && (
-          <Dialog.Root open={inviteOpen} onOpenChange={setInviteOpen}>
-            <Dialog.Trigger asChild>
-              <Button variant="primary">Invite member</Button>
-            </Dialog.Trigger>
-            <Dialog.Portal>
-              <Dialog.Overlay className={shared.overlay} />
-              <Dialog.Content className={shared.dialog}>
-                <Dialog.Title className={shared.dialogTitle}>
-                  Invite member
-                </Dialog.Title>
-                <label>
-                  <span className={shared.dialogTitle}>Search users</span>
-                  <input
-                    className={classes.value}
-                    style={{ width: '100%', padding: 8 }}
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    autoFocus
-                  />
-                </label>
-                <div style={{ marginTop: 10 }}>
-                  {(candidates ?? []).slice(0, 6).map((user: UserDto) => (
-                    <Button
-                      key={user.id}
-                      variant="quiet"
-                      style={{ display: 'block', width: '100%', marginTop: 4 }}
-                      onClick={() => invite(user)}
+    <div className={classes.frame}>
+      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        <div
+          style={{
+            maxWidth: 1200,
+            padding: '22px 20px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 16,
+          }}
+        >
+          <div className={classes.headTop}>
+            <div className={classes.headMain} style={{ gap: 7 }}>
+              <h1
+                style={{
+                  margin: 0,
+                  fontSize: 20,
+                  fontWeight: 650,
+                  letterSpacing: '-0.01em',
+                }}
+              >
+                Members
+              </h1>
+              <p className={classes.lede} style={{ maxWidth: '76ch' }}>
+                Read and write are separate bits per resource, so
+                read-without-write is the normal case rather than an edge case.
+                Granting <code>KV_WRITE</code> lets a member change values
+                production reads on the next request; it does not let them
+                publish, that is <code>SCRIPT_WRITE</code>.
+              </p>
+            </div>
+            {write && (
+              <Dialog.Root open={inviteOpen} onOpenChange={setInviteOpen}>
+                <Dialog.Trigger asChild>
+                  <button className={classes.accentButton}>
+                    Invite member
+                  </button>
+                </Dialog.Trigger>
+                <Dialog.Portal>
+                  <Dialog.Overlay className={dialogClasses.overlay} />
+                  <Dialog.Content className={dialogClasses.dialog}>
+                    <Dialog.Title className={dialogClasses.dialogTitle}>
+                      Invite member
+                    </Dialog.Title>
+                    <input
+                      className={classes.searchInput}
+                      style={{
+                        width: '100%',
+                        height: 30,
+                        padding: '0 10px',
+                        border: '1px solid var(--line)',
+                        borderRadius: 'var(--r2)',
+                      }}
+                      placeholder="Search users"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      autoFocus
+                    />
+                    <div
+                      style={{
+                        marginTop: 10,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 4,
+                      }}
                     >
-                      {user.username}
-                    </Button>
-                  ))}
-                </div>
-              </Dialog.Content>
-            </Dialog.Portal>
-          </Dialog.Root>
-        )}
-      </div>
+                      {(candidates ?? []).slice(0, 6).map((user: UserDto) => (
+                        <button
+                          key={user.id}
+                          className={classes.ghostButton}
+                          style={{ width: '100%', justifyContent: 'start' }}
+                          onClick={() => invite(user)}
+                        >
+                          {user.username}
+                        </button>
+                      ))}
+                    </div>
+                  </Dialog.Content>
+                </Dialog.Portal>
+              </Dialog.Root>
+            )}
+          </div>
 
-      <Card>
-        <table className={shared.table}>
-          <thead>
-            <tr>
-              <th>member</th>
-              {groups.map(([resource]) => (
-                <th key={resource} style={{ textAlign: 'center' }}>
-                  {resource.toLowerCase()}
-                  <div style={{ fontWeight: 400 }}>read · write</div>
-                </th>
-              ))}
-              {write && <th />}
-            </tr>
-          </thead>
-          <tbody>
-            {(members ?? []).map((entry: AclListDto) => (
-              <tr key={entry.user.id}>
-                <td className={shared.name}>{entry.user.username}</td>
-                {groups.map(([, permissions]) => (
-                  <td
-                    key={permissions[0]}
-                    style={{ textAlign: 'center', whiteSpace: 'nowrap' }}
-                  >
-                    {permissions.map((permission: string) => (
-                      <input
-                        key={permission}
-                        type="checkbox"
-                        checked={entry.permissions[permission] === true}
-                        disabled={!write}
-                        onChange={() => toggle(entry, permission)}
-                        title={permission}
-                        style={{ accentColor: 'var(--luna)', margin: '0 4px' }}
-                      />
-                    ))}
-                  </td>
-                ))}
-                {write && (
-                  <td style={{ textAlign: 'right' }}>
-                    <Button
-                      variant="danger"
-                      onClick={() => setGrants(entry.user, [])}
+          <div className={classes.card}>
+            <div style={{ overflowX: 'auto' }}>
+              <div style={{ minWidth: 900 }}>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: columns,
+                    borderBottom: '1px solid var(--line)',
+                  }}
+                >
+                  <div className={classes.matrixHeadCell}>member</div>
+                  {groups.map(([resource, permissions]) => (
+                    <div
+                      key={resource}
+                      className={classes.matrixGroupHead}
+                      style={{ gridColumn: `span ${permissions.length}` }}
                     >
-                      Remove
-                    </Button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+                      <span className={classes.matrixGroupName}>
+                        {resource}
+                      </span>
+                      <span className={classes.matrixBitNames}>
+                        <span>read</span>
+                        <span>write</span>
+                      </span>
+                    </div>
+                  ))}
+                  <div />
+                </div>
+
+                {(members ?? []).map((entry: AclListDto) => {
+                  const isOwner = entry.user.id === project.ownerId;
+                  return (
+                    <div
+                      key={entry.user.id}
+                      className={classes.matrixRow}
+                      style={{ gridTemplateColumns: columns }}
+                    >
+                      <div className={classes.matrixMember}>
+                        <span
+                          className={
+                            isOwner
+                              ? classes.matrixAvatarOwner
+                              : classes.matrixAvatar
+                          }
+                        >
+                          {entry.user.username.slice(0, 2).toLowerCase()}
+                        </span>
+                        <span className={classes.matrixName}>
+                          {entry.user.username}
+                        </span>
+                        {isOwner && (
+                          <span
+                            className={classes.ownerChip}
+                            title="The owner implicitly holds every permission and cannot be edited."
+                          >
+                            owner
+                          </span>
+                        )}
+                      </div>
+                      {groups.flatMap(([, permissions]) =>
+                        permissions.map((permission, index) => {
+                          const on =
+                            isOwner || entry.permissions[permission] === true;
+                          const locked = isOwner || !write;
+                          return (
+                            <div
+                              key={permission}
+                              className={
+                                index === 0
+                                  ? classes.matrixCellGroupStart
+                                  : classes.matrixCell
+                              }
+                            >
+                              <button
+                                className={
+                                  locked && on
+                                    ? classes.bitBoxLocked
+                                    : on
+                                    ? classes.bitBoxOn
+                                    : classes.bitBox
+                                }
+                                title={
+                                  isOwner
+                                    ? `The owner implicitly holds ${permission}.`
+                                    : permission
+                                }
+                                disabled={locked}
+                                onClick={() => toggle(entry, permission)}
+                              >
+                                {on && (
+                                  <svg
+                                    width="11"
+                                    height="11"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke={
+                                      locked ? 'var(--luna)' : 'var(--night-0)'
+                                    }
+                                    strokeWidth="3.2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                  >
+                                    <path d="M5 12l5 5l9 -9" />
+                                  </svg>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        }),
+                      )}
+                      <div className={classes.matrixRemove}>
+                        {write && !isOwner && (
+                          <button
+                            className={classes.copy}
+                            title="Remove every grant"
+                            onClick={() => setGrants(entry.user, [])}
+                          >
+                            <svg
+                              width="13"
+                              height="13"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                            >
+                              <path d="M18 6l-12 12" />
+                              <path d="M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
