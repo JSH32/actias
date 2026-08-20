@@ -134,3 +134,31 @@
 .content {
   padding: 20px;
 }
+
+.publicPage {
+  min-height: 100vh;
+  background: var(--night-0);
+  color: var(--ink-1);
+  font-family: var(--ui);
+  font-size: 13px;
+}
+
+.publicHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 52px;
+  border-bottom: 1px solid var(--line);
+}
+
+.publicNav {
+  display: flex;
+  gap: 18px;
+}
+.publicNav a {
+  color: var(--ink-2);
+}
+.publicNav a:hover {
+  color: var(--ink-1);
+}
