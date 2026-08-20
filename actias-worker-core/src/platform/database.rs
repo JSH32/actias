@@ -8,43 +8,49 @@
 //! transaction, so a failed migration applies nothing, records nothing,
 //! and retries on the next touch.
 
-use crate::runtime::ActiasRuntime;
+use crate::extensions::objects::DATABASE_CLASS;
 use crate::storage::SqliteStorage;
 
-use crate::extensions::objects::DATABASE_CLASS;
-
-/// Marks migrations as checked for this vm's life; the applied table in
-/// the file is the durable record, this only skips re-reading it per call.
-struct MigrationsChecked;
-
-/// Routes one `__database` method call.
+/// Routes one `__database` method call. Takes no guest runtime at all:
+/// the statements, the migrations and the rows are pure storage work.
 ///
 /// # Errors
 /// Returns the user-safe text of whatever failed: a refused statement, a
 /// failed migration, or SQLite's own message.
-pub(crate) async fn dispatch(
-    runtime: &ActiasRuntime,
+pub(crate) fn dispatch(
+    context: &super::PlatformContext<'_>,
     call: &super::Call,
 ) -> Result<serde_json::Value, String> {
-    if runtime.app_data_ref::<MigrationsChecked>().is_none() {
-        apply_migrations(runtime, &call.name)?;
-        runtime.set_app_data(MigrationsChecked);
+    use std::sync::atomic::Ordering;
+
+    if !context.home.migrations_checked.load(Ordering::Relaxed) {
+        apply_migrations(context)?;
+        context
+            .home
+            .migrations_checked
+            .store(true, Ordering::Relaxed);
     }
 
     match call.method.as_str() {
         "exec" => {
             let (text, params) = statement(&call.args)?;
-            super::with_storage(runtime, |storage| storage.exec(&text, &params))?;
+            context
+                .home
+                .with_storage(|storage| storage.exec(&text, &params))?;
             Ok(serde_json::Value::Bool(true))
         }
         "query" | "read" => {
             let (text, params) = statement(&call.args)?;
-            let rows = super::with_storage(runtime, |storage| storage.query(&text, &params))?;
+            let rows = context
+                .home
+                .with_storage(|storage| storage.query(&text, &params))?;
             Ok(serde_json::Value::Array(rows))
         }
         "query_one" | "read_one" => {
             let (text, params) = statement(&call.args)?;
-            let rows = super::with_storage(runtime, |storage| storage.query(&text, &params))?;
+            let rows = context
+                .home
+                .with_storage(|storage| storage.query(&text, &params))?;
             Ok(rows.into_iter().next().unwrap_or(serde_json::Value::Null))
         }
         // A batch is nothing special: one call is one transaction already,
@@ -63,9 +69,11 @@ pub(crate) async fn dispatch(
                     .as_array()
                     .ok_or_else(|| "Each batch entry is { sql, params }.".to_owned())?;
                 let (text, params) = statement(parts)?;
-                affected.push(super::with_storage(runtime, |storage| {
-                    storage.exec(&text, &params)
-                })?);
+                affected.push(
+                    context
+                        .home
+                        .with_storage(|storage| storage.exec(&text, &params))?,
+                );
             }
             Ok(serde_json::json!(affected))
         }
@@ -91,20 +99,16 @@ fn statement(args: &[serde_json::Value]) -> Result<(String, Vec<serde_json::Valu
 }
 
 /// Applies this database's pending migrations in order.
-fn apply_migrations(runtime: &ActiasRuntime, database: &str) -> Result<(), String> {
-    let migrations = {
-        let Some(prepared) =
-            runtime.app_data_ref::<std::sync::Arc<crate::runtime::PreparedRevision>>()
-        else {
-            return Err("Runtime has no revision loaded.".to_owned());
-        };
-        prepared.migrations(database)
+fn apply_migrations(context: &super::PlatformContext<'_>) -> Result<(), String> {
+    let Some(revision) = &context.home.revision else {
+        return Err("Runtime has no revision loaded.".to_owned());
     };
+    let migrations = revision.migrations(context.name);
     if migrations.is_empty() {
         return Ok(());
     }
 
-    super::with_storage(runtime, |storage: &mut SqliteStorage| {
+    context.home.with_storage(|storage: &mut SqliteStorage| {
         let applied = storage.applied_migrations()?;
         for (name, sql) in migrations {
             if applied.contains(&name) {

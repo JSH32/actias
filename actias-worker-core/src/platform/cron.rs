@@ -17,11 +17,12 @@ use crate::runtime::ActiasRuntime;
 /// refuses `ensure` outright, the same way publish refuses it.
 pub(crate) async fn dispatch(
     runtime: &ActiasRuntime,
+    context: &super::PlatformContext<'_>,
     call: &super::Call,
 ) -> Result<serde_json::Value, String> {
     match call.method.as_str() {
-        "ensure" => ensure(runtime, call),
-        "alarm" => fire(runtime, call).await,
+        "ensure" => ensure(context),
+        "alarm" => fire(runtime, context).await,
         other => Err(format!(
             "Object class '{CRON_CLASS}' has no method '{other}'."
         )),
@@ -30,23 +31,26 @@ pub(crate) async fn dispatch(
 
 /// Arms the first occurrence; called once per revision per process, and
 /// idempotent because setting an alarm replaces the previous one.
-fn ensure(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_json::Value, String> {
-    let delay_ms = cron_delay_ms(&call.name)?;
-    super::set_alarm(runtime, CRON_CLASS, &call.name, delay_ms)?;
+fn ensure(context: &super::PlatformContext<'_>) -> Result<serde_json::Value, String> {
+    let delay_ms = cron_delay_ms(context.name)?;
+    super::set_alarm(context, CRON_CLASS, delay_ms)?;
     Ok(serde_json::Value::Null)
 }
 
 /// Re-arms the next occurrence, then fires the listener; in that order,
 /// so the schedule survives anything the handler does.
-async fn fire(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_json::Value, String> {
-    let delay_ms = cron_delay_ms(&call.name)?;
-    super::set_alarm(runtime, CRON_CLASS, &call.name, delay_ms)?;
+async fn fire(
+    runtime: &ActiasRuntime,
+    context: &super::PlatformContext<'_>,
+) -> Result<serde_json::Value, String> {
+    let delay_ms = cron_delay_ms(context.name)?;
+    super::set_alarm(context, CRON_CLASS, delay_ms)?;
 
     let payload = serde_json::json!({
-        "cron": call.name,
+        "cron": context.name,
         "scheduled_at": unix_now_ms(),
     });
-    super::fire_listener(runtime, &call.name, &payload).await;
+    super::fire_listener(runtime, context.name, &payload).await;
 
     Ok(serde_json::Value::Null)
 }

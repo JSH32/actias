@@ -71,12 +71,13 @@ const DELIVERY_BATCH: i64 = 16;
 /// like a missing method on any class.
 pub(crate) async fn dispatch(
     runtime: &ActiasRuntime,
+    context: &super::PlatformContext<'_>,
     call: &super::Call,
 ) -> Result<serde_json::Value, String> {
     match call.method.as_str() {
-        "send" => send(runtime, call),
-        "alarm" => deliver(runtime, call).await,
-        "stats" => stats(runtime),
+        "send" => send(context, call),
+        "alarm" => deliver(runtime, context).await,
+        "stats" => stats(context),
         other => Err(format!(
             "Object class '{QUEUE_CLASS}' has no method '{other}'."
         )),
@@ -84,7 +85,10 @@ pub(crate) async fn dispatch(
 }
 
 /// Appends one message and arms an immediate delivery alarm.
-fn send(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_json::Value, String> {
+fn send(
+    context: &super::PlatformContext<'_>,
+    call: &super::Call,
+) -> Result<serde_json::Value, String> {
     let payload = call
         .args
         .first()
@@ -93,7 +97,7 @@ fn send(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_json::Value
     let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let now = unix_now_ms();
 
-    super::with_storage(runtime, |storage| {
+    context.home.with_storage(|storage| {
         let connection = storage.platform();
         connection
             .execute(CREATE_MESSAGES, [])
@@ -107,7 +111,7 @@ fn send(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_json::Value
         Ok(())
     })?;
 
-    super::set_alarm(runtime, QUEUE_CLASS, &call.name, 0)?;
+    super::set_alarm(context, QUEUE_CLASS, 0)?;
     Ok(serde_json::Value::Bool(true))
 }
 
@@ -121,14 +125,14 @@ struct Due {
 /// Delivers due messages to the `on "queue:<name>"` listener, applying
 /// the per-message verdict, then re-arms for the earliest remaining
 /// message. The storage borrow is never held across the listener await.
-async fn deliver(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_json::Value, String> {
-    let policy = runtime
-        .app_data_ref::<QueuePolicy>()
-        .map(|policy| policy.clone())
-        .unwrap_or_default();
-    let event = format!("queue:{}", call.name);
+async fn deliver(
+    runtime: &ActiasRuntime,
+    context: &super::PlatformContext<'_>,
+) -> Result<serde_json::Value, String> {
+    let policy = &context.home.queue_policy;
+    let event = format!("queue:{}", context.name);
 
-    let due = super::with_storage(runtime, |storage| {
+    let due = context.home.with_storage(|storage| {
         let connection = storage.platform();
         connection
             .execute(CREATE_MESSAGES, [])
@@ -163,7 +167,7 @@ async fn deliver(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_js
         let payload = serde_json::from_str(&message.payload).unwrap_or(serde_json::Value::Null);
         let delivered = super::fire_listener(runtime, &event, &payload).await;
 
-        super::with_storage(runtime, |storage| {
+        context.home.with_storage(|storage| {
             let connection = storage.platform();
             if delivered {
                 connection
@@ -201,7 +205,7 @@ async fn deliver(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_js
         })?;
     }
 
-    let earliest: Option<i64> = super::with_storage(runtime, |storage| {
+    let earliest: Option<i64> = context.home.with_storage(|storage| {
         storage
             .platform()
             .query_row(
@@ -213,7 +217,7 @@ async fn deliver(runtime: &ActiasRuntime, call: &super::Call) -> Result<serde_js
     })?;
 
     if let Some(at) = earliest {
-        super::set_alarm(runtime, QUEUE_CLASS, &call.name, at - unix_now_ms())?;
+        super::set_alarm(context, QUEUE_CLASS, at - unix_now_ms())?;
     }
 
     Ok(serde_json::Value::Null)
@@ -251,8 +255,8 @@ pub fn read_stats(storage: &mut crate::storage::SqliteStorage) -> Result<Stats, 
     })
 }
 
-/// The `stats` method: [`read_stats`] over this vm's own storage.
-fn stats(runtime: &ActiasRuntime) -> Result<serde_json::Value, String> {
-    let stats = super::with_storage(runtime, read_stats)?;
+/// The `stats` method: [`read_stats`] over this object's own storage.
+fn stats(context: &super::PlatformContext<'_>) -> Result<serde_json::Value, String> {
+    let stats = context.home.with_storage(read_stats)?;
     serde_json::to_value(stats).map_err(|e| e.to_string())
 }

@@ -8,10 +8,6 @@
 
 use std::path::Path;
 
-/// The storage as vm app data: one cell per pinned vm, borrowed only
-/// inside a method call, which is single-threaded by construction.
-pub struct StorageCell(pub std::cell::RefCell<SqliteStorage>);
-
 /// SQLite on a local file, durability by fsync: `synchronous=FULL` under
 /// WAL, so every committed write survives a crash without an explicit
 /// flush step. Checkpoint trims the WAL so files stay small.
