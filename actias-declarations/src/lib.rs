@@ -47,6 +47,9 @@ pub struct Declarations {
     /// Queues declared with `queue "name"`.
     #[serde(default)]
     pub queues: Vec<String>,
+    /// Workflow definitions declared with `workflow "name"`.
+    #[serde(default)]
+    pub workflows: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -183,6 +186,28 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 .queues
                 .push(name);
             stub(lua)
+        })?,
+    )?;
+
+    let workflow_recorded = recorded.clone();
+    lua.globals().set(
+        "workflow",
+        lua.create_function(move |lua, name: String| {
+            // The same shape the runtime enforces; a bad name dies at
+            // publish, not on the first start.
+            if name.trim().is_empty() || name.contains('/') {
+                return Err(mlua::Error::RuntimeError(
+                    "A workflow name is a non-empty string without '/'.".to_owned(),
+                ));
+            }
+            workflow_recorded
+                .lock()
+                .expect("no other holder")
+                .workflows
+                .push(name);
+            // `workflow "name" (fn)`: the registrar takes the body and
+            // returns the handle stub callers hold.
+            lua.create_function(|lua, _body: mlua::Function| stub(lua))
         })?,
     )?;
 

@@ -1336,6 +1336,7 @@ mod tests {
                     objects: vec![],
                     databases: vec![],
                     queues: vec![],
+                    workflows: vec![],
                 }),
                 ..Default::default()
             }),

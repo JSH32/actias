@@ -290,25 +290,62 @@ impl ObjectRouting {
                     }
                 }
 
+                // A workflow instance replays the revision it STARTED
+                // with, the one deliberate exception to always-current;
+                // every other class runs the owner's current revision.
+                let workflow = identity.class() == actias_common::classes::WORKFLOW_CLASS;
+                let prepared = match actias_worker_core::platform::workflow::pinned_revision(&file)
+                {
+                    Some(pinned) if workflow && pinned != owner.revision_id => {
+                        cached_revision(&routing.state, owner.script.clone(), pinned)
+                            .await
+                            .map_err(|error| {
+                                mlua::Error::RuntimeError(format!(
+                                    "The run's pinned revision could not load: {error:#}"
+                                ))
+                            })?
+                    }
+                    _ => owner.clone(),
+                };
+
                 // Object logs join the owner script's production channel,
                 // so `actias tail` sees them like any handler line.
                 let logs = routing.state.redis.clone().map(|connection| {
                     LogPublisher::new(connection, script_log_channel(&owner.script.id))
                 });
 
-                let runtime = ActiasRuntime::new(
-                    owner.clone(),
-                    routing.state.clients.kv.clone(),
-                    routing.state.egress.clone(),
-                    logs,
-                    routing.state.secrets_key.clone(),
-                    None,
-                )
-                .await?;
+                let runtime = if workflow {
+                    // The enforced-determinism profile: the shared cell is
+                    // both the replay cursor and the shim source.
+                    let shared =
+                        Arc::new(actias_worker_core::platform::workflow::WfShared::default());
+                    let runtime = ActiasRuntime::with_profile(
+                        prepared.clone(),
+                        routing.state.clients.kv.clone(),
+                        routing.state.egress.clone(),
+                        logs,
+                        routing.state.secrets_key.clone(),
+                        None,
+                        actias_worker_core::runtime::VmProfile::Workflow(shared.clone()),
+                    )
+                    .await?;
+                    runtime.set_app_data(shared);
+                    runtime
+                } else {
+                    ActiasRuntime::new(
+                        prepared.clone(),
+                        routing.state.clients.kv.clone(),
+                        routing.state.egress.clone(),
+                        logs,
+                        routing.state.secrets_key.clone(),
+                        None,
+                    )
+                    .await?
+                };
                 // The pinned vm routes its own outbound calls too; the
                 // chain it hands them is what makes cycles refusable. Its
-                // routing context is the owner, matching the code it runs.
-                let vm_routing = ObjectRouting::new(&routing.state, owner);
+                // routing context matches the code it runs.
+                let vm_routing = ObjectRouting::new(&routing.state, prepared);
                 runtime.set_app_data::<ObjectRouter>(vm_routing.as_router());
 
                 let mut storage = actias_worker_core::storage::SqliteStorage::open(&file)

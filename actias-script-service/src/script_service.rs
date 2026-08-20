@@ -36,6 +36,8 @@ pub struct ScriptService {
 enum ContractMember {
     /// `on "queue:<name>"`, the queue's consumer.
     Events,
+    /// `workflow "name"`, the definition's declarer.
+    Workflows,
     /// `queue "name"`, a producer.
     Queues,
     /// `database "name"`, a declarer.
@@ -55,6 +57,7 @@ impl ContractMember {
                 Some(&[ContractMember::Events, ContractMember::Queues])
             }
             actias_common::classes::DATABASE_CLASS => Some(&[ContractMember::Databases]),
+            actias_common::classes::WORKFLOW_CLASS => Some(&[ContractMember::Workflows]),
             class if class.starts_with("__") => None,
             _ => Some(&[ContractMember::Objects]),
         }
@@ -64,6 +67,7 @@ impl ContractMember {
     fn member(&self) -> &'static str {
         match self {
             ContractMember::Events => "events",
+            ContractMember::Workflows => "workflows",
             ContractMember::Queues => "queues",
             ContractMember::Databases => "databases",
             ContractMember::Objects => "objects",
@@ -74,6 +78,9 @@ impl ContractMember {
     fn needle(&self, class: &str, name: &str) -> String {
         match self {
             ContractMember::Events => format!("queue:{name}"),
+            // A workflow instance is `<definition>/<caller id>`; the
+            // definition segment is what the contract declares.
+            ContractMember::Workflows => name.split('/').next().unwrap_or_default().to_owned(),
             ContractMember::Queues | ContractMember::Databases => name.to_owned(),
             ContractMember::Objects => class.to_owned(),
         }
@@ -179,6 +186,14 @@ impl ScriptService {
         let checks = [
             ("events", consumed, "already consumes"),
             ("objects", capabilities.objects.clone(), "already declares"),
+            // A workflow definition has one declarer: its runs replay
+            // that script's revisions, so a second declarer would split
+            // the identity space.
+            (
+                "workflows",
+                capabilities.workflows.clone(),
+                "already declares",
+            ),
         ];
 
         for (member, names, verb) in checks {
@@ -277,6 +292,7 @@ impl ScriptService {
             objects: derived.objects,
             databases: derived.databases,
             queues: derived.queues,
+            workflows: derived.workflows,
         });
 
         // Identity is project-scoped, so single-owner declarations must be
@@ -1593,6 +1609,7 @@ mod tests {
                     objects: vec!["a-lied-class".to_owned()],
                     databases: vec![],
                     queues: vec![],
+                    workflows: vec![],
                 }),
             }),
             bundle: Some(Bundle {

@@ -668,6 +668,23 @@ mod tests {
     }
 }
 
+/// The revision id STARTED pinned, when the file already holds a run:
+/// what the spawn factory replays instead of the owner's current
+/// revision, the one deliberate exception to always-current. A fresh or
+/// unreadable file reads as unpinned; journal problems surface at
+/// dispatch, not here.
+pub fn pinned_revision(file: &std::path::Path) -> Option<String> {
+    let mut storage = crate::storage::SqliteStorage::open_read_only(file).ok()?;
+    if !storage.table_exists("__actias_wf_journal").ok()? {
+        return None;
+    }
+    let first = read_from(&mut storage, 0).ok()?.into_iter().next()?;
+    if first.kind != EntryKind::Started {
+        return None;
+    }
+    first.data["revision"].as_str().map(str::to_owned)
+}
+
 /// One run-attempt's replay state: the journal tail not yet consumed,
 /// and the instance's deterministic generator. Live mode is simply the
 /// tail running out.
