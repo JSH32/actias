@@ -47,6 +47,7 @@ const projectNav: { label: string; slug: string; icon: IconName }[] = [
   { label: 'KV', slug: 'kv', icon: 'kv' },
   { label: 'Databases', slug: 'databases', icon: 'databases' },
   { label: 'Queues', slug: 'queues', icon: 'queues' },
+  { label: 'Workflows', slug: 'workflows', icon: 'workflows' },
   { label: 'Members', slug: 'members', icon: 'members' },
 ];
 
