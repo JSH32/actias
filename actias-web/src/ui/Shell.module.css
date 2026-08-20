@@ -21,8 +21,9 @@
 
 .brand {
   font-weight: 700;
-  letter-spacing: 0.04em;
-  padding: 16px 16px 12px;
+  font-size: 13px;
+  letter-spacing: 0.07em;
+  padding: 14px;
   color: var(--ink-1);
 }
 
@@ -36,46 +37,49 @@
 
 .nav {
   flex: 1;
-  padding: 8px;
+  padding: 6px 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
   overflow-y: auto;
 }
 
 .navLabel {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font: 400 10px/1 var(--mono);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-3);
-  padding: 12px 8px 4px;
+  padding: 12px 14px 6px;
 }
 
 .navLink {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: var(--r2);
+  gap: 11px;
+  height: 32px;
+  padding: 0 14px;
+  border-left: 2px solid transparent;
   color: var(--ink-2);
+  font-size: 13px;
 }
 .navLink:hover {
-  background: var(--night-2);
   color: var(--ink-1);
+  background: var(--night-2);
 }
 .navLinkActive {
   composes: navLink;
-  background: var(--night-2);
+  border-left-color: var(--luna);
   color: var(--ink-1);
+  background: var(--night-2);
 }
 
 .user {
+  margin-top: auto;
   border-top: 1px solid var(--line);
-  padding: 12px 16px;
+  padding: 10px 14px;
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .initials {
@@ -92,13 +96,14 @@
 }
 
 .userName {
+  font: 500 12px var(--mono);
   color: var(--ink-1);
-  line-height: 1.2;
+  line-height: 1.3;
 }
 
 .userMeta {
-  font-size: 11px;
-  color: var(--ink-3);
+  font: 400 10px var(--mono);
+  color: var(--ink-2);
 }
 
 .logout {
