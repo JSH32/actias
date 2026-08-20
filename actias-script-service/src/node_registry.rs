@@ -13,9 +13,10 @@ use uuid::Uuid;
 
 use crate::proto_node_registry::{
     AcquireLeaseRequest, AlarmRow, ClassCount, ClearAlarmRequest, CountInstancesRequest,
-    CountInstancesResponse, DueAlarmsRequest, DueAlarmsResponse, GetLeaseRequest, GetNodeRequest,
-    HeartbeatRequest, Lease, ListInstancesRequest, ListInstancesResponse, ListNodesResponse, Node,
-    NodeRegistration, ObjectInstance, RegisterNodeRequest, ReleaseLeaseRequest, SetAlarmRequest,
+    CountInstancesResponse, DeregisterRequest, DueAlarmsRequest, DueAlarmsResponse,
+    GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListInstancesRequest,
+    ListInstancesResponse, ListNodesResponse, Node, NodeRegistration, ObjectInstance,
+    RegisterNodeRequest, ReleaseLeaseRequest, SetAlarmRequest,
     node_registry_service_server::NodeRegistryService,
 };
 
@@ -364,6 +365,24 @@ impl NodeRegistryService for NodeRegistry {
             acquired: false,
             epoch: epoch.max(1) as u64,
         }))
+    }
+
+    async fn deregister(
+        &self,
+        request: Request<DeregisterRequest>,
+    ) -> Result<Response<()>, Status> {
+        let id = Uuid::from_str(&request.get_ref().node_id)
+            .map_err(|_| RegistryError::InvalidId("node_id"))?;
+
+        // A goodbye is age-out brought forward: the same deletion, the
+        // same lease-freeing cascade, none of the waiting.
+        sqlx::query("DELETE FROM nodes WHERE id = $1")
+            .bind(id)
+            .execute(&self.database)
+            .await
+            .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(()))
     }
 
     async fn release_lease(
@@ -785,6 +804,44 @@ mod tests {
 
         // Re-claiming keeps the epoch; the fence only moves on takeover.
         assert_eq!(acquire(claimant).await.epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn a_deregistered_node_frees_its_leases_immediately() {
+        let (registry, _database, _guard) = registry(3600).await;
+
+        let leaver = register(&registry, "leaver:3100").await;
+        let heir = register(&registry, "heir:3100").await;
+        let object = "e".repeat(64);
+
+        registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: object.clone(),
+                node_id: leaver.clone(),
+                ..Default::default()
+            }))
+            .await
+            .expect("claims");
+
+        // The ttl is an hour; only the goodbye can free this today.
+        registry
+            .deregister(Request::new(DeregisterRequest {
+                node_id: leaver.clone(),
+            }))
+            .await
+            .expect("deregisters");
+
+        let won = registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: object,
+                node_id: heir.clone(),
+                ..Default::default()
+            }))
+            .await
+            .expect("claim answers")
+            .into_inner();
+        assert!(won.acquired, "the goodbye must free the lease at once");
+        assert_eq!(won.node_id, heir);
     }
 
     #[tokio::test]

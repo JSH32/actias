@@ -170,18 +170,44 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .serve_with_shutdown(grpc_addr, shutdown_signal());
 
-    let app = server::router(state, config.max_body_bytes);
+    let app = server::router(state.clone(), config.max_body_bytes);
 
     info!("Serving http on {addr}, data plane on {grpc_addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let http = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 
+    let registry_for_goodbye = state.registry.clone();
+    let identity_for_goodbye = state.node_identity.clone();
+
     // Either listener failing takes the process down: a worker whose data
     // plane is dark would strand every object homed on it.
     tokio::try_join!(async { http.await.map_err(anyhow::Error::from) }, async {
         data_plane.await.map_err(anyhow::Error::from)
     },)?;
+
+    // The goodbye: deregistering frees this node's leases at once, so a
+    // deploy's replacement claims them immediately instead of serving a
+    // ttl's worth of dead forwards. Best effort; a crash still ages out.
+    let node_id = identity_for_goodbye
+        .read()
+        .expect("no poisoned lock")
+        .clone();
+    if let Some(node_id) = node_id {
+        let mut registry = registry_for_goodbye.clone();
+        let goodbye = registry.deregister(
+            actias_worker_core::proto::node_registry::DeregisterRequest {
+                node_id: node_id.clone(),
+            },
+        );
+        match tokio::time::timeout(std::time::Duration::from_secs(5), goodbye).await {
+            Ok(Ok(_)) => info!(node_id, "deregistered from the placement store"),
+            Ok(Err(error)) => {
+                actias_common::tracing::warn!(%error, "deregistration failed; age-out covers it")
+            }
+            Err(_) => actias_common::tracing::warn!("deregistration timed out; age-out covers it"),
+        }
+    }
 
     Ok(())
 }
