@@ -1,14 +1,6 @@
 import { getPublicConfig } from '@/pages/api/config';
-import {
-  Badge,
-  Code,
-  Group,
-  Paper,
-  ScrollArea,
-  Text,
-  Title,
-} from '@mantine/core';
 import React, { useEffect, useRef, useState } from 'react';
+import { Card } from '@/ui';
 
 interface LogLine {
   level: string;
@@ -16,11 +8,18 @@ interface LogLine {
   timestampMs?: number;
 }
 
+/** Level colors from the token sheet; debug recedes, error alarms. */
 const LEVEL_COLORS: Record<string, string> = {
-  error: 'red',
-  warn: 'yellow',
-  info: 'blue',
-  debug: 'gray',
+  error: 'var(--err)',
+  warn: 'var(--warn)',
+  info: 'var(--kind-kv)',
+  debug: 'var(--ink-3)',
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  live: 'var(--luna)',
+  closed: 'var(--err)',
+  connecting: 'var(--ink-3)',
 };
 
 /**
@@ -67,42 +66,61 @@ const LogTail = ({ scriptId }: { scriptId: string }) => {
   }, [lines]);
 
   return (
-    <Paper withBorder p="md">
-      <Group justify="space-between" mb="xs">
-        <Title order={4}>Live logs</Title>
-        <Badge
-          color={
-            status === 'live' ? 'green' : status === 'closed' ? 'red' : 'gray'
-          }
-          variant="light"
+    <Card style={{ padding: 16, maxWidth: 760 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 8,
+        }}
+      >
+        <div style={{ fontWeight: 700 }}>Live logs</div>
+        <span
+          style={{
+            fontFamily: 'var(--mono)',
+            fontSize: 11,
+            color: STATUS_COLORS[status],
+          }}
         >
-          {status}
-        </Badge>
-      </Group>
-      <ScrollArea h={240} viewportRef={viewport}>
+          ● {status}
+        </span>
+      </div>
+      <div
+        ref={viewport}
+        style={{
+          height: 260,
+          overflowY: 'auto',
+          background: 'var(--night-2)',
+          border: '1px solid var(--line)',
+          borderRadius: 'var(--r2)',
+          padding: '8px 10px',
+          fontFamily: 'var(--mono)',
+          fontSize: 12,
+          lineHeight: 1.7,
+        }}
+      >
         {lines.length === 0 ? (
-          <Text c="dimmed" size="sm">
+          <span style={{ color: 'var(--ink-3)' }}>
             Waiting for log lines; request the script to see them arrive.
-          </Text>
+          </span>
         ) : (
           lines.map((line, index) => (
-            <Code block key={index} mb={2}>
-              <Text
-                span
-                c={LEVEL_COLORS[line.level] ?? 'gray'}
-                fw={700}
-                size="sm"
+            <div key={index}>
+              <span
+                style={{
+                  color: LEVEL_COLORS[line.level] ?? 'var(--ink-3)',
+                  fontWeight: 700,
+                }}
               >
                 {line.level}
-              </Text>{' '}
-              <Text span size="sm">
-                {line.message}
-              </Text>
-            </Code>
+              </span>{' '}
+              <span style={{ color: 'var(--ink-1)' }}>{line.message}</span>
+            </div>
           ))
         )}
-      </ScrollArea>
-    </Paper>
+      </div>
+    </Card>
   );
 };
 

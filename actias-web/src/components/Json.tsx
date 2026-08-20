@@ -1,19 +1,17 @@
-import { lightTheme } from '@uiw/react-json-view/light';
-import { darkTheme } from '@uiw/react-json-view/dark';
 import React from 'react';
 import JsonView from '@uiw/react-json-view';
-import { useMantineColorScheme } from '@mantine/core';
+import { darkTheme } from '@uiw/react-json-view/dark';
 
-export const Json: React.FC<{ value: any }> = ({ value }) => {
-  const { colorScheme } = useMantineColorScheme();
-
-  return (
-    <JsonView
-      value={value}
-      style={{
-        ...((colorScheme === 'dark' ? darkTheme : lightTheme) as any),
-        background: 'transparent',
-      }}
-    />
-  );
-};
+/** Structured values in the console's own dark theme; the viewer's own
+ * background yields to the surface it sits on. */
+export const Json: React.FC<{ value: object }> = ({ value }) => (
+  <JsonView
+    value={value}
+    style={{
+      ...(darkTheme as React.CSSProperties),
+      background: 'transparent',
+      fontFamily: 'var(--mono)',
+      fontSize: 12,
+    }}
+  />
+);
