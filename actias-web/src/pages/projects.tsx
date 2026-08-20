@@ -1,151 +1,124 @@
-import { ProjectDto } from '@/client';
-import { AuthGuard } from '@/helpers/auth';
-import React, { useCallback } from 'react';
-import api, { errorForm, showError } from '@/helpers/api';
+import * as React from 'react';
+import { useRouter } from 'next/router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Anchor,
-  Button,
-  Card,
-  CloseButton,
-  Divider,
-  Grid,
-  Group,
-  Loader,
-  Modal,
-  Stack,
-  Text,
-  TextInput,
-  Title,
-} from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
-import { useForm } from '@mantine/form';
+import * as Dialog from '@radix-ui/react-dialog';
 import { notifications } from '@mantine/notifications';
-import Link from 'next/link';
+import api, { showError } from '@/helpers/api';
+import { AuthGuard } from '@/helpers/auth';
+import { ProjectDto } from '@/client';
+import { Button, Card, Field } from '@/ui';
+import classes from './projects.module.css';
 
-const Projects = () => {
+function Projects() {
+  const router = useRouter();
   const queryClient = useQueryClient();
+  const [createOpen, setCreateOpen] = React.useState(false);
+
   const { data: projects } = useQuery({
     queryKey: ['projects'],
-    queryFn: async () =>
-      ((await api.project.listProjects(1)) as any).items as ProjectDto[],
-  });
-
-  const reloadProjects = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
-    [queryClient],
-  );
-
-  const [createOpened, { open, close }] = useDisclosure(false);
-
-  const createProjectForm = useForm({
-    initialValues: {
-      name: '',
+    queryFn: async () => {
+      // The generated paginated dto erases the item type; this endpoint
+      // returns projects.
+      const page = (await api.project.listProjects(1)) as unknown as {
+        items: ProjectDto[];
+      };
+      return page.items;
     },
   });
 
-  const createProject = useCallback(
-    (values: any) => {
+  const createProject = React.useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const name = String(new FormData(event.currentTarget).get('name') ?? '');
       api.project
-        .createProject(values)
+        .createProject({ name })
         .then((res) => {
           notifications.show({
-            title: 'Project created!',
-            message: `New project named ${res.name} was created.`,
+            title: 'Project created',
+            message: `${res.name} is ready; publish a script into it.`,
           });
-
-          reloadProjects();
-          close();
-        })
-        .catch((err) => errorForm(err, createProjectForm));
-
-      createProjectForm.reset();
-    },
-    [reloadProjects, createProjectForm, close],
-  );
-
-  const deleteProject = useCallback(
-    (project: ProjectDto) => {
-      api.project
-        .deleteProject(project.id)
-        .then(({ message }) => {
-          notifications.show({
-            title: 'Project deleted!',
-            message,
-          });
-
-          reloadProjects();
+          setCreateOpen(false);
+          queryClient.invalidateQueries({ queryKey: ['projects'] });
         })
         .catch(showError);
     },
-    [reloadProjects],
+    [queryClient],
   );
 
   return (
-    <>
-      <Stack>
-        <Title>Projects</Title>
-        <Divider />
-        <Button w={150} onClick={open}>
-          Create Project
-        </Button>
+    <div className={classes.page}>
+      <div className={classes.head}>
+        <div>
+          <h1 className={classes.title}>Projects</h1>
+          <p className={classes.lede}>
+            A project owns scripts, KV namespaces, databases and an access
+            list. Everything a script can reach is scoped to the project that
+            holds it.
+          </p>
+        </div>
+        <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
+          <Dialog.Trigger asChild>
+            <Button variant="primary">New project</Button>
+          </Dialog.Trigger>
+          <Dialog.Portal>
+            <Dialog.Overlay className={classes.overlay} />
+            <Dialog.Content className={classes.dialog}>
+              <Dialog.Title className={classes.dialogTitle}>
+                New project
+              </Dialog.Title>
+              <form onSubmit={createProject}>
+                <Field label="Name" name="name" required autoFocus />
+                <div className={classes.dialogActions}>
+                  <Dialog.Close asChild>
+                    <Button type="button">Cancel</Button>
+                  </Dialog.Close>
+                  <Button type="submit" variant="primary">
+                    Create
+                  </Button>
+                </div>
+              </form>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+      </div>
 
-        <Modal opened={createOpened} onClose={close} title="Create Project">
-          <form onSubmit={createProjectForm.onSubmit(createProject)}>
-            <TextInput
-              withAsterisk
-              label="Name"
-              placeholder="Project Name"
-              {...createProjectForm.getInputProps('name')}
-            />
-            <Group align="right" mt="md">
-              <Button type="submit">Submit</Button>
-            </Group>
-          </form>
-        </Modal>
-
-        {!projects && <Loader />}
-        <Grid gutter="xs">
-          {projects?.map((project: ProjectDto) => (
-            <Grid.Col key={project.id} span={{ md: 6, lg: 3 }}>
-              <ProjectCard
-                key={project.id}
-                project={project}
-                onDelete={deleteProject}
-              />
-            </Grid.Col>
-          ))}
-        </Grid>
-      </Stack>
-    </>
+      {projects && projects.length === 0 ? (
+        <Card className={classes.empty}>
+          <p>
+            No projects yet. A project is the box everything else lives in.
+            Make one, then publish a script into it: the script gets a URL the
+            moment the first revision lands.
+          </p>
+          <code className={classes.cli}>actias projects create</code>
+        </Card>
+      ) : (
+        <Card>
+          <table className={classes.table}>
+            <thead>
+              <tr>
+                <th>name</th>
+                <th>created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(projects ?? []).map((project: ProjectDto) => (
+                <tr
+                  key={project.id}
+                  onClick={() => router.push(`/project/${project.id}`)}
+                >
+                  <td className={classes.name}>{project.name}</td>
+                  <td className={classes.meta}>
+                    {new Date(project.createdAt).toLocaleDateString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
   );
-};
-
-const ProjectCard: React.FC<{
-  project: ProjectDto;
-  onDelete: (project: ProjectDto) => void;
-}> = ({ project, onDelete }) => {
-  return (
-    <Card shadow="sm" padding="lg" radius="md" withBorder>
-      <Group justify="space-between" mt="md" mb="xs">
-        <Title order={3}>{project.name}</Title>
-        <Anchor component="button" onClick={() => onDelete(project)}>
-          <CloseButton aria-label="Delete project" />
-        </Anchor>
-      </Group>
-
-      <Text mt="xs" color="dimmed" size="sm">
-        {project.id}
-      </Text>
-
-      <Link href={`/project/${project.id}`}>
-        <Button fullWidth mt="md" radius="md">
-          Open
-        </Button>
-      </Link>
-    </Card>
-  );
-};
+}
 
 export default function ProjectsPage() {
   return (
