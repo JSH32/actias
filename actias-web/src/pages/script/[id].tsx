@@ -190,8 +190,8 @@ const Script = () => {
           <a href={liveUrl} target="_blank" rel="noreferrer">
             <Button>Visit</Button>
           </a>
-          <Link href={`/script/${script.id}/playground`}>
-            <Button variant="quiet">Open playground</Button>
+          <Link href={`/script/${script.id}/workbench`}>
+            <Button variant="quiet">Open workbench</Button>
           </Link>
         </div>
       </div>
