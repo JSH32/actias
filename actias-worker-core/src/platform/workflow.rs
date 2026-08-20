@@ -377,6 +377,189 @@ mod tests {
             assert_eq!(counters["kind"], "COMPLETED");
         }
 
+        const PARKING_SOURCE: &str = r#"
+            workflow "waity" (function(wf, input)
+                if input.mode == "sleep" then
+                    wf:sleep("60ms")
+                    return { woke = true, at = os.time() }
+                end
+                local approval = wf:await("approval", { timeout = "24h" })
+                if approval == nil then
+                    return { status = "timed-out" }
+                end
+                return { status = "approved", by = approval.by }
+            end)
+        "#;
+
+        fn call(name: &str, method: &str, args: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "class": actias_common::classes::WORKFLOW_CLASS,
+                "name": name,
+                "method": method,
+                "args": args,
+                "chain": [format!("p/__workflow/{name}")],
+            })
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_sleep_parks_and_the_alarm_wakes_it_to_completion() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(PARKING_SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            let parked = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "waity/nap-1",
+                        "start",
+                        serde_json::json!([{ "mode": "sleep" }]),
+                    ),
+                )
+                .await
+                .expect("parks");
+            assert_eq!(parked["status"], "parked", "{parked}");
+
+            // The pinned task's own alarm loop fires the wake; nothing
+            // here touches the object again.
+            let mut woke = serde_json::Value::Null;
+            for _ in 0..40 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let status = handle
+                    .call(
+                        "__dispatch",
+                        call("waity/nap-1", "status", serde_json::json!([])),
+                    )
+                    .await
+                    .expect("status answers");
+                if status["kind"] == "COMPLETED" {
+                    woke = status;
+                    break;
+                }
+            }
+            assert_eq!(woke["kind"], "COMPLETED", "the alarm never woke the run");
+
+            let joined = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "waity/nap-1",
+                        "start",
+                        serde_json::json!([{ "mode": "sleep" }]),
+                    ),
+                )
+                .await
+                .expect("joins");
+            assert_eq!(joined["value"]["woke"], true, "{joined}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_signal_wakes_a_parked_await() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(PARKING_SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            let parked = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "waity/gate-1",
+                        "start",
+                        serde_json::json!([{ "mode": "await" }]),
+                    ),
+                )
+                .await
+                .expect("parks");
+            assert_eq!(parked["status"], "parked", "{parked}");
+
+            let resumed = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "waity/gate-1",
+                        "signal",
+                        serde_json::json!(["approval", { "by": "jsh32" }]),
+                    ),
+                )
+                .await
+                .expect("the signal resumes the run");
+            assert_eq!(resumed["status"], "completed", "{resumed}");
+            assert_eq!(resumed["value"]["by"], "jsh32");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cancel_wins_over_further_progress() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(PARKING_SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "waity/gone-1",
+                        "start",
+                        serde_json::json!([{ "mode": "await" }]),
+                    ),
+                )
+                .await
+                .expect("parks");
+            let cancelled = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "waity/gone-1",
+                        "cancel",
+                        serde_json::json!(["customer withdrew"]),
+                    ),
+                )
+                .await
+                .expect("cancels");
+            assert_eq!(cancelled["status"], "cancelled");
+
+            // A late signal does not resurrect the run.
+            let after = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "waity/gone-1",
+                        "signal",
+                        serde_json::json!(["approval", { "by": "too-late" }]),
+                    ),
+                )
+                .await
+                .expect("answers");
+            assert_eq!(after["status"], "cancelled", "{after}");
+            assert_eq!(after["reason"], "customer withdrew");
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn joining_a_completed_run_returns_the_recorded_outcome() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -492,6 +675,9 @@ struct Attempt {
     pending: std::collections::VecDeque<Entry>,
     home: std::sync::Arc<crate::objects::ObjectHome>,
     rng: u64,
+    /// The instance's own key and name, for arming its alarm from verbs.
+    own_key: String,
+    name: String,
 }
 
 impl Attempt {
@@ -510,6 +696,19 @@ impl Attempt {
 #[derive(Default)]
 pub struct WfShared {
     attempt: std::sync::Mutex<Option<Attempt>>,
+    /// Set by a verb just before it unwinds the run to park it; the
+    /// attempt runner reads it back to tell a park from a failure, so
+    /// nothing ever sniffs error strings.
+    parked: std::sync::Mutex<Option<String>>,
+}
+
+impl WfShared {
+    /// Parks the run: records why, then unwinds the Lua stack. The
+    /// error is only the vehicle; the flag is the truth.
+    fn park(&self, reason: String) -> mlua::Error {
+        *self.parked.lock().expect("no poisoned lock") = Some(reason);
+        mlua::Error::RuntimeError("workflow parked".to_owned())
+    }
 }
 
 impl WfShared {
@@ -690,7 +889,173 @@ impl mlua::UserData for WfHandle {
                 }
             },
         );
+
+        // sleep(duration): real suspension. Live appends TIMER and arms
+        // the alarm; replay past a due timer just continues.
+        methods.add_method("sleep", |lua, _this, duration: mlua::Value| {
+            let delay_ms = match &duration {
+                mlua::Value::String(raw) => {
+                    crate::extensions::objects::parse_duration_ms(&raw.to_str()?)
+                        .map_err(mlua::Error::RuntimeError)?
+                }
+                mlua::Value::Integer(seconds) => seconds * 1000,
+                mlua::Value::Number(seconds) => (*seconds * 1000.0) as i64,
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "wf:sleep takes a duration: \"30s\", \"10m\" or seconds.".to_owned(),
+                    ));
+                }
+            };
+            let shared = lua
+                .app_data_ref::<std::sync::Arc<WfShared>>()
+                .map(|shared| shared.clone())
+                .ok_or_else(|| mlua::Error::RuntimeError("Not a workflow vm.".to_owned()))?;
+
+            let mut guard = shared.attempt.lock().expect("no poisoned lock");
+            let attempt = guard.as_mut().ok_or_else(|| {
+                mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned())
+            })?;
+            let now = crate::extensions::objects::unix_now_ms();
+
+            match attempt.pending.front() {
+                Some(entry) if entry.kind == EntryKind::Timer && entry.data["for"].is_null() => {
+                    let due = entry.data["due_ms"].as_i64().unwrap_or(0);
+                    if due <= now {
+                        attempt.pending.pop_front();
+                        return Ok(());
+                    }
+                    arm(attempt, due - now).map_err(mlua::Error::RuntimeError)?;
+                    drop(guard);
+                    Err(shared.park(format!("sleeping, due in {}ms", due - now)))
+                }
+                Some(entry) => Err(mlua::Error::RuntimeError(format!(
+                    "journal divergence: expected {:?}, code reached sleep",
+                    entry.kind
+                ))),
+                None => {
+                    let due = now + delay_ms.max(0);
+                    attempt
+                        .home
+                        .with_storage(|storage| {
+                            append(
+                                storage,
+                                EntryKind::Timer,
+                                &serde_json::json!({ "due_ms": due, "for": null }),
+                            )?;
+                            storage.commit()?;
+                            storage.begin()
+                        })
+                        .map_err(mlua::Error::RuntimeError)?;
+                    arm(attempt, delay_ms.max(0)).map_err(mlua::Error::RuntimeError)?;
+                    drop(guard);
+                    Err(shared.park(format!("sleeping {delay_ms}ms")))
+                }
+            }
+        });
+
+        // await(name, opts?): parks until the named signal arrives or
+        // the timeout passes; nil on timeout.
+        methods.add_method(
+            "await",
+            |lua, _this, (name, opts): (String, Option<mlua::Table>)| {
+                let timeout_ms = opts
+                    .and_then(|table| table.get::<mlua::Value>("timeout").ok())
+                    .map(|value| match value {
+                        mlua::Value::String(raw) => {
+                            crate::extensions::objects::parse_duration_ms(&raw.to_str()?)
+                                .map_err(mlua::Error::RuntimeError)
+                        }
+                        mlua::Value::Integer(seconds) => Ok(seconds * 1000),
+                        mlua::Value::Nil => Ok(i64::MAX),
+                        _ => Err(mlua::Error::RuntimeError(
+                            "await's timeout is a duration.".to_owned(),
+                        )),
+                    })
+                    .transpose()?;
+
+                let shared = lua
+                    .app_data_ref::<std::sync::Arc<WfShared>>()
+                    .map(|shared| shared.clone())
+                    .ok_or_else(|| mlua::Error::RuntimeError("Not a workflow vm.".to_owned()))?;
+                let mut guard = shared.attempt.lock().expect("no poisoned lock");
+                let attempt = guard.as_mut().ok_or_else(|| {
+                    mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned())
+                })?;
+                let now = crate::extensions::objects::unix_now_ms();
+
+                // The gate row: live appends it; replay finds it first.
+                match attempt.pending.front() {
+                    Some(entry)
+                        if entry.kind == EntryKind::Timer && entry.data["for"] == name.as_str() => {
+                    }
+                    Some(entry) => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "journal divergence: expected {:?}, code reached await '{name}'",
+                            entry.kind
+                        )));
+                    }
+                    None => {
+                        let due = timeout_ms.map(|ms| now.saturating_add(ms.max(0)));
+                        attempt
+                            .home
+                            .with_storage(|storage| {
+                                append(
+                                    storage,
+                                    EntryKind::Timer,
+                                    &serde_json::json!({ "due_ms": due, "for": name }),
+                                )?;
+                                storage.commit()?;
+                                storage.begin()
+                            })
+                            .map_err(mlua::Error::RuntimeError)?;
+                        if let Some(ms) = timeout_ms.filter(|ms| *ms < i64::MAX) {
+                            arm(attempt, ms.max(0)).map_err(mlua::Error::RuntimeError)?;
+                        }
+                        drop(guard);
+                        return Err(shared.park(format!("awaiting '{name}'")));
+                    }
+                }
+
+                // The gate is journaled; the answer is whatever follows.
+                let due = attempt.pending.front().expect("checked").data["due_ms"].as_i64();
+                if attempt.pending.get(1).is_some_and(|next| {
+                    next.kind == EntryKind::Signal && next.data["name"] == name.as_str()
+                }) {
+                    attempt.pending.pop_front();
+                    let signal = attempt.pending.pop_front().expect("checked");
+                    return lua.to_value(&signal.data["payload"]);
+                }
+                match due {
+                    Some(due) if due <= now => {
+                        attempt.pending.pop_front();
+                        Ok(mlua::Value::Nil)
+                    }
+                    Some(due) => {
+                        arm(attempt, due - now).map_err(mlua::Error::RuntimeError)?;
+                        drop(guard);
+                        Err(shared.park(format!("awaiting '{name}'")))
+                    }
+                    None => {
+                        drop(guard);
+                        Err(shared.park(format!("awaiting '{name}'")))
+                    }
+                }
+            },
+        );
     }
+}
+
+/// Arms the instance's one alarm through both homes, like any platform
+/// class arming from inside a call.
+fn arm(attempt: &Attempt, delay_ms: i64) -> Result<(), String> {
+    attempt
+        .home
+        .set_alarm(crate::extensions::objects::PendingAlarm {
+            due_ms: crate::extensions::objects::unix_now_ms() + delay_ms.max(0),
+            class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+            name: attempt.name.clone(),
+            own_key: attempt.own_key.clone(),
+        })
 }
 
 /// Runs one platform method against a workflow instance.
@@ -706,15 +1071,53 @@ pub(crate) async fn dispatch(
 
     match call.method.as_str() {
         "start" => {
-            start(
+            run_attempt(
                 runtime,
                 context,
-                call.args
-                    .first()
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null),
+                Some(
+                    call.args
+                        .first()
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                ),
             )
             .await
+        }
+        // The alarm is a wake: replay to the parked verb, which now
+        // finds its timer due (or its signal arrived) and continues.
+        "alarm" => run_attempt(runtime, context, None).await,
+        "signal" => {
+            let name = call
+                .args
+                .first()
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| "signal takes a name and an optional payload.".to_owned())?
+                .to_owned();
+            let payload = call.args.get(1).cloned().unwrap_or(serde_json::Value::Null);
+            context.home.with_storage(|storage| {
+                append(
+                    storage,
+                    EntryKind::Signal,
+                    &serde_json::json!({ "name": name, "payload": payload }),
+                )
+            })?;
+            run_attempt(runtime, context, None).await
+        }
+        "cancel" => {
+            let reason = call
+                .args
+                .first()
+                .and_then(|value| value.as_str())
+                .unwrap_or("cancelled")
+                .to_owned();
+            context.home.with_storage(|storage| {
+                append(
+                    storage,
+                    EntryKind::Cancel,
+                    &serde_json::json!({ "reason": reason }),
+                )
+            })?;
+            Ok(serde_json::json!({ "status": "cancelled", "reason": reason }))
         }
         "status" => {
             let head = context.home.with_storage(head)?;
@@ -731,11 +1134,13 @@ pub(crate) async fn dispatch(
 
 /// One run attempt: replay the journal from the top, continue live past
 /// its end, journal the return. Joining a completed run returns the
-/// recorded outcome, which is what makes `start` idempotent.
-async fn start(
+/// recorded outcome, which is what makes `start` idempotent; a parked
+/// verb unwinds here and reads as parked, never as failure. `input` is
+/// [`Some`] only for `start`, which may create the run.
+async fn run_attempt(
     runtime: &crate::runtime::ActiasRuntime,
     context: &super::PlatformContext<'_>,
-    input: serde_json::Value,
+    input: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let entries = context.home.with_storage(|storage| read_from(storage, 0))?;
 
@@ -745,6 +1150,17 @@ async fn start(
     {
         return Ok(serde_json::json!({ "status": "completed", "value": done.data["value"] }));
     }
+    if let Some(cancelled) = entries.iter().find(|entry| entry.kind == EntryKind::Cancel) {
+        return Ok(
+            serde_json::json!({ "status": "cancelled", "reason": cancelled.data["reason"] }),
+        );
+    }
+    // A wake or signal on a run that never started is a stale alarm or a
+    // caller racing creation; both read as nothing to do.
+    if entries.is_empty() && input.is_none() {
+        return Ok(serde_json::Value::Null);
+    }
+    let input = input.unwrap_or(serde_json::Value::Null);
 
     // The definition is the instance name's first segment; the caller id
     // after it is the run's identity.
@@ -807,6 +1223,8 @@ async fn start(
             .map(|home| home.clone())
             .ok_or_else(|| "This vm has no object home.".to_owned())?,
         rng: seed,
+        own_key: context.own_key.to_owned(),
+        name: context.name.to_owned(),
     });
 
     let outcome: Result<mlua::Value, mlua::Error> = {
@@ -833,6 +1251,14 @@ async fn start(
             })?;
             Ok(serde_json::json!({ "status": "completed", "value": json }))
         }
-        Err(error) => Err(error.to_string()),
+        Err(error) => {
+            // A park is progress, not failure: the verb recorded why
+            // before unwinding, and the journaled gate plus the armed
+            // alarm are already durable.
+            if let Some(reason) = shared.parked.lock().expect("no poisoned lock").take() {
+                return Ok(serde_json::json!({ "status": "parked", "reason": reason }));
+            }
+            Err(error.to_string())
+        }
     }
 }
