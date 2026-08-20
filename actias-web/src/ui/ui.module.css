@@ -57,6 +57,8 @@
   background: var(--night-1);
   border: 1px solid var(--line);
   border-radius: var(--r3);
+  /* Wide tables scroll inside the card, never the page. */
+  overflow-x: auto;
 }
 
 .chip {
