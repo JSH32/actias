@@ -33,7 +33,10 @@ export enum AccessFields {
   /**
    * All permissions for all resource types.
    */
-  FULL = SCRIPT_RESOURCE | PERMISSIONS_RESOURCE | KV_RESOURCE | DATABASE_RESOURCE,
+  FULL = SCRIPT_RESOURCE |
+    PERMISSIONS_RESOURCE |
+    KV_RESOURCE |
+    DATABASE_RESOURCE,
 }
 
 export const ACCESS_KEYS = Object.keys(AccessFields).filter(
