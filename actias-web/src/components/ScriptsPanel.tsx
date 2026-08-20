@@ -79,7 +79,13 @@ export default function ScriptsPanel({
   return (
     <div>
       {write && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            marginBottom: 12,
+          }}
+        >
           <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
             <Dialog.Trigger asChild>
               <Button variant="primary">New script</Button>
@@ -113,13 +119,11 @@ export default function ScriptsPanel({
       )}
 
       {scripts && scripts.length === 0 ? (
-        <Card>
-          <EmptyState
-            title="No scripts yet"
-            body="A script gets a URL the moment its first revision publishes."
-            cli="actias init && actias publish"
-          />
-        </Card>
+        <EmptyState
+          title="No scripts yet"
+          body="A script gets a URL the moment its first revision publishes."
+          cli="actias init && actias publish"
+        />
       ) : (
         <Card>
           <table className={classes.table}>

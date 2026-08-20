@@ -5,7 +5,6 @@ import { ProjectDto, ResourceInstanceDto } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
 import { Card, Chip, EmptyState } from '@/ui';
 import classes from '../../../components/KvPanel.module.css';
-import shared from '../../projects.module.css';
 
 /**
  * Design 03: a queue exists because a script declared it; the numbers
@@ -44,15 +43,23 @@ function Queues({ project }: { project: ProjectDto }) {
     },
   ];
 
+  if (queues && queues.length === 0) {
+    return (
+      <EmptyState
+        title="No queues here"
+        body="A queue exists because a script declared it. Declare one and publish; it exists from the first send."
+        cli={'local jobs = queue "jobs"'}
+      />
+    );
+  }
+
   return (
     <div className={classes.split}>
       <div className={classes.nsList}>
         {(queues ?? []).map((queue: ResourceInstanceDto) => (
           <button
             key={`${queue.scriptId}/${queue.name}`}
-            className={
-              queue === active ? classes.nsItemActive : classes.nsItem
-            }
+            className={queue === active ? classes.nsItemActive : classes.nsItem}
             onClick={() => setSelected(`${queue.scriptId}/${queue.name}`)}
           >
             {queue.name}
@@ -72,8 +79,8 @@ function Queues({ project }: { project: ProjectDto }) {
           <p className={classes.lede}>
             {active.orphaned ? (
               <>
-                No live revision declares this queue; its data persists until
-                it is deleted explicitly.
+                No live revision declares this queue; its data persists until it
+                is deleted explicitly.
               </>
             ) : (
               <>
@@ -116,15 +123,7 @@ function Queues({ project }: { project: ProjectDto }) {
             ))}
           </div>
         </div>
-      ) : (
-        <Card>
-          <EmptyState
-            title="No queues here"
-            body="A queue exists because a script declared it. Declare one and publish; it exists from the first send."
-            cli={'local jobs = queue "jobs"'}
-          />
-        </Card>
-      )}
+      ) : null}
     </div>
   );
 }

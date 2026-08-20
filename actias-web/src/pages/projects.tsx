@@ -51,9 +51,9 @@ function Projects() {
         <div>
           <h1 className={classes.title}>Projects</h1>
           <p className={classes.lede}>
-            A project owns scripts, KV namespaces, databases and an access
-            list. Everything a script can reach is scoped to the project that
-            holds it.
+            A project owns scripts, KV namespaces, databases and an access list.
+            Everything a script can reach is scoped to the project that holds
+            it.
           </p>
         </div>
         <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
@@ -83,13 +83,11 @@ function Projects() {
       </div>
 
       {projects && projects.length === 0 ? (
-        <Card>
-          <EmptyState
-            title="No projects yet"
-            body="A project is the box everything else lives in. Make one, then publish a script into it: the script gets a URL the moment the first revision lands."
-            cli="actias project create"
-          />
-        </Card>
+        <EmptyState
+          title="No projects yet"
+          body="A project is the box everything else lives in. Make one, then publish a script into it: the script gets a URL the moment the first revision lands."
+          cli="actias project create"
+        />
       ) : (
         <Card>
           <table className={classes.table}>

@@ -53,6 +53,16 @@ function Databases({
       .finally(() => setRunning(false));
   };
 
+  if (databases && databases.length === 0) {
+    return (
+      <EmptyState
+        title="No databases here"
+        body="Declare one in a script and publish; migrations apply at its first touch, and the tables show up right here."
+        cli={'local db = database "main"'}
+      />
+    );
+  }
+
   return (
     <div className={classes.split}>
       <div className={classes.nsList}>
@@ -62,9 +72,7 @@ function Databases({
             className={
               database === active ? classes.nsItemActive : classes.nsItem
             }
-            onClick={() =>
-              setSelected(`${database.scriptId}/${database.name}`)
-            }
+            onClick={() => setSelected(`${database.scriptId}/${database.name}`)}
           >
             {database.name}
             {database.orphaned && (
@@ -169,15 +177,7 @@ function Databases({
             )}
           </Card>
         </div>
-      ) : (
-        <Card>
-          <EmptyState
-            title="No databases here"
-            body="Declare one in a script and publish; migrations apply at its first touch, and the tables show up right here."
-            cli={'local db = database "main"'}
-          />
-        </Card>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -187,9 +187,7 @@ export default function DatabasesPage() {
     <ProjectSection
       permission="DATABASE_READ"
       writeBit="DATABASE_WRITE"
-      render={(project, write) => (
-        <Databases project={project} write={write} />
-      )}
+      render={(project, write) => <Databases project={project} write={write} />}
     />
   );
 }
