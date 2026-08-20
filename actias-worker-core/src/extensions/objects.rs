@@ -359,13 +359,7 @@ fn set_alarm(lua: &Lua, (_this, duration): (Table, mlua::Value)) -> mlua::Result
             "set_alarm only works inside an object method.".to_owned(),
         ));
     };
-    if home.storage.is_some() {
-        home.with_storage(|storage| {
-            storage.save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
-        })
-        .map_err(mlua::Error::RuntimeError)?;
-    }
-    *crate::objects::lock_unpoisoned(&home.alarm) = Some(alarm);
+    home.set_alarm(alarm).map_err(mlua::Error::RuntimeError)?;
 
     Ok(())
 }
@@ -489,7 +483,7 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
                     let state = lua.create_table()?;
                     let stored = lua
                         .app_data_ref::<Arc<crate::objects::ObjectHome>>()
-                        .is_some_and(|home| home.storage.is_some());
+                        .is_some_and(|home| home.has_storage());
                     if stored {
                         state.set("sql", sql_surface(&lua)?)?;
                     }
@@ -513,7 +507,7 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
                 let home = lua
                     .app_data_ref::<Arc<crate::objects::ObjectHome>>()
                     .map(|home| home.clone())
-                    .filter(|home| home.storage.is_some());
+                    .filter(|home| home.has_storage());
                 let fresh = match &home {
                     Some(home) => home
                         .with_storage(|storage| storage.is_fresh())

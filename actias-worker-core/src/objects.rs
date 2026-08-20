@@ -99,25 +99,36 @@ pub type AfterWrite =
 /// The locks are never contended: the mailbox serializes every consumer
 /// by construction, so each lock is take-use-release on one task.
 pub struct ObjectHome {
-    /// The object's durable half; [`None`] leaves state in-memory only.
-    pub storage: Option<std::sync::Mutex<crate::storage::SqliteStorage>>,
-    /// The one alarm the object may hold; setting replaces. The task loop
-    /// reads it after every call to know when to wake.
-    pub alarm: std::sync::Mutex<Option<crate::extensions::objects::PendingAlarm>>,
-    /// Storage change counter at the last shipped snapshot, so only calls
-    /// that actually wrote pay the shipping toll.
+    storage: Option<std::sync::Mutex<crate::storage::SqliteStorage>>,
+    alarm: std::sync::Mutex<Option<crate::extensions::objects::PendingAlarm>>,
     ship_mark: std::sync::atomic::AtomicI64,
-    /// Whether pending database migrations were already checked in this
-    /// vm's life; the applied table in the file is the durable record.
-    pub migrations_checked: std::sync::atomic::AtomicBool,
-    /// Delivery limits for `__queue` instances.
-    pub queue_policy: crate::platform::queue::QueuePolicy,
-    /// The revision this vm runs; platform classes read migrations from it
-    /// without touching the vm.
-    pub revision: Option<Arc<crate::runtime::PreparedRevision>>,
+    migrations_checked: std::sync::atomic::AtomicBool,
+    queue_policy: crate::platform::queue::QueuePolicy,
+    revision: Option<Arc<crate::runtime::PreparedRevision>>,
 }
 
 impl ObjectHome {
+    fn new(
+        storage: Option<crate::storage::SqliteStorage>,
+        pending: Option<crate::extensions::objects::PendingAlarm>,
+        queue_policy: crate::platform::queue::QueuePolicy,
+        revision: Option<Arc<crate::runtime::PreparedRevision>>,
+    ) -> Self {
+        Self {
+            storage: storage.map(std::sync::Mutex::new),
+            alarm: std::sync::Mutex::new(pending),
+            ship_mark: std::sync::atomic::AtomicI64::new(0),
+            migrations_checked: std::sync::atomic::AtomicBool::new(false),
+            queue_policy,
+            revision,
+        }
+    }
+
+    /// Whether the object has a durable half at all.
+    pub fn has_storage(&self) -> bool {
+        self.storage.is_some()
+    }
+
     /// Runs one operation against the object's storage; the lock never
     /// outlives the closure, so callers are free to await between
     /// operations.
@@ -135,12 +146,105 @@ impl ObjectHome {
             .ok_or_else(|| "This object has no durable storage.".to_owned())?;
         operation(&mut lock_unpoisoned(storage))
     }
+
+    /// Arms the object's one alarm; setting replaces. The persisted row
+    /// rides the current call's transaction, the in-memory cell wakes the
+    /// task loop; this is the only place both homes are written.
+    ///
+    /// # Errors
+    /// Returns SQLite's message when the persisted row cannot be written.
+    pub fn set_alarm(&self, alarm: crate::extensions::objects::PendingAlarm) -> Result<(), String> {
+        if self.has_storage() {
+            self.with_storage(|storage| {
+                storage.save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
+            })?;
+        }
+        *lock_unpoisoned(&self.alarm) = Some(alarm);
+        Ok(())
+    }
+
+    /// The alarm currently armed, if any.
+    pub fn pending_alarm(&self) -> Option<crate::extensions::objects::PendingAlarm> {
+        lock_unpoisoned(&self.alarm).clone()
+    }
+
+    /// Drops the alarm from both homes; called the moment it fires, so a
+    /// handler that sets a new one is not clobbered afterwards.
+    fn clear_alarm(&self) {
+        *lock_unpoisoned(&self.alarm) = None;
+        if self.has_storage()
+            && let Err(error) = self.with_storage(|storage| storage.clear_alarm())
+        {
+            actias_common::tracing::warn!(%error, "alarm could not be cleared");
+        }
+    }
+
+    /// Rereads the alarm cell from the persisted row after a rollback:
+    /// the rolled-back row is the truth, and the in-memory alarm must not
+    /// outlive an alarm the failed method set.
+    fn resync_alarm_from_storage(&self) {
+        use crate::extensions::objects::PendingAlarm;
+
+        let persisted = self
+            .with_storage(|storage| storage.load_alarm())
+            .ok()
+            .flatten()
+            .map(|(due_ms, class, name, own_key)| PendingAlarm {
+                due_ms,
+                class,
+                name,
+                own_key,
+            });
+        *lock_unpoisoned(&self.alarm) = persisted;
+    }
+
+    /// Whether storage changed since the last shipped snapshot, advancing
+    /// the mark when it did; only calls that wrote pay the shipping toll.
+    fn writes_advanced(&self) -> bool {
+        use std::sync::atomic::Ordering;
+
+        let current = self
+            .with_storage(|storage| storage.total_changes())
+            .unwrap_or(0);
+        if current == self.ship_mark.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.ship_mark.store(current, Ordering::Relaxed);
+        true
+    }
+
+    /// Whether pending migrations still need checking this vm life. The
+    /// applied table in the file is the durable record; this only skips
+    /// re-reading it per call. Marked separately so a failed migration
+    /// stays unchecked and retries on the next touch.
+    pub(crate) fn migrations_unchecked(&self) -> bool {
+        !self
+            .migrations_checked
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Notes that migrations were checked and applied for this vm life.
+    pub(crate) fn mark_migrations_checked(&self) {
+        self.migrations_checked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Delivery limits for `__queue` instances.
+    pub fn queue_policy(&self) -> &crate::platform::queue::QueuePolicy {
+        &self.queue_policy
+    }
+
+    /// The revision this vm runs; platform classes read migrations from
+    /// it without touching the vm.
+    pub fn revision(&self) -> Option<&Arc<crate::runtime::PreparedRevision>> {
+        self.revision.as_ref()
+    }
 }
 
 /// A poisoned lock has no observer to protect here (the mailbox already
 /// serializes every consumer), so the inner value is recovered rather
 /// than panicking a request path.
-pub(crate) fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -195,16 +299,14 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
             })
     });
 
-    let home = Arc::new(ObjectHome {
-        storage: storage.map(std::sync::Mutex::new),
-        alarm: std::sync::Mutex::new(pending),
-        ship_mark: std::sync::atomic::AtomicI64::new(0),
-        migrations_checked: std::sync::atomic::AtomicBool::new(false),
-        queue_policy: queue,
-        revision: runtime
+    let home = Arc::new(ObjectHome::new(
+        storage,
+        pending,
+        queue,
+        runtime
             .app_data_ref::<Arc<crate::runtime::PreparedRevision>>()
             .map(|revision| revision.clone()),
-    });
+    ));
     runtime.set_app_data(home.clone());
 
     tokio::spawn(async move {
@@ -213,7 +315,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         // alarm is just one more message source, so it serializes with
         // calls exactly like they serialize with each other.
         loop {
-            let pending = lock_unpoisoned(&home.alarm).clone();
+            let pending = home.pending_alarm();
 
             let call = if let Some(alarm) = pending {
                 // A pending alarm keeps the vm warm: hibernating past it
@@ -276,12 +378,7 @@ async fn fire_alarm(
     call_budget: Option<u64>,
     after_write: Option<&AfterWrite>,
 ) {
-    *lock_unpoisoned(&home.alarm) = None;
-    if home.storage.is_some()
-        && let Err(error) = home.with_storage(|storage| storage.clear_alarm())
-    {
-        actias_common::tracing::warn!(%error, "alarm could not be cleared");
-    }
+    home.clear_alarm();
 
     let result = guarded_dispatch(
         runtime,
@@ -315,7 +412,7 @@ async fn guarded_dispatch(
     call_budget: Option<u64>,
     after_write: Option<&AfterWrite>,
 ) -> Result<serde_json::Value, ObjectError> {
-    let has_storage = home.storage.is_some();
+    let has_storage = home.has_storage();
 
     if has_storage && let Err(error) = home.with_storage(|storage| storage.begin()) {
         return Err(ObjectError::Call(format!(
@@ -335,63 +432,34 @@ async fn guarded_dispatch(
     };
     runtime.end_call_budget();
 
-    if let Some(storage) = &home.storage {
-        let mut storage = lock_unpoisoned(storage);
-
+    if has_storage {
         match &result {
             Ok(_) => {
-                if let Err(error) = storage.commit() {
+                if let Err(error) = home.with_storage(|storage| storage.commit()) {
                     return Err(ObjectError::Call(format!(
                         "The call's writes could not commit: {error}"
                     )));
                 }
             }
             Err(_) => {
-                if let Err(error) = storage.rollback() {
+                if let Err(error) = home.with_storage(|storage| storage.rollback()) {
                     actias_common::tracing::warn!(%error, "rollback failed");
                 }
-
-                // The rolled-back row is the truth; the in-memory alarm
-                // must not outlive an alarm the failed method set.
-                let persisted =
-                    storage
-                        .load_alarm()
-                        .ok()
-                        .flatten()
-                        .map(|(due_ms, class, name, own_key)| {
-                            crate::extensions::objects::PendingAlarm {
-                                due_ms,
-                                class,
-                                name,
-                                own_key,
-                            }
-                        });
-                drop(storage);
-                *lock_unpoisoned(&home.alarm) = persisted;
+                home.resync_alarm_from_storage();
             }
         }
-    }
 
-    // The handler is done; give storage its flush moment before the
-    // caller hears anything.
-    if home.storage.is_some()
-        && let Err(error) = home.with_storage(|storage| storage.checkpoint())
-    {
-        actias_common::tracing::warn!(%error, "object storage checkpoint failed");
-    }
+        // The handler is done; give storage its flush moment before the
+        // caller hears anything.
+        if let Err(error) = home.with_storage(|storage| storage.checkpoint()) {
+            actias_common::tracing::warn!(%error, "object storage checkpoint failed");
+        }
 
-    // The output gate: a call that wrote does not answer until the write
-    // has also left the building.
-    if let Some(after_write) = after_write
-        && home.storage.is_some()
-    {
-        use std::sync::atomic::Ordering;
-
-        let current = home
-            .with_storage(|storage| storage.total_changes())
-            .unwrap_or(0);
-        if current != home.ship_mark.load(Ordering::Relaxed) {
-            home.ship_mark.store(current, Ordering::Relaxed);
+        // The output gate: a call that wrote does not answer until the
+        // write has also left the building.
+        if let Some(after_write) = after_write
+            && home.writes_advanced()
+        {
             after_write().await;
         }
     }

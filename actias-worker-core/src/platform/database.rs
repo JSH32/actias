@@ -1,81 +1,154 @@
 //! The `__database` platform class: the sql product face, an ordinary
 //! object whose methods are the storage surface.
 //!
-//! The statements are user SQL, so unlike the other platform classes
-//! every one of them runs through the script-guarded [`SqliteStorage`]
-//! surface, never the bare connection. Pending migrations apply before
-//! the first statement of a vm's life; the tracking rows ride the call's
-//! transaction, so a failed migration applies nothing, records nothing,
-//! and retries on the next touch.
+//! [`Database`] is the typed API: rust callers (the dispatch codec below,
+//! and any future api read path or test) open a handle and call real
+//! methods. The statements are user SQL, so unlike the other platform
+//! classes every one of them runs through the script-guarded
+//! [`SqliteStorage`] surface, never the bare connection.
 
 use crate::extensions::objects::DATABASE_CLASS;
+use crate::objects::ObjectHome;
 use crate::storage::SqliteStorage;
 
-/// Routes one `__database` method call. Takes no guest runtime at all:
-/// the statements, the migrations and the rows are pure storage work.
-///
-/// # Errors
-/// Returns the user-safe text of whatever failed: a refused statement, a
-/// failed migration, or SQLite's own message.
+/// A typed handle to one database instance's operations.
+pub struct Database<'a> {
+    home: &'a ObjectHome,
+    name: &'a str,
+}
+
+impl<'a> Database<'a> {
+    /// Opens the instance, applying pending migrations first when this is
+    /// the vm's first touch: the tracking rows ride the call's
+    /// transaction, so a failed migration applies nothing, records
+    /// nothing, and retries on the next touch.
+    ///
+    /// # Errors
+    /// Returns the failed migration's user-safe message.
+    pub fn open(home: &'a ObjectHome, name: &'a str) -> Result<Self, String> {
+        let database = Self { home, name };
+        if home.migrations_unchecked() {
+            database.apply_migrations()?;
+            home.mark_migrations_checked();
+        }
+        Ok(database)
+    }
+
+    /// Runs one statement; the affected row count is the result.
+    ///
+    /// # Errors
+    /// Returns a refused statement's or SQLite's user-safe message.
+    pub fn exec(&self, sql: &str, params: &[serde_json::Value]) -> Result<u64, String> {
+        self.home.with_storage(|storage| storage.exec(sql, params))
+    }
+
+    /// Runs one query; rows come back as string-keyed json objects.
+    ///
+    /// # Errors
+    /// Returns a refused statement's or SQLite's user-safe message.
+    pub fn query(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+    ) -> Result<Vec<serde_json::Value>, String> {
+        self.home.with_storage(|storage| storage.query(sql, params))
+    }
+
+    /// [`Self::query`] returning only the first row, if any.
+    ///
+    /// # Errors
+    /// Returns a refused statement's or SQLite's user-safe message.
+    pub fn query_one(
+        &self,
+        sql: &str,
+        params: &[serde_json::Value],
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(self.query(sql, params)?.into_iter().next())
+    }
+
+    /// Runs statements in order, returning each one's affected count. A
+    /// batch is nothing special: one call is one transaction already, so
+    /// the atomicity comes from the dispatch guard.
+    ///
+    /// # Errors
+    /// Returns the first failing statement's user-safe message.
+    pub fn batch(
+        &self,
+        statements: &[(String, Vec<serde_json::Value>)],
+    ) -> Result<Vec<u64>, String> {
+        statements
+            .iter()
+            .map(|(sql, params)| self.exec(sql, params))
+            .collect()
+    }
+
+    /// Applies this database's pending migrations in order.
+    fn apply_migrations(&self) -> Result<(), String> {
+        let Some(revision) = self.home.revision() else {
+            return Err("Runtime has no revision loaded.".to_owned());
+        };
+        let migrations = revision.migrations(self.name);
+        if migrations.is_empty() {
+            return Ok(());
+        }
+
+        self.home.with_storage(|storage: &mut SqliteStorage| {
+            let applied = storage.applied_migrations()?;
+            for (name, sql) in migrations {
+                if applied.contains(&name) {
+                    continue;
+                }
+                storage
+                    .exec_script(&sql)
+                    .map_err(|error| format!("Migration {name} failed: {error}"))?;
+                storage.record_migration(&name)?;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// The wire codec: maps one dispatched method name and its json arguments
+/// onto [`Database`], and the typed result back to json. Method names
+/// arrive as strings because that is what a Lua handle sends.
 pub(crate) fn dispatch(
     context: &super::PlatformContext<'_>,
     call: &super::Call,
 ) -> Result<serde_json::Value, String> {
-    use std::sync::atomic::Ordering;
-
-    if !context.home.migrations_checked.load(Ordering::Relaxed) {
-        apply_migrations(context)?;
-        context
-            .home
-            .migrations_checked
-            .store(true, Ordering::Relaxed);
-    }
+    let database = Database::open(context.home, context.name)?;
 
     match call.method.as_str() {
         "exec" => {
-            let (text, params) = statement(&call.args)?;
-            context
-                .home
-                .with_storage(|storage| storage.exec(&text, &params))?;
+            let (sql, params) = statement(&call.args)?;
+            database.exec(&sql, &params)?;
             Ok(serde_json::Value::Bool(true))
         }
         "query" | "read" => {
-            let (text, params) = statement(&call.args)?;
-            let rows = context
-                .home
-                .with_storage(|storage| storage.query(&text, &params))?;
-            Ok(serde_json::Value::Array(rows))
+            let (sql, params) = statement(&call.args)?;
+            Ok(serde_json::Value::Array(database.query(&sql, &params)?))
         }
         "query_one" | "read_one" => {
-            let (text, params) = statement(&call.args)?;
-            let rows = context
-                .home
-                .with_storage(|storage| storage.query(&text, &params))?;
-            Ok(rows.into_iter().next().unwrap_or(serde_json::Value::Null))
+            let (sql, params) = statement(&call.args)?;
+            Ok(database
+                .query_one(&sql, &params)?
+                .unwrap_or(serde_json::Value::Null))
         }
-        // A batch is nothing special: one call is one transaction already,
-        // so this is a loop with the atomicity coming from the dispatch
-        // guard.
         "batch" => {
             let entries = call
                 .args
                 .first()
                 .and_then(|value| value.as_array())
                 .ok_or_else(|| "batch takes a list of statements.".to_owned())?;
-
-            let mut affected = Vec::new();
-            for entry in entries {
-                let parts = entry
-                    .as_array()
-                    .ok_or_else(|| "Each batch entry is { sql, params }.".to_owned())?;
-                let (text, params) = statement(parts)?;
-                affected.push(
-                    context
-                        .home
-                        .with_storage(|storage| storage.exec(&text, &params))?,
-                );
-            }
-            Ok(serde_json::json!(affected))
+            let statements = entries
+                .iter()
+                .map(|entry| {
+                    entry
+                        .as_array()
+                        .ok_or_else(|| "Each batch entry is { sql, params }.".to_owned())
+                        .and_then(|parts| statement(parts))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(serde_json::json!(database.batch(&statements)?))
         }
         other => Err(format!(
             "Object class '{DATABASE_CLASS}' has no method '{other}'."
@@ -96,29 +169,4 @@ fn statement(args: &[serde_json::Value]) -> Result<(String, Vec<serde_json::Valu
         .cloned()
         .unwrap_or_default();
     Ok((text.to_owned(), params))
-}
-
-/// Applies this database's pending migrations in order.
-fn apply_migrations(context: &super::PlatformContext<'_>) -> Result<(), String> {
-    let Some(revision) = &context.home.revision else {
-        return Err("Runtime has no revision loaded.".to_owned());
-    };
-    let migrations = revision.migrations(context.name);
-    if migrations.is_empty() {
-        return Ok(());
-    }
-
-    context.home.with_storage(|storage: &mut SqliteStorage| {
-        let applied = storage.applied_migrations()?;
-        for (name, sql) in migrations {
-            if applied.contains(&name) {
-                continue;
-            }
-            storage
-                .exec_script(&sql)
-                .map_err(|error| format!("Migration {name} failed: {error}"))?;
-            storage.record_migration(&name)?;
-        }
-        Ok(())
-    })
 }

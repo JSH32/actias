@@ -75,7 +75,13 @@ pub(crate) async fn dispatch(
     call: &super::Call,
 ) -> Result<serde_json::Value, String> {
     match call.method.as_str() {
-        "send" => send(context, call),
+        "send" => send(
+            context,
+            call.args
+                .first()
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        ),
         "alarm" => deliver(runtime, context).await,
         "stats" => stats(context),
         other => Err(format!(
@@ -87,13 +93,8 @@ pub(crate) async fn dispatch(
 /// Appends one message and arms an immediate delivery alarm.
 fn send(
     context: &super::PlatformContext<'_>,
-    call: &super::Call,
+    payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let payload = call
-        .args
-        .first()
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
     let text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let now = unix_now_ms();
 
@@ -129,7 +130,7 @@ async fn deliver(
     runtime: &ActiasRuntime,
     context: &super::PlatformContext<'_>,
 ) -> Result<serde_json::Value, String> {
-    let policy = &context.home.queue_policy;
+    let policy = context.home.queue_policy();
     let event = format!("queue:{}", context.name);
 
     let due = context.home.with_storage(|storage| {
