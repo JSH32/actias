@@ -24,8 +24,10 @@ pub trait Determinism: Send + Sync {
     fn time(&self) -> i64;
     /// A v4-shaped id, journaled per call.
     fn uuid(&self) -> String;
-    /// The per-instance random seed, recorded once in STARTED.
-    fn seed(&self) -> i64;
+    /// A uniform draw in [0, 1) from the instance's own generator,
+    /// seeded once in STARTED; engine-independent so a Luau upgrade can
+    /// never bend a replay.
+    fn random(&self) -> f64;
 }
 
 /// The recorder handle the shims reach through vm app data.
@@ -98,13 +100,12 @@ impl LuaExtension for ForbiddenExtension {
 }
 
 /// Installs the deterministic stdlib overrides: `os.time`/`os.clock`
-/// consult the source, `math.randomseed` applies the instance seed once
-/// and further re-seeding is refused (a code-chosen seed would replay,
-/// but a time-derived one is the classic leak).
+/// and `math.random` consult the source, `os.date` and re-seeding are
+/// refused (a time-derived seed is the classic determinism leak).
 ///
 /// # Errors
 /// Returns [`mlua::Error`] when the globals cannot be written.
-pub fn shim_stdlib(lua: &mlua::Lua, seed: i64) -> mlua::Result<()> {
+pub fn shim_stdlib(lua: &mlua::Lua) -> mlua::Result<()> {
     let globals = lua.globals();
 
     // Luau's sandbox marks stdlib tables readonly; the patch window
@@ -130,8 +131,21 @@ pub fn shim_stdlib(lua: &mlua::Lua, seed: i64) -> mlua::Result<()> {
 
     let math: mlua::Table = globals.get("math")?;
     math.set_readonly(false);
-    let native_seed: mlua::Function = math.get("randomseed")?;
-    native_seed.call::<()>(seed)?;
+    math.set(
+        "random",
+        lua.create_function(|lua, range: (Option<i64>, Option<i64>)| {
+            let draw = source(lua)?.0.random();
+            Ok(match range {
+                // Lua's three shapes: uniform float, 1..=m, m..=n.
+                (None, None) => mlua::Value::Number(draw),
+                (Some(high), None) => mlua::Value::Integer(1 + (draw * high as f64).floor() as i64),
+                (Some(low), Some(high)) => {
+                    mlua::Value::Integer(low + (draw * (high - low + 1) as f64).floor() as i64)
+                }
+                (None, Some(_)) => unreachable!("lua cannot skip the first argument"),
+            })
+        })?,
+    )?;
     math.set(
         "randomseed",
         lua.create_function(|_, _: mlua::MultiValue| {

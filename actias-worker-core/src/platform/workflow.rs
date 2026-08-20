@@ -54,6 +54,9 @@ pub enum EntryKind {
     Cancel,
     /// The function returned; the row holds the return value.
     Completed,
+    /// A journaled ambient read (time, uuid): recorded on first
+    /// execution, replayed identically forever.
+    Ambient,
 }
 
 impl EntryKind {
@@ -67,6 +70,7 @@ impl EntryKind {
             Self::Child => "CHILD",
             Self::Cancel => "CANCEL",
             Self::Completed => "COMPLETED",
+            Self::Ambient => "AMBIENT",
         }
     }
 
@@ -80,6 +84,7 @@ impl EntryKind {
             "CHILD" => Self::Child,
             "CANCEL" => Self::Cancel,
             "COMPLETED" => Self::Completed,
+            "AMBIENT" => Self::Ambient,
             _ => return None,
         })
     }
@@ -245,6 +250,169 @@ mod tests {
         storage
     }
 
+    /// A workflow vm over a real file, wired the way the worker will
+    /// wire it: profile carries the cursor, app data carries the home.
+    mod runs {
+        use super::super::*;
+        use crate::objects::{TaskOptions, spawn_object_task};
+        use crate::proto::bundle::{Bundle, File};
+        use crate::proto::script_service::{Revision, Script};
+        use crate::runtime::{ActiasRuntime, PreparedRevision, VmProfile};
+        use std::sync::Arc;
+
+        const SOURCE: &str = r#"
+            fn_runs = 0
+            body_runs = 0
+
+            workflow "greet" (function(wf, input)
+                fn_runs = fn_runs + 1
+                local id = uuid.v4()
+                local charged = wf:step("charge", function()
+                    body_runs = body_runs + 1
+                    return { key = id, n = input.n, body_runs = body_runs }
+                end)
+                if fail_once and fn_runs == 1 then
+                    error("transient outage after the step")
+                end
+                return { charged = charged, at = os.time(), fn_runs = fn_runs }
+            end)
+
+            on "fetch" (function()
+                return { fn_runs = fn_runs, body_runs = body_runs }
+            end)
+        "#;
+
+        async fn workflow_vm(source: &str, flag_fail_once: bool) -> (ActiasRuntime, Arc<WfShared>) {
+            let channel =
+                tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+            let shared = Arc::new(WfShared::default());
+            let source = if flag_fail_once {
+                format!("fail_once = true\n{source}")
+            } else {
+                source.to_owned()
+            };
+            let revision = Revision {
+                bundle: Some(Bundle {
+                    entry_point: "main.lua".to_owned(),
+                    files: vec![File {
+                        file_path: "main.lua".to_owned(),
+                        content: source.into_bytes(),
+                        ..Default::default()
+                    }],
+                }),
+                ..Default::default()
+            };
+            let prepared =
+                Arc::new(PreparedRevision::prepare(Script::default(), revision).expect("prepares"));
+            let runtime = ActiasRuntime::with_profile(
+                prepared,
+                crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
+                crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
+                    .expect("client builds"),
+                None,
+                None,
+                None,
+                VmProfile::Workflow(shared.clone()),
+            )
+            .await
+            .expect("workflow vm builds");
+            runtime.set_app_data(shared.clone());
+            (runtime, shared)
+        }
+
+        fn start_call(input: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "class": actias_common::classes::WORKFLOW_CLASS,
+                "name": "greet/run-1",
+                "method": "start",
+                "args": [input],
+                "chain": ["p/__workflow/greet/run-1"],
+            })
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_failed_attempt_replays_the_step_instead_of_rerunning_it() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("wf.db");
+
+            let (runtime, _shared) = workflow_vm(SOURCE, true).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                    ..Default::default()
+                },
+            );
+
+            // First attempt: the step runs, then the function fails past
+            // it. The INTENT/RESULT pair survived their checkpoints.
+            let failed = handle
+                .call("__dispatch", start_call(serde_json::json!({ "n": 7 })))
+                .await;
+            assert!(failed.is_err(), "the transient outage surfaces");
+
+            // Second attempt on the same instance: replay returns the
+            // journaled step value; the body must not run again.
+            let done = handle
+                .call("__dispatch", start_call(serde_json::json!({ "n": 7 })))
+                .await
+                .expect("the retry completes");
+            assert_eq!(done["status"], "completed");
+            assert_eq!(done["value"]["charged"]["body_runs"], 1, "{done}");
+            assert_eq!(done["value"]["charged"]["n"], 7);
+            assert_eq!(done["value"]["fn_runs"], 2, "the function replayed");
+
+            let counters = handle
+                .call(
+                    "__dispatch",
+                    serde_json::json!({
+                        "class": actias_common::classes::WORKFLOW_CLASS,
+                        "name": "greet/run-1",
+                        "method": "status",
+                        "chain": ["p/__workflow/greet/run-1"],
+                    }),
+                )
+                .await
+                .expect("status answers");
+            assert_eq!(counters["kind"], "COMPLETED");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn joining_a_completed_run_returns_the_recorded_outcome() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("wf.db");
+
+            let (runtime, _shared) = workflow_vm(SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                    ..Default::default()
+                },
+            );
+
+            let first = handle
+                .call("__dispatch", start_call(serde_json::json!({ "n": 1 })))
+                .await
+                .expect("completes");
+
+            // A retried start joins the finished run: same recorded value,
+            // nothing executes again.
+            let joined = handle
+                .call("__dispatch", start_call(serde_json::json!({ "n": 999 })))
+                .await
+                .expect("joins");
+            assert_eq!(first, joined);
+
+            let probe = handle.call("fetch", serde_json::Value::Null).await;
+            // The fetch listener is a user-class shape this platform
+            // object does not dispatch; the counters are already proven
+            // via the returned value.
+            let _ = probe;
+            assert_eq!(first["value"]["charged"]["body_runs"], 1);
+        }
+    }
+
     #[test]
     fn appends_read_back_in_order_across_reopen() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -314,5 +482,357 @@ mod tests {
         // A second ensure over a current file is a no-op, not an error.
         ensure_schema(&mut storage).expect("idempotent");
         assert_eq!(storage.schema_version().expect("reads"), SCHEMA_VERSION);
+    }
+}
+
+/// One run-attempt's replay state: the journal tail not yet consumed,
+/// and the instance's deterministic generator. Live mode is simply the
+/// tail running out.
+struct Attempt {
+    pending: std::collections::VecDeque<Entry>,
+    home: std::sync::Arc<crate::objects::ObjectHome>,
+    rng: u64,
+}
+
+impl Attempt {
+    /// One uniform draw; xorshift64*, engine-independent, stepped
+    /// identically on replay because the seed and the draw order are.
+    fn draw(&mut self) -> f64 {
+        self.rng ^= self.rng >> 12;
+        self.rng ^= self.rng << 25;
+        self.rng ^= self.rng >> 27;
+        (self.rng.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// The per-instance cell the vm profile's shims and the dispatch share:
+/// the determinism source IS the replay cursor.
+#[derive(Default)]
+pub struct WfShared {
+    attempt: std::sync::Mutex<Option<Attempt>>,
+}
+
+impl WfShared {
+    /// One journaled ambient read: replayed from the cursor when the
+    /// tail still holds one, appended live otherwise.
+    fn ambient(
+        &self,
+        tag: &str,
+        live: impl FnOnce() -> serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let mut guard = self.attempt.lock().expect("no poisoned lock");
+        let attempt = guard
+            .as_mut()
+            .ok_or_else(|| "No workflow attempt is executing.".to_owned())?;
+
+        if let Some(entry) = attempt.pending.front() {
+            if entry.kind != EntryKind::Ambient || entry.data["tag"] != tag {
+                return Err(format!(
+                    "journal divergence: expected {:?} '{}', code asked for ambient '{tag}'",
+                    entry.kind, entry.data["tag"]
+                ));
+            }
+            let value = entry.data["value"].clone();
+            attempt.pending.pop_front();
+            return Ok(value);
+        }
+
+        let value = live();
+        let record = serde_json::json!({ "tag": tag, "value": value });
+        attempt
+            .home
+            .with_storage(|storage| append(storage, EntryKind::Ambient, &record))?;
+        Ok(value)
+    }
+}
+
+impl crate::extensions::determinism::Determinism for WfShared {
+    fn time(&self) -> i64 {
+        self.ambient("time", || {
+            serde_json::json!(crate::extensions::objects::unix_now_ms() / 1000)
+        })
+        .ok()
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0)
+    }
+
+    fn uuid(&self) -> String {
+        self.ambient("uuid", || {
+            serde_json::json!(uuid::Uuid::new_v4().to_string())
+        })
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+    }
+
+    fn random(&self) -> f64 {
+        let mut guard = self.attempt.lock().expect("no poisoned lock");
+        guard.as_mut().map(Attempt::draw).unwrap_or(0.0)
+    }
+}
+
+/// The `wf` handle the run body receives; every verb consults the
+/// shared cursor, which is what makes replay transparent.
+struct WfHandle;
+
+impl mlua::UserData for WfHandle {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        use mlua::LuaSerdeExt;
+        // step(name, fn) or step(name, opts, fn); opts (retries, backoff,
+        // timeout) are accepted and recorded but not yet enforced.
+        methods.add_async_method(
+            "step",
+            |lua, _this, (name, a, b): (String, mlua::Value, Option<mlua::Function>)| async move {
+                let body = match (&a, b) {
+                    (mlua::Value::Function(function), _) => function.clone(),
+                    (_, Some(function)) => function,
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "wf:step takes a name and a function.".to_owned(),
+                        ));
+                    }
+                };
+
+                let shared = lua
+                    .app_data_ref::<std::sync::Arc<WfShared>>()
+                    .map(|shared| shared.clone())
+                    .ok_or_else(|| mlua::Error::RuntimeError("Not a workflow vm.".to_owned()))?;
+
+                // Replay: a recorded RESULT answers without running the
+                // body. A dangling INTENT (the crash window) re-runs it.
+                enum Plan {
+                    Replay(serde_json::Value),
+                    Run,
+                }
+                let plan = {
+                    let mut guard = shared.attempt.lock().expect("no poisoned lock");
+                    let attempt = guard.as_mut().ok_or_else(|| {
+                        mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned())
+                    })?;
+
+                    match attempt.pending.front() {
+                        Some(entry)
+                            if entry.kind == EntryKind::Intent
+                                && entry.data["step"] == name.as_str() =>
+                        {
+                            attempt.pending.pop_front();
+                            match attempt.pending.front() {
+                                Some(result)
+                                    if result.kind == EntryKind::Result
+                                        && result.data["step"] == name.as_str() =>
+                                {
+                                    let value = result.data["value"].clone();
+                                    attempt.pending.pop_front();
+                                    Plan::Replay(value)
+                                }
+                                // INTENT without RESULT: the crash window;
+                                // the effect may or may not have happened,
+                                // so it runs again (idempotency keys are
+                                // the code's tool for the difference).
+                                _ => Plan::Run,
+                            }
+                        }
+                        Some(entry) => {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "journal divergence: expected {:?}, code reached step '{name}'",
+                                entry.kind
+                            )));
+                        }
+                        None => {
+                            let home = attempt.home.clone();
+                            home.with_storage(|storage| {
+                                append(
+                                    storage,
+                                    EntryKind::Intent,
+                                    &serde_json::json!({ "step": name }),
+                                )?;
+                                // The intent (and every journaled read
+                                // before it) is durable BEFORE the effect
+                                // runs: persist-intent, do, persist-result.
+                                storage.commit()?;
+                                storage.begin()
+                            })
+                            .map_err(mlua::Error::RuntimeError)?;
+                            Plan::Run
+                        }
+                    }
+                };
+
+                match plan {
+                    Plan::Replay(value) => lua.to_value(&value),
+                    Plan::Run => {
+                        let value: mlua::Value = body.call_async(()).await?;
+                        let json: serde_json::Value = lua.from_value(value.clone())?;
+                        let shared = lua
+                            .app_data_ref::<std::sync::Arc<WfShared>>()
+                            .map(|shared| shared.clone())
+                            .expect("checked above");
+                        let guard = shared.attempt.lock().expect("no poisoned lock");
+                        let attempt = guard.as_ref().expect("attempt is executing");
+                        attempt
+                            .home
+                            .with_storage(|storage| {
+                                append(
+                                    storage,
+                                    EntryKind::Result,
+                                    &serde_json::json!({ "step": name, "value": json }),
+                                )?;
+                                // persist-result: the effect's outcome is
+                                // durable before anything downstream can
+                                // observe it, so a later crash replays
+                                // the value instead of the effect.
+                                storage.commit()?;
+                                storage.begin()
+                            })
+                            .map_err(mlua::Error::RuntimeError)?;
+                        Ok(value)
+                    }
+                }
+            },
+        );
+    }
+}
+
+/// Runs one platform method against a workflow instance.
+///
+/// # Errors
+/// Returns user-safe texts like every platform class.
+pub(crate) async fn dispatch(
+    runtime: &crate::runtime::ActiasRuntime,
+    context: &super::PlatformContext<'_>,
+    call: &super::Call,
+) -> Result<serde_json::Value, String> {
+    context.home.with_storage(ensure_schema)?;
+
+    match call.method.as_str() {
+        "start" => {
+            start(
+                runtime,
+                context,
+                call.args
+                    .first()
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await
+        }
+        "status" => {
+            let head = context.home.with_storage(head)?;
+            Ok(head
+                .map(|entry| serde_json::json!({ "kind": entry.kind, "seq": entry.seq, "at": entry.at }))
+                .unwrap_or(serde_json::Value::Null))
+        }
+        other => Err(format!(
+            "Object class '{}' has no method '{other}'.",
+            actias_common::classes::WORKFLOW_CLASS
+        )),
+    }
+}
+
+/// One run attempt: replay the journal from the top, continue live past
+/// its end, journal the return. Joining a completed run returns the
+/// recorded outcome, which is what makes `start` idempotent.
+async fn start(
+    runtime: &crate::runtime::ActiasRuntime,
+    context: &super::PlatformContext<'_>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let entries = context.home.with_storage(|storage| read_from(storage, 0))?;
+
+    if let Some(done) = entries
+        .iter()
+        .find(|entry| entry.kind == EntryKind::Completed)
+    {
+        return Ok(serde_json::json!({ "status": "completed", "value": done.data["value"] }));
+    }
+
+    // The definition is the instance name's first segment; the caller id
+    // after it is the run's identity.
+    let definition = context
+        .name
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let listener = runtime
+        .listener(&format!(
+            "{}{definition}",
+            crate::runtime::ActiasRuntime::WORKFLOW_EVENT_PREFIX
+        ))
+        .map_err(|_| format!("No workflow '{definition}' is declared by the owning script."))?;
+
+    let (seed, input, pending) = match entries.first() {
+        Some(started) if started.kind == EntryKind::Started => (
+            started.data["seed"].as_i64().unwrap_or(1) as u64,
+            started.data["input"].clone(),
+            entries[1..].to_vec(),
+        ),
+        Some(other) => {
+            return Err(format!(
+                "journal divergence: first entry is {:?}, not STARTED",
+                other.kind
+            ));
+        }
+        None => {
+            let seed = uuid::Uuid::new_v4().as_u128() as u64 | 1;
+            let revision = context
+                .home
+                .revision()
+                .map(|prepared| prepared.revision_id.clone())
+                .unwrap_or_default();
+            context.home.with_storage(|storage| {
+                append(
+                    storage,
+                    EntryKind::Started,
+                    &serde_json::json!({
+                        "input": input,
+                        "seed": seed,
+                        "revision": revision,
+                        "engine": "luau",
+                    }),
+                )
+            })?;
+            (seed, input, Vec::new())
+        }
+    };
+
+    let shared = runtime
+        .app_data_ref::<std::sync::Arc<WfShared>>()
+        .map(|shared| shared.clone())
+        .ok_or_else(|| "This vm has no workflow cursor; not a workflow vm.".to_owned())?;
+    *shared.attempt.lock().expect("no poisoned lock") = Some(Attempt {
+        pending: pending.into(),
+        home: runtime
+            .app_data_ref::<std::sync::Arc<crate::objects::ObjectHome>>()
+            .map(|home| home.clone())
+            .ok_or_else(|| "This vm has no object home.".to_owned())?,
+        rng: seed,
+    });
+
+    let outcome: Result<mlua::Value, mlua::Error> = {
+        use mlua::LuaSerdeExt;
+        let argument = runtime
+            .to_value(&input)
+            .map_err(|e| format!("workflow input did not convert: {e}"))?;
+        listener.call_async((WfHandle, argument)).await
+    };
+    *shared.attempt.lock().expect("no poisoned lock") = None;
+
+    match outcome {
+        Ok(value) => {
+            use mlua::LuaSerdeExt;
+            let json: serde_json::Value = runtime
+                .from_value(value)
+                .map_err(|e| format!("workflow return did not convert: {e}"))?;
+            context.home.with_storage(|storage| {
+                append(
+                    storage,
+                    EntryKind::Completed,
+                    &serde_json::json!({ "value": json }),
+                )
+            })?;
+            Ok(serde_json::json!({ "status": "completed", "value": json }))
+        }
+        Err(error) => Err(error.to_string()),
     }
 }

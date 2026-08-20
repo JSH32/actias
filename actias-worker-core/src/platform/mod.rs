@@ -158,6 +158,9 @@ pub(crate) async fn dispatch(
         crate::extensions::objects::QUEUE_CLASS => queue::dispatch(runtime, &context, &call).await,
         crate::extensions::objects::CRON_CLASS => cron::dispatch(runtime, &context, &call).await,
         crate::extensions::objects::DATABASE_CLASS => database::dispatch(&context, &call),
+        actias_common::classes::WORKFLOW_CLASS => {
+            workflow::dispatch(runtime, &context, &call).await
+        }
         other => Err(format!("No object class '{other}'.")),
     };
 

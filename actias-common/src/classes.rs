@@ -15,3 +15,7 @@ pub const DATABASE_CLASS: &str = "__database";
 /// The built-in class behind `on "cron:<expr>"`: one instance per cron
 /// event, scoped to its script rather than the project.
 pub const CRON_CLASS: &str = "__cron";
+
+/// The built-in class behind `workflow "name"`: one instance per run,
+/// its sqlite holding the replay journal; the mailbox is append order.
+pub const WORKFLOW_CLASS: &str = "__workflow";
