@@ -24,9 +24,16 @@ export enum AccessFields {
   KV_WRITE = 1 << 6,
   KV_RESOURCE = KV_READ | KV_WRITE,
   /**
+   * Ability to query (read) or execute statements against (write) a
+   * project's sql databases from outside a script.
+   */
+  DATABASE_READ = 1 << 7,
+  DATABASE_WRITE = 1 << 8,
+  DATABASE_RESOURCE = DATABASE_READ | DATABASE_WRITE,
+  /**
    * All permissions for all resource types.
    */
-  FULL = SCRIPT_RESOURCE | PERMISSIONS_RESOURCE | KV_RESOURCE,
+  FULL = SCRIPT_RESOURCE | PERMISSIONS_RESOURCE | KV_RESOURCE | DATABASE_RESOURCE,
 }
 
 export const ACCESS_KEYS = Object.keys(AccessFields).filter(
