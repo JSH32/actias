@@ -10,16 +10,46 @@ import { useRouter } from 'next/router';
 import { useLogout, useUser } from '@/helpers/auth';
 import classes from './Shell.module.css';
 
+/** Routes outside the portal: they get the public chrome, not the shell. */
+const publicRoutes = [/^\/$/, /^\/login/, /^\/register/, /^\/blog/, /^\/posts/, /^\/404/];
+
 const globalNav = [
   { label: 'All projects', href: '/projects' },
   { label: 'Download', href: '/download' },
   { label: 'Settings', href: '/settings' },
 ];
 
+/** Minimal chrome for public pages: wordmark, log in, nothing else. */
+function PublicChrome({ children }: React.PropsWithChildren) {
+  const { data: user } = useUser();
+  return (
+    <div className={classes.publicPage}>
+      <header className={classes.publicHeader}>
+        <Link href="/" className={classes.brand}>
+          <span>ACTIAS</span>
+        </Link>
+        <nav className={classes.publicNav}>
+          <Link href="/download">Download</Link>
+          {user ? (
+            <Link href="/projects">Open console</Link>
+          ) : (
+            <Link href="/login">Log in</Link>
+          )}
+        </nav>
+      </header>
+      <main>{children}</main>
+    </div>
+  );
+}
+
 export function Shell({ children }: React.PropsWithChildren) {
   const router = useRouter();
   const { data: user } = useUser();
   const logout = useLogout();
+
+  if (publicRoutes.some((route) => route.test(router.pathname))) {
+    return <PublicChrome>{children}</PublicChrome>;
+  }
 
   // The path is the breadcrumb: segment identifiers are what users copy
   // into the cli, so showing them verbatim beats prettifying.
