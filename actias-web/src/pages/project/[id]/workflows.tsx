@@ -26,6 +26,7 @@ const RUN_COLUMNS = '168px minmax(0, 1fr) 150px 108px 92px';
 const STATUS_COLORS: Record<string, string> = {
   completed: 'var(--luna)',
   cancelled: 'var(--err)',
+  failed: 'var(--err)',
   sleeping: 'var(--warn)',
   awaiting: 'var(--warn)',
   running: 'var(--kind-obj)',
@@ -55,18 +56,18 @@ const TILES: {
     statuses: ['sleeping', 'awaiting'],
   },
   {
+    key: 'failed',
+    label: 'Failed',
+    color: 'var(--err)',
+    sub: 'resumable from the failed step',
+    statuses: ['failed'],
+  },
+  {
     key: 'completed',
     label: 'Completed',
     color: 'var(--luna)',
-    sub: 'returned a value',
-    statuses: ['completed'],
-  },
-  {
-    key: 'cancelled',
-    label: 'Cancelled',
-    color: 'var(--err)',
-    sub: 'stopped on purpose',
-    statuses: ['cancelled'],
+    sub: 'returned or cancelled',
+    statuses: ['completed', 'cancelled'],
   },
 ];
 
@@ -207,6 +208,23 @@ function foldHistory(
           time: agoShort(entry.at),
         });
         break;
+      case 'FAILED': {
+        const isFinal = Boolean(data.final);
+        rows.push({
+          key: `f${entry.seq}`,
+          name: String(data.step ?? ''),
+          kind: 'step',
+          state: 'done',
+          attempts: Number(data.attempt ?? 1),
+          note: `attempt ${String(data.attempt ?? 1)} failed${
+            isFinal ? ' · retries exhausted' : ''
+          }`,
+          result: String(data.error ?? ''),
+          time: agoShort(entry.at),
+        });
+        openIntent = null;
+        break;
+      }
       case 'CANCEL':
         rows.push({
           key: `c${entry.seq}`,
@@ -359,6 +377,14 @@ function RunDrawer({
     },
     onError: showError,
   });
+  const resume = useMutation({
+    mutationFn: () => api.workflows.resume(project.id, definition, run.id),
+    onSuccess: () => {
+      toast({ title: 'Resumed', message: 'Re-entered at the failed step.' });
+      refresh();
+    },
+    onError: showError,
+  });
   const cancel = useMutation({
     mutationFn: () =>
       api.workflows.cancel(project.id, definition, run.id, {
@@ -376,6 +402,7 @@ function RunDrawer({
   const journal = detail?.journal ?? [];
   const rows = foldHistory(journal, status, statusDetail, stepNames);
   const terminal = status === 'completed' || status === 'cancelled';
+  const failed = status === 'failed';
   const awaited =
     status === 'awaiting' ? String(statusDetail.signal ?? '') : '';
 
@@ -530,6 +557,51 @@ function RunDrawer({
             </details>
           ))}
         </div>
+
+        {failed && (
+          <div
+            style={{
+              marginTop: 10,
+              padding: '10px 12px',
+              border: '1px solid rgba(240, 138, 138, 0.35)',
+              borderRadius: 'var(--r2)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+            }}
+          >
+            <span style={{ font: '500 12px var(--mono)', color: 'var(--err)' }}>
+              Attempts exhausted at {String(statusDetail.step ?? '')}
+            </span>
+            <span
+              style={{ font: '400 11px var(--mono)', color: 'var(--ink-2)' }}
+            >
+              {String(statusDetail.error ?? '')}
+            </span>
+            <span className={classes.lede}>
+              Earlier steps stay recorded. Resuming re-enters at the failed step
+              and replays nothing before it.
+            </span>
+            {write && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className={classes.accentButton}
+                  style={{ height: 28, font: '650 12px var(--ui)' }}
+                  onClick={() => resume.mutate()}
+                >
+                  Resume from {String(statusDetail.step ?? 'the step')}
+                </button>
+                <button
+                  className={classes.ghostButton}
+                  style={{ height: 28, font: '500 12px var(--ui)' }}
+                  onClick={() => cancel.mutate()}
+                >
+                  Abandon run
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {status === 'awaiting' && write && (
           <div

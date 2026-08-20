@@ -107,6 +107,31 @@ export class WorkflowsService {
     }
 
     /**
+     * Re-enters a failed run at its failed step with fresh attempts;
+     * everything before it replays untouched.
+     * @param project
+     * @param definition
+     * @param id
+     * @returns any
+     * @throws ApiError
+     */
+    public resume(
+        project: string,
+        definition: string,
+        id: string,
+    ): CancelablePromise<any> {
+        return this.httpRequest.request({
+            method: 'POST',
+            url: '/api/project/{project}/workflows/{definition}/runs/{id}/resume',
+            path: {
+                'project': project,
+                'definition': definition,
+                'id': id,
+            },
+        });
+    }
+
+    /**
      * Delivers a named signal into the run; a parked await resumes.
      * @param project
      * @param definition
