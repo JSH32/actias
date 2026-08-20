@@ -8,6 +8,7 @@ import React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useLogout, useUser } from '@/helpers/auth';
+import { Mark } from './Mark';
 import classes from './Shell.module.css';
 
 /** Routes outside the portal: they get the public chrome, not the shell. */
@@ -26,6 +27,7 @@ function PublicChrome({ children }: React.PropsWithChildren) {
     <div className={classes.publicPage}>
       <header className={classes.publicHeader}>
         <Link href="/" className={classes.brand}>
+          <Mark size={20} />
           <span>ACTIAS</span>
         </Link>
         <nav className={classes.publicNav}>
@@ -59,6 +61,7 @@ export function Shell({ children }: React.PropsWithChildren) {
     <div className={classes.shell}>
       <aside className={classes.sidebar}>
         <Link href="/" className={classes.brand}>
+          <Mark size={20} />
           <span>ACTIAS</span>
         </Link>
         <nav className={classes.nav}>
