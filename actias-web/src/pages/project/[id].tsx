@@ -1,12 +1,11 @@
-import { AuthGuard } from '@/helpers/auth';
 import { useRouter } from 'next/router';
-import api from '@/helpers/api';
 import { useQuery } from '@tanstack/react-query';
-import { Breadcrumbs, Loader, Stack } from '@mantine/core';
-import { breadcrumbs } from '@/helpers/util';
+import api from '@/helpers/api';
+import { AuthGuard } from '@/helpers/auth';
 import AccessControl from '@/components/AccessControl';
-import ScriptsControl from '@/components/ScriptsControl';
+import ScriptsPanel from '@/components/ScriptsPanel';
 import KvControl from '@/components/KvControl';
+import { TabPanel, Tabs } from '@/ui';
 
 const Project = () => {
   const router = useRouter();
@@ -24,40 +23,54 @@ const Project = () => {
     enabled: !!project,
   });
 
-  return project ? (
-    <>
-      <Breadcrumbs>
-        {breadcrumbs([
-          { title: 'Home', href: '/projects' },
-          { title: project?.name, href: `/project/${project?.id}` },
-        ])}
-      </Breadcrumbs>
+  if (!project || !permissions) {
+    return <p style={{ color: 'var(--ink-3)' }}>Loading…</p>;
+  }
 
-      <Stack>
-        {permissions?.permissions['SCRIPT_READ'] && (
-          <ScriptsControl
-            project={project}
-            write={permissions?.permissions['SCRIPT_WRITE']}
-          />
-        )}
+  const tabs = [
+    permissions.permissions['SCRIPT_READ'] && {
+      value: 'scripts',
+      label: 'Scripts',
+    },
+    permissions.permissions['KV_READ'] && { value: 'kv', label: 'KV' },
+    permissions.permissions['PERMISSIONS_READ'] && {
+      value: 'access',
+      label: 'Access',
+    },
+  ].filter(Boolean) as { value: string; label: string }[];
 
-        {permissions?.permissions['KV_READ'] && (
-          <KvControl
-            project={project}
-            write={permissions?.permissions['KV_WRITE']}
-          />
+  return (
+    <div>
+      <h1 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12 }}>
+        {project.name}
+      </h1>
+      <Tabs tabs={tabs} defaultValue={tabs[0]?.value ?? 'scripts'}>
+        {permissions.permissions['SCRIPT_READ'] && (
+          <TabPanel value="scripts">
+            <ScriptsPanel
+              project={project}
+              write={!!permissions.permissions['SCRIPT_WRITE']}
+            />
+          </TabPanel>
         )}
-
-        {permissions?.permissions['PERMISSIONS_READ'] && (
-          <AccessControl
-            project={project}
-            write={permissions?.permissions['PERMISSIONS_WRITE']}
-          />
+        {permissions.permissions['KV_READ'] && (
+          <TabPanel value="kv">
+            <KvControl
+              project={project}
+              write={permissions.permissions['KV_WRITE']}
+            />
+          </TabPanel>
         )}
-      </Stack>
-    </>
-  ) : (
-    <Loader />
+        {permissions.permissions['PERMISSIONS_READ'] && (
+          <TabPanel value="access">
+            <AccessControl
+              project={project}
+              write={permissions.permissions['PERMISSIONS_WRITE']}
+            />
+          </TabPanel>
+        )}
+      </Tabs>
+    </div>
   );
 };
 
