@@ -518,6 +518,19 @@ function Workbench() {
         </Button>
       </div>
 
+      {status === 'closed' && (
+        <div className={classes.deadSession}>
+          This session ended; edits are no longer served anywhere. Old
+          session tabs keep showing stale code.{' '}
+          <button
+            className={classes.deadReload}
+            onClick={() => window.location.reload()}
+          >
+            Start a fresh session
+          </button>
+        </div>
+      )}
+
       <ContextMenu.Root>
         <ContextMenu.Trigger asChild>
           <div className={classes.tree}>
