@@ -11,6 +11,8 @@
 //! shipping work exactly as they do for user classes. Only the method
 //! bodies are native.
 
+pub mod cron;
+pub mod database;
 pub mod queue;
 
 use mlua::LuaSerdeExt;
@@ -34,11 +36,14 @@ pub(crate) struct Call {
     pub chain: Vec<String>,
 }
 
-/// Whether `payload` targets a class this module implements; user classes
-/// and platform classes still bodied in Lua fall through to `__dispatch`.
+/// Whether `payload` targets a platform class; the `__` prefix is
+/// reserved at declaration time, so everything carrying it is ours and
+/// user classes fall through to `__dispatch`.
 pub(crate) fn handles(method: &str, payload: &serde_json::Value) -> bool {
     method == "__dispatch"
-        && payload["class"].as_str() == Some(crate::extensions::objects::QUEUE_CLASS)
+        && payload["class"]
+            .as_str()
+            .is_some_and(|class| class.starts_with("__"))
 }
 
 /// Runs one platform method call against this vm's storage and alarm
@@ -60,6 +65,8 @@ pub(crate) async fn dispatch(
 
     let result = match call.class.as_str() {
         crate::extensions::objects::QUEUE_CLASS => queue::dispatch(runtime, &call).await,
+        crate::extensions::objects::CRON_CLASS => cron::dispatch(runtime, &call).await,
+        crate::extensions::objects::DATABASE_CLASS => database::dispatch(runtime, &call).await,
         other => Err(format!("No object class '{other}'.")),
     };
 
