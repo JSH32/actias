@@ -349,7 +349,7 @@ mod tests {
 
     /// The served surface end to end: a wrong token never reaches a
     /// handler, the right one does (and fails in the handler, because the
-    /// test state's backends are unreachable — proving the gate is the
+    /// test state's backends are unreachable, proving the gate is the
     /// interceptor, not the handler).
     #[tokio::test(flavor = "multi_thread")]
     async fn the_data_plane_refuses_strangers_and_serves_the_cluster() {
