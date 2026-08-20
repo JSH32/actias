@@ -437,6 +437,11 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
 #[serde(rename_all = "camelCase")]
 struct ForwardedCall {
     script_id: String,
+    /// True when the caller is not a worker (the api's dashboard reads):
+    /// a first hop may forward once to the holder; worker-to-worker calls
+    /// arrive with the hop already spent.
+    #[serde(default)]
+    first_hop: bool,
     /// The caller's revision: the vm a forwarded call lands in runs the
     /// same code it would have locally (previews included). Empty means
     /// the current revision, which is what live sessions resolve to.
@@ -576,7 +581,7 @@ async fn object_handler(
                     // target; dispatch reads it as-is.
                     chain: call.chain.clone(),
                 },
-                false,
+                call.first_hop,
             )
             .await
     }

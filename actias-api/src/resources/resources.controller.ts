@@ -238,6 +238,7 @@ export class ResourcesController {
       },
       body: JSON.stringify({
         script_id: scriptId,
+        first_hop: true,
         class: '__database',
         name: database,
         method,
