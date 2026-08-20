@@ -17,18 +17,32 @@ const previewUrl = (identifier: string, revisionId: string) =>
     .replaceAll('_IDENTIFIER_', identifier)
     .replaceAll('_REVISION_', revisionId);
 
-/** Contract groups as the design draws them, colored by kind. */
-const contractGroups: {
-  key: string;
-  label: string;
-  kind: CapabilityKind;
+/** The contract card's sections as design 02 draws them: declarations
+ * grouped by what they are, each colored by kind. */
+const contractSections: {
+  title: string;
+  entries: { key: string; label: string; kind: CapabilityKind }[];
 }[] = [
-  { key: 'kv', label: 'kv', kind: 'kv' },
-  { key: 'databases', label: 'database', kind: 'db' },
-  { key: 'objects', label: 'object', kind: 'obj' },
-  { key: 'queues', label: 'queue', kind: 'event' },
-  { key: 'events', label: 'on', kind: 'event' },
-  { key: 'secrets', label: 'secret', kind: 'secret' },
+  {
+    title: 'storage',
+    entries: [
+      { key: 'kv', label: 'kv', kind: 'kv' },
+      { key: 'databases', label: 'database', kind: 'db' },
+      { key: 'queues', label: 'queue', kind: 'event' },
+    ],
+  },
+  {
+    title: 'objects',
+    entries: [{ key: 'objects', label: 'object', kind: 'obj' }],
+  },
+  {
+    title: 'events',
+    entries: [{ key: 'events', label: 'on', kind: 'event' }],
+  },
+  {
+    title: 'secrets',
+    entries: [{ key: 'secrets', label: 'secret', kind: 'secret' }],
+  },
 ];
 
 const Script = () => {
@@ -56,6 +70,12 @@ const Script = () => {
     queryFn: () =>
       api.revisions.getRevision(script?.currentRevisionId as string, false),
     enabled: !!script?.currentRevisionId,
+  });
+
+  const { data: aliases } = useQuery({
+    queryKey: ['aliases', script?.id],
+    queryFn: () => api.scripts.listAliases(script?.id as string),
+    enabled: !!script,
   });
 
   const reload = React.useCallback(() => {
@@ -159,6 +179,9 @@ const Script = () => {
             >
               {liveUrl.replace(/^https?:\/\//, '')}
             </a>
+            {script.currentRevisionId && (
+              <Chip>rev {script.currentRevisionId.slice(0, 8)}</Chip>
+            )}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -185,36 +208,101 @@ const Script = () => {
         defaultValue="overview"
       >
         <TabPanel value="overview">
-          <Card style={{ padding: 16, maxWidth: 640 }}>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>
-              Capability contract
-            </div>
-            <p style={{ color: 'var(--ink-2)', marginBottom: 12 }}>
-              Derived from the code at publish; the platform enforces exactly
-              this.
-            </p>
-            {capabilities ? (
-              <div
+          <div style={{ display: 'grid', gap: 12, maxWidth: 640 }}>
+            <Card style={{ padding: 16 }}>
+              <div style={{ fontWeight: 700 }}>Capability contract</div>
+              <p
                 style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 6,
+                  color: 'var(--ink-3)',
+                  fontFamily: 'var(--mono)',
+                  fontSize: 11,
+                  margin: '2px 0 12px',
                 }}
               >
-                {contractGroups.flatMap(({ key, label, kind }) =>
-                  (capabilities[key] ?? []).map((name) => (
-                    <Chip key={`${key}:${name}`} kind={kind}>
-                      {label} &quot;{name}&quot;
-                    </Chip>
-                  )),
-                )}
-              </div>
-            ) : (
-              <p style={{ color: 'var(--ink-3)' }}>
-                No revision published yet.
+                derived at publish
+                {script.currentRevisionId
+                  ? ` · revision ${script.currentRevisionId.slice(0, 8)}`
+                  : ''}
               </p>
-            )}
-          </Card>
+              {capabilities ? (
+                contractSections.map((section) => {
+                  const chips = section.entries.flatMap(
+                    ({ key, label, kind }) =>
+                      (capabilities[key] ?? []).map((name) => (
+                        <Chip key={`${key}:${name}`} kind={kind}>
+                          {label} &quot;{name}&quot;
+                        </Chip>
+                      )),
+                  );
+                  if (!chips.length) return null;
+                  return (
+                    <div key={section.title} style={{ marginBottom: 10 }}>
+                      <div
+                        style={{
+                          fontFamily: 'var(--mono)',
+                          fontSize: 10,
+                          letterSpacing: '0.08em',
+                          textTransform: 'uppercase',
+                          color: 'var(--ink-3)',
+                          marginBottom: 4,
+                        }}
+                      >
+                        {section.title}
+                      </div>
+                      <div
+                        style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}
+                      >
+                        {chips}
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <p style={{ color: 'var(--ink-3)' }}>
+                  No revision published yet.
+                </p>
+              )}
+            </Card>
+            <Card style={{ padding: 16 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Aliases</div>
+              <p style={{ color: 'var(--ink-2)', marginBottom: 12 }}>
+                Named pointers to revisions; moving one is a rollback, so a
+                move and a create are the same call.
+              </p>
+              {aliases?.aliases?.length ? (
+                aliases.aliases.map(
+                  (alias: { name: string; revisionId: string }) => (
+                    <div
+                      key={alias.name}
+                      style={{
+                        fontFamily: 'var(--mono)',
+                        fontSize: 12,
+                        lineHeight: 2,
+                      }}
+                    >
+                      <span style={{ color: 'var(--luna)' }}>
+                        {alias.name}
+                      </span>{' '}
+                      <span style={{ color: 'var(--ink-3)' }}>→</span>{' '}
+                      <span style={{ color: 'var(--ink-2)' }}>
+                        {alias.revisionId.slice(0, 8)}
+                      </span>
+                    </div>
+                  ),
+                )
+              ) : (
+                <code
+                  style={{
+                    fontFamily: 'var(--mono)',
+                    fontSize: 12,
+                    color: 'var(--ink-3)',
+                  }}
+                >
+                  actias alias {'{script}'} set staging {'{revision}'}
+                </code>
+              )}
+            </Card>
+          </div>
         </TabPanel>
 
         <TabPanel value="revisions">
