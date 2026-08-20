@@ -7,6 +7,7 @@
 
 pub mod egress;
 pub mod extensions;
+pub mod identity;
 pub mod objects;
 pub mod platform;
 pub mod runtime;
