@@ -80,10 +80,6 @@ pub struct ObjectTarget {
 /// vm runs exactly one call at a time.
 pub struct CallChain(pub Vec<String>);
 
-/// The one alarm an object may hold; setting replaces. The task loop reads
-/// it after every call to know when to wake.
-pub struct AlarmCell(pub std::cell::RefCell<Option<PendingAlarm>>);
-
 #[derive(Clone)]
 pub struct PendingAlarm {
     /// Unix milliseconds the alarm is due at.
@@ -358,19 +354,18 @@ fn set_alarm(lua: &Lua, (_this, duration): (Table, mlua::Value)) -> mlua::Result
         own_key,
     };
 
-    if let Some(cell) = lua.app_data_ref::<crate::storage::StorageCell>() {
-        cell.0
-            .borrow_mut()
-            .save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
-            .map_err(mlua::Error::RuntimeError)?;
+    let Some(home) = lua.app_data_ref::<Arc<crate::objects::ObjectHome>>() else {
+        return Err(mlua::Error::RuntimeError(
+            "set_alarm only works inside an object method.".to_owned(),
+        ));
+    };
+    if home.storage.is_some() {
+        home.with_storage(|storage| {
+            storage.save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
+        })
+        .map_err(mlua::Error::RuntimeError)?;
     }
-
-    match lua.app_data_ref::<AlarmCell>() {
-        Some(cell) => *cell.0.borrow_mut() = Some(alarm),
-        None => {
-            lua.set_app_data(AlarmCell(std::cell::RefCell::new(Some(alarm))));
-        }
-    }
+    *crate::objects::lock_unpoisoned(&home.alarm) = Some(alarm);
 
     Ok(())
 }
@@ -388,18 +383,18 @@ fn sql_params(lua: &Lua, params: Option<Table>) -> mlua::Result<Vec<serde_json::
     Ok(values)
 }
 
-/// Runs one storage operation against this vm's cell.
+/// Runs one storage operation against this vm's object home.
 fn with_storage<T>(
     lua: &Lua,
     operation: impl FnOnce(&mut crate::storage::SqliteStorage) -> Result<T, String>,
 ) -> mlua::Result<T> {
-    let cell = lua
-        .app_data_ref::<crate::storage::StorageCell>()
+    let home = lua
+        .app_data_ref::<Arc<crate::objects::ObjectHome>>()
         .ok_or_else(|| {
             mlua::Error::RuntimeError("This object has no durable storage.".to_owned())
         })?;
-    let mut storage = cell.0.borrow_mut();
-    operation(&mut storage).map_err(mlua::Error::RuntimeError)
+    home.with_storage(operation)
+        .map_err(mlua::Error::RuntimeError)
 }
 
 /// The `state.sql` handle: exec/query/query_one over the object's own
@@ -492,7 +487,10 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
                 Ok(state) => (state, false),
                 Err(_) => {
                     let state = lua.create_table()?;
-                    if lua.app_data_ref::<crate::storage::StorageCell>().is_some() {
+                    let stored = lua
+                        .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+                        .is_some_and(|home| home.storage.is_some());
+                    if stored {
                         state.set("sql", sql_surface(&lua)?)?;
                     }
                     state.set("now", lua.create_function(|_, ()| Ok(unix_now_ms()))?)?;
@@ -510,20 +508,23 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
             // file is the record (a failed init retries next call); without
             // storage, once per vm life, which is when state is fresh too.
             if state_is_new && call.method != "init" {
-                let fresh = match lua.app_data_ref::<crate::storage::StorageCell>() {
-                    Some(cell) => {
-                        let fresh = cell.0.borrow_mut().is_fresh();
-                        fresh.map_err(mlua::Error::RuntimeError)?
-                    }
+                // Cloned out rather than borrowed: the app-data guard must
+                // not live across the init await below.
+                let home = lua
+                    .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+                    .map(|home| home.clone())
+                    .filter(|home| home.storage.is_some());
+                let fresh = match &home {
+                    Some(home) => home
+                        .with_storage(|storage| storage.is_fresh())
+                        .map_err(mlua::Error::RuntimeError)?,
                     None => true,
                 };
 
                 if fresh && let Ok(init) = class.get::<mlua::Function>("init") {
                     init.call_async::<()>(state.clone()).await?;
-                    if let Some(cell) = lua.app_data_ref::<crate::storage::StorageCell>() {
-                        cell.0
-                            .borrow_mut()
-                            .mark_initialized()
+                    if let Some(home) = &home {
+                        home.with_storage(|storage| storage.mark_initialized())
                             .map_err(mlua::Error::RuntimeError)?;
                     }
                 }

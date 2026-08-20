@@ -90,9 +90,61 @@ impl ObjectHandle {
 pub type AfterWrite =
     Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// Tracks the storage change counter across calls, so only calls that
-/// actually wrote pay the shipping toll.
-struct ShipMark(std::cell::Cell<i64>);
+/// Everything the pinned task owns about its object, in one place: the
+/// task is the owner, and the vm holds a clone of the [`Arc`] as app data
+/// so the Lua extension surface (`state.sql`, `state:set_alarm`) reaches
+/// the same cells. Platform classes take it directly, which is what keeps
+/// them free of any guest runtime type.
+///
+/// The locks are never contended: the mailbox serializes every consumer
+/// by construction, so each lock is take-use-release on one task.
+pub struct ObjectHome {
+    /// The object's durable half; [`None`] leaves state in-memory only.
+    pub storage: Option<std::sync::Mutex<crate::storage::SqliteStorage>>,
+    /// The one alarm the object may hold; setting replaces. The task loop
+    /// reads it after every call to know when to wake.
+    pub alarm: std::sync::Mutex<Option<crate::extensions::objects::PendingAlarm>>,
+    /// Storage change counter at the last shipped snapshot, so only calls
+    /// that actually wrote pay the shipping toll.
+    ship_mark: std::sync::atomic::AtomicI64,
+    /// Whether pending database migrations were already checked in this
+    /// vm's life; the applied table in the file is the durable record.
+    pub migrations_checked: std::sync::atomic::AtomicBool,
+    /// Delivery limits for `__queue` instances.
+    pub queue_policy: crate::platform::queue::QueuePolicy,
+    /// The revision this vm runs; platform classes read migrations from it
+    /// without touching the vm.
+    pub revision: Option<Arc<crate::runtime::PreparedRevision>>,
+}
+
+impl ObjectHome {
+    /// Runs one operation against the object's storage; the lock never
+    /// outlives the closure, so callers are free to await between
+    /// operations.
+    ///
+    /// # Errors
+    /// Returns the operation's error, or a message when the object has no
+    /// durable storage at all.
+    pub fn with_storage<T>(
+        &self,
+        operation: impl FnOnce(&mut crate::storage::SqliteStorage) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let storage = self
+            .storage
+            .as_ref()
+            .ok_or_else(|| "This object has no durable storage.".to_owned())?;
+        operation(&mut lock_unpoisoned(storage))
+    }
+}
+
+/// A poisoned lock has no observer to protect here (the mailbox already
+/// serializes every consumer), so the inner value is recovered rather
+/// than panicking a request path.
+pub(crate) fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Everything configurable about one pinned task; the runtime is the
 /// only required piece.
@@ -115,25 +167,23 @@ pub struct TaskOptions {
 }
 
 pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> ObjectHandle {
-    use crate::extensions::objects::{AlarmCell, PendingAlarm};
+    use crate::extensions::objects::PendingAlarm;
 
     let TaskOptions {
         call_budget,
-        storage,
+        mut storage,
         hibernate_after,
         after_write,
         queue,
     } = options;
-    runtime.set_app_data(queue);
 
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
 
-    runtime.set_app_data(ShipMark(std::cell::Cell::new(0)));
-    if let Some(mut storage) = storage {
-        // A persisted alarm re-arms the moment the object is resident
-        // again; past-due fires immediately. (A cold object with a due
-        // alarm still needs a touch to wake, until placement can scan.)
-        let pending = storage
+    // A persisted alarm re-arms the moment the object is resident again;
+    // past-due fires immediately. (A cold object with a due alarm still
+    // needs a touch to wake, until placement can scan.)
+    let pending = storage.as_mut().and_then(|storage| {
+        storage
             .load_alarm()
             .ok()
             .flatten()
@@ -142,12 +192,20 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                 class,
                 name,
                 own_key,
-            });
-        runtime.set_app_data(AlarmCell(std::cell::RefCell::new(pending)));
-        runtime.set_app_data(crate::storage::StorageCell(std::cell::RefCell::new(
-            storage,
-        )));
-    }
+            })
+    });
+
+    let home = Arc::new(ObjectHome {
+        storage: storage.map(std::sync::Mutex::new),
+        alarm: std::sync::Mutex::new(pending),
+        ship_mark: std::sync::atomic::AtomicI64::new(0),
+        migrations_checked: std::sync::atomic::AtomicBool::new(false),
+        queue_policy: queue,
+        revision: runtime
+            .app_data_ref::<Arc<crate::runtime::PreparedRevision>>()
+            .map(|revision| revision.clone()),
+    });
+    runtime.set_app_data(home.clone());
 
     tokio::spawn(async move {
         // Popping only after the previous call finished is the input gate;
@@ -155,9 +213,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         // alarm is just one more message source, so it serializes with
         // calls exactly like they serialize with each other.
         loop {
-            let pending = runtime
-                .app_data_ref::<AlarmCell>()
-                .and_then(|cell| cell.0.borrow().clone());
+            let pending = lock_unpoisoned(&home.alarm).clone();
 
             let call = if let Some(alarm) = pending {
                 // A pending alarm keeps the vm warm: hibernating past it
@@ -169,7 +225,8 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                         None => break,
                     },
                     _ = tokio::time::sleep(std::time::Duration::from_millis(wait as u64)) => {
-                        fire_alarm(&runtime, alarm, call_budget, after_write.as_ref()).await;
+                        fire_alarm(&runtime, &home, alarm, call_budget, after_write.as_ref())
+                            .await;
                         continue;
                     }
                 }
@@ -192,6 +249,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
 
             let result = guarded_dispatch(
                 &runtime,
+                &home,
                 &call.method,
                 call.payload,
                 call_budget,
@@ -213,21 +271,21 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
 /// object asked itself for; its failure is logged, never propagated.
 async fn fire_alarm(
     runtime: &ActiasRuntime,
+    home: &ObjectHome,
     alarm: crate::extensions::objects::PendingAlarm,
     call_budget: Option<u64>,
     after_write: Option<&AfterWrite>,
 ) {
-    if let Some(cell) = runtime.app_data_ref::<crate::extensions::objects::AlarmCell>() {
-        *cell.0.borrow_mut() = None;
-    }
-    if let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
-        && let Err(error) = cell.0.borrow_mut().clear_alarm()
+    *lock_unpoisoned(&home.alarm) = None;
+    if home.storage.is_some()
+        && let Err(error) = home.with_storage(|storage| storage.clear_alarm())
     {
         actias_common::tracing::warn!(%error, "alarm could not be cleared");
     }
 
     let result = guarded_dispatch(
         runtime,
+        home,
         "__dispatch",
         serde_json::json!({
             "class": alarm.class,
@@ -251,19 +309,15 @@ async fn fire_alarm(
 /// checkpoint before any caller hears the result.
 async fn guarded_dispatch(
     runtime: &ActiasRuntime,
+    home: &ObjectHome,
     method: &str,
     payload: serde_json::Value,
     call_budget: Option<u64>,
     after_write: Option<&AfterWrite>,
 ) -> Result<serde_json::Value, ObjectError> {
-    let has_storage = runtime
-        .app_data_ref::<crate::storage::StorageCell>()
-        .is_some();
+    let has_storage = home.storage.is_some();
 
-    if has_storage
-        && let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
-        && let Err(error) = cell.0.borrow_mut().begin()
-    {
+    if has_storage && let Err(error) = home.with_storage(|storage| storage.begin()) {
         return Err(ObjectError::Call(format!(
             "The call's transaction could not open: {error}"
         )));
@@ -275,14 +329,14 @@ async fn guarded_dispatch(
     // Platform-implemented classes never enter the vm; everything else is
     // the Lua dispatch, user classes and Lua-bodied platform classes alike.
     let result = if crate::platform::handles(method, &payload) {
-        crate::platform::dispatch(runtime, payload).await
+        crate::platform::dispatch(runtime, home, payload).await
     } else {
         dispatch(runtime, method, payload).await
     };
     runtime.end_call_budget();
 
-    if has_storage && let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>() {
-        let mut storage = cell.0.borrow_mut();
+    if let Some(storage) = &home.storage {
+        let mut storage = lock_unpoisoned(storage);
 
         match &result {
             Ok(_) => {
@@ -313,44 +367,31 @@ async fn guarded_dispatch(
                             }
                         });
                 drop(storage);
-                if let Some(cell) = runtime.app_data_ref::<crate::extensions::objects::AlarmCell>()
-                {
-                    *cell.0.borrow_mut() = persisted;
-                }
+                *lock_unpoisoned(&home.alarm) = persisted;
             }
         }
     }
 
     // The handler is done; give storage its flush moment before the
     // caller hears anything.
-    if let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>()
-        && let Err(error) = cell.0.borrow_mut().checkpoint()
+    if home.storage.is_some()
+        && let Err(error) = home.with_storage(|storage| storage.checkpoint())
     {
         actias_common::tracing::warn!(%error, "object storage checkpoint failed");
     }
 
     // The output gate: a call that wrote does not answer until the write
     // has also left the building.
-    if let Some(after_write) = after_write {
-        let advanced = {
-            let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>() else {
-                return result;
-            };
-            let current = cell.0.borrow_mut().total_changes().unwrap_or(0);
-            let mark = runtime
-                .app_data_ref::<ShipMark>()
-                .map(|mark| mark.0.get())
-                .unwrap_or(0);
-            if current != mark {
-                if let Some(ship_mark) = runtime.app_data_ref::<ShipMark>() {
-                    ship_mark.0.set(current);
-                }
-                true
-            } else {
-                false
-            }
-        };
-        if advanced {
+    if let Some(after_write) = after_write
+        && home.storage.is_some()
+    {
+        use std::sync::atomic::Ordering;
+
+        let current = home
+            .with_storage(|storage| storage.total_changes())
+            .unwrap_or(0);
+        if current != home.ship_mark.load(Ordering::Relaxed) {
+            home.ship_mark.store(current, Ordering::Relaxed);
             after_write().await;
         }
     }

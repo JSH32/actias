@@ -18,7 +18,8 @@ pub mod queue;
 use mlua::LuaSerdeExt;
 use serde::Deserialize;
 
-use crate::extensions::objects::{AlarmCell, CallChain, PendingAlarm, unix_now_ms};
+use crate::extensions::objects::{CallChain, PendingAlarm, unix_now_ms};
+use crate::objects::{ObjectHome, lock_unpoisoned};
 use crate::runtime::ActiasRuntime;
 
 /// One platform method call, the same shape the Lua `__dispatch` decodes.
@@ -34,6 +35,17 @@ pub(crate) struct Call {
     /// fired listener's outbound object calls extend it.
     #[serde(default)]
     pub chain: Vec<String>,
+}
+
+/// What a platform method may touch, passed explicitly: the object's own
+/// state plus its call identity. Nothing in here is guest-shaped; the
+/// guest runtime appears only where a listener must actually fire.
+pub(crate) struct PlatformContext<'a> {
+    pub home: &'a ObjectHome,
+    /// The instance name.
+    pub name: &'a str,
+    /// The object's own key, seeding any alarm it arms.
+    pub own_key: &'a str,
 }
 
 /// Whether `payload` targets a platform class; the `__` prefix is
@@ -54,36 +66,31 @@ pub(crate) fn handles(method: &str, payload: &serde_json::Value) -> bool {
 /// texts a Lua-bodied method would produce.
 pub(crate) async fn dispatch(
     runtime: &ActiasRuntime,
+    home: &ObjectHome,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, crate::objects::ObjectError> {
     let call: Call = serde_json::from_value(payload)
         .map_err(|e| crate::objects::ObjectError::Call(format!("Malformed object call: {e}")))?;
 
     // One call at a time by construction, so installing per dispatch is
-    // safe; the Lua dispatch does the same for user classes.
+    // safe; the Lua dispatch does the same for user classes. Only a fired
+    // listener's outbound calls read this.
     runtime.set_app_data(CallChain(call.chain.clone()));
 
+    let context = PlatformContext {
+        home,
+        name: &call.name,
+        own_key: call.chain.last().map(String::as_str).unwrap_or_default(),
+    };
+
     let result = match call.class.as_str() {
-        crate::extensions::objects::QUEUE_CLASS => queue::dispatch(runtime, &call).await,
-        crate::extensions::objects::CRON_CLASS => cron::dispatch(runtime, &call).await,
-        crate::extensions::objects::DATABASE_CLASS => database::dispatch(runtime, &call).await,
+        crate::extensions::objects::QUEUE_CLASS => queue::dispatch(runtime, &context, &call).await,
+        crate::extensions::objects::CRON_CLASS => cron::dispatch(runtime, &context, &call).await,
+        crate::extensions::objects::DATABASE_CLASS => database::dispatch(&context, &call),
         other => Err(format!("No object class '{other}'.")),
     };
 
     result.map_err(crate::objects::ObjectError::Call)
-}
-
-/// Runs one operation against this vm's storage cell; the borrow never
-/// outlives the closure, so callers are free to await between operations.
-pub(crate) fn with_storage<T>(
-    runtime: &ActiasRuntime,
-    operation: impl FnOnce(&mut crate::storage::SqliteStorage) -> Result<T, String>,
-) -> Result<T, String> {
-    let cell = runtime
-        .app_data_ref::<crate::storage::StorageCell>()
-        .ok_or_else(|| "This object has no durable storage.".to_owned())?;
-    let mut storage = cell.0.borrow_mut();
-    operation(&mut storage)
 }
 
 /// Fires the script's listener for `event` and reports the delivery
@@ -122,33 +129,23 @@ pub(crate) async fn fire_listener(
 /// # Errors
 /// Returns SQLite's message when the persisted row cannot be written.
 pub(crate) fn set_alarm(
-    runtime: &ActiasRuntime,
+    context: &PlatformContext<'_>,
     class: &str,
-    name: &str,
     delay_ms: i64,
 ) -> Result<(), String> {
-    let own_key = runtime
-        .app_data_ref::<CallChain>()
-        .and_then(|chain| chain.0.last().cloned())
-        .unwrap_or_default();
-
     let alarm = PendingAlarm {
         due_ms: unix_now_ms() + delay_ms.max(0),
         class: class.to_owned(),
-        name: name.to_owned(),
-        own_key,
+        name: context.name.to_owned(),
+        own_key: context.own_key.to_owned(),
     };
 
-    with_storage(runtime, |storage| {
-        storage.save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
-    })?;
-
-    match runtime.app_data_ref::<AlarmCell>() {
-        Some(cell) => *cell.0.borrow_mut() = Some(alarm),
-        None => {
-            runtime.set_app_data(AlarmCell(std::cell::RefCell::new(Some(alarm))));
-        }
+    if context.home.storage.is_some() {
+        context.home.with_storage(|storage| {
+            storage.save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
+        })?;
     }
+    *lock_unpoisoned(&context.home.alarm) = Some(alarm);
 
     Ok(())
 }
