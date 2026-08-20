@@ -249,6 +249,9 @@ services:
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:3000}
       # Development-only key, must match the worker's; a deployment sets its own.
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      # Dashboard reads reach a worker directly, cluster-internal only.
+      - WORKER_INTERNAL_URL=http://worker_service:3000
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
 
   actias_web:
     image: ghcr.io/jsh32/actias_web:latest

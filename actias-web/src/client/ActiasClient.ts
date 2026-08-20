@@ -10,6 +10,7 @@ import { AdminService } from './services/AdminService';
 import { AuthService } from './services/AuthService';
 import { KvService } from './services/KvService';
 import { ProjectService } from './services/ProjectService';
+import { ResourcesService } from './services/ResourcesService';
 import { RevisionsService } from './services/RevisionsService';
 import { ScriptsService } from './services/ScriptsService';
 import { SecretsService } from './services/SecretsService';
@@ -25,6 +26,7 @@ export class ActiasClient {
     public readonly auth: AuthService;
     public readonly kv: KvService;
     public readonly project: ProjectService;
+    public readonly resources: ResourcesService;
     public readonly revisions: RevisionsService;
     public readonly scripts: ScriptsService;
     public readonly secrets: SecretsService;
@@ -51,6 +53,7 @@ export class ActiasClient {
         this.auth = new AuthService(this.request);
         this.kv = new KvService(this.request);
         this.project = new ProjectService(this.request);
+        this.resources = new ResourcesService(this.request);
         this.revisions = new RevisionsService(this.request);
         this.scripts = new ScriptsService(this.request);
         this.secrets = new SecretsService(this.request);
