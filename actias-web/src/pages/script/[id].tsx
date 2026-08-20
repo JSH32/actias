@@ -44,6 +44,12 @@ const contractGroups: {
     entries: [{ key: 'events', label: 'on', token: 'var(--kind-event)' }],
   },
   {
+    title: 'WORKFLOWS',
+    entries: [
+      { key: 'workflows', label: 'workflow', token: 'var(--kind-obj)' },
+    ],
+  },
+  {
     title: 'SECRETS',
     entries: [{ key: 'secrets', label: 'secret', token: 'var(--kind-secret)' }],
   },
