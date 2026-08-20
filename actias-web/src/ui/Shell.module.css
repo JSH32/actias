@@ -511,3 +511,21 @@
   background: var(--night-2);
   color: var(--ink-1);
 }
+
+.railFind {
+  display: block;
+  width: calc(100% - 28px);
+  margin: 2px 14px 6px;
+  padding: 5px 8px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-1);
+  font: 400 11px var(--mono);
+}
+.railFind::placeholder {
+  color: var(--ink-3);
+}
+.railFind:focus {
+  outline: none;
+  border-color: var(--luna);
+}

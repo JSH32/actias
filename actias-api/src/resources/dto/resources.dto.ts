@@ -112,6 +112,26 @@ export class ObjectInstanceDto {
   declaredBy: string;
 }
 
+/** One page of a class's instances, with how many match in all. */
+export class ObjectPageDto {
+  @ApiProperty({ type: [ObjectInstanceDto] })
+  items: ObjectInstanceDto[];
+
+  @ApiProperty({
+    description: 'Instances matching the filter across every page.',
+  })
+  total: number;
+}
+
+/** How many instances one class holds; the rail shows classes, not names. */
+export class ClassCountDto {
+  @ApiProperty()
+  class: string;
+
+  @ApiProperty()
+  count: number;
+}
+
 export class RetriedDto {
   @ApiProperty({ description: 'How many dead letters were requeued.' })
   requeued: number;
