@@ -1,0 +1,77 @@
+/* Base primitives on the token sheet. Flat surfaces separate by line;
+ * solid luna is reserved for the one primary action per view. */
+
+.button {
+  font-family: var(--ui);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 8px 14px;
+  border-radius: var(--r2);
+  border: 1px solid var(--line);
+  background: var(--night-2);
+  color: var(--ink-1);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.button:hover {
+  border-color: var(--ink-3);
+}
+.button:focus-visible {
+  outline: 2px solid var(--luna-edge);
+  outline-offset: 1px;
+}
+.button:disabled {
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+/* The one primary action per view. */
+.buttonPrimary {
+  composes: button;
+  background: var(--luna);
+  border-color: var(--luna);
+  color: var(--night-0);
+}
+.buttonPrimary:hover {
+  background: var(--luna-dim);
+  border-color: var(--luna-dim);
+}
+
+/* Affirmative but not primary: luna as a state, not a fill. */
+.buttonQuiet {
+  composes: button;
+  background: var(--luna-tint);
+  border-color: var(--luna-edge);
+  color: var(--luna);
+}
+
+.buttonDanger {
+  composes: button;
+  background: var(--err-tint);
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.card {
+  background: var(--night-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+}
+
+.chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: var(--r1);
+  border: 1px solid var(--line);
+  background: var(--night-2);
+  color: var(--ink-2);
+}
+
+.kindChip {
+  composes: chip;
+  border-color: color-mix(in srgb, var(--kind) 35%, transparent);
+  color: var(--kind);
+  background: color-mix(in srgb, var(--kind) 10%, transparent);
+}

@@ -1,0 +1,64 @@
+/*
+ * The design system's token sheet, verbatim from the Foundations design
+ * document (claude design output 01, backed by docs/UI-DESIGN.md).
+ *
+ * Surfaces separate by line, not shadow: three night levels and one
+ * border. Luna is a state, not a fill: solid luna is reserved for one
+ * primary action per view and the live dot. Elevation exists only for
+ * things that float over the page (overlay, modal).
+ */
+:root {
+  /* Surface and line */
+  --night-0: #0b0d12; /* page background */
+  --night-1: #12151d; /* cards, table rows, sidebar */
+  --night-2: #1a1e29; /* inputs, code, wells */
+  --line: #262b38; /* borders, dividers, rules */
+  --line-soft: #1f2431;
+
+  /* Ink */
+  --ink-1: #e8ebf0; /* primary text, 16.2:1 on night-0 */
+  --ink-2: #9aa3b2; /* secondary text, 7.7:1 */
+  --ink-3: #6b7486; /* non-text only: icons, rules, index numbers */
+
+  /* Accent and status */
+  --luna: #a3e6b4;
+  --luna-dim: #6fbf87;
+  --luna-tint: rgba(163, 230, 180, 0.12);
+  --luna-edge: rgba(163, 230, 180, 0.4);
+  --viola: #a78bfa;
+  --viola-tint: rgba(167, 139, 250, 0.14);
+  --warn: #f5c97b;
+  --err: #f08a8a;
+  --err-tint: rgba(240, 138, 138, 0.12);
+
+  /* Capability kinds */
+  --kind-kv: #7dd3fc;
+  --kind-db: #a3e6b4;
+  --kind-obj: #a78bfa;
+  --kind-event: #f5c97b;
+  --kind-secret: #f08a8a;
+
+  /* Lua syntax */
+  --syn-default: #c8cfdb;
+  --syn-keyword: #a78bfa;
+  --syn-decl: #a3e6b4;
+  --syn-fn: #c4b5fd;
+  --syn-string: #e9b872;
+  --syn-number: #7dd3fc;
+  --syn-field: #9aa3b2;
+  --syn-comment: #7c8699;
+
+  /* Type */
+  --ui: 'Archivo', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --prose: 'Newsreader', Georgia, serif;
+
+  /* Shape */
+  --r1: 2px;
+  --r2: 4px;
+  --r3: 6px;
+
+  /* Elevation: reserved for things that float over the page */
+  --shadow-overlay: 0 6px 18px -8px rgb(0 0 0 / 0.7);
+  --shadow-modal: 0 24px 48px -12px rgb(0 0 0 / 0.85);
+}
