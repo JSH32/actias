@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { showError } from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
-import { Button, Card, Field } from '@/ui';
+import { Button, Card, Field, PageBody } from '@/ui';
 import { toast } from '@/ui/toast';
 import classes from './projects.module.css';
 
@@ -109,7 +109,9 @@ function Admin() {
 export default function AdminPage() {
   return (
     <AuthGuard>
-      <Admin />
+      <PageBody>
+        <Admin />
+      </PageBody>
     </AuthGuard>
   );
 }

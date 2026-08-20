@@ -7,7 +7,15 @@ import { AuthGuard } from '@/helpers/auth';
 import { getPublicConfig } from '@/pages/api/config';
 import { RevisionDataDto } from '@/client';
 import LogTail from '@/components/LogTail';
-import { Button, Card, CapabilityKind, Chip, TabPanel, Tabs } from '@/ui';
+import {
+  Button,
+  Card,
+  CapabilityKind,
+  Chip,
+  PageBody,
+  TabPanel,
+  Tabs,
+} from '@/ui';
 import shared from '../projects.module.css';
 import { toast } from '@/ui/toast';
 
@@ -405,7 +413,9 @@ const Script = () => {
 export default function ScriptPage() {
   return (
     <AuthGuard>
-      <Script />
+      <PageBody>
+        <Script />
+      </PageBody>
     </AuthGuard>
   );
 }

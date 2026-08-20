@@ -4,11 +4,10 @@
 
 export type ResourceInstanceDto = {
     name: string;
-    scriptId: string;
     /**
-     * Public identifier of the owning script.
+     * Public identifier of a script declaring it; empty when only the directory remembers it.
      */
-    scriptIdentifier: string;
+    declaredBy: string;
     /**
      * Data exists but no live revision declares it; the platform keeps it until it is deleted explicitly.
      */

@@ -1,0 +1,867 @@
+/* Shared inspector grammar for the resource screens (designs 03/04/06):
+ * the page frame, stat cards, filter tabs, sticky grid tables with a
+ * select bar, state pills and the right-hand drawer. Column templates
+ * come from the page via inline style; everything else lives here. */
+
+/* A page that draws its own frame: a header band that stays put over a
+ * body that scrolls in regions. */
+.frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* An empty state owns the whole region rather than sitting at its top. */
+.frameEmpty {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+  display: grid;
+  align-content: center;
+}
+
+.frameHead {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 18px 20px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* The variant for headers ending in a filter row rather than tabs: tabs
+ * sit flush on the border, filters need air under them. */
+.frameHeadPadded {
+  composes: frameHead;
+  padding-bottom: 12px;
+  gap: 13px;
+}
+
+.headTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.headMain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The lede under the title: prose that explains the resource, with the
+ * identifiers it names set in mono. */
+.lede {
+  margin: 0;
+  max-width: 84ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+.lede code {
+  font-family: var(--mono);
+  color: var(--ink-1);
+}
+
+/* A fact chip beside the title: quiet label, full-ink value. */
+.metaChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--r1);
+  border: 1px solid var(--line);
+  background: var(--night-2);
+  font: 500 11px var(--mono);
+  color: var(--ink-2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.metaChip strong {
+  font-weight: 500;
+  color: var(--ink-1);
+}
+
+.statRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(0, 168px));
+  gap: 10px;
+}
+
+.statCard {
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  background: var(--night-1);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.statLabel {
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.statValue {
+  font: 650 22px var(--mono);
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.tabRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* The search box the design parks opposite the tabs. */
+.search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 9px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--night-1);
+  flex-shrink: 0;
+}
+.search svg {
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+.searchInput {
+  width: 240px;
+  max-width: 34vw;
+  border: 0;
+  background: transparent;
+  color: var(--ink-1);
+  font: 400 11px var(--mono);
+  outline: none;
+}
+.searchInput::placeholder {
+  color: var(--ink-3);
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.tab {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font: 500 13px var(--ui);
+  color: var(--ink-2);
+  box-shadow: inset 0 -2px 0 transparent;
+}
+.tab:hover {
+  color: var(--ink-1);
+}
+.tabActive {
+  composes: tab;
+  font-weight: 650;
+  color: var(--ink-1);
+  box-shadow: inset 0 -2px 0 var(--luna);
+}
+
+.tabCount {
+  margin-left: 6px;
+  font: 500 10px var(--mono);
+  color: var(--warn);
+}
+
+/* The split: table on the left, drawer on the right. Each side is its
+ * own scroll region, so the frame never hands overflow to the page.
+ * Drawer width is per screen; the page sets --drawer. */
+.split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--drawer, 380px);
+  overflow: hidden;
+}
+.splitSolo {
+  composes: split;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tableScroll {
+  overflow: auto;
+  min-width: 0;
+  border-right: 1px solid var(--line);
+}
+.splitSolo .tableScroll {
+  border-right: 0;
+}
+
+/* Tables keep their columns legible: past this width the region scrolls
+ * sideways rather than crushing the cells. The page sets --table-min. */
+.tableMin {
+  min-width: var(--table-min, 860px);
+}
+
+/* Browse (design 04): the rows scroll, the pager stays on the floor of
+ * the region. */
+.browseRegion {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+.splitSolo .browseRegion {
+  border-right: 0;
+}
+.browseRegion .tableScroll {
+  flex: 1;
+  border-right: 0;
+}
+
+.pager {
+  flex-shrink: 0;
+  height: 38px;
+  padding: 0 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
+.pagerButtons {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* A browse column names itself and its sql type in one head. */
+.columnHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.columnType {
+  font: 400 9px var(--mono);
+  color: var(--ink-3);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* The query tab: a framed console over its results. */
+.queryRegion {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.console {
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  overflow: hidden;
+}
+.consoleHead {
+  height: 32px;
+  padding: 0 12px;
+  background: var(--night-1);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font: 400 11px var(--mono);
+  color: var(--ink-2);
+}
+.consoleInput {
+  display: block;
+  width: 100%;
+  height: 132px;
+  padding: 12px;
+  border: 0;
+  background: var(--night-2);
+  color: var(--syn-default);
+  font: 400 12px/1.7 var(--mono);
+  resize: vertical;
+  outline: none;
+}
+
+/* Column template set inline per page. */
+.tableHead {
+  display: grid;
+  gap: 12px;
+  height: 30px;
+  align-items: center;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--night-0);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  font: 500 11px var(--ui);
+  color: var(--ink-2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.row {
+  display: grid;
+  gap: 12px;
+  height: 36px;
+  align-items: center;
+  padding: 0 16px;
+  cursor: pointer;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  width: 100%;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  box-shadow: inset 2px 0 0 transparent;
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.row:hover {
+  background: var(--night-1);
+}
+.rowSelected {
+  composes: row;
+  background: color-mix(in srgb, var(--luna) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--luna);
+}
+
+.cellMono {
+  font: 400 12px var(--mono);
+  color: var(--ink-1);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cellDim {
+  font: 400 12px var(--mono);
+  color: var(--ink-2);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cellRight {
+  font: 400 12px var(--mono);
+  color: var(--ink-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.copy {
+  color: var(--ink-3);
+  display: inline-flex;
+  cursor: pointer;
+  border: 0;
+  background: none;
+  padding: 0;
+  flex-shrink: 0;
+}
+.copy:hover {
+  color: var(--luna);
+}
+
+/* State pills: color comes from the page via CSS custom property. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--pill) 33%, transparent);
+  background: color-mix(in srgb, var(--pill) 12%, transparent);
+  font: 500 11px var(--mono);
+  color: var(--pill);
+  white-space: nowrap;
+}
+.pillDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--pill);
+  flex-shrink: 0;
+}
+.pillPulse {
+  composes: pillDot;
+  animation: lunaPulse 2s ease-in-out infinite;
+}
+/* Outline variant: colored border and text, no fill. */
+.pillOutline {
+  composes: pill;
+  background: transparent;
+}
+
+/* Type chips (design 06) are square, filled and dotless: a pill marks a
+ * state that changes, a chip marks what a value permanently is. */
+.typeChip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--r1);
+  border: 1px solid color-mix(in srgb, var(--pill) 33%, transparent);
+  background: color-mix(in srgb, var(--pill) 12%, transparent);
+  font: 500 11px var(--mono);
+  color: var(--pill);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* The filter row opposite the search box: square mono buttons, luna when
+ * they own the current view. */
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filterCount {
+  margin-left: auto;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.filterPill {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r1);
+  background: transparent;
+  color: var(--ink-2);
+  font: 500 11px var(--mono);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.filterPill:hover {
+  color: var(--ink-1);
+}
+.filterPillActive {
+  composes: filterPill;
+  border-color: var(--luna-edge);
+  background: var(--luna-tint);
+  color: var(--luna);
+}
+
+@keyframes lunaPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pillPulse {
+    animation: none;
+  }
+}
+
+/* The drawer: its own scroll region inside the split, lifted to night-1
+ * so it reads as a surface beside the table rather than more page. */
+.drawer {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--night-1);
+  display: flex;
+  flex-direction: column;
+}
+
+.drawerHead {
+  height: 38px;
+  flex-shrink: 0;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  background: var(--night-1);
+  z-index: 5;
+}
+
+.drawerTitle {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.drawerHeadActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.drawerClose {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--night-2);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.drawerClose:hover {
+  color: var(--ink-1);
+}
+
+.drawerBody {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.drawerSection {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* A footnote closing the drawer: what saving actually does. */
+.drawerNote {
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+.drawerId {
+  font: 400 12px var(--mono);
+  color: var(--ink-1);
+  word-break: break-all;
+}
+
+.sectionLabel {
+  font: 400 10px/1 var(--mono);
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pre {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--night-2);
+  font: 400 12px/1.7 var(--mono);
+  color: #c8cfdb;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+/* Facts set side by side under their own labels (design 06's TYPE/TTL/
+ * SIZE row), as opposed to the label/value pairs of .fact. */
+.factGrid {
+  display: flex;
+  gap: 10px;
+}
+.factCol {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.factColValue {
+  font: 400 12px var(--mono);
+  color: var(--ink-1);
+  padding-top: 1px;
+}
+
+/* A copyable identifier given its own well, for values long enough that
+ * a right-aligned fact row would wrap badly. */
+.well {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--night-2);
+  font: 400 12px/1.6 var(--mono);
+  color: var(--ink-1);
+  word-break: break-all;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+}
+.well:hover {
+  border-color: var(--luna-edge);
+}
+
+.valueArea {
+  width: 100%;
+  height: 260px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--night-2);
+  color: var(--syn-default);
+  font: 400 12px/1.7 var(--mono);
+  resize: vertical;
+  outline: none;
+}
+
+/* The quiet toggle that rides in a section head or drawer header. */
+.smallButton {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r1);
+  background: var(--night-2);
+  color: var(--ink-2);
+  font: 500 10px var(--mono);
+  cursor: pointer;
+}
+.smallButton:hover {
+  color: var(--ink-1);
+}
+
+.unsaved {
+  font: 400 10px var(--mono);
+  color: var(--warn);
+}
+
+.fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+.factLabel {
+  color: var(--ink-2);
+}
+.factValue {
+  font-family: var(--mono);
+  color: var(--ink-1);
+  text-align: right;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.attempts {
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  overflow: hidden;
+}
+.attempt {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+}
+.attempt + .attempt {
+  border-top: 1px solid var(--line-soft);
+}
+.attemptHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--ink-1);
+}
+.attemptAt {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.attemptError {
+  font: 400 11px/1.5 var(--mono);
+  color: var(--err);
+  word-break: break-word;
+}
+
+/* Header action buttons. */
+.accentButton {
+  height: 30px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--luna-edge);
+  border-radius: var(--r2);
+  background: var(--luna-tint);
+  color: var(--luna);
+  font: 650 13px var(--ui);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.accentButton:hover:not(:disabled) {
+  background: rgba(163, 230, 180, 0.2);
+  border-color: var(--luna);
+}
+.accentButton:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ghostButton {
+  height: 30px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: transparent;
+  color: var(--ink-2);
+  font: 500 13px var(--ui);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ghostButton:hover {
+  color: var(--ink-1);
+  border-color: var(--ink-3);
+}
+
+.dangerButton {
+  height: 30px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(240, 138, 138, 0.35);
+  border-radius: var(--r2);
+  background: transparent;
+  color: var(--err);
+  font: 650 12px var(--ui);
+  cursor: pointer;
+}
+.dangerButton:hover {
+  background: var(--err-tint);
+}
+
+.drawerActions {
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
+}
+.drawerActions > * {
+  flex: 1;
+}
+
+.emptyRows {
+  padding: 28px 16px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.emptyRows code {
+  font-family: var(--mono);
+  color: var(--ink-2);
+}
+
+/* Page header per the design: mono title + pills, actions opposite. */
+.pageHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pageTitle {
+  margin: 0;
+  font: 650 20px var(--mono);
+  letter-spacing: -0.01em;
+  color: var(--ink-1);
+}
+.pageActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* The in-content sources rail (design 04): a 48px header, then sections
+ * separated by soft borders, each with an icon label. */
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.railHead {
+  height: 48px;
+  flex-shrink: 0;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  font: 400 10px/1 var(--mono);
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.railSection {
+  padding: 6px 0;
+}
+.railSection + .railSection {
+  border-top: 1px solid var(--line-soft);
+}
+.railSectionHead {
+  padding: 10px 14px 7px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: 500 10px/1 var(--mono);
+  color: var(--ink-2);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.railSectionHead svg {
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+.railNote {
+  margin: 0;
+  padding: 0 14px 8px;
+  font-size: 11px;
+  color: var(--ink-3);
+  line-height: 1.5;
+}

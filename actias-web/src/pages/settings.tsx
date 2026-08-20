@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import api, { showError } from '@/helpers/api';
 import { AuthGuard, useUser } from '@/helpers/auth';
-import { Button, Field } from '@/ui';
+import { Button, Field, PageBody } from '@/ui';
 import { toast } from '@/ui/toast';
 
 function Settings() {
@@ -122,7 +122,9 @@ function Settings() {
 export default function SettingsPage() {
   return (
     <AuthGuard>
-      <Settings />
+      <PageBody>
+        <Settings />
+      </PageBody>
     </AuthGuard>
   );
 }

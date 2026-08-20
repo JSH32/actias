@@ -5,7 +5,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
 import { ProjectDto } from '@/client';
-import { Button, Card, EmptyState, Field } from '@/ui';
+import { Button, Card, EmptyState, Field, PageBody } from '@/ui';
 import classes from './projects.module.css';
 import { toast } from '@/ui/toast';
 
@@ -120,7 +120,9 @@ function Projects() {
 export default function ProjectsPage() {
   return (
     <AuthGuard>
-      <Projects />
+      <PageBody>
+        <Projects />
+      </PageBody>
     </AuthGuard>
   );
 }
