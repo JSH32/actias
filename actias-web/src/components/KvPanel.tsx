@@ -205,7 +205,7 @@ export default function KvPanel({
                     <tr key={pair.key}>
                       <td className={shared.name}>{pair.key}</td>
                       <td>
-                        <Chip kind="kv">{pair.type}</Chip>
+                        <Chip kind="kv">{pair.type ?? 'string'}</Chip>
                       </td>
                       <td className={classes.value}>{pair.value}</td>
                       {write && (
