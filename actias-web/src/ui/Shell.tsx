@@ -30,6 +30,8 @@ const projectNav: { label: string; slug: string; icon: IconName }[] = [
   { label: 'Overview', slug: '', icon: 'overview' },
   { label: 'Scripts', slug: 'scripts', icon: 'scripts' },
   { label: 'KV', slug: 'kv', icon: 'kv' },
+  { label: 'Databases', slug: 'databases', icon: 'databases' },
+  { label: 'Queues', slug: 'queues', icon: 'queues' },
   { label: 'Members', slug: 'members', icon: 'members' },
 ];
 

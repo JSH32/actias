@@ -308,6 +308,30 @@ done
     || { echo "queue deliveries did not land ($QN of 3)"; exit 1; }
 echo "queue delivered $QN message(s) to the consumer"
 
+echo "== dashboard resources speak for the platform's own storage"
+# The union listing knows the queue and database from the contract; the
+# stats and tables come off the worker's sqlite through the api proxy;
+# the console reads through the same transport scripts use.
+RQ=$(curl -sf "$API/project/$PROJECT_ID/resources/queues" -H "$AUTH")
+echo "$RQ" | jq -e '.[0].name == "jobs" and .[0].orphaned == false' >/dev/null \
+    || { echo "queue listing did not surface the contract queue: $RQ"; exit 1; }
+RD=$(curl -sf "$API/project/$PROJECT_ID/resources/databases" -H "$AUTH")
+echo "$RD" | jq -e 'map(.name) | index("main") != null' >/dev/null \
+    || { echo "database listing missed main: $RD"; exit 1; }
+QSID=$(echo "$RQ" | jq -r '.[0].scriptId')
+QST=$(curl -sf "$API/project/$PROJECT_ID/resources/queues/$QSID/jobs/stats" -H "$AUTH")
+echo "$QST" | jq -e '.depth >= 0 and .deadLetters >= 0' >/dev/null \
+    || { echo "queue stats did not read: $QST"; exit 1; }
+TBL=$(curl -sf "$API/project/$PROJECT_ID/resources/databases/$QSID/main/tables" -H "$AUTH")
+echo "$TBL" | jq -e 'map(.name) | index("visits") != null' >/dev/null \
+    || { echo "table overview missed visits: $TBL"; exit 1; }
+CONSOLE=$(curl -sf -X POST "$API/project/$PROJECT_ID/resources/databases/$QSID/main/query" \
+    -H "$AUTH" -H 'Content-Type: application/json' \
+    -d '{"sql":"SELECT COUNT(*) AS n FROM visits"}')
+echo "$CONSOLE" | jq -e '.rows[0][0].n >= 1 or (.rows[0].n >= 1)' >/dev/null \
+    || { echo "the query console did not read visits: $CONSOLE"; exit 1; }
+echo "resources listing, stats, tables and console all answered"
+
 echo "== object state survives losing the data volume"
 # The disk is a leased cache; the blob store is the truth. Wipe every
 # object file while the worker is down, and the counters must continue
