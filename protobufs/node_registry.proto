@@ -39,15 +39,20 @@ service NodeRegistryService {
 }
 
 message ListInstancesRequest {
-    repeated string script_ids = 1;
+    repeated string project_ids = 1;
 }
 
 message ObjectInstance {
-    string script_id = 1;
+    // Identity scope: the project for resource classes. Cron rows scope
+    // to their script and never surface in a project listing.
+    string scope_id = 1;
     string class = 2;
     string name = 3;
+    // Script whose code the object ran when first claimed; directory
+    // metadata ("declared by"), never identity.
+    string script_id = 4;
     // Unix milliseconds of the first claim.
-    int64 created_ms = 4;
+    int64 created_ms = 5;
 }
 
 message ListInstancesResponse {
@@ -62,12 +67,18 @@ message AcquireLeaseRequest {
     // blake3 of the object identity, hex.
     string object_id = 1;
     string node_id = 2;
-    // The identity the hash was made from; recorded in the instance
-    // directory so object data stays enumerable after the declaring
-    // revision is gone.
-    string script_id = 3;
+    // The identity the hash was made from: (scope, class, name), where
+    // the scope is the project for every resource class and the script
+    // for `__cron` (a schedule belongs to its script, so equal
+    // expressions across a project never collide). Recorded in the
+    // instance directory so object data stays enumerable after the
+    // declaring revision is gone.
+    string scope_id = 3;
     string class = 4;
     string name = 5;
+    // The owner script whose code the object runs; directory metadata,
+    // never part of the identity.
+    string script_id = 6;
 }
 
 message Lease {

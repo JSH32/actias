@@ -3,6 +3,7 @@ mod config;
 mod heartbeat;
 mod metrics;
 mod object_store;
+mod routing;
 mod server;
 mod sweeper;
 

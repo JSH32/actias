@@ -29,6 +29,57 @@ pub struct ScriptService {
     blobs: BlobStore,
 }
 
+/// The contract arrays an object owner can be resolved from; a closed
+/// set, so the JSONB member queried below is selected by match, never
+/// taken from input.
+#[derive(Clone, Copy)]
+enum ContractMember {
+    /// `on "queue:<name>"`, the queue's consumer.
+    Events,
+    /// `queue "name"`, a producer.
+    Queues,
+    /// `database "name"`, a declarer.
+    Databases,
+    /// `object "Class" { ... }`, the class's declarer.
+    Objects,
+}
+
+impl ContractMember {
+    /// Resolution order per class: a queue's consumer outranks its
+    /// producers; databases and user classes read one member each.
+    /// [`None`] for platform classes never resolved this way (`__cron`
+    /// scopes to its script and never asks).
+    fn for_class(class: &str) -> Option<&'static [ContractMember]> {
+        match class {
+            actias_common::classes::QUEUE_CLASS => {
+                Some(&[ContractMember::Events, ContractMember::Queues])
+            }
+            actias_common::classes::DATABASE_CLASS => Some(&[ContractMember::Databases]),
+            class if class.starts_with("__") => None,
+            _ => Some(&[ContractMember::Objects]),
+        }
+    }
+
+    /// The JSONB member under `capabilities` holding the declarations.
+    fn member(&self) -> &'static str {
+        match self {
+            ContractMember::Events => "events",
+            ContractMember::Queues => "queues",
+            ContractMember::Databases => "databases",
+            ContractMember::Objects => "objects",
+        }
+    }
+
+    /// What the declaration reads as inside that member.
+    fn needle(&self, class: &str, name: &str) -> String {
+        match self {
+            ContractMember::Events => format!("queue:{name}"),
+            ContractMember::Queues | ContractMember::Databases => name.to_owned(),
+            ContractMember::Objects => class.to_owned(),
+        }
+    }
+}
+
 impl ScriptService {
     pub fn new(
         database: Pool<Postgres>,
@@ -75,6 +126,95 @@ impl ScriptService {
                     PublicName(_) => "identifier",
                 }
             )))
+    }
+
+    /// The script in the project whose current contract declares the
+    /// needle in the given member. Ordering by id makes a multi-declarer
+    /// pick stable rather than meaningful; publish-time uniqueness keeps
+    /// queues and user classes single-owner, databases are shared by
+    /// design.
+    async fn contract_owner(
+        &self,
+        project_id: Uuid,
+        member: ContractMember,
+        class: &str,
+        name: &str,
+    ) -> Result<Option<Uuid>, tonic::Status> {
+        let sql = format!(
+            "SELECT s.id FROM scripts s
+             JOIN revisions r ON r.id = s.current_revision
+             WHERE s.project_id = $1
+               AND jsonb_exists(r.script_config->'capabilities'->'{}', $2)
+             ORDER BY s.id LIMIT 1",
+            member.member()
+        );
+
+        sqlx::query_scalar(&sql)
+            .bind(project_id)
+            .bind(member.needle(class, name))
+            .fetch_optional(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))
+    }
+
+    /// Refuses a derived contract colliding with a sibling script's
+    /// current one: a queue has one consumer (`on "queue:<name>"`) and a
+    /// user class one declarer per project. Producers (`queue "name"`)
+    /// and databases repeat freely; the publishing script's own previous
+    /// revision never conflicts with itself.
+    async fn refuse_contract_conflicts(
+        &self,
+        script_id: &Uuid,
+        capabilities: &crate::database_types::Capabilities,
+    ) -> Result<(), tonic::Status> {
+        let consumed: Vec<String> = capabilities
+            .events
+            .iter()
+            .filter(|event| event.starts_with("queue:"))
+            .cloned()
+            .collect();
+
+        // The member names are the closed set ContractMember also reads;
+        // deliberate literals, never taken from input.
+        let checks = [
+            ("events", consumed, "already consumes"),
+            ("objects", capabilities.objects.clone(), "already declares"),
+        ];
+
+        for (member, names, verb) in checks {
+            if names.is_empty() {
+                continue;
+            }
+
+            let sql = format!(
+                "SELECT s.public_identifier, held.name
+                 FROM scripts s
+                 JOIN revisions r ON r.id = s.current_revision,
+                 LATERAL jsonb_array_elements_text(
+                     r.script_config->'capabilities'->'{member}'
+                 ) AS held(name)
+                 WHERE s.project_id = (SELECT project_id FROM scripts WHERE id = $1)
+                   AND s.id <> $1
+                   AND held.name = ANY($2)
+                 LIMIT 1"
+            );
+
+            let conflict: Option<(String, String)> = sqlx::query_as(&sql)
+                .bind(script_id)
+                .bind(&names)
+                .fetch_optional(&self.database)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+
+            if let Some((identifier, name)) = conflict {
+                return Err(Status::failed_precondition(format!(
+                    "Script '{identifier}' {verb} '{name}' in this project; \
+                     it has exactly one owner. Remove one declaration and publish again."
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     async fn get_db_revision(&self, revision_id: &str) -> Result<DbRevision, tonic::Status> {
@@ -138,6 +278,14 @@ impl ScriptService {
             databases: derived.databases,
             queues: derived.queues,
         });
+
+        // Identity is project-scoped, so single-owner declarations must be
+        // unique across the project: publishing the second consumer of a
+        // queue or the second declarer of a class fails loudly here.
+        if let Some(capabilities) = script_config.capabilities.as_ref() {
+            self.refuse_contract_conflicts(script_id, capabilities)
+                .await?;
+        }
 
         // Files arrive either inline (content present, hashed and stored
         // here so the hash is authoritative) or manifest-only (a claimed
@@ -282,8 +430,9 @@ impl script_service_server::ScriptService for ScriptService {
                     .bundle
                     .ok_or_else(|| Status::invalid_argument("bundle is required"))?,
             )
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?,
+            // Already a Status; re-wrapping would flatten every refusal
+            // (bad code, contract conflicts) into an internal error.
+            .await?,
         ))
     }
 
@@ -691,6 +840,53 @@ impl script_service_server::ScriptService for ScriptService {
         Ok(Response::new(MissingBlobsResponse { missing }))
     }
 
+    async fn resolve_class_owner(
+        &self,
+        request: tonic::Request<ResolveClassOwnerRequest>,
+    ) -> Result<tonic::Response<ClassOwner>, tonic::Status> {
+        let request = request.get_ref();
+        let project_id = Uuid::from_str(&request.project_id)
+            .map_err(|_| Status::invalid_argument("'project_id' was not a valid uuid"))?;
+
+        let reads = ContractMember::for_class(&request.class).ok_or_else(|| {
+            Status::invalid_argument("Platform class has no contract-derived owner.")
+        })?;
+
+        // Contracts first, in declaration-strength order (a queue's
+        // consumer outranks its producers); the directory is the fallback
+        // so orphaned data (declaring revision gone) stays reachable.
+        for member in reads {
+            if let Some(script_id) = self
+                .contract_owner(project_id, *member, &request.class, &request.name)
+                .await?
+            {
+                return Ok(Response::new(ClassOwner {
+                    script_id: script_id.to_string(),
+                }));
+            }
+        }
+
+        let remembered: Option<Uuid> = sqlx::query_scalar(
+            "SELECT script_id FROM object_instances
+             WHERE scope_id = $1 AND class = $2 AND name = $3",
+        )
+        .bind(project_id)
+        .bind(&request.class)
+        .bind(&request.name)
+        .fetch_optional(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        match remembered {
+            Some(script_id) => Ok(Response::new(ClassOwner {
+                script_id: script_id.to_string(),
+            })),
+            None => Err(Status::not_found(
+                "No current contract in the project owns that identity.",
+            )),
+        }
+    }
+
     async fn set_alias(
         &self,
         request: tonic::Request<SetAliasRequest>,
@@ -923,6 +1119,213 @@ mod tests {
         .expect("script inserts");
 
         id
+    }
+
+    /// Publishes a bare revision carrying the given capability contract
+    /// and makes it the script's current one.
+    async fn publish_contract(
+        database: &Pool<Postgres>,
+        script_id: Uuid,
+        capabilities: serde_json::Value,
+    ) {
+        let config = serde_json::json!({
+            "id": script_id,
+            "entryPoint": "main.lua",
+            "includes": [],
+            "ignore": [],
+            "capabilities": capabilities,
+        });
+        let (revision_id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO revisions (script_id, entry_point, script_config)
+             VALUES ($1, 'main.lua', $2) RETURNING id",
+        )
+        .bind(script_id)
+        .bind(sqlx::types::Json(config))
+        .fetch_one(database)
+        .await
+        .expect("revision inserts");
+
+        sqlx::query("UPDATE scripts SET current_revision = $2 WHERE id = $1")
+            .bind(script_id)
+            .bind(revision_id)
+            .execute(database)
+            .await
+            .expect("current revision sets");
+    }
+
+    /// A full capability contract with only the given members filled.
+    fn contract(members: &[(&str, &[&str])]) -> serde_json::Value {
+        let mut capabilities = serde_json::json!({
+            "kv": [], "events": [], "secrets": [],
+            "objects": [], "databases": [], "queues": [],
+        });
+        for (member, names) in members {
+            capabilities[member] = serde_json::json!(names);
+        }
+        capabilities
+    }
+
+    /// Publishes `code` as a one-file bundle through the real rpc, the
+    /// path every client takes; the contract is derived from the code.
+    async fn publish_code(
+        harness: &TestService,
+        script_id: Uuid,
+        code: &str,
+    ) -> Result<tonic::Response<Revision>, tonic::Status> {
+        harness
+            .service
+            .create_revision(tonic::Request::new(CreateRevisionRequest {
+                script_id: script_id.to_string(),
+                script_config: Some(crate::proto_script_service::ScriptConfig {
+                    id: script_id.to_string(),
+                    entry_point: "main.lua".to_owned(),
+                    includes: vec![],
+                    ignore: vec![],
+                    capabilities: None,
+                }),
+                bundle: Some(Bundle {
+                    entry_point: "main.lua".to_owned(),
+                    files: vec![File {
+                        file_path: "main.lua".to_owned(),
+                        content: code.as_bytes().to_vec(),
+                        hash: String::new(),
+                        size: code.len() as u64,
+                        content_type: "text/x-lua".to_owned(),
+                        kind: crate::bundle::FileKind::Module as i32,
+                    }],
+                }),
+            }))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_queue_has_one_consumer_and_a_class_one_declarer_per_project() {
+        let harness = service().await;
+        let project = Uuid::new_v4();
+
+        let first = insert_script(&harness.database, "first", project).await;
+        let second = insert_script(&harness.database, "second", project).await;
+
+        publish_code(
+            &harness,
+            first,
+            "on \"queue:jobs\" (function(msg) end)\nlocal Room = object \"Room\" { }",
+        )
+        .await
+        .expect("the first consumer and declarer publish");
+
+        // A second consumer of the same queue fails its publish loudly.
+        let refused = publish_code(&harness, second, "on \"queue:jobs\" (function(msg) end)")
+            .await
+            .expect_err("a second consumer must be refused");
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            refused.message().contains("first"),
+            "the refusal names the incumbent: {refused}"
+        );
+
+        // A second declarer of the same class fails the same way.
+        let refused = publish_code(&harness, second, "local Room = object \"Room\" { }")
+            .await
+            .expect_err("a second declarer must be refused");
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+
+        // Producing to the queue is free: many scripts may send.
+        publish_code(&harness, second, "local jobs = queue \"jobs\"")
+            .await
+            .expect("a producer publishes");
+
+        // The incumbent republishing its own declarations stays fine.
+        publish_code(
+            &harness,
+            first,
+            "on \"queue:jobs\" (function(msg) end)\nlocal Room = object \"Room\" { }",
+        )
+        .await
+        .expect("the owner republishes itself");
+    }
+
+    #[tokio::test]
+    async fn class_owners_resolve_from_contracts_then_the_directory() {
+        let harness = service().await;
+        let project = Uuid::new_v4();
+
+        let producer = insert_script(&harness.database, "producer", project).await;
+        let consumer = insert_script(&harness.database, "consumer", project).await;
+        publish_contract(
+            &harness.database,
+            producer,
+            contract(&[("queues", &["jobs"])]),
+        )
+        .await;
+        publish_contract(
+            &harness.database,
+            consumer,
+            contract(&[("events", &["queue:jobs"]), ("objects", &["Room"])]),
+        )
+        .await;
+
+        let resolve = |class: &str, name: &str| {
+            let request = ResolveClassOwnerRequest {
+                project_id: project.to_string(),
+                class: class.to_owned(),
+                name: name.to_owned(),
+            };
+            harness
+                .service
+                .resolve_class_owner(tonic::Request::new(request))
+        };
+
+        // The consumer outranks the producer for a queue's code.
+        let owner = resolve("__queue", "jobs").await.expect("resolves");
+        assert_eq!(owner.get_ref().script_id, consumer.to_string());
+
+        // A user class resolves its declarer.
+        let owner = resolve("Room", "lobby").await.expect("resolves");
+        assert_eq!(owner.get_ref().script_id, consumer.to_string());
+
+        // With no consumer anywhere, a producer's declaration suffices.
+        let solo = Uuid::new_v4();
+        let lone_producer = insert_script(&harness.database, "lone", solo).await;
+        publish_contract(
+            &harness.database,
+            lone_producer,
+            contract(&[("queues", &["only-sent"])]),
+        )
+        .await;
+        let request = ResolveClassOwnerRequest {
+            project_id: solo.to_string(),
+            class: "__queue".to_owned(),
+            name: "only-sent".to_owned(),
+        };
+        let owner = harness
+            .service
+            .resolve_class_owner(tonic::Request::new(request))
+            .await
+            .expect("resolves");
+        assert_eq!(owner.get_ref().script_id, lone_producer.to_string());
+
+        // Orphaned data: no current contract declares it, but the
+        // directory remembers whose code claimed it.
+        let ghost_owner = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO object_instances (scope_id, class, name, script_id)
+             VALUES ($1, '__queue', 'ghost', $2)",
+        )
+        .bind(project)
+        .bind(ghost_owner)
+        .execute(&harness.database)
+        .await
+        .expect("directory row inserts");
+        let owner = resolve("__queue", "ghost").await.expect("resolves");
+        assert_eq!(owner.get_ref().script_id, ghost_owner.to_string());
+
+        // Nothing anywhere: NOT_FOUND, so the worker can say so cleanly.
+        let missing = resolve("__queue", "never-was").await;
+        assert_eq!(
+            missing.expect_err("must not resolve").code(),
+            tonic::Code::NotFound
+        );
     }
 
     #[tokio::test]

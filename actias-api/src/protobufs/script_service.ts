@@ -179,6 +179,22 @@ export namespace script_service {
         lastUpdated?: string;
         currentRevisionId?: string;
     }
+    export interface ResolveClassOwnerRequest {
+        // Project the object identity is scoped to.
+        projectId?: string;
+        // Object class the owner is resolved for: a user class resolves its
+    // declaring script, &#x60;__queue&#x60; the consumer (&#x60;on &quot;queue:&lt;name&gt;&quot;&#x60;),
+    // &#x60;__database&#x60; a declarer.
+        class?: string;
+        // Instance name; platform classes resolve by it, user classes by the
+    // class alone.
+        name?: string;
+    }
+    // The script whose current revision&#x27;s code an object of the asked-about
+    // identity runs.
+    export interface ClassOwner {
+        scriptId?: string;
+    }
     export interface ScriptService {
         queryScript(
             data: FindScriptRequest,
@@ -263,6 +279,14 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<MissingBlobsResponse>;
+        // Which script&#x27;s code an object identity runs, derived from the
+    // project&#x27;s current capability contracts; NOT_FOUND when no current
+    // contract owns it.
+        resolveClassOwner(
+            data: ResolveClassOwnerRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ClassOwner>;
         // Named environments over revisions; set is upsert, so a move and a
     // create are the same call.
         setAlias(

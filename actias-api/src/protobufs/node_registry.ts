@@ -62,12 +62,17 @@ export namespace node_registry {
         ): Observable<ListInstancesResponse>;
     }
     export interface ListInstancesRequest {
-        scriptIds?: string[];
+        projectIds?: string[];
     }
     export interface ObjectInstance {
-        scriptId?: string;
+        // Identity scope: the project for resource classes. Cron rows scope
+    // to their script and never surface in a project listing.
+        scopeId?: string;
         class?: string;
         name?: string;
+        // Script whose code the object ran when first claimed; directory
+    // metadata (&quot;declared by&quot;), never identity.
+        scriptId?: string;
         // Unix milliseconds of the first claim.
         createdMs?: number;
     }
@@ -81,12 +86,18 @@ export namespace node_registry {
         // blake3 of the object identity, hex.
         objectId?: string;
         nodeId?: string;
-        // The identity the hash was made from; recorded in the instance
-    // directory so object data stays enumerable after the declaring
-    // revision is gone.
-        scriptId?: string;
+        // The identity the hash was made from: (scope, class, name), where
+    // the scope is the project for every resource class and the script
+    // for &#x60;__cron&#x60; (a schedule belongs to its script, so equal
+    // expressions across a project never collide). Recorded in the
+    // instance directory so object data stays enumerable after the
+    // declaring revision is gone.
+        scopeId?: string;
         class?: string;
         name?: string;
+        // The owner script whose code the object runs; directory metadata,
+    // never part of the identity.
+        scriptId?: string;
     }
     export interface Lease {
         objectId?: string;

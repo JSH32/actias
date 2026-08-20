@@ -19,14 +19,14 @@ use actias_worker_core::extensions;
 use actias_worker_core::extensions::http::Request as LuaRequest;
 use actias_worker_core::extensions::log::LogPublisher;
 use actias_worker_core::extensions::objects::{ObjectRouter, ObjectTarget};
+use actias_worker_core::identity::ObjectKey;
 use actias_worker_core::objects::ObjectHost;
+use actias_worker_core::platform::PlatformRead;
 use actias_worker_core::proto::bundle::File;
 use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
-use actias_worker_core::proto::node_registry::AcquireLeaseRequest;
 use actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient;
 use actias_worker_core::proto::script_service::FindScriptRequest;
 use actias_worker_core::proto::script_service::GetAliasRequest;
-use actias_worker_core::proto::script_service::GetRevisionRequest;
 use actias_worker_core::proto::script_service::LiveScriptSession;
 use actias_worker_core::proto::script_service::Revision;
 use actias_worker_core::proto::script_service::Script;
@@ -37,6 +37,9 @@ use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
 use crate::blob_cache::BlobCache;
 use crate::metrics::Metrics;
 use crate::object_store::ObjectStore;
+use crate::routing::{
+    ObjectRouting, ResolveError, cached_revision, fresh_replica_file, owner_prepared,
+};
 
 /// The service clients every request handler needs.
 #[derive(Clone)]
@@ -53,11 +56,15 @@ pub struct Clients {
 /// revision is immutable; only eviction pressure should drop one.
 #[derive(Clone)]
 pub struct WorkerCaches {
-    pointers: moka::future::Cache<String, Script>,
-    revisions: moka::future::Cache<String, Arc<PreparedRevision>>,
+    pub(crate) pointers: moka::future::Cache<String, Script>,
+    pub(crate) revisions: moka::future::Cache<String, Arc<PreparedRevision>>,
     /// Alias pointers (`script_id/name` to revision id); mutable like the
     /// script pointer, so it expires on the same ttl.
-    aliases: moka::future::Cache<String, String>,
+    pub(crate) aliases: moka::future::Cache<String, String>,
+    /// Object key to the code it runs: the owner script's current
+    /// revision. Mutable twice over (the owner can change on publish, the
+    /// owner republishes), so it expires on the pointer ttl.
+    pub(crate) owners: moka::future::Cache<String, Arc<PreparedRevision>>,
 }
 
 impl WorkerCaches {
@@ -68,6 +75,10 @@ impl WorkerCaches {
                 .time_to_live(pointer_ttl)
                 .build(),
             aliases: moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(pointer_ttl)
+                .build(),
+            owners: moka::future::Cache::builder()
                 .max_capacity(10_000)
                 .time_to_live(pointer_ttl)
                 .build(),
@@ -271,7 +282,7 @@ enum Target {
 
 /// A preview naming a revision that belongs to a different script; the
 /// loader refuses it before anything is cached.
-const FOREIGN_REVISION: &str = "the revision does not belong to this script";
+pub(crate) const FOREIGN_REVISION: &str = "the revision does not belong to this script";
 
 /// Whether a load failed because the addressed thing does not exist for
 /// this script, as opposed to infrastructure failing.
@@ -432,21 +443,21 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
     Ok(response)
 }
 
-/// What one forwarded object call carries.
+/// What one forwarded object call carries: the object identity and the
+/// call, never code coordinates. Whichever node dispatches resolves the
+/// owner's current revision itself, so every route into an object runs
+/// the same code.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ForwardedCall {
-    script_id: String,
+    /// The identity scope: the project id (cron objects never travel this
+    /// transport; their scope is their script).
+    scope_id: String,
     /// True when the caller is not a worker (the api's dashboard reads):
     /// a first hop may forward once to the holder; worker-to-worker calls
     /// arrive with the hop already spent.
     #[serde(default)]
     first_hop: bool,
-    /// The caller's revision: the vm a forwarded call lands in runs the
-    /// same code it would have locally (previews included). Empty means
-    /// the current revision, which is what live sessions resolve to.
-    #[serde(default)]
-    revision_id: String,
     class: String,
     name: String,
     method: String,
@@ -454,30 +465,30 @@ struct ForwardedCall {
     arguments: Vec<serde_json::Value>,
     #[serde(default)]
     chain: Vec<String>,
+    /// The producing script's identity, carried across the hop; absent
+    /// for dashboard dispatches, which have no script behind them.
+    #[serde(default)]
+    caller: Option<WireCaller>,
+}
+
+/// The caller identity as it travels the internal transport.
+#[derive(serde::Deserialize)]
+struct WireCaller {
+    script: String,
+    revision: String,
 }
 
 #[derive(serde::Deserialize)]
 struct PlatformStatsQuery {
-    script: String,
+    project: String,
     class: String,
     name: String,
 }
 
-/// Typed platform reads for dashboards: queue stats and database
-/// overviews straight off the sqlite file, no vm, bounded staleness by
-/// design. The holder reads its live file; any other node serves from
-/// the snapshot replica, so any worker can answer.
-/// The identity an object key was built from: (script id, class, name);
-/// the lease claim carries it so the instance directory stays complete.
-fn split_key(key: &str) -> (String, String, String) {
-    let mut parts = key.splitn(3, '/');
-    (
-        parts.next().unwrap_or_default().to_owned(),
-        parts.next().unwrap_or_default().to_owned(),
-        parts.next().unwrap_or_default().to_owned(),
-    )
-}
-
+/// Typed platform reads for dashboards, straight off the local file, no
+/// vm. This handler only maps transport parameters onto a
+/// [`PlatformRead`] and picks the file; everything from file to value is
+/// worker-core's.
 async fn platform_stats_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -491,38 +502,38 @@ async fn platform_stats_handler(
         return text_response(StatusCode::UNAUTHORIZED, "Internal transport only.");
     }
 
-    let key = format!("{}/{}/{}", query.script, query.class, query.name);
-    let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
-    let local = state.object_data_dir.join(format!("{object_id}.db"));
+    let Some(read) = PlatformRead::stats_for_class(&query.class) else {
+        return text_response(StatusCode::BAD_REQUEST, "No stats for that class.");
+    };
+    let key = ObjectKey::received(&query.project, &query.class, &query.name);
+    let local = state.object_data_dir.join(key.db_file_name());
 
-    // The holder's live file answers; a non-holder answers nothing yet
-    // (the replica fallback arrives with the api proxy, which knows how
-    // to ask another node).
-    let file = local.exists().then_some(local);
+    // The holder's live file answers; any other node serves the shipped
+    // snapshot replica, so the read never depends on where the object
+    // happens to be homed.
+    let file = if local.exists() {
+        Some(local)
+    } else {
+        match fresh_replica_file(&state, &key.object_id()).await {
+            Ok(replica) => replica,
+            Err(error) => {
+                return axum::response::IntoResponse::into_response((
+                    StatusCode::BAD_REQUEST,
+                    error,
+                ));
+            }
+        }
+    };
     let Some(file) = file else {
         // Nothing local and nothing ever shipped: the object has no
         // observable state yet, which reads as empty, not as an error.
         return axum::response::IntoResponse::into_response(axum::Json(serde_json::Value::Null));
     };
 
-    let class = query.class.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let mut storage = actias_worker_core::storage::SqliteStorage::open_read_only(&file)?;
-        match class.as_str() {
-            "__queue" => serde_json::to_value(actias_worker_core::platform::queue::read_stats(
-                &mut storage,
-            )?)
-            .map_err(|e| e.to_string()),
-            "__database" => serde_json::to_value(
-                actias_worker_core::platform::database::read_overview(&mut storage)?,
-            )
-            .map_err(|e| e.to_string()),
-            other => Err(format!("No stats for class '{other}'.")),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())
-    .and_then(|inner| inner);
+    let result = tokio::task::spawn_blocking(move || read.run(&file))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|inner| inner);
 
     match result {
         Ok(value) => axum::response::IntoResponse::into_response(axum::Json(value)),
@@ -546,31 +557,12 @@ async fn object_handler(
     }
 
     let answer = async {
-        let script = state
-            .clients
-            .script
-            .clone()
-            .query_script(FindScriptRequest {
-                query: Some(Query::Id(call.script_id.clone())),
-            })
-            .await
-            .map_err(|e| e.to_string())?
-            .into_inner();
-        // The caller's revision travels with the call; falling back to
-        // current covers live sessions, whose revisions have no id.
-        let revision_id = if call.revision_id.is_empty() {
-            script
-                .current_revision_id
-                .clone()
-                .ok_or("script has no current revision")?
-        } else {
-            call.revision_id.clone()
-        };
-        let prepared = cached_revision(&state, script, revision_id)
-            .await
-            .map_err(|e| e.to_string())?;
+        // The call names an identity, not code: the owner's current
+        // revision is resolved here, exactly as a local touch would.
+        let key = ObjectKey::received(&call.scope_id, &call.class, &call.name);
+        let owner = owner_prepared(&state, &key).await?;
 
-        ObjectRouting::new(&state, prepared)
+        ObjectRouting::new(&state, owner)
             .route_inner(
                 ObjectTarget {
                     class: call.class,
@@ -580,6 +572,14 @@ async fn object_handler(
                     // The sender already extended the chain through the
                     // target; dispatch reads it as-is.
                     chain: call.chain.clone(),
+                    // The wire's caller is the truth; the owner resolved
+                    // here is who RUNS the code, not who called.
+                    caller: call.caller.map(|caller| {
+                        actias_worker_core::extensions::objects::CallerIdentity {
+                            script: caller.script,
+                            revision: caller.revision,
+                        }
+                    }),
                 },
                 call.first_hop,
             )
@@ -633,6 +633,22 @@ fn metrics_label(state: &AppState, request: &axum::extract::Request) -> String {
     }
 }
 
+/// The live session a request addresses, when it addresses one; parsed
+/// the same way run_script routes, but never failing.
+fn live_session_of(state: &AppState, request: &axum::extract::Request) -> Option<String> {
+    let host_route = state.base_domain.as_deref().and_then(|base| {
+        request
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|host| route_by_host(host, base))
+    });
+    match host_route.or_else(|| route_by_path(request.uri().path())) {
+        Some(Route::Live { session, .. }) => Some(session.to_owned()),
+        _ => None,
+    }
+}
+
 /// Handles every inbound request by running the addressed script.
 async fn handle(State(state): State<AppState>, request: axum::extract::Request) -> Response {
     let span = span!(Level::DEBUG, "lua_http_request");
@@ -640,513 +656,40 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
     let _in_flight = InFlight::enter(&state.in_flight);
 
     let label = metrics_label(&state, &request);
+    let live_session = live_session_of(&state, &request);
     let metrics = state.metrics.clone();
     let started = std::time::Instant::now();
 
     let deadline = state.request_timeout;
+    let redis = state.redis.clone();
     let result = tokio::time::timeout(deadline, run_script(state, request)).await;
+
+    // A live session's audience is its developer: the failure joins the
+    // session's log stream, where the workbench and `actias dev` are
+    // watching, while the http response stays sanitized.
+    let session_error = |text: String| {
+        if let (Some(session), Some(redis)) = (&live_session, redis.clone()) {
+            LogPublisher::new(redis, live_log_channel(session)).publish("error", text);
+        }
+    };
 
     let response = match result {
         Ok(Ok(response)) => response,
-        Ok(Err(error)) => internal_error_response(&error),
-        Err(_elapsed) => text_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "Script did not respond in time.",
-        ),
+        Ok(Err(error)) => {
+            session_error(format!("{error:#}"));
+            internal_error_response(&error)
+        }
+        Err(_elapsed) => {
+            session_error("Script did not respond in time.".to_owned());
+            text_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                "Script did not respond in time.",
+            )
+        }
     };
 
     metrics.record(&label, started.elapsed(), response.status().is_success());
     response
-}
-
-/// One revision prepared through the cache: the manifest travels over
-/// grpc, the bytes come from the blob store by hash, and the compiled
-/// result is shared by every request that runs it.
-pub async fn cached_revision(
-    state: &AppState,
-    script: Script,
-    revision_id: String,
-) -> Result<Arc<PreparedRevision>, Arc<anyhow::Error>> {
-    state
-        .caches
-        .revisions
-        .try_get_with(revision_id.clone(), {
-            let mut client = state.clients.script.clone();
-            let blobs = state.blobs.clone();
-            async move {
-                let mut revision = client
-                    .get_revision(GetRevisionRequest {
-                        id: revision_id,
-                        with_bundle: true,
-                        manifest_only: true,
-                    })
-                    .await?
-                    .into_inner();
-
-                // A preview could name any revision; only this script's may
-                // serve under its identifier. Failed loads are not cached.
-                if revision.script_id != script.id {
-                    anyhow::bail!(FOREIGN_REVISION);
-                }
-
-                if let Some(bundle) = revision.bundle.as_mut() {
-                    for file in &mut bundle.files {
-                        if file.content.is_empty() && !file.hash.is_empty() {
-                            file.content = blobs.get(&file.hash).await?.as_ref().clone();
-                        }
-                    }
-                }
-
-                Ok::<_, anyhow::Error>(Arc::new(PreparedRevision::prepare(script, revision)?))
-            }
-        })
-        .await
-}
-
-/// Everything routing an object method call needs; one per node, shared
-/// by request vms and pinned vms alike, so objects call objects through
-/// exactly the machinery requests use.
-pub struct ObjectRouting {
-    host: Arc<ObjectHost>,
-    data_dir: std::path::PathBuf,
-    db_max_bytes: u64,
-    store: Arc<ObjectStore>,
-    metrics: Arc<Metrics>,
-    replica_ttl: Duration,
-    internal_http: reqwest::Client,
-    internal_token: String,
-    idle_after: Duration,
-    queue_policy: actias_worker_core::platform::queue::QueuePolicy,
-    node_identity: Arc<std::sync::RwLock<Option<String>>>,
-    registry: NodeRegistryServiceClient<Channel>,
-    kv: KvServiceClient<Channel>,
-    egress: EgressClient,
-    secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
-    redis: Option<redis::aio::ConnectionManager>,
-    prepared: Arc<PreparedRevision>,
-}
-
-/// Per-call budget for one object method, mirroring the request deadline.
-const OBJECT_CALL_BUDGET_SECS: u64 = 10;
-
-/// Why an object could not be made resident here.
-pub enum ResolveError {
-    /// A live incumbent holds the lease; forward the call to it.
-    Elsewhere(String),
-    Other(String),
-}
-
-impl ObjectRouting {
-    /// Routing for one prepared revision over this node's shared pieces.
-    pub fn new(state: &AppState, prepared: Arc<PreparedRevision>) -> Arc<Self> {
-        Arc::new(Self {
-            host: state.objects.clone(),
-            data_dir: state.object_data_dir.clone(),
-            db_max_bytes: state.object_db_max_bytes,
-            store: state.object_store.clone(),
-            metrics: state.metrics.clone(),
-            replica_ttl: state.replica_ttl,
-            internal_http: state.internal_http.clone(),
-            internal_token: state.internal_token.clone(),
-            idle_after: state.object_idle_after,
-            queue_policy: state.queue_policy.clone(),
-            node_identity: state.node_identity.clone(),
-            registry: state.registry.clone(),
-            kv: state.clients.kv.clone(),
-            egress: state.egress.clone(),
-            secrets_key: state.secrets_key.clone(),
-            redis: state.redis.clone(),
-            prepared,
-        })
-    }
-
-    /// Wraps this routing as the closure vms carry in app data.
-    fn as_router(self: &Arc<Self>) -> ObjectRouter {
-        let this = self.clone();
-        Arc::new(move |target: ObjectTarget| {
-            let this = this.clone();
-            Box::pin(async move { this.route(target).await })
-        })
-    }
-
-    /// Resolves the pinned vm (spawning it from the same prepared revision
-    /// on first touch) and pushes one mailbox message.
-    ///
-    /// The vm registry is keyed by object identity and marked with the
-    /// revision, so a republish gets fresh code on first touch instead of
-    /// stale vms accumulating. A call whose chain already holds the target
-    /// is refused: its mailbox is busy underneath this very call, and
-    /// waiting on it would deadlock.
-    /// The object's live mailbox, spawning (and thereby reviving) it if
-    /// needed: lease claim, vm, storage, all of it. The cold-alarm sweep
-    /// calls this too; making an object resident is all a wake takes,
-    /// because the spawned task re-arms its persisted alarm itself.
-    ///
-    /// A refusal surfaces the incumbent, so the caller can forward there
-    /// instead of failing.
-    pub async fn resolve_handle(
-        self: &Arc<Self>,
-        key: &str,
-    ) -> Result<actias_worker_core::objects::ObjectHandle, ResolveError> {
-        // A non-resident object needs the lease before anything spawns;
-        // a resident one already holds it (leases live as long as we do).
-        if !self.host.is_resident(key).await {
-            let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
-            let node_id = self
-                .node_identity
-                .read()
-                .expect("no poisoned lock")
-                .clone()
-                .ok_or_else(|| {
-                    ResolveError::Other(
-                        "This node has not finished registering; try again.".to_owned(),
-                    )
-                })?;
-
-            let lease = self
-                .registry
-                .clone()
-                .acquire_lease({
-                    let (script_id, class, name) = split_key(key);
-                    AcquireLeaseRequest {
-                        object_id,
-                        node_id,
-                        script_id,
-                        class,
-                        name,
-                    }
-                })
-                .await
-                .map_err(|e| ResolveError::Other(e.to_string()))?
-                .into_inner();
-            if !lease.acquired {
-                return Err(ResolveError::Elsewhere(lease.node_id));
-            }
-        }
-
-        self.resolve_local(key).await.map_err(ResolveError::Other)
-    }
-
-    /// The spawn itself, lease already settled (or re-settled by the
-    /// factory for the resident-revision-bump edge, where it is our own).
-    async fn resolve_local(
-        self: &Arc<Self>,
-        key: &str,
-    ) -> Result<actias_worker_core::objects::ObjectHandle, String> {
-        let routing = self.clone();
-        // The hash is the object's platform-wide id: the lease key in the
-        // placement store and the file name on disk, because the class and
-        // instance names are user-chosen text.
-        let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
-        let file = self.data_dir.join(format!("{object_id}.db"));
-        let identity_key = key.to_owned();
-
-        self.host
-            .get_or_spawn(key, &self.prepared.revision_id, || async move {
-                // One claim per residency, before anything is built: an
-                // object only ever lives where its lease is held, which is
-                // what makes a second node refusing to serve it correct.
-                let node_id = routing
-                    .node_identity
-                    .read()
-                    .expect("no poisoned lock")
-                    .clone()
-                    .ok_or_else(|| {
-                        mlua::Error::RuntimeError(
-                            "This node has not finished registering; try again.".to_owned(),
-                        )
-                    })?;
-
-                let lease = routing
-                    .registry
-                    .clone()
-                    .acquire_lease({
-                        let (script_id, class, name) = split_key(&identity_key);
-                        AcquireLeaseRequest {
-                            object_id: object_id.clone(),
-                            node_id,
-                            script_id,
-                            class,
-                            name,
-                        }
-                    })
-                    .await
-                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
-                    .into_inner();
-                if !lease.acquired {
-                    return Err(mlua::Error::RuntimeError(
-                        "Object is homed on another node.".to_owned(),
-                    ));
-                }
-
-                // No local file means this node has never hosted the
-                // object (or lost its volume): the last shipped snapshot
-                // is the truth, and restoring it here is rehoming.
-                if !file.exists() {
-                    match routing.store.restore(&object_id, &file).await {
-                        Ok(true) => {
-                            actias_common::tracing::info!(object_id, "object restored from store")
-                        }
-                        Ok(false) => {}
-                        Err(error) => {
-                            return Err(mlua::Error::RuntimeError(format!(
-                                "The object's snapshot could not be restored: {error}"
-                            )));
-                        }
-                    }
-                }
-
-                // Object logs join the script's production channel, so
-                // `actias tail` sees them like any handler line.
-                let logs = routing.redis.clone().map(|connection| {
-                    LogPublisher::new(connection, script_log_channel(&routing.prepared.script.id))
-                });
-
-                let runtime = ActiasRuntime::new(
-                    routing.prepared.clone(),
-                    routing.kv.clone(),
-                    routing.egress.clone(),
-                    logs,
-                    routing.secrets_key.clone(),
-                    None,
-                )
-                .await?;
-                // The pinned vm routes its own outbound calls too; the
-                // chain it hands them is what makes cycles refusable.
-                runtime.set_app_data::<ObjectRouter>(routing.as_router());
-
-                let mut storage = actias_worker_core::storage::SqliteStorage::open(&file)
-                    .map_err(mlua::Error::RuntimeError)?;
-                storage
-                    .set_size_limit(routing.db_max_bytes)
-                    .map_err(mlua::Error::RuntimeError)?;
-
-                // The output gate: every call that wrote ships its snapshot
-                // before the caller hears the result. A refused (fenced) or
-                // failed ship is logged; local durability still holds and
-                // the next write retries.
-                let ship_store = routing.store.clone();
-                let ship_id = object_id.clone();
-                let ship_file = file.clone();
-                let epoch = lease.epoch;
-                let after_write: actias_worker_core::objects::AfterWrite = Arc::new(move || {
-                    let store = ship_store.clone();
-                    let object_id = ship_id.clone();
-                    let file = ship_file.clone();
-                    Box::pin(async move {
-                        if let Err(error) = store.ship(&object_id, epoch, &file).await {
-                            actias_common::tracing::warn!(
-                                %error,
-                                object_id,
-                                "object snapshot did not ship"
-                            );
-                        }
-                    })
-                });
-
-                Ok((
-                    runtime,
-                    actias_worker_core::objects::TaskOptions {
-                        call_budget: Some(OBJECT_CALL_BUDGET_SECS),
-                        storage: Some(storage),
-                        hibernate_after: Some(routing.idle_after),
-                        after_write: Some(after_write),
-                        queue: routing.queue_policy.clone(),
-                    },
-                ))
-            })
-            .await
-            .map_err(|e| e.to_string())
-    }
-
-    async fn route(self: Arc<Self>, target: ObjectTarget) -> Result<serde_json::Value, String> {
-        self.route_inner(target, true).await
-    }
-
-    /// The replica file for one database, restored from the last shipped
-    /// snapshot and reused until it ages past the ttl. [`None`] when
-    /// nothing was ever shipped: the caller falls through to the owner.
-    async fn fresh_replica(&self, object_id: &str) -> Result<Option<std::path::PathBuf>, String> {
-        let dir = self.data_dir.join("replicas");
-        let replica = dir.join(format!("{object_id}.db"));
-
-        let fresh = std::fs::metadata(&replica)
-            .and_then(|meta| meta.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age < self.replica_ttl);
-
-        if !fresh {
-            tokio::fs::create_dir_all(&dir)
-                .await
-                .map_err(|e| e.to_string())?;
-            if !self.store.restore(object_id, &replica).await? {
-                return Ok(None);
-            }
-        }
-
-        Ok(Some(replica))
-    }
-
-    /// One hop to the lease holder's /_object endpoint; its answer is the
-    /// answer.
-    async fn forward(
-        &self,
-        holder: &str,
-        target: &ObjectTarget,
-        chain: Vec<String>,
-    ) -> Result<serde_json::Value, String> {
-        let node = self
-            .registry
-            .clone()
-            .get_node(actias_worker_core::proto::node_registry::GetNodeRequest {
-                node_id: holder.to_owned(),
-            })
-            .await
-            .map_err(|e| format!("The object's home could not be resolved: {e}"))?
-            .into_inner();
-
-        let response = self
-            .internal_http
-            .post(format!("http://{}/_object", node.address))
-            .header("x-actias-internal", self.internal_token.clone())
-            .json(&serde_json::json!({
-                "scriptId": self.prepared.script.id,
-                "revisionId": self.prepared.revision_id,
-                "class": target.class,
-                "name": target.name,
-                "method": target.method,
-                "arguments": target.arguments,
-                // The chain already includes the target; the receiver
-                // dispatches without extending again.
-                "chain": chain,
-            }))
-            .send()
-            .await
-            .map_err(|e| format!("The object's home did not answer: {e}"))?;
-
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| format!("The object's home answered garbage: {e}"))?;
-        match body.get("error") {
-            Some(error) if !error.is_null() => {
-                Err(error.as_str().unwrap_or("forwarded call failed").to_owned())
-            }
-            _ => Ok(body
-                .get("result")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null)),
-        }
-    }
-
-    /// The routing body; `allow_forward` is false for calls that already
-    /// arrived over the internal transport, so a stale lease view can
-    /// never bounce a call between nodes.
-    pub async fn route_inner(
-        self: Arc<Self>,
-        target: ObjectTarget,
-        allow_forward: bool,
-    ) -> Result<serde_json::Value, String> {
-        let key = format!(
-            "{}/{}/{}",
-            self.prepared.script.id, target.class, target.name
-        );
-
-        // Reads that tolerate bounded staleness skip the mailbox entirely.
-        // A resident object's own file is the freshest copy there is; a
-        // non-resident one reads from a snapshot replica restored beside
-        // it, refreshed past its ttl, which is the whole multi-node read
-        // story: reads never need the home. A database nothing has shipped
-        // yet falls through, so first touch still creates and migrates it
-        // through the owner.
-        if target.class == actias_worker_core::extensions::objects::DATABASE_CLASS
-            && matches!(target.method.as_str(), "read" | "read_one")
-        {
-            let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
-            let file = self.data_dir.join(format!("{object_id}.db"));
-
-            if self.host.is_resident(&key).await && file.exists() {
-                if let Some(result) = read_bypass(&file, &target).await? {
-                    return Ok(result);
-                }
-            } else if let Some(replica) = self.fresh_replica(&object_id).await?
-                && let Some(result) = read_bypass(&replica, &target).await?
-            {
-                self.metrics
-                    .replica_reads
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return Ok(result);
-            }
-        }
-
-        // A forwarded call arrives with its chain already extended through
-        // this target; extending again would refuse it as its own cycle.
-        let chain = if target.chain.last().map(String::as_str) == Some(key.as_str()) {
-            target.chain.clone()
-        } else {
-            actias_worker_core::objects::extend_call_chain(&target.chain, &key)?
-        };
-        let handle = match self.resolve_handle(&key).await {
-            Ok(handle) => handle,
-            // The incumbent lives: the call belongs on its node, one hop.
-            Err(ResolveError::Elsewhere(holder)) if allow_forward => {
-                return self.forward(&holder, &target, chain).await;
-            }
-            Err(ResolveError::Elsewhere(holder)) => {
-                return Err(format!(
-                    "Object is homed on {holder}, but this call may not forward again."
-                ));
-            }
-            Err(ResolveError::Other(error)) => return Err(error),
-        };
-
-        handle
-            .call(
-                "__dispatch",
-                serde_json::json!({
-                    "class": target.class,
-                    "name": target.name,
-                    "method": target.method,
-                    "args": target.arguments,
-                    "chain": chain,
-                }),
-            )
-            .await
-            .map_err(|e| e.to_string())
-    }
-}
-
-/// One bypassed read: a fresh read-only connection, the query, done.
-/// Returns [`None`] when the arguments do not fit a read, letting the
-/// mailbox path produce its usual error shapes.
-async fn read_bypass(
-    file: &std::path::Path,
-    target: &ObjectTarget,
-) -> Result<Option<serde_json::Value>, String> {
-    let Some(serde_json::Value::String(sql)) = target.arguments.first().cloned() else {
-        return Ok(None);
-    };
-    let params: Vec<serde_json::Value> = match target.arguments.get(1) {
-        Some(serde_json::Value::Array(params)) => params.clone(),
-        Some(serde_json::Value::Null) | None => Vec::new(),
-        Some(_) => return Ok(None),
-    };
-    let one = target.method == "read_one";
-
-    let file = file.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let mut reader = actias_worker_core::storage::SqliteStorage::open_read_only(&file)?;
-        let rows = reader.query(&sql, &params)?;
-
-        Ok(Some(if one {
-            rows.into_iter().next().unwrap_or(serde_json::Value::Null)
-        } else {
-            serde_json::Value::Array(rows)
-        }))
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 /// Resolves the script, runs it, and shapes its response.
@@ -1385,11 +928,11 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             tokio::spawn(async move {
                 let mut all_armed = true;
                 for event in cron_events {
-                    let key = format!(
-                        "{}/{}/{}",
-                        routing.prepared.script.id,
+                    let key = ObjectKey::scoped(
+                        &routing.prepared.script.project_id,
+                        &routing.prepared.script.id,
                         actias_worker_core::extensions::objects::CRON_CLASS,
-                        event
+                        &event,
                     );
                     let armed = match routing.resolve_handle(&key).await {
                         Err(ResolveError::Elsewhere(holder)) => {
@@ -1407,7 +950,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                                     // The object's own key: set_alarm persists
                                     // it, and the sweep needs it to revive this
                                     // cron after a restart.
-                                    "chain": [key],
+                                    "chain": [key.to_string()],
                                 }),
                             )
                             .await
@@ -1924,7 +1467,7 @@ mod tests {
             .header("content-type", "application/json")
             .header("x-actias-internal", "wrong-token")
             .body(Body::from(
-                r#"{"scriptId":"s","class":"C","name":"n","method":"m"}"#,
+                r#"{"scopeId":"p","class":"C","name":"n","method":"m"}"#,
             ))
             .unwrap();
 

@@ -5,6 +5,7 @@
 
 use std::str::FromStr;
 
+use actias_common::thiserror;
 use sqlx::types::chrono::{DateTime, Utc};
 use sqlx::{Pool, Postgres};
 use tonic::{Request, Response, Status};
@@ -46,6 +47,70 @@ pub struct NodeRegistry {
     ttl_secs: u32,
 }
 
+/// What can fail inside the registry. The [`From`] impl below is the one
+/// place deciding what the wire sees; raw store detail stops at tracing.
+#[derive(thiserror::Error, Debug)]
+enum RegistryError {
+    #[error("placement store query failed: {0}")]
+    Store(#[from] sqlx::Error),
+    #[error("'{0}' is not a uuid")]
+    InvalidId(&'static str),
+    #[error("claim identity is incomplete")]
+    IncompleteIdentity,
+    #[error("node unknown or aged out")]
+    NodeUnknown,
+    #[error("no live node with that id")]
+    NoSuchNode,
+    #[error("claim raced a cascade")]
+    ClaimRaced,
+}
+
+impl From<RegistryError> for Status {
+    fn from(error: RegistryError) -> Self {
+        match error {
+            RegistryError::Store(source) => {
+                actias_common::tracing::error!(error = %source, "placement store query failed");
+                Status::internal("The placement store failed.")
+            }
+            RegistryError::InvalidId(field) => {
+                Status::invalid_argument(format!("'{field}' is not a uuid."))
+            }
+            RegistryError::IncompleteIdentity => Status::invalid_argument(
+                "A claim identity carries scope, class, name and script, or none of them.",
+            ),
+            RegistryError::NodeUnknown => {
+                Status::not_found("Node is not registered or has aged out; register again.")
+            }
+            RegistryError::NoSuchNode => Status::not_found("No live node with that id."),
+            // The caller simply claims again.
+            RegistryError::ClaimRaced => {
+                Status::aborted("The lease was freed mid-claim; try again.")
+            }
+        }
+    }
+}
+
+/// The identity preimage a claim carries, parsed: (scope, script). An
+/// identity-less claim (every field empty) is allowed and records nothing
+/// in the directory; a partial one is refused.
+fn claim_identity(request: &AcquireLeaseRequest) -> Result<Option<(Uuid, Uuid)>, RegistryError> {
+    if request.scope_id.is_empty()
+        && request.class.is_empty()
+        && request.name.is_empty()
+        && request.script_id.is_empty()
+    {
+        return Ok(None);
+    }
+    if request.class.is_empty() || request.name.is_empty() {
+        return Err(RegistryError::IncompleteIdentity);
+    }
+    let scope =
+        Uuid::from_str(&request.scope_id).map_err(|_| RegistryError::InvalidId("scope_id"))?;
+    let script =
+        Uuid::from_str(&request.script_id).map_err(|_| RegistryError::InvalidId("script_id"))?;
+    Ok(Some((scope, script)))
+}
+
 impl NodeRegistry {
     pub fn new(database: Pool<Postgres>, ttl_secs: u32) -> Self {
         Self { database, ttl_secs }
@@ -60,6 +125,91 @@ impl NodeRegistry {
     /// Oldest heartbeat still considered alive.
     fn cutoff(&self) -> DateTime<Utc> {
         Utc::now() - std::time::Duration::from_secs(self.ttl_secs.into())
+    }
+
+    /// Deletes every node past the ttl. Ageing out is physical, so the
+    /// table never accumulates a graveyard, and lease expiry is the same
+    /// deletion through the cascade.
+    async fn reap(&self) -> Result<(), RegistryError> {
+        sqlx::query("DELETE FROM nodes WHERE last_heartbeat <= $1")
+            .bind(self.cutoff())
+            .execute(&self.database)
+            .await?;
+        Ok(())
+    }
+
+    /// The conditional claim and everything it settles: directory record,
+    /// holder, epoch.
+    async fn claim(&self, request: &AcquireLeaseRequest) -> Result<Lease, RegistryError> {
+        let node_id =
+            Uuid::from_str(&request.node_id).map_err(|_| RegistryError::InvalidId("node_id"))?;
+        let identity = claim_identity(request)?;
+
+        // A dead holder frees its leases by the same deletion that ages it
+        // out; doing it here means a claim never waits for a liveness read.
+        self.reap().await?;
+
+        // The conditional claim: exactly one row per object, first insert
+        // wins, a re-claim by the current holder is a no-op success.
+        let claimed = sqlx::query(
+            "INSERT INTO leases (object_id, node_id) VALUES ($1, $2)
+             ON CONFLICT (object_id) DO NOTHING",
+        )
+        .bind(&request.object_id)
+        .bind(node_id)
+        .execute(&self.database)
+        .await?;
+
+        // The claim carries its preimage; the directory keeps it so the
+        // data stays enumerable after the declaring revision is gone.
+        if let Some((scope_id, script_id)) = identity {
+            sqlx::query(
+                "INSERT INTO object_instances (scope_id, class, name, script_id)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (scope_id, class, name) DO NOTHING",
+            )
+            .bind(scope_id)
+            .bind(&request.class)
+            .bind(&request.name)
+            .bind(script_id)
+            .execute(&self.database)
+            .await?;
+        }
+
+        let holder: Option<Uuid> =
+            sqlx::query_scalar("SELECT node_id FROM leases WHERE object_id = $1")
+                .bind(&request.object_id)
+                .fetch_optional(&self.database)
+                .await?;
+        let holder = holder.ok_or(RegistryError::ClaimRaced)?;
+        let acquired = claimed.rows_affected() == 1 || holder == node_id;
+
+        // A fresh claim advances the object's epoch, which never resets:
+        // it is the fence storage shipping writes into its manifests.
+        let epoch: i64 = if claimed.rows_affected() == 1 {
+            sqlx::query_scalar(
+                "INSERT INTO object_epochs (object_id) VALUES ($1)
+                 ON CONFLICT (object_id)
+                 DO UPDATE SET epoch = object_epochs.epoch + 1
+                 RETURNING epoch",
+            )
+            .bind(&request.object_id)
+            .fetch_one(&self.database)
+            .await?
+        } else {
+            sqlx::query_scalar("SELECT epoch FROM object_epochs WHERE object_id = $1")
+                .bind(&request.object_id)
+                .fetch_optional(&self.database)
+                .await?
+                .unwrap_or(1)
+        };
+
+        Ok(Lease {
+            object_id: request.object_id.clone(),
+            node_id: holder.to_string(),
+            acquired,
+            epoch: epoch.max(1) as u64,
+        })
     }
 }
 
@@ -78,7 +228,7 @@ impl NodeRegistryService for NodeRegistry {
         .bind(&request.capabilities)
         .fetch_one(&self.database)
         .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+        .map_err(RegistryError::Store)?;
 
         Ok(Response::new(NodeRegistration {
             node_id: id.to_string(),
@@ -88,8 +238,8 @@ impl NodeRegistryService for NodeRegistry {
 
     async fn heartbeat(&self, request: Request<HeartbeatRequest>) -> Result<Response<()>, Status> {
         let request = request.get_ref();
-        let id = Uuid::from_str(&request.node_id)
-            .map_err(|_| Status::invalid_argument("Node id is not a uuid."))?;
+        let id =
+            Uuid::from_str(&request.node_id).map_err(|_| RegistryError::InvalidId("node_id"))?;
 
         // An aged-out node must not resurrect by beating: only a row still
         // inside the ttl accepts the update, so the stale one is refused
@@ -103,12 +253,10 @@ impl NodeRegistryService for NodeRegistry {
         .bind(self.cutoff())
         .execute(&self.database)
         .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+        .map_err(RegistryError::Store)?;
 
         if updated.rows_affected() == 0 {
-            return Err(Status::not_found(
-                "Node is not registered or has aged out; register again.",
-            ));
+            return Err(RegistryError::NodeUnknown.into());
         }
 
         Ok(Response::new(()))
@@ -118,18 +266,12 @@ impl NodeRegistryService for NodeRegistry {
         &self,
         _request: Request<()>,
     ) -> Result<Response<ListNodesResponse>, Status> {
-        // Ageing out is physical: the dead are deleted on read, so the
-        // table never accumulates a graveyard.
-        sqlx::query("DELETE FROM nodes WHERE last_heartbeat <= $1")
-            .bind(self.cutoff())
-            .execute(&self.database)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        self.reap().await?;
 
         let nodes = sqlx::query_as::<_, DbNode>("SELECT * FROM nodes ORDER BY registered")
             .fetch_all(&self.database)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(RegistryError::Store)?;
 
         Ok(Response::new(ListNodesResponse {
             nodes: nodes.into_iter().map(Node::from).collect(),
@@ -138,7 +280,7 @@ impl NodeRegistryService for NodeRegistry {
 
     async fn get_node(&self, request: Request<GetNodeRequest>) -> Result<Response<Node>, Status> {
         let id = Uuid::from_str(&request.get_ref().node_id)
-            .map_err(|_| Status::invalid_argument("Node id is not a uuid."))?;
+            .map_err(|_| RegistryError::InvalidId("node_id"))?;
 
         let node = sqlx::query_as::<_, DbNode>(
             "SELECT * FROM nodes WHERE id = $1 AND last_heartbeat > $2",
@@ -147,8 +289,8 @@ impl NodeRegistryService for NodeRegistry {
         .bind(self.cutoff())
         .fetch_optional(&self.database)
         .await
-        .map_err(|e| Status::internal(e.to_string()))?
-        .ok_or_else(|| Status::not_found("No live node with that id."))?;
+        .map_err(RegistryError::Store)?
+        .ok_or(RegistryError::NoSuchNode)?;
 
         Ok(Response::new(node.into()))
     }
@@ -157,87 +299,7 @@ impl NodeRegistryService for NodeRegistry {
         &self,
         request: Request<AcquireLeaseRequest>,
     ) -> Result<Response<Lease>, Status> {
-        let request = request.get_ref();
-        let node_id = Uuid::from_str(&request.node_id)
-            .map_err(|_| Status::invalid_argument("Node id is not a uuid."))?;
-
-        // A dead holder frees its leases by the same deletion that ages it
-        // out; doing it here means a claim never waits for a liveness read.
-        sqlx::query("DELETE FROM nodes WHERE last_heartbeat <= $1")
-            .bind(self.cutoff())
-            .execute(&self.database)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        // The conditional claim: exactly one row per object, first insert
-        // wins, a re-claim by the current holder is a no-op success.
-        let claimed = sqlx::query(
-            "INSERT INTO leases (object_id, node_id) VALUES ($1, $2)
-             ON CONFLICT (object_id) DO NOTHING",
-        )
-        .bind(&request.object_id)
-        .bind(node_id)
-        .execute(&self.database)
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-
-        // The claim carries its preimage; the directory keeps it so the
-        // data stays enumerable after the declaring revision is gone. A
-        // claim without identity (old callers, tests) records nothing.
-        if let Ok(script_id) = Uuid::from_str(&request.script_id) {
-            sqlx::query(
-                "INSERT INTO object_instances (script_id, class, name) VALUES ($1, $2, $3)
-                 ON CONFLICT (script_id, class, name) DO NOTHING",
-            )
-            .bind(script_id)
-            .bind(&request.class)
-            .bind(&request.name)
-            .execute(&self.database)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-        }
-
-        let holder: Option<Uuid> =
-            sqlx::query_scalar("SELECT node_id FROM leases WHERE object_id = $1")
-                .bind(&request.object_id)
-                .fetch_optional(&self.database)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?;
-
-        let holder = holder.ok_or_else(|| {
-            // Claim raced a cascade; the caller simply claims again.
-            Status::aborted("The lease was freed mid-claim; try again.")
-        })?;
-        let acquired = claimed.rows_affected() == 1 || holder == node_id;
-
-        // A fresh claim advances the object's epoch, which never resets:
-        // it is the fence storage shipping writes into its manifests.
-        let epoch: i64 = if claimed.rows_affected() == 1 {
-            sqlx::query_scalar(
-                "INSERT INTO object_epochs (object_id) VALUES ($1)
-                 ON CONFLICT (object_id)
-                 DO UPDATE SET epoch = object_epochs.epoch + 1
-                 RETURNING epoch",
-            )
-            .bind(&request.object_id)
-            .fetch_one(&self.database)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
-        } else {
-            sqlx::query_scalar("SELECT epoch FROM object_epochs WHERE object_id = $1")
-                .bind(&request.object_id)
-                .fetch_optional(&self.database)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?
-                .unwrap_or(1)
-        };
-
-        Ok(Response::new(Lease {
-            object_id: request.object_id.clone(),
-            node_id: holder.to_string(),
-            acquired,
-            epoch: epoch.max(1) as u64,
-        }))
+        Ok(Response::new(self.claim(request.get_ref()).await?))
     }
 
     async fn release_lease(
@@ -245,8 +307,8 @@ impl NodeRegistryService for NodeRegistry {
         request: Request<ReleaseLeaseRequest>,
     ) -> Result<Response<()>, Status> {
         let request = request.get_ref();
-        let node_id = Uuid::from_str(&request.node_id)
-            .map_err(|_| Status::invalid_argument("Node id is not a uuid."))?;
+        let node_id =
+            Uuid::from_str(&request.node_id).map_err(|_| RegistryError::InvalidId("node_id"))?;
 
         // Only the holder may release; anyone else's release is a no-op,
         // so a laggard cannot free an object out from under its new home.
@@ -255,7 +317,7 @@ impl NodeRegistryService for NodeRegistry {
             .bind(node_id)
             .execute(&self.database)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(RegistryError::Store)?;
 
         Ok(Response::new(()))
     }
@@ -264,33 +326,38 @@ impl NodeRegistryService for NodeRegistry {
         &self,
         request: Request<ListInstancesRequest>,
     ) -> Result<Response<ListInstancesResponse>, Status> {
-        let script_ids: Vec<Uuid> = request
+        let project_ids: Vec<Uuid> = request
             .get_ref()
-            .script_ids
+            .project_ids
             .iter()
             .filter_map(|id| Uuid::from_str(id).ok())
             .collect();
 
-        let rows: Vec<(Uuid, String, String, i64)> = sqlx::query_as(
-            "SELECT script_id, class, name,
+        // Cron rows scope to their script, so a project listing never
+        // matches them: only resource identities surface here.
+        let rows: Vec<(Uuid, String, String, Uuid, i64)> = sqlx::query_as(
+            "SELECT scope_id, class, name, script_id,
                     (EXTRACT(EPOCH FROM created) * 1000)::BIGINT
-             FROM object_instances WHERE script_id = ANY($1)
+             FROM object_instances WHERE scope_id = ANY($1)
              ORDER BY class, name",
         )
-        .bind(&script_ids)
+        .bind(&project_ids)
         .fetch_all(&self.database)
         .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+        .map_err(RegistryError::Store)?;
 
         Ok(Response::new(ListInstancesResponse {
             instances: rows
                 .into_iter()
-                .map(|(script_id, class, name, created_ms)| ObjectInstance {
-                    script_id: script_id.to_string(),
-                    class,
-                    name,
-                    created_ms,
-                })
+                .map(
+                    |(scope_id, class, name, script_id, created_ms)| ObjectInstance {
+                        scope_id: scope_id.to_string(),
+                        class,
+                        name,
+                        script_id: script_id.to_string(),
+                        created_ms,
+                    },
+                )
                 .collect(),
         }))
     }
@@ -427,28 +494,31 @@ mod tests {
     async fn a_claim_records_its_identity_in_the_directory() {
         let (registry, _database, _container) = registry(60).await;
         let node = register(&registry, "10.0.0.9:80").await;
+        let project = Uuid::new_v4();
         let script = Uuid::new_v4();
 
-        let claim = |name: &str| AcquireLeaseRequest {
+        let claim = |name: &str, script: Uuid| AcquireLeaseRequest {
             object_id: format!("hash-{name}"),
             node_id: node.clone(),
-            script_id: script.to_string(),
+            scope_id: project.to_string(),
             class: "__queue".to_owned(),
             name: name.to_owned(),
+            script_id: script.to_string(),
         };
         registry
-            .acquire_lease(Request::new(claim("jobs")))
+            .acquire_lease(Request::new(claim("jobs", script)))
             .await
             .expect("claims");
-        // A re-claim is a directory no-op, not a duplicate.
+        // A re-claim is a directory no-op, not a duplicate, even when a
+        // different script's code touches the shared identity.
         registry
-            .acquire_lease(Request::new(claim("jobs")))
+            .acquire_lease(Request::new(claim("jobs", Uuid::new_v4())))
             .await
             .expect("re-claims");
 
         let listed = registry
             .list_instances(Request::new(ListInstancesRequest {
-                script_ids: vec![script.to_string()],
+                project_ids: vec![project.to_string()],
             }))
             .await
             .expect("lists")
@@ -456,6 +526,11 @@ mod tests {
         assert_eq!(listed.instances.len(), 1, "one identity, once");
         assert_eq!(listed.instances[0].name, "jobs");
         assert_eq!(listed.instances[0].class, "__queue");
+        assert_eq!(
+            listed.instances[0].script_id,
+            script.to_string(),
+            "declared-by metadata keeps the first claim's owner"
+        );
 
         // The directory outlives the lease: release frees the object,
         // the identity stays enumerable.
@@ -468,7 +543,7 @@ mod tests {
             .expect("releases");
         let survives = registry
             .list_instances(Request::new(ListInstancesRequest {
-                script_ids: vec![script.to_string()],
+                project_ids: vec![project.to_string()],
             }))
             .await
             .expect("lists again")
