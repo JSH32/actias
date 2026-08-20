@@ -19,7 +19,7 @@ use mlua::LuaSerdeExt;
 use serde::Deserialize;
 
 use crate::extensions::objects::{CallChain, PendingAlarm, unix_now_ms};
-use crate::objects::{ObjectHome, lock_unpoisoned};
+use crate::objects::ObjectHome;
 use crate::runtime::ActiasRuntime;
 
 /// One platform method call, the same shape the Lua `__dispatch` decodes.
@@ -133,19 +133,10 @@ pub(crate) fn set_alarm(
     class: &str,
     delay_ms: i64,
 ) -> Result<(), String> {
-    let alarm = PendingAlarm {
+    context.home.set_alarm(PendingAlarm {
         due_ms: unix_now_ms() + delay_ms.max(0),
         class: class.to_owned(),
         name: context.name.to_owned(),
         own_key: context.own_key.to_owned(),
-    };
-
-    if context.home.storage.is_some() {
-        context.home.with_storage(|storage| {
-            storage.save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
-        })?;
-    }
-    *lock_unpoisoned(&context.home.alarm) = Some(alarm);
-
-    Ok(())
+    })
 }
