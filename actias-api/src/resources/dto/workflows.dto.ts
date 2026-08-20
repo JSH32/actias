@@ -41,6 +41,17 @@ export class WorkflowRunDto {
   @ApiProperty({ description: 'Journal rows so far.' })
   entries: number;
 
+  @ApiProperty({ description: 'The step or gate the run is at.' })
+  atStep: string;
+
+  @ApiProperty({
+    description: 'The STARTED input, verbatim.',
+    type: 'object',
+    additionalProperties: true,
+    nullable: true,
+  })
+  input: unknown;
+
   @ApiProperty({ required: false, nullable: true })
   startedAt?: number;
 
@@ -85,6 +96,21 @@ export class WorkflowRunDetailDto {
 
   @ApiProperty({ type: [WorkflowJournalRowDto] })
   journal: WorkflowJournalRowDto[];
+}
+
+export class RunStartDto {
+  @ApiProperty({ required: false, type: 'object', additionalProperties: true })
+  @IsOptional()
+  payload?: unknown;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'The run id; the idempotency key. Omitted, the console mints one.',
+  })
+  @IsOptional()
+  @IsString()
+  id?: string;
 }
 
 export class RunSignalDto {

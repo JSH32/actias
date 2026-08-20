@@ -3,6 +3,7 @@
 /* eslint-disable */
 import type { RunCancelDto } from '../models/RunCancelDto';
 import type { RunSignalDto } from '../models/RunSignalDto';
+import type { RunStartDto } from '../models/RunStartDto';
 import type { WorkflowDefinitionDto } from '../models/WorkflowDefinitionDto';
 import type { WorkflowRunDetailDto } from '../models/WorkflowRunDetailDto';
 import type { WorkflowRunDto } from '../models/WorkflowRunDto';
@@ -52,6 +53,32 @@ export class WorkflowsService {
                 'project': project,
                 'definition': definition,
             },
+        });
+    }
+
+    /**
+     * Starts (or joins) a run; the id is the idempotency key, minted
+     * here when the caller has none.
+     * @param project
+     * @param definition
+     * @param requestBody
+     * @returns any
+     * @throws ApiError
+     */
+    public startRun(
+        project: string,
+        definition: string,
+        requestBody: RunStartDto,
+    ): CancelablePromise<any> {
+        return this.httpRequest.request({
+            method: 'POST',
+            url: '/api/project/{project}/workflows/{definition}/runs',
+            path: {
+                'project': project,
+                'definition': definition,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
         });
     }
 

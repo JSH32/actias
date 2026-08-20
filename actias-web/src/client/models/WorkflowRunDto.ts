@@ -20,6 +20,14 @@ export type WorkflowRunDto = {
      * Journal rows so far.
      */
     entries: number;
+    /**
+     * The step or gate the run is at.
+     */
+    atStep: string;
+    /**
+     * The STARTED input, verbatim.
+     */
+    input: any;
     startedAt?: number | null;
     updatedAt?: number | null;
 };

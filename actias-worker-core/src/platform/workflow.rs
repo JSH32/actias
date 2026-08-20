@@ -709,6 +709,41 @@ pub fn read_journal_readonly_from(
 /// tail IS the state. Terminal kinds win; a trailing timer is a park
 /// (sleeping, or awaiting unless its signal already arrived); anything
 /// else reads as running.
+/// The step label a runs table shows: the dangling intent, the gate, or
+/// the last completed step.
+pub fn at_step(entries: &[Entry]) -> serde_json::Value {
+    let mut last_result: Option<&str> = None;
+    let mut dangling: Option<&str> = None;
+    for entry in entries {
+        match entry.kind {
+            EntryKind::Intent => dangling = entry.data["step"].as_str(),
+            EntryKind::Result => {
+                dangling = None;
+                last_result = entry.data["step"].as_str();
+            }
+            _ => {}
+        }
+    }
+    if let Some(step) = dangling {
+        return serde_json::json!(step);
+    }
+    match entries.last() {
+        Some(last) if last.kind == EntryKind::Timer => {
+            let gate = &last.data["for"];
+            if gate.is_null() {
+                serde_json::json!("sleep")
+            } else {
+                serde_json::json!(format!("await {}", gate.as_str().unwrap_or("?")))
+            }
+        }
+        Some(last) if last.kind == EntryKind::Completed => serde_json::json!("done"),
+        Some(last) if last.kind == EntryKind::Cancel => serde_json::json!("cancelled"),
+        _ => last_result
+            .map(|step| serde_json::json!(format!("after {step}")))
+            .unwrap_or(serde_json::json!("start")),
+    }
+}
+
 pub fn run_status(entries: &[Entry]) -> serde_json::Value {
     if let Some(cancelled) = entries.iter().find(|e| e.kind == EntryKind::Cancel) {
         return serde_json::json!({
