@@ -17,10 +17,7 @@ import { ResourcesController } from './resources.controller';
       grpcClient(
         'NODE_REGISTRY',
         'node_registry',
-        [
-          'google/protobuf/empty.proto',
-          `${protoBasePath}/node_registry.proto`,
-        ],
+        ['google/protobuf/empty.proto', `${protoBasePath}/node_registry.proto`],
         // The registry lives inside the script service binary.
         'externalServices.scriptServiceUri',
       ),
