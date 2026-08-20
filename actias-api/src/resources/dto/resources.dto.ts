@@ -56,3 +56,17 @@ export class SqlRowsDto {
   @ApiProperty({ type: 'array', items: {} })
   rows: unknown[];
 }
+
+export class QueueEventDto {
+  @ApiProperty()
+  seq: number;
+
+  @ApiProperty()
+  at: number;
+
+  @ApiProperty()
+  kind: string;
+
+  @ApiProperty()
+  detail: string;
+}

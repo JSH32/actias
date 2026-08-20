@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/helpers/api';
-import { ProjectDto, ResourceInstanceDto } from '@/client';
+import { ProjectDto, QueueEventDto, ResourceInstanceDto } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
 import { Card, Chip, EmptyState } from '@/ui';
 import classes from '../../../components/KvPanel.module.css';
@@ -29,8 +29,41 @@ function Queues({ project }: { project: ProjectDto }) {
     queryFn: () =>
       api.resources.queueStats(project.id, active!.scriptId, active!.name),
     enabled: !!active,
-    refetchInterval: 5000,
+    refetchInterval: 3000,
   });
+
+  // The inspector: the queue's own journal, polled with a cursor so the
+  // feed only ever grows forward.
+  const [events, setEvents] = React.useState<QueueEventDto[]>([]);
+  const cursor = React.useRef(0);
+  React.useEffect(() => {
+    cursor.current = 0;
+    setEvents([]);
+    if (!active) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const fresh = await api.resources.queueEvents(
+          project.id,
+          active.scriptId,
+          active.name,
+          cursor.current,
+        );
+        if (stopped || !fresh.length) return;
+        cursor.current = fresh[fresh.length - 1].seq;
+        setEvents((previous) => [...previous, ...fresh].slice(-200));
+      } catch {
+        // The holder may be waking; the next tick retries.
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 2000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.scriptId, active?.name, project.id]);
 
   const numbers = [
     { label: 'depth', value: stats?.depth },
@@ -122,6 +155,60 @@ function Queues({ project }: { project: ProjectDto }) {
               </Card>
             ))}
           </div>
+
+          <Card style={{ maxWidth: 560, marginTop: 14, padding: 0 }}>
+            <div
+              style={{
+                padding: '10px 14px',
+                fontWeight: 700,
+                borderBottom: '1px solid var(--line)',
+              }}
+            >
+              Live activity
+            </div>
+            <div
+              style={{
+                maxHeight: 300,
+                overflowY: 'auto',
+                fontFamily: 'var(--mono)',
+                fontSize: 11,
+                lineHeight: 1.9,
+                padding: '6px 14px',
+              }}
+            >
+              {events.length === 0 ? (
+                <span style={{ color: 'var(--ink-3)' }}>
+                  Waiting for activity; send to this queue to see it move.
+                </span>
+              ) : (
+                [...events].reverse().map((event) => (
+                  <div key={event.seq}>
+                    <span style={{ color: 'var(--ink-3)' }}>
+                      {new Date(event.at).toLocaleTimeString()}
+                    </span>{' '}
+                    <span
+                      style={{
+                        color:
+                          event.kind === 'delivered'
+                            ? 'var(--luna)'
+                            : event.kind === 'enqueued'
+                              ? 'var(--kind-kv)'
+                              : event.kind === 'retried'
+                                ? 'var(--warn)'
+                                : 'var(--err)',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {event.kind}
+                    </span>{' '}
+                    <span style={{ color: 'var(--ink-2)' }}>
+                      {event.detail}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
         </div>
       ) : null}
     </div>

@@ -1,6 +1,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { QueueEventDto } from '../models/QueueEventDto';
 import type { QueueStatsDto } from '../models/QueueStatsDto';
 import type { ResourceInstanceDto } from '../models/ResourceInstanceDto';
 import type { SqlQueryDto } from '../models/SqlQueryDto';
@@ -67,6 +68,36 @@ export class ResourcesService {
                 'project': project,
                 'script': script,
                 'name': name,
+            },
+        });
+    }
+
+    /**
+     * The queue's journal after `since`: enqueued, delivered, retried and
+     * dead-lettered, oldest first.
+     * @param project
+     * @param script
+     * @param name
+     * @param since
+     * @returns QueueEventDto
+     * @throws ApiError
+     */
+    public queueEvents(
+        project: string,
+        script: string,
+        name: string,
+        since?: number,
+    ): CancelablePromise<Array<QueueEventDto>> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/project/{project}/resources/queues/{script}/{name}/events',
+            path: {
+                'project': project,
+                'script': script,
+                'name': name,
+            },
+            query: {
+                'since': since,
             },
         });
     }
