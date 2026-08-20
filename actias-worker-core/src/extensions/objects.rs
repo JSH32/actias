@@ -169,9 +169,9 @@ impl LuaExtension for ObjectExtension {
     }
 
     fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
+        // User classes only; platform classes dispatch in rust and never
+        // appear here.
         let classes = lua.create_table()?;
-        classes.set(DATABASE_CLASS, database_class(lua)?)?;
-        classes.set(CRON_CLASS, cron_class(lua)?)?;
         lua.set_named_registry_value(CLASSES_KEY, classes)?;
 
         // `database "name"`: the sql product face, sugar over an object of
@@ -317,132 +317,6 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
     Ok(handle)
 }
 
-/// The built-in database class body: thin lua over `state.sql`, so a
-/// database is an ordinary object with the storage surface as its methods.
-fn database_class(lua: &Lua) -> mlua::Result<Table> {
-    let body = lua.create_table()?;
-
-    body.set(
-        "exec",
-        lua.create_function(
-            |lua, (state, text, params): (Table, String, Option<Table>)| {
-                let sql: Table = state.get("sql")?;
-                let exec: mlua::Function = sql.get("exec")?;
-                exec.call::<u64>((sql, text, params))?;
-                lua.to_value(&serde_json::Value::Bool(true))
-            },
-        )?,
-    )?;
-
-    body.set(
-        "query",
-        lua.create_function(|_, (state, text, params): (Table, String, Option<Table>)| {
-            let sql: Table = state.get("sql")?;
-            let query: mlua::Function = sql.get("query")?;
-            query.call::<mlua::Value>((sql, text, params))
-        })?,
-    )?;
-
-    // A batch is nothing special: one call is one transaction already, so
-    // this is a loop with the atomicity coming from the dispatch guard.
-    body.set(
-        "batch",
-        lua.create_function(|_, (state, statements): (Table, Table)| {
-            let sql: Table = state.get("sql")?;
-            let exec: mlua::Function = sql.get("exec")?;
-
-            let mut affected = Vec::new();
-            for entry in statements.sequence_values::<Table>() {
-                let entry = entry?;
-                let text: String = entry.get(1)?;
-                let params: Option<Table> = entry.get(2)?;
-                affected.push(exec.call::<u64>((sql.clone(), text, params))?);
-            }
-            Ok(affected)
-        })?,
-    )?;
-
-    body.set(
-        "query_one",
-        lua.create_function(|_, (state, text, params): (Table, String, Option<Table>)| {
-            let sql: Table = state.get("sql")?;
-            let query_one: mlua::Function = sql.get("query_one")?;
-            query_one.call::<mlua::Value>((sql, text, params))
-        })?,
-    )?;
-
-    // read/read_one: the same queries by another name. The name is the
-    // contract: these tolerate bounded staleness, which lets the router
-    // serve them from a read-only connection without entering the mailbox.
-    // Inside the pinned vm (or when the file does not exist yet) they run
-    // here, where they are simply reads.
-    let query: mlua::Function = body.get("query")?;
-    body.set("read", query)?;
-    let query_one: mlua::Function = body.get("query_one")?;
-    body.set("read_one", query_one)?;
-
-    Ok(body)
-}
-
-/// The built-in cron class: `ensure` records the event and arms the first
-/// occurrence, `alarm` re-arms the next one and fires the listener. The
-/// re-arm happens before the fire and the fire is pcall-guarded, so a
-/// failing handler can never kill the schedule.
-fn cron_class(lua: &Lua) -> mlua::Result<Table> {
-    lua.globals().set(
-        "__cron_next_ms",
-        lua.create_function(|_, event: String| {
-            cron_delay_ms(&event).map_err(mlua::Error::RuntimeError)
-        })?,
-    )?;
-
-    // Errors are contained here in rust rather than by a lua pcall: the
-    // handler may yield (async platform calls), and Luau cannot yield
-    // across a pcall's C boundary. A failing handler is logged and the
-    // caller keeps running, so a bad handler can never kill a schedule or
-    // a delivery loop. The boolean is the delivery verdict: cron ignores
-    // it, queues retry on false.
-    lua.globals().set(
-        "__fire_event",
-        lua.create_async_function(|lua, (event, payload): (String, mlua::Value)| async move {
-            let Ok(listener) = ActiasRuntime::listener_in(&lua, &event) else {
-                actias_common::tracing::warn!(event, "no listener registered for event");
-                return Ok(false);
-            };
-            if let Err(error) = listener.call_async::<mlua::Value>(payload).await {
-                actias_common::tracing::warn!(%error, event, "event handler failed");
-                return Ok(false);
-            }
-            Ok(true)
-        })?,
-    )?;
-
-    lua.load(
-        r#"
-        return {
-            ensure = function(state, event)
-                state.sql:exec("CREATE TABLE IF NOT EXISTS cron_state (event TEXT)")
-                state.sql:exec("DELETE FROM cron_state")
-                state.sql:exec("INSERT INTO cron_state VALUES (?)", { event })
-                state:set_alarm(__cron_next_ms(event) / 1000)
-            end,
-
-            alarm = function(state)
-                local row = state.sql:query_one("SELECT event FROM cron_state")
-                if not row then return end
-                state:set_alarm(__cron_next_ms(row.event) / 1000)
-                __fire_event(row.event, {
-                    cron = row.event,
-                    scheduled_at = state.now(),
-                })
-            end,
-        }
-        "#,
-    )
-    .set_name("__cron")
-    .eval()
-}
-
 /// Which class and instance the pinned vm is currently dispatching for.
 struct CurrentDispatch {
     class: String,
@@ -580,6 +454,16 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
         lua.create_async_function(|lua, payload: mlua::Value| async move {
             let call: DispatchCall = lua.from_value(payload)?;
 
+            // Platform classes dispatch in rust before the vm is entered;
+            // one arriving here is a routing bug, refused like any other
+            // unknown class.
+            if call.class.starts_with("__") {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "No object class '{}'.",
+                    call.class
+                )));
+            }
+
             // The method's own outbound calls extend this stack; installing
             // it per dispatch is safe because this vm runs one call at a
             // time by construction. The class rides along for `set_alarm`,
@@ -621,48 +505,6 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
             // The object knows its own name; the queue class keys its
             // event off it, and user code gets it for free.
             state.set("name", call.name.as_str())?;
-
-            // A database applies its pending migrations before anything
-            // else, once per vm life: the tracking rows ride the call's
-            // transaction, so a failed migration applies nothing and
-            // records nothing, and retries on the next touch.
-            if state_is_new && call.class == DATABASE_CLASS {
-                let Some(prepared) =
-                    lua.app_data_ref::<std::sync::Arc<crate::runtime::PreparedRevision>>()
-                else {
-                    return Err(mlua::Error::RuntimeError(
-                        "Runtime has no revision loaded.".to_owned(),
-                    ));
-                };
-                let migrations = prepared.migrations(&call.name);
-                drop(prepared);
-
-                if !migrations.is_empty() {
-                    let cell = lua
-                        .app_data_ref::<crate::storage::StorageCell>()
-                        .ok_or_else(|| {
-                            mlua::Error::RuntimeError(
-                                "This database has no durable storage.".to_owned(),
-                            )
-                        })?;
-                    let mut storage = cell.0.borrow_mut();
-
-                    let applied = storage
-                        .applied_migrations()
-                        .map_err(mlua::Error::RuntimeError)?;
-                    for (name, sql) in migrations {
-                        if applied.contains(&name) {
-                            continue;
-                        }
-                        storage.exec_script(&sql).map_err(|error| {
-                            mlua::Error::RuntimeError(format!("Migration {name} failed: {error}"))
-                        })?;
-                        storage
-                            .record_migration(&name)
-                            .map_err(mlua::Error::RuntimeError)?;
-                    }
-                }
-            }
 
             // `init` runs exactly once per object: for stored objects the
             // file is the record (a failed init retries next call); without
