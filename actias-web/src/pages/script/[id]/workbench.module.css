@@ -276,3 +276,19 @@
   color: var(--ink-3);
   font-size: 10px;
 }
+
+.dirty {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border-radius: var(--r2);
+  padding: 3px 8px;
+}
+
+.clean {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
