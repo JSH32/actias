@@ -104,6 +104,7 @@ fn pair_into_lua(lua: &mlua::Lua, value_type: ValueType, value: &str) -> mlua::R
 impl UserData for KvNamespace {
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         methods.add_async_method_mut("get", |lua, mut this, key: String| async move {
+            crate::platform::workflow::assert_effects_allowed(&lua)?;
             let request = PairRequest {
                 project_id: this.project_id.clone(),
                 namespace: this.namespace.clone(),
@@ -131,7 +132,8 @@ impl UserData for KvNamespace {
 
         methods.add_async_method_mut(
             "set",
-            |_, mut this, (key, value): (String, mlua::Value)| async move {
+            |lua, mut this, (key, value): (String, mlua::Value)| async move {
+                crate::platform::workflow::assert_effects_allowed(&lua)?;
                 match value.into_service_value()? {
                     Some((val_type, val)) => {
                         let request = SetPairsRequest {
@@ -171,67 +173,75 @@ impl UserData for KvNamespace {
             },
         );
 
-        methods.add_async_method_mut("set_batch", |_, mut this, values: mlua::Table| async move {
-            let mut to_set = vec![];
-            let mut to_delete = vec![];
+        methods.add_async_method_mut(
+            "set_batch",
+            |lua, mut this, values: mlua::Table| async move {
+                crate::platform::workflow::assert_effects_allowed(&lua)?;
+                let mut to_set = vec![];
+                let mut to_delete = vec![];
 
-            for pair in values.pairs::<String, mlua::Value>() {
-                let (key, value) = pair?;
+                for pair in values.pairs::<String, mlua::Value>() {
+                    let (key, value) = pair?;
 
-                match value.into_service_value()? {
-                    Some((val_type, val)) => to_set.push(Pair {
-                        project_id: this.project_id.clone(),
-                        namespace: this.namespace.clone(),
-                        r#type: val_type.into(),
-                        ttl: None,
-                        key,
-                        value: val,
-                    }),
-                    None => to_delete.push(PairRequest {
-                        project_id: this.project_id.clone(),
-                        namespace: this.namespace.clone(),
-                        key,
-                    }),
+                    match value.into_service_value()? {
+                        Some((val_type, val)) => to_set.push(Pair {
+                            project_id: this.project_id.clone(),
+                            namespace: this.namespace.clone(),
+                            r#type: val_type.into(),
+                            ttl: None,
+                            key,
+                            value: val,
+                        }),
+                        None => to_delete.push(PairRequest {
+                            project_id: this.project_id.clone(),
+                            namespace: this.namespace.clone(),
+                            key,
+                        }),
+                    }
                 }
-            }
 
-            if !to_set.is_empty() {
-                this.kv_client
-                    .set_pairs(SetPairsRequest { pairs: to_set })
-                    .await
-                    .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
-            }
+                if !to_set.is_empty() {
+                    this.kv_client
+                        .set_pairs(SetPairsRequest { pairs: to_set })
+                        .await
+                        .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
+                }
 
-            if !to_delete.is_empty() {
-                this.kv_client
-                    .delete_pairs(DeletePairsRequest { pairs: to_delete })
-                    .await
-                    .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
-            }
+                if !to_delete.is_empty() {
+                    this.kv_client
+                        .delete_pairs(DeletePairsRequest { pairs: to_delete })
+                        .await
+                        .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
+                }
 
-            Ok(())
-        });
+                Ok(())
+            },
+        );
 
-        methods.add_async_method_mut("delete", |_, mut this, keys: mlua::MultiValue| async move {
-            let keys: Vec<PairRequest> = keys
-                .into_vec()
-                .into_iter()
-                .map(|key| {
-                    key.to_string().map(|string_key| PairRequest {
-                        project_id: this.project_id.clone(),
-                        namespace: this.namespace.clone(),
-                        key: string_key,
+        methods.add_async_method_mut(
+            "delete",
+            |lua, mut this, keys: mlua::MultiValue| async move {
+                crate::platform::workflow::assert_effects_allowed(&lua)?;
+                let keys: Vec<PairRequest> = keys
+                    .into_vec()
+                    .into_iter()
+                    .map(|key| {
+                        key.to_string().map(|string_key| PairRequest {
+                            project_id: this.project_id.clone(),
+                            namespace: this.namespace.clone(),
+                            key: string_key,
+                        })
                     })
-                })
-                .collect::<mlua::Result<Vec<_>>>()?;
+                    .collect::<mlua::Result<Vec<_>>>()?;
 
-            this.kv_client
-                .delete_pairs(DeletePairsRequest { pairs: keys })
-                .await
-                .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
+                this.kv_client
+                    .delete_pairs(DeletePairsRequest { pairs: keys })
+                    .await
+                    .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?;
 
-            Ok(())
-        })
+                Ok(())
+            },
+        )
     }
 }
 
