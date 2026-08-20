@@ -2,7 +2,7 @@ import { useRouter } from 'next/router';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
-import AccessControl from '@/components/AccessControl';
+import AccessPanel from '@/components/AccessPanel';
 import ScriptsPanel from '@/components/ScriptsPanel';
 import KvPanel from '@/components/KvPanel';
 import { TabPanel, Tabs } from '@/ui';
@@ -63,9 +63,9 @@ const Project = () => {
         )}
         {permissions.permissions['PERMISSIONS_READ'] && (
           <TabPanel value="access">
-            <AccessControl
+            <AccessPanel
               project={project}
-              write={permissions.permissions['PERMISSIONS_WRITE']}
+              write={!!permissions.permissions['PERMISSIONS_WRITE']}
             />
           </TabPanel>
         )}
