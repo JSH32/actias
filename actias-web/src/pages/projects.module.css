@@ -81,34 +81,44 @@
   padding: 6px 10px;
 }
 
+/* Modals sit above every in-page region, including the sticky table
+ * headers that carry a z-index of their own. */
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 0.6);
+  background: rgb(6 7 10 / 0.6);
+  z-index: 60;
 }
 
 .dialog {
   position: fixed;
-  top: 20%;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
-  width: 360px;
+  transform: translate(-50%, -50%);
+  width: 460px;
+  max-width: 90vw;
   background: var(--night-1);
   border: 1px solid var(--line);
   border-radius: var(--r3);
   box-shadow: var(--shadow-modal);
-  padding: 20px;
+  padding: 16px;
+  z-index: 61;
 }
 
 .dialogTitle {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 650;
   color: var(--ink-1);
 }
 
+/* The action row is a footer: it spans the dialog edge to edge, so the
+ * negative margins cancel the body padding rather than the markup
+ * splitting into body and footer wrappers. */
 .dialogActions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 18px;
+  margin: 16px -16px -16px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
 }

@@ -1,14 +1,26 @@
+/* The in-content rail follows the sidebar's grammar: flat columns
+ * separated by a border, rows with a luna left-border when active, never
+ * rounded hover pills or cards inside borders. */
 .split {
   display: grid;
-  grid-template-columns: 200px 1fr;
-  gap: 16px;
-  align-items: start;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 0;
+  align-items: stretch;
+  min-height: 60vh;
+}
+.split > :first-child {
+  border-right: 1px solid var(--line);
+  padding: 4px 0;
+}
+.split > :last-child {
+  padding-left: 18px;
+  min-width: 0;
 }
 
 .nsList {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 
 .nsItem {
@@ -16,23 +28,27 @@
   justify-content: space-between;
   align-items: center;
   width: 100%;
-  padding: 6px 8px;
+  height: 30px;
+  padding: 0 14px 0 12px;
   border: none;
-  border-radius: var(--r2);
+  border-left: 2px solid transparent;
+  border-radius: 0;
   background: none;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--ink-2);
   cursor: pointer;
   text-align: left;
+  flex-shrink: 0;
 }
 .nsItem:hover {
-  background: var(--night-2);
+  background: var(--night-1);
   color: var(--ink-1);
 }
 .nsItemActive {
   composes: nsItem;
-  background: var(--night-2);
+  border-left-color: var(--luna);
+  background: var(--night-1);
   color: var(--ink-1);
 }
 

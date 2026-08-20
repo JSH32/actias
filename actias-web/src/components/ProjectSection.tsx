@@ -34,11 +34,11 @@ function Section({
   });
 
   if (!project || !permissions) {
-    return <p style={{ color: 'var(--ink-3)' }}>Loading…</p>;
+    return <p style={{ color: 'var(--ink-3)', padding: 20 }}>Loading…</p>;
   }
   if (!permissions.permissions[permission]) {
     return (
-      <p style={{ color: 'var(--ink-2)' }}>
+      <p style={{ color: 'var(--ink-2)', padding: 20 }}>
         You do not have {permission} on this project.
       </p>
     );

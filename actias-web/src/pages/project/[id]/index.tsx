@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import api from '@/helpers/api';
 import { ProjectDto, ScriptDto } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
-import { Card } from '@/ui';
+import { Card, PageBody } from '@/ui';
 import shared from '../../projects.module.css';
 
 /** The at-a-glance numbers the mockup's overview leads with. */
@@ -104,10 +104,12 @@ function Overview({ project }: { project: ProjectDto }) {
 
 export default function OverviewPage() {
   return (
-    <ProjectSection
-      permission="SCRIPT_READ"
-      writeBit="SCRIPT_WRITE"
-      render={(project) => <Overview project={project} />}
-    />
+    <PageBody>
+      <ProjectSection
+        permission="SCRIPT_READ"
+        writeBit="SCRIPT_WRITE"
+        render={(project) => <Overview project={project} />}
+      />
+    </PageBody>
   );
 }

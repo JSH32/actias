@@ -10,7 +10,14 @@ import { useRouter } from 'next/router';
 import { useQuery } from '@tanstack/react-query';
 import * as Dropdown from '@radix-ui/react-dropdown-menu';
 import api from '@/helpers/api';
-import { ProjectDto } from '@/client';
+import {
+  NamespaceDto,
+  ObjectInstanceDto,
+  ProjectDto,
+  ResourceInstanceDto,
+  ScriptDto,
+  TableInfoDto,
+} from '@/client';
 import { useLogout, useUser } from '@/helpers/auth';
 import { Icon, IconName } from './icons';
 import { Mark } from './Mark';
@@ -99,6 +106,86 @@ export function Shell({ children }: React.PropsWithChildren) {
     (entry: ProjectDto) => entry.id === projectId,
   );
 
+  // The contextual sub-list under the active section: NAMESPACES on kv,
+  // QUEUES with depths on queues, SCRIPTS with serving dots on script
+  // pages, exactly as the design's sidebar draws them.
+  const path = router.asPath.split('?')[0];
+  const section = onProject
+    ? path.split('/')[3] ?? ''
+    : onScript
+    ? 'scripts'
+    : '';
+
+  const { data: navNamespaces } = useQuery({
+    queryKey: ['namespaces', projectId],
+    queryFn: async () =>
+      (await api.kv.listNamespaces(projectId as string)) || [],
+    enabled: !isPublic && !!projectId && section === 'kv',
+  });
+  const { data: navQueues } = useQuery({
+    queryKey: ['queue-nav', projectId],
+    queryFn: async () => {
+      const queues = await api.resources.listQueues(projectId as string);
+      return Promise.all(
+        queues.slice(0, 12).map(async (queue) => ({
+          name: queue.name,
+          depth:
+            (
+              await api.resources
+                .queueStats(projectId as string, queue.name)
+                .catch(() => null)
+            )?.depth ?? 0,
+        })),
+      );
+    },
+    enabled: !isPublic && !!projectId && !!user,
+    refetchInterval: section === 'queues' ? 5000 : 30000,
+  });
+  const { data: navScripts } = useQuery({
+    queryKey: ['scripts', projectId],
+    queryFn: async () =>
+      (
+        (await api.scripts.listScripts(projectId as string, 1)) as unknown as {
+          items: ScriptDto[];
+        }
+      ).items,
+    enabled: !isPublic && !!projectId && section === 'scripts',
+  });
+  const { data: navDatabases } = useQuery({
+    queryKey: ['databases', projectId],
+    queryFn: () => api.resources.listDatabases(projectId as string),
+    enabled: !isPublic && !!projectId && section === 'databases',
+  });
+  const { data: navObjects } = useQuery({
+    queryKey: ['object-instances', projectId],
+    queryFn: () => api.resources.listObjects(projectId as string),
+    enabled: !isPublic && !!projectId && section === 'databases',
+  });
+  const queueDepthTotal = (navQueues ?? []).reduce(
+    (sum: number, queue: { depth: number }) => sum + queue.depth,
+    0,
+  );
+
+  // The databases rail's third group: the tables of whichever source is
+  // selected. Same query key the page uses, so the two share one read.
+  const railDb =
+    typeof router.query.db === 'string'
+      ? router.query.db
+      : navDatabases?.[0]?.name ?? null;
+  const { data: railOverview } = useQuery({
+    queryKey: ['db-overview', projectId, railDb],
+    queryFn: () => api.resources.databaseOverview(projectId as string, railDb!),
+    enabled: !isPublic && !!projectId && !!railDb && section === 'databases',
+  });
+  const railed = section === 'databases';
+
+  // The editor is its own full-viewport page (design 09): no sidebar, no
+  // topbar, the page owns the screen. Checked after every hook so client
+  // navigation in and out never changes the hook count.
+  if (router.pathname === '/script/[id]/workbench') {
+    return <>{children}</>;
+  }
+
   if (isPublic) {
     return <PublicChrome>{children}</PublicChrome>;
   }
@@ -108,9 +195,9 @@ export function Shell({ children }: React.PropsWithChildren) {
   const crumbs = router.asPath.split('?')[0].split('/').filter(Boolean);
 
   return (
-    <div className={classes.shell}>
+    <div className={railed ? classes.shellRailed : classes.shell}>
       <aside className={classes.sidebar}>
-        <Link href="/" className={classes.brand}>
+        <Link href="/" className={classes.brandRow}>
           <Mark size={20} />
           <span>ACTIAS</span>
         </Link>
@@ -119,7 +206,7 @@ export function Shell({ children }: React.PropsWithChildren) {
             <Dropdown.Trigger asChild>
               <button className={classes.switcher}>
                 <span className={classes.switcherBadge}>
-                  {(currentProject?.name ?? 'p').slice(0, 1)}
+                  {(currentProject?.name ?? 'pr').slice(0, 2)}
                 </span>
                 <span className={classes.switcherLabel}>
                   {currentProject?.name ?? 'Select project'}
@@ -160,12 +247,11 @@ export function Shell({ children }: React.PropsWithChildren) {
                 const href = `/project/${projectId}${
                   item.slug ? `/${item.slug}` : ''
                 }`;
-                const path = router.asPath.split('?')[0];
                 const active = onProject
                   ? item.slug
                     ? path.endsWith(`/${item.slug}`)
                     : path.endsWith(projectId)
-                  : false;
+                  : item.slug === 'scripts' && onScript;
                 return (
                   <Link
                     key={item.slug}
@@ -174,9 +260,90 @@ export function Shell({ children }: React.PropsWithChildren) {
                   >
                     <Icon name={item.icon} />
                     <span>{item.label}</span>
+                    {item.slug === 'queues' && queueDepthTotal > 0 && (
+                      <span className={classes.navBadge}>
+                        {queueDepthTotal}
+                      </span>
+                    )}
                   </Link>
                 );
               })}
+
+              {section === 'kv' && (navNamespaces?.length ?? 0) > 0 && (
+                <div className={classes.subNav}>
+                  <div className={classes.subNavLabel}>Namespaces</div>
+                  {(navNamespaces ?? []).map((ns: NamespaceDto) => (
+                    <Link
+                      key={ns.name}
+                      href={`/project/${projectId}/kv?ns=${encodeURIComponent(
+                        ns.name,
+                      )}`}
+                      className={
+                        router.query.ns === ns.name
+                          ? classes.subNavItemActive
+                          : classes.subNavItem
+                      }
+                    >
+                      <span className={classes.subNavName}>{ns.name}</span>
+                      <span className={classes.subNavCount}>{ns.count}</span>
+                    </Link>
+                  ))}
+                </div>
+              )}
+
+              {section === 'queues' && (navQueues?.length ?? 0) > 0 && (
+                <div className={classes.subNav}>
+                  <div className={classes.subNavLabel}>Queues</div>
+                  {(navQueues ?? []).map(
+                    (queue: { name: string; depth: number }) => (
+                      <Link
+                        key={queue.name}
+                        href={`/project/${projectId}/queues?q=${encodeURIComponent(
+                          queue.name,
+                        )}`}
+                        className={
+                          router.query.q === queue.name
+                            ? classes.subNavItemActive
+                            : classes.subNavItem
+                        }
+                      >
+                        <span className={classes.subNavName}>{queue.name}</span>
+                        <span className={classes.subNavCount}>
+                          {queue.depth}
+                        </span>
+                      </Link>
+                    ),
+                  )}
+                </div>
+              )}
+
+              {section === 'scripts' && (navScripts?.length ?? 0) > 0 && (
+                <div className={classes.subNav}>
+                  <div className={classes.subNavLabel}>Scripts</div>
+                  {(navScripts ?? []).map((script: ScriptDto) => (
+                    <Link
+                      key={script.id}
+                      href={`/script/${script.id}`}
+                      className={
+                        onScript && routeId === script.id
+                          ? classes.subNavItemActive
+                          : classes.subNavItem
+                      }
+                    >
+                      <span
+                        className={
+                          script.currentRevisionId
+                            ? classes.subNavDot
+                            : classes.subNavDotIdle
+                        }
+                      />
+                      <span className={classes.subNavName}>
+                        {script.publicIdentifier}
+                      </span>
+                    </Link>
+                  ))}
+                </div>
+              )}
             </>
           )}
           <div className={classes.navLabel}>Workspace</div>
@@ -213,12 +380,29 @@ export function Shell({ children }: React.PropsWithChildren) {
               <div className={classes.initials}>
                 {user.username.slice(0, 2).toLowerCase()}
               </div>
-              <div>
-                <div className={classes.userName}>{user.username}</div>
-                <div className={classes.userMeta}>signed in</div>
+              <div className={classes.userText}>
+                <span className={classes.userName}>{user.username}</span>
+                <span className={classes.userMeta}>signed in</span>
               </div>
-              <button className={classes.logout} onClick={logout}>
-                log out
+              <button
+                className={classes.logout}
+                onClick={logout}
+                title="Log out"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M14 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2v-2" />
+                  <path d="M9 12h12l-3-3" />
+                  <path d="M18 15l3-3" />
+                </svg>
               </button>
             </>
           ) : (
@@ -228,9 +412,102 @@ export function Shell({ children }: React.PropsWithChildren) {
           )}
         </div>
       </aside>
+      {railed && (
+        <div className={classes.rail}>
+          <div className={classes.railHead}>SOURCES</div>
+          <div className={classes.railSection}>
+            <div className={classes.railSectionHead}>
+              <Icon name="databases" size={13} />
+              SQL DATABASES
+            </div>
+            {(navDatabases ?? []).map((database: ResourceInstanceDto) => (
+              <Link
+                key={database.name}
+                href={`/project/${projectId}/databases?db=${encodeURIComponent(
+                  database.name,
+                )}`}
+                className={
+                  database.name === railDb
+                    ? classes.railItemActive
+                    : classes.railItem
+                }
+              >
+                <span className={classes.railName}>{database.name}</span>
+                {database.orphaned && (
+                  <span className={classes.railMeta}>orphan</span>
+                )}
+              </Link>
+            ))}
+          </div>
+          {(navObjects?.length ?? 0) > 0 && (
+            <div className={classes.railSection}>
+              <div className={classes.railSectionHead}>
+                <Icon name="kv" size={13} />
+                OBJECT INSTANCES
+              </div>
+              <p className={classes.railNote}>
+                Each durable object owns a private SQLite file. Reading one
+                places you on its node.
+              </p>
+              {(navObjects ?? []).map((instance: ObjectInstanceDto) => (
+                <div
+                  key={`${instance.class}/${instance.name}`}
+                  className={classes.railItem}
+                  style={{ cursor: 'default' }}
+                  title={`class ${instance.class}, runs ${instance.declaredBy}`}
+                >
+                  <span className={classes.railName}>{instance.name}</span>
+                  <span className={classes.railMeta}>{instance.class}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {(railOverview?.tables?.length ?? 0) > 0 && (
+            <div className={classes.railSection}>
+              <div className={classes.railSectionHead}>TABLES · {railDb}</div>
+              {(railOverview?.tables ?? []).map((table: TableInfoDto) => (
+                <Link
+                  key={table.name}
+                  href={`/project/${projectId}/databases?db=${encodeURIComponent(
+                    railDb as string,
+                  )}&table=${encodeURIComponent(table.name)}`}
+                  className={
+                    router.query.table === table.name
+                      ? classes.railItemActive
+                      : classes.railItem
+                  }
+                >
+                  <span className={classes.railName}>{table.name}</span>
+                  <span className={classes.railMeta}>{table.rows}</span>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className={classes.main}>
         <div className={classes.topbar}>
-          {crumbs.length ? crumbs.join(' / ') : 'actias'}
+          <div className={classes.crumbs}>
+            {crumbs.length === 0 ? (
+              <span className={classes.crumbCurrent}>actias</span>
+            ) : (
+              crumbs.map((crumb, index) => (
+                <React.Fragment key={`${crumb}-${index}`}>
+                  {index > 0 && <span className={classes.crumbSep}>/</span>}
+                  {index === crumbs.length - 1 ? (
+                    <span className={classes.crumbCurrent}>{crumb}</span>
+                  ) : (
+                    <Link
+                      href={`/${crumbs.slice(0, index + 1).join('/')}`}
+                      className={classes.crumbLink}
+                    >
+                      {crumb}
+                    </Link>
+                  )}
+                </React.Fragment>
+              ))
+            )}
+          </div>
         </div>
         <div className={classes.content}>{children}</div>
       </div>

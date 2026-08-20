@@ -27,6 +27,13 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   },
 );
 
+/** The scrolling body of a page that has no fixed regions of its own.
+ * Pages that draw their own frame (a fixed header over a split region)
+ * fill the shell's content area directly instead. */
+export function PageBody({ children }: React.PropsWithChildren) {
+  return <div className={classes.pageBody}>{children}</div>;
+}
+
 export function Card(props: React.HTMLAttributes<HTMLDivElement>) {
   const { className, ...rest } = props;
   return (
@@ -71,15 +78,19 @@ export function Chip({
 
 type InputProps = React.InputHTMLAttributes<HTMLInputElement> & {
   label: string;
+  /** What the value means, said under the input rather than crammed
+   * into the label. */
+  hint?: string;
 };
 
 /** A labeled input on the token sheet; the label doubles as the name. */
 export const Field = React.forwardRef<HTMLInputElement, InputProps>(
-  function Field({ label, ...rest }, ref) {
+  function Field({ label, hint, ...rest }, ref) {
     return (
       <label>
         <span className={classes.label}>{label}</span>
         <input ref={ref} className={classes.input} {...rest} />
+        {hint && <span className={classes.hint}>{hint}</span>}
       </label>
     );
   },
@@ -129,9 +140,11 @@ export function EmptyState({
 }) {
   return (
     <div className={classes.emptyState}>
-      <Mark size={28} />
-      <div className={classes.emptyTitle}>{title}</div>
-      <p className={classes.emptyBody}>{body}</p>
+      <Mark size={72} />
+      <div className={classes.emptyText}>
+        <span className={classes.emptyTitle}>{title}</span>
+        <p className={classes.emptyBody}>{body}</p>
+      </div>
       {cli && <code className={classes.emptyCli}>{cli}</code>}
     </div>
   );

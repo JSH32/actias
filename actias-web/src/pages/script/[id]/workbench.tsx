@@ -1,9 +1,10 @@
 /**
- * The workbench, bare form over one live session: file tree with context
- * menus, Monaco in the site's own theme, a request runner against the
- * session url, revision history with diffs, and publish as the way out.
- * `script.json` rides the tree as the config face; files persist
- * per-browser until the environments platform gives trees a home.
+ * The editor as its own full-viewport page (design 09), over one live
+ * session: icon rail, explorer tree, tabs with dirty dots, Monaco in the
+ * site's theme, a request runner and live logs beside it, and a status
+ * bar that says the truth about syncing. `script.json` rides the tree as
+ * the config face; files persist per-browser until the environments
+ * platform gives trees a home, and publish is the way out.
  */
 import * as React from 'react';
 import dynamic from 'next/dynamic';
@@ -15,8 +16,8 @@ import api, { showError } from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
 import { getPublicConfig } from '@/pages/api/config';
 import { RevisionDataDto } from '@/client';
-import { Button } from '@/ui';
 import { toast } from '@/ui/toast';
+import { CopyButton } from '@/components/inspector';
 import classes from './workbench.module.css';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
@@ -88,6 +89,13 @@ function defineTheme(monaco: {
   });
 }
 
+const LEVEL_COLORS: Record<string, string> = {
+  error: 'var(--err)',
+  warn: 'var(--warn)',
+  info: 'var(--luna)',
+  debug: 'var(--ink-3)',
+};
+
 interface LogLine {
   level: string;
   message: string;
@@ -98,6 +106,26 @@ interface RunnerAnswer {
   timeMs: number;
   contentType: string;
   body: string;
+}
+
+/** The explorer's rows: directories once, then their files. */
+function treeEntries(
+  paths: string[],
+): { kind: 'dir' | 'file'; path: string }[] {
+  const rows: { kind: 'dir' | 'file'; path: string }[] = [];
+  const seenDirs = new Set<string>();
+  for (const path of paths) {
+    const parts = path.split('/');
+    for (let depth = 1; depth < parts.length; depth += 1) {
+      const dir = parts.slice(0, depth).join('/');
+      if (!seenDirs.has(dir)) {
+        seenDirs.add(dir);
+        rows.push({ kind: 'dir', path: dir });
+      }
+    }
+    rows.push({ kind: 'file', path });
+  }
+  return rows;
 }
 
 function Workbench() {
@@ -111,18 +139,19 @@ function Workbench() {
     enabled: !!scriptId,
   });
 
-  const [files, setFiles] = React.useState<Record<string, string> | null>(
-    null,
-  );
+  const [files, setFiles] = React.useState<Record<string, string> | null>(null);
   const [activePath, setActivePath] = React.useState('main.lua');
+  const [openTabs, setOpenTabs] = React.useState<string[]>(['main.lua']);
   const [session, setSession] = React.useState<string>();
   const [status, setStatus] = React.useState<'connecting' | 'live' | 'closed'>(
     'connecting',
   );
   const [logs, setLogs] = React.useState<LogLine[]>([]);
   const [publishing, setPublishing] = React.useState(false);
-  const [pane, setPane] = React.useState<'run' | 'history' | null>('run');
+  const [rail, setRail] = React.useState<'explorer' | 'history'>('explorer');
   const [answer, setAnswer] = React.useState<RunnerAnswer | null>(null);
+  const [sending, setSending] = React.useState(false);
+  const [cursor, setCursor] = React.useState({ line: 1, column: 1 });
   const [diffFiles, setDiffFiles] = React.useState<Record<
     string,
     string
@@ -149,7 +178,7 @@ function Workbench() {
           items: RevisionDataDto[];
         }
       ).items,
-    enabled: !!script && pane === 'history',
+    enabled: !!script && rail === 'history',
   });
 
   // Seed order: what this browser had, else the live revision's bundle,
@@ -323,6 +352,22 @@ function Workbench() {
     }, 750);
   }, [script, revisionPayload]);
 
+  const openFile = (path: string) => {
+    setActivePath(path);
+    setDiffFiles(null);
+    setOpenTabs((tabs) => (tabs.includes(path) ? tabs : [...tabs, path]));
+  };
+
+  const closeTab = (path: string) => {
+    setOpenTabs((tabs) => {
+      const next = tabs.filter((tab) => tab !== path);
+      if (activePath === path) {
+        setActivePath(next[next.length - 1] ?? parsedConfig().entryPoint);
+      }
+      return next.length ? next : [parsedConfig().entryPoint];
+    });
+  };
+
   const editFile = (value?: string) => {
     setFiles((previous) => ({
       ...(previous ?? {}),
@@ -341,7 +386,7 @@ function Workbench() {
       ...(previous ?? {}),
       [name]: `-- ${name}\nreturn {}\n`,
     }));
-    setActivePath(name);
+    openFile(name);
     syncSoon();
   };
 
@@ -360,6 +405,7 @@ function Workbench() {
       delete tree[path];
       return tree;
     });
+    setOpenTabs((tabs) => tabs.map((tab) => (tab === path ? next : tab)));
     if (activePath === path) setActivePath(next);
     syncSoon();
   };
@@ -371,6 +417,7 @@ function Workbench() {
       delete tree[path];
       return tree;
     });
+    setOpenTabs((tabs) => tabs.filter((tab) => tab !== path));
     if (activePath === path) setActivePath(parsedConfig().entryPoint);
     syncSoon();
   };
@@ -414,6 +461,7 @@ function Workbench() {
     const data = new FormData(event.currentTarget);
     const method = String(data.get('method') ?? 'GET');
     const path = String(data.get('path') ?? '/').replace(/^\//, '');
+    setSending(true);
     fetch('/api/proxy', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -425,11 +473,18 @@ function Workbench() {
     })
       .then((response) => response.json())
       .then(setAnswer)
-      .catch(() => setAnswer(null));
+      .catch(() => setAnswer(null))
+      .finally(() => setSending(false));
   };
 
   if (!script || !files) {
-    return <p style={{ color: 'var(--ink-3)' }}>Loading…</p>;
+    return (
+      <div className={classes.bench}>
+        <div className={classes.topbar}>
+          <span className={classes.crumb}>Loading…</span>
+        </div>
+      </div>
+    );
   }
 
   const liveUrl = session
@@ -442,8 +497,8 @@ function Workbench() {
     status === 'live'
       ? 'var(--luna)'
       : status === 'closed'
-        ? 'var(--err)'
-        : 'var(--ink-3)';
+      ? 'var(--err)'
+      : 'var(--ink-3)';
   const entryPoint = parsedConfig().entryPoint;
   const dirtyPaths = liveFiles
     ? Object.keys(files)
@@ -452,76 +507,66 @@ function Workbench() {
         .filter((path, index, all) => all.indexOf(path) === index)
         .filter((path) => (files[path] ?? '') !== (liveFiles[path] ?? ''))
     : [];
-  const dirtyCount = dirtyPaths.length;
+  const isDirty = (path: string) =>
+    liveFiles != null && (files[path] ?? '') !== (liveFiles[path] ?? '');
   const paths = Object.keys(files).sort((a, b) => {
     if (a === CONFIG_FILE) return 1;
     if (b === CONFIG_FILE) return -1;
     return a.localeCompare(b);
   });
+  const language = activePath.endsWith('.json') ? 'json' : 'lua';
+  const syncLabel =
+    status === 'live'
+      ? 'Synced to live · no save button — edits serve in about a second'
+      : status === 'closed'
+      ? 'Session ended · edits stay in this browser'
+      : 'Connecting…';
 
   return (
-    <div
-      className={classes.bench}
-      style={{ gridTemplateColumns: pane ? '200px 1fr 300px' : '200px 1fr' }}
-    >
+    <div className={classes.bench}>
       <div className={classes.topbar}>
-        <Link
-          href={`/script/${script.id}`}
-          style={{
-            fontFamily: 'var(--mono)',
-            fontSize: 12,
-            color: 'var(--ink-3)',
-          }}
-        >
-          ← {script.publicIdentifier}
-        </Link>
+        <span className={classes.crumb}>
+          <Link href={`/script/${script.id}`}>{script.publicIdentifier}</Link> /{' '}
+          <span className={classes.crumbHere}>editor</span>
+        </span>
         {liveUrl && (
           <a
             href={liveUrl}
             target="_blank"
             rel="noreferrer"
-            className={classes.liveUrl}
+            className={classes.urlPill}
           >
+            <span
+              className={classes.statusDot}
+              style={{ background: statusColor }}
+            />
             {liveUrl.replace(/^https?:\/\//, '')}
           </a>
         )}
-        <span className={classes.status} style={{ color: statusColor }}>
-          ● {status}
-        </span>
-        {dirtyCount > 0 && (
-          <span className={classes.dirty} title={dirtyPaths.join(', ')}>
-            {dirtyCount} file{dirtyCount === 1 ? '' : 's'} differ from live
-          </span>
-        )}
-        {dirtyCount === 0 && liveFiles && (
-          <span className={classes.clean}>matches live</span>
-        )}
-        <button
-          className={pane === 'run' ? classes.paneTabActive : classes.paneTab}
-          onClick={() => setPane(pane === 'run' ? null : 'run')}
-        >
-          Run
-        </button>
-        <button
-          className={
-            pane === 'history' ? classes.paneTabActive : classes.paneTab
-          }
-          onClick={() => {
-            setPane(pane === 'history' ? null : 'history');
-            setDiffFiles(null);
-          }}
-        >
-          History
-        </button>
-        <Button variant="primary" disabled={publishing} onClick={publish}>
-          Publish
-        </Button>
+        <div className={classes.topActions}>
+          {dirtyPaths.length > 0 && (
+            <span className={classes.dirty} title={dirtyPaths.join(', ')}>
+              {dirtyPaths.length} file{dirtyPaths.length === 1 ? '' : 's'}{' '}
+              differ from live
+            </span>
+          )}
+          {dirtyPaths.length === 0 && liveFiles && (
+            <span className={classes.clean}>matches live</span>
+          )}
+          <button
+            className={classes.send}
+            disabled={publishing}
+            onClick={publish}
+          >
+            Publish revision
+          </button>
+        </div>
       </div>
 
       {status === 'closed' && (
         <div className={classes.deadSession}>
-          This session ended; edits are no longer served anywhere. Old
-          session tabs keep showing stale code.{' '}
+          This session ended; edits are no longer served anywhere. Old session
+          tabs keep showing stale code.{' '}
           <button
             className={classes.deadReload}
             onClick={() => window.location.reload()}
@@ -530,203 +575,400 @@ function Workbench() {
           </button>
         </div>
       )}
+      {status !== 'closed' && <div />}
 
-      <ContextMenu.Root>
-        <ContextMenu.Trigger asChild>
-          <div className={classes.tree}>
-            {paths.map((path) => (
-              <ContextMenu.Root key={path}>
+      <div className={classes.main}>
+        <div className={classes.rail}>
+          <button
+            title="Explorer"
+            className={
+              rail === 'explorer' ? classes.railActive : classes.railButton
+            }
+            onClick={() => setRail('explorer')}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+              <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z" />
+            </svg>
+          </button>
+          <button
+            title="History"
+            className={
+              rail === 'history' ? classes.railActive : classes.railButton
+            }
+            onClick={() => setRail('history')}
+          >
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 8v4l3 3" />
+              <path d="M3.05 11a9 9 0 1 1 .5 4" />
+              <path d="M3 16V11h5" />
+            </svg>
+          </button>
+        </div>
+
+        <div className={classes.explorer}>
+          {rail === 'explorer' ? (
+            <>
+              <div className={classes.explorerHead}>
+                <span>Explorer</span>
+                <span className={classes.envChip}>
+                  live{' '}
+                  <span
+                    className={classes.statusDot}
+                    style={{ background: statusColor }}
+                  />
+                </span>
+              </div>
+              <ContextMenu.Root>
                 <ContextMenu.Trigger asChild>
-                  <button
-                    className={
-                      path === activePath ? classes.fileActive : classes.file
-                    }
-                    style={{
-                      paddingLeft: 8 + (path.split('/').length - 1) * 12,
-                    }}
-                    onClick={() => setActivePath(path)}
-                  >
-                    <span>
-                      {path === entryPoint && (
-                        <span className={classes.entryDot}>● </span>
-                      )}
-                      {path.split('/').pop()}
-                    </span>
-                  </button>
+                  <div className={classes.treeScroll}>
+                    {treeEntries(paths).map((entry) =>
+                      entry.kind === 'dir' ? (
+                        <div
+                          key={`dir-${entry.path}`}
+                          className={classes.folder}
+                          style={{
+                            paddingLeft:
+                              8 + (entry.path.split('/').length - 1) * 12,
+                          }}
+                        >
+                          <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.7"
+                          >
+                            <path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2" />
+                          </svg>
+                          {entry.path.split('/').pop()}
+                        </div>
+                      ) : (
+                        <ContextMenu.Root key={entry.path}>
+                          <ContextMenu.Trigger asChild>
+                            <button
+                              className={
+                                entry.path === activePath && !diffFiles
+                                  ? classes.fileActive
+                                  : classes.file
+                              }
+                              style={{
+                                paddingLeft:
+                                  8 + (entry.path.split('/').length - 1) * 12,
+                              }}
+                              onClick={() => openFile(entry.path)}
+                            >
+                              <span>
+                                {entry.path === entryPoint && (
+                                  <span className={classes.entryDot}>● </span>
+                                )}
+                                {entry.path.split('/').pop()}
+                              </span>
+                              {isDirty(entry.path) && (
+                                <span className={classes.tabDirty} />
+                              )}
+                            </button>
+                          </ContextMenu.Trigger>
+                          <ContextMenu.Portal>
+                            <ContextMenu.Content className={classes.menu}>
+                              <ContextMenu.Item
+                                className={classes.menuItem}
+                                onSelect={() => renameFile(entry.path)}
+                                disabled={entry.path === CONFIG_FILE}
+                              >
+                                Rename
+                              </ContextMenu.Item>
+                              <ContextMenu.Item
+                                className={classes.menuItemDanger}
+                                onSelect={() => removeFile(entry.path)}
+                                disabled={
+                                  entry.path === CONFIG_FILE ||
+                                  entry.path === entryPoint
+                                }
+                              >
+                                Delete
+                              </ContextMenu.Item>
+                            </ContextMenu.Content>
+                          </ContextMenu.Portal>
+                        </ContextMenu.Root>
+                      ),
+                    )}
+                    <button
+                      className={classes.newFile}
+                      onClick={() => addFile()}
+                    >
+                      + new file
+                    </button>
+                  </div>
                 </ContextMenu.Trigger>
                 <ContextMenu.Portal>
                   <ContextMenu.Content className={classes.menu}>
                     <ContextMenu.Item
                       className={classes.menuItem}
-                      onSelect={() => renameFile(path)}
-                      disabled={path === CONFIG_FILE}
+                      onSelect={() => addFile()}
                     >
-                      Rename
+                      New file
                     </ContextMenu.Item>
                     <ContextMenu.Item
-                      className={classes.menuItemDanger}
-                      onSelect={() => removeFile(path)}
-                      disabled={path === CONFIG_FILE || path === entryPoint}
+                      className={classes.menuItem}
+                      onSelect={addFolder}
                     >
-                      Delete
+                      New folder
                     </ContextMenu.Item>
                   </ContextMenu.Content>
                 </ContextMenu.Portal>
               </ContextMenu.Root>
-            ))}
-            <button className={classes.newFile} onClick={() => addFile()}>
-              + new file
-            </button>
-          </div>
-        </ContextMenu.Trigger>
-        <ContextMenu.Portal>
-          <ContextMenu.Content className={classes.menu}>
-            <ContextMenu.Item
-              className={classes.menuItem}
-              onSelect={() => addFile()}
-            >
-              New file
-            </ContextMenu.Item>
-            <ContextMenu.Item
-              className={classes.menuItem}
-              onSelect={addFolder}
-            >
-              New folder
-            </ContextMenu.Item>
-          </ContextMenu.Content>
-        </ContextMenu.Portal>
-      </ContextMenu.Root>
-
-      <div className={classes.editor}>
-        {diffFiles ? (
-          <>
-            <div className={classes.diffBar}>
-              <span>
-                diff · {diffRevision} → working tree · {activePath}
-              </span>
-              <button
-                className={classes.paneTab}
-                onClick={() => setDiffFiles(null)}
-              >
-                close
-              </button>
-            </div>
-            <DiffEditor
-              height="calc(100% - 30px)"
-              language={activePath.endsWith('.json') ? 'json' : 'lua'}
-              original={diffFiles[activePath] ?? ''}
-              modified={files[activePath] ?? ''}
-              theme="actias-night"
-              beforeMount={defineTheme}
-              options={{ readOnly: true, renderSideBySide: true }}
-            />
-          </>
-        ) : (
-          <Editor
-            height="100%"
-            path={activePath}
-            language={activePath.endsWith('.json') ? 'json' : 'lua'}
-            value={files[activePath] ?? ''}
-            theme="actias-night"
-            beforeMount={defineTheme}
-            onChange={editFile}
-            options={{ minimap: { enabled: false }, fontSize: 13 }}
-          />
-        )}
-      </div>
-
-      {pane === 'run' && (
-        <div className={classes.pane}>
-          <div className={classes.paneTitle}>Run a request</div>
-          <form onSubmit={runnerSubmit}>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <select name="method" className={classes.method}>
-                {['GET', 'POST', 'PUT', 'DELETE'].map((method) => (
-                  <option key={method}>{method}</option>
-                ))}
-              </select>
-              <input
-                name="path"
-                defaultValue="/"
-                className={classes.pathInput}
-              />
-            </div>
-            <textarea
-              name="body"
-              rows={4}
-              placeholder="{ }"
-              className={classes.bodyInput}
-            />
-            <Button type="submit" variant="quiet" disabled={!liveUrl}>
-              Send
-            </Button>
-          </form>
-          {answer && (
-            <div className={classes.answer}>
-              <div className={classes.answerMeta}>
-                <span
-                  style={{
-                    color:
-                      answer.status < 400 && answer.status > 0
-                        ? 'var(--luna)'
-                        : 'var(--err)',
-                  }}
-                >
-                  {answer.status || 'error'}
-                </span>{' '}
-                · {answer.timeMs}ms
+            </>
+          ) : (
+            <>
+              <div className={classes.explorerHead}>
+                <span>Revisions</span>
               </div>
-              <pre className={classes.answerBody}>{answer.body}</pre>
-            </div>
+              <div className={classes.treeScroll}>
+                {(revisions ?? []).map((revision: RevisionDataDto) => (
+                  <button
+                    key={revision.id}
+                    className={
+                      diffRevision === revision.id.slice(0, 8)
+                        ? classes.fileActive
+                        : classes.file
+                    }
+                    onClick={() => openDiff(revision)}
+                  >
+                    <span>
+                      {revision.id === script.currentRevisionId && (
+                        <span className={classes.entryDot}>● </span>
+                      )}
+                      {revision.id.slice(0, 8)}
+                    </span>
+                    <span className={classes.revisionDate}>
+                      {new Date(revision.created).toLocaleDateString()}
+                    </span>
+                  </button>
+                ))}
+                <p className={classes.paneHint}>
+                  Select a revision to diff it against the working tree; the
+                  luna dot marks live.
+                </p>
+              </div>
+            </>
           )}
         </div>
-      )}
 
-      {pane === 'history' && (
-        <div className={classes.pane}>
-          <div className={classes.paneTitle}>Revisions</div>
-          {(revisions ?? []).map((revision: RevisionDataDto) => (
-            <button
-              key={revision.id}
-              className={
-                diffRevision === revision.id.slice(0, 8)
-                  ? classes.fileActive
-                  : classes.file
-              }
-              onClick={() => openDiff(revision)}
-            >
-              <span>
-                {revision.id === script.currentRevisionId && (
-                  <span className={classes.entryDot}>● </span>
-                )}
-                {revision.id.slice(0, 8)}
-              </span>
-              <span className={classes.revisionDate}>
-                {new Date(revision.created).toLocaleDateString()}
-              </span>
-            </button>
-          ))}
-          <p className={classes.paneHint}>
-            Select a revision to diff it against the working tree.
-          </p>
+        <div className={classes.editorColumn}>
+          <div className={classes.tabsRow}>
+            {openTabs
+              .filter((tab) => files[tab] != null)
+              .map((tab) => (
+                <button
+                  key={tab}
+                  className={
+                    tab === activePath ? classes.tabActive : classes.tab
+                  }
+                  onClick={() => openFile(tab)}
+                >
+                  {isDirty(tab) && <span className={classes.tabDirty} />}
+                  {tab.split('/').pop()}
+                  <span
+                    role="button"
+                    tabIndex={-1}
+                    className={classes.tabClose}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeTab(tab);
+                    }}
+                  >
+                    ×
+                  </span>
+                </button>
+              ))}
+          </div>
+
+          {diffFiles ? (
+            <>
+              <div className={classes.diffBar}>
+                <span>
+                  diff · {diffRevision} → working tree · {activePath}
+                </span>
+                <button
+                  className={classes.diffClose}
+                  onClick={() => setDiffFiles(null)}
+                >
+                  close
+                </button>
+              </div>
+              <div className={classes.editorHost}>
+                <DiffEditor
+                  height="100%"
+                  language={language}
+                  original={diffFiles[activePath] ?? ''}
+                  modified={files[activePath] ?? ''}
+                  theme="actias-night"
+                  beforeMount={defineTheme}
+                  options={{ readOnly: true, renderSideBySide: true }}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className={classes.breadcrumbRow}>
+                <span>live</span>
+                <span>›</span>
+                <span style={{ color: 'var(--ink-1)' }}>{activePath}</span>
+              </div>
+              <div className={classes.editorHost}>
+                <Editor
+                  height="100%"
+                  path={activePath}
+                  language={language}
+                  value={files[activePath] ?? ''}
+                  theme="actias-night"
+                  beforeMount={defineTheme}
+                  onChange={editFile}
+                  onMount={(editor) => {
+                    editor.onDidChangeCursorPosition(
+                      (event: {
+                        position: { lineNumber: number; column: number };
+                      }) =>
+                        setCursor({
+                          line: event.position.lineNumber,
+                          column: event.position.column,
+                        }),
+                    );
+                  }}
+                  options={{
+                    minimap: { enabled: true },
+                    fontSize: 13,
+                    fontFamily: 'JetBrains Mono, monospace',
+                  }}
+                />
+              </div>
+            </>
+          )}
         </div>
-      )}
 
-      <div className={classes.logs}>
-        {logs.length === 0 ? (
-          <span style={{ color: 'var(--ink-3)' }}>
-            Request the live url to see log lines here.
-          </span>
-        ) : (
-          logs.map((line, index) => (
-            <div key={index}>
-              <span style={{ color: 'var(--luna)', fontWeight: 700 }}>
-                {line.level}
-              </span>{' '}
-              {line.message}
+        <div className={classes.side}>
+          <div className={classes.sideSection}>
+            <div className={classes.sideHead}>
+              <span>Request runner</span>
+              <span className={classes.envChip}>→ live</span>
             </div>
-          ))
-        )}
+            <form className={classes.runnerForm} onSubmit={runnerSubmit}>
+              <div className={classes.runnerLine}>
+                <select name="method" className={classes.method}>
+                  {['GET', 'POST', 'PUT', 'DELETE'].map((method) => (
+                    <option key={method}>{method}</option>
+                  ))}
+                </select>
+                <input
+                  name="path"
+                  defaultValue="/"
+                  className={classes.pathInput}
+                />
+                <button
+                  type="submit"
+                  className={classes.send}
+                  disabled={!liveUrl || sending}
+                >
+                  Send
+                </button>
+              </div>
+              <textarea
+                name="body"
+                rows={3}
+                placeholder="{ }"
+                className={classes.bodyInput}
+              />
+            </form>
+            {answer && (
+              <>
+                <div className={classes.answerMeta}>
+                  <span
+                    style={{
+                      color:
+                        answer.status < 400 && answer.status > 0
+                          ? 'var(--luna)'
+                          : 'var(--err)',
+                      fontWeight: 650,
+                    }}
+                  >
+                    {answer.status || 'error'}
+                  </span>{' '}
+                  · {answer.timeMs}ms · {new Blob([answer.body ?? '']).size}B
+                </div>
+                <pre className={classes.answerBody}>{answer.body}</pre>
+              </>
+            )}
+          </div>
+
+          <div className={classes.sideSection}>
+            <div className={classes.sideHead}>
+              <span>Logs</span>
+              {status === 'live' && (
+                <span className={classes.livePill}>live</span>
+              )}
+              <button
+                className={classes.clearButton}
+                onClick={() => setLogs([])}
+              >
+                clear
+              </button>
+            </div>
+            <div className={classes.logScroll}>
+              {logs.length === 0 ? (
+                <span style={{ color: 'var(--ink-3)' }}>
+                  Nothing yet. Send a request above and the lines arrive here.
+                </span>
+              ) : (
+                logs.map((line, index) => (
+                  <div key={index}>
+                    <span
+                      style={{
+                        color: LEVEL_COLORS[line.level] ?? 'var(--luna)',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {line.level}
+                    </span>{' '}
+                    {line.message}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className={classes.statusBar}>
+        <span style={{ color: statusColor }}>{syncLabel}</span>
+        <div className={classes.statusRight}>
+          <span>
+            Ln {cursor.line}, Col {cursor.column}
+          </span>
+          <span>Spaces: 4</span>
+          <span>UTF-8</span>
+          <span>{language === 'lua' ? 'Luau' : 'JSON'}</span>
+          {liveUrl && <CopyButton text={liveUrl} label="live url" />}
+        </div>
       </div>
     </div>
   );

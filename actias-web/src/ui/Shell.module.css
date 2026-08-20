@@ -1,30 +1,157 @@
+/* The app frame: a fixed viewport split into two columns, each of which
+ * scrolls its own regions. Nothing here scrolls the document, so
+ * scrollbars only ever appear at the edge of the region that owns the
+ * overflow. */
 .shell {
-  display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  overflow: hidden;
   background: var(--night-0);
   color: var(--ink-1);
   font-family: var(--ui);
   font-size: 13px;
 }
 
+/* Sections whose picker is too big for a sidebar sub-list get a column
+ * of their own (design 04): full height, so its header band lines up
+ * with the breadcrumb rather than starting under it. */
+.shellRailed {
+  composes: shell;
+  grid-template-columns: 232px 236px 1fr;
+}
+
 .sidebar {
-  width: 232px;
-  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  background: var(--night-1);
+  min-height: 0;
   border-right: 1px solid var(--line);
-  position: sticky;
-  top: 0;
-  height: 100vh;
+}
+
+.rail {
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.railHead {
+  height: 48px;
+  flex-shrink: 0;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  font: 400 10px/1 var(--mono);
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+}
+
+.railSection {
+  padding: 6px 0;
+}
+.railSection:first-of-type {
+  padding-top: 12px;
+}
+.railSection + .railSection {
+  border-top: 1px solid var(--line-soft);
+}
+
+.railSectionHead {
+  padding: 10px 14px 7px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: 500 10px/1 var(--mono);
+  color: var(--ink-2);
+  letter-spacing: 0.05em;
+}
+.railSectionHead svg {
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+
+.railNote {
+  margin: 0;
+  padding: 0 14px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.railItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 14px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  font: 400 12px var(--mono);
+  color: var(--ink-2);
+  text-align: left;
+  text-decoration: none;
+}
+.railItem:hover {
+  color: var(--ink-1);
+  background: var(--night-1);
+}
+.railItemActive {
+  composes: railItem;
+  border-left-color: var(--luna);
+  background: var(--night-1);
+  font-weight: 500;
+  color: var(--ink-1);
+}
+
+.railName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.railMeta {
+  font: 400 10px var(--mono);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.railDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--viola);
+}
+.railDotIdle {
+  composes: railDot;
+  background: transparent;
+  border: 1px solid var(--ink-3);
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 700;
   font-size: 13px;
   letter-spacing: 0.07em;
   padding: 14px;
   color: var(--ink-1);
+}
+
+/* The wordmark row: the sidebar's first band, closed by a border like
+ * the switcher under it. */
+.brandRow {
+  composes: brand;
+  height: 48px;
+  padding: 0 14px;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
 }
 
 /* The moonrise gradient tints the wordmark and nothing else. */
@@ -37,6 +164,7 @@
 
 .nav {
   flex: 1;
+  min-height: 0;
   padding: 6px 0;
   display: flex;
   flex-direction: column;
@@ -63,13 +191,14 @@
 }
 .navLink:hover {
   color: var(--ink-1);
-  background: var(--night-2);
+  background: var(--night-1);
 }
 .navLinkActive {
   composes: navLink;
   border-left-color: var(--luna);
   color: var(--ink-1);
-  background: var(--night-2);
+  background: var(--night-1);
+  font-weight: 500;
 }
 
 .user {
@@ -85,14 +214,21 @@
 .initials {
   width: 26px;
   height: 26px;
+  flex-shrink: 0;
   border-radius: var(--r2);
-  background: var(--night-2);
-  border: 1px solid var(--line);
+  background: var(--viola-tint);
+  border: 1px solid rgba(167, 139, 250, 0.35);
   display: grid;
   place-items: center;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink-2);
+  font: 650 11px var(--mono);
+  color: var(--viola);
+}
+
+.userText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
 }
 
 .userName {
@@ -106,22 +242,28 @@
   color: var(--ink-2);
 }
 
+/* The icon button the design parks at the end of the user block. */
 .logout {
-  margin-left: auto;
-  background: none;
-  border: none;
-  color: var(--ink-3);
-  font-size: 11px;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--night-1);
+  color: var(--ink-2);
   cursor: pointer;
-  font-family: var(--ui);
 }
 .logout:hover {
   color: var(--err);
+  border-color: rgba(240, 138, 138, 0.4);
 }
 
 .main {
-  flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -129,17 +271,47 @@
 .topbar {
   display: flex;
   align-items: center;
-  height: 44px;
+  justify-content: space-between;
+  gap: 16px;
+  height: 48px;
+  flex-shrink: 0;
   padding: 0 20px;
   border-bottom: 1px solid var(--line);
-  color: var(--ink-3);
-  font-family: var(--mono);
-  font-size: 12px;
-  gap: 6px;
 }
 
+/* The breadcrumb is the path: identifiers verbatim, the leaf in full
+ * ink because it names the thing on screen. */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font: 400 12px var(--mono);
+}
+.crumbLink {
+  color: var(--ink-2);
+}
+.crumbLink:hover {
+  color: var(--ink-1);
+}
+.crumbSep {
+  color: var(--ink-3);
+}
+.crumbCurrent {
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Everything below the topbar. Pages own their own regions inside it,
+ * so this never scrolls: it clips, and a region inside scrolls. */
 .content {
-  padding: 20px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .publicPage {
@@ -170,61 +342,65 @@
   color: var(--ink-1);
 }
 
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
 /* Narrow viewports: the sidebar collapses to its icons. */
 @media (max-width: 820px) {
-  .sidebar {
-    width: 52px;
+  .shell {
+    grid-template-columns: 52px 1fr;
+  }
+  .shellRailed {
+    grid-template-columns: 52px 200px 1fr;
   }
   .navLink span,
   .navLabel,
-  .user > div,
+  .subNav,
+  .userText,
   .logout,
+  .switcherLabel,
+  .switcherChevron,
   .brand span {
     display: none;
   }
-  .content {
-    padding: 12px;
-  }
 }
 
+/* The project switcher per the design: a full-width 44px row under the
+ * wordmark, closed off by a border, never a floating boxed button. */
 .switcher {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0 8px 4px;
-  padding: 6px 8px;
-  background: var(--night-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r2);
+  gap: 10px;
+  height: 44px;
+  padding: 0 14px;
+  margin: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
   color: var(--ink-1);
-  font-family: var(--ui);
-  font-size: 12px;
   cursor: pointer;
   text-align: left;
+  width: 100%;
+  flex-shrink: 0;
+}
+.switcher:hover {
+  background: var(--night-1);
 }
 
 .switcherBadge {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
   border-radius: var(--r1);
   background: var(--luna-tint);
+  border: 1px solid var(--luna-edge);
   color: var(--luna);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
+  font: 650 10px var(--mono);
+  text-transform: lowercase;
 }
 
 .switcherLabel {
   flex: 1;
+  font: 500 12px var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -232,7 +408,84 @@
 
 .switcherChevron {
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 11px;
+}
+
+/* The contextual sub-list under the section nav: NAMESPACES / QUEUES /
+ * SCRIPTS with counts and live dots. */
+.subNav {
+  margin: 8px 0;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.subNavLabel {
+  font: 400 10px/1 var(--mono);
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  padding: 0 14px 6px;
+  text-transform: uppercase;
+}
+.subNavItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 14px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: none;
+  font: 400 12px var(--mono);
+  color: var(--ink-2);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+}
+.subNavItem:hover {
+  background: var(--night-1);
+  color: var(--ink-1);
+}
+.subNavItemActive {
+  composes: subNavItem;
+  border-left-color: var(--luna);
+  background: var(--night-1);
+  color: var(--ink-1);
+}
+.subNavName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subNavCount {
+  font: 400 10px var(--mono);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.subNavDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--luna);
+  flex-shrink: 0;
+}
+.subNavDotIdle {
+  composes: subNavDot;
+  background: transparent;
+  border: 1px solid var(--ink-3);
+}
+
+/* Count badge on a nav row (the design's Queues pill). */
+.navBadge {
+  margin-left: auto;
+  font: 500 10px var(--mono);
+  color: var(--warn);
+  background: var(--warn-tint, rgba(245, 201, 123, 0.12));
+  border: 1px solid rgba(245, 201, 123, 0.35);
+  border-radius: 999px;
+  padding: 1px 6px;
 }
 
 .switcherMenu {

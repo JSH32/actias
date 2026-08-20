@@ -1,7 +1,7 @@
 import { AuthGuard } from '@/helpers/auth';
 import api from '@/helpers/api';
 import { getPublicConfig } from '@/pages/api/config';
-import { Card } from '@/ui';
+import { Card, PageBody } from '@/ui';
 import { useQuery } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
@@ -163,102 +163,104 @@ const Playground = () => {
 
   return script ? (
     <AuthGuard>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 10,
-        }}
-      >
-        <h1 style={{ fontSize: 18, fontWeight: 700 }}>Playground</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {liveUrl && (
-            <a
-              href={liveUrl}
-              target="_blank"
-              rel="noreferrer"
-              style={{ fontFamily: 'var(--mono)', fontSize: 12 }}
-            >
-              {liveUrl}
-            </a>
-          )}
-          <span
-            style={{
-              fontFamily: 'var(--mono)',
-              fontSize: 11,
-              color: statusColor,
-            }}
-          >
-            ● {status}
-          </span>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gap: 12 }}>
-        <Card>
-          <Editor
-            height="50vh"
-            defaultLanguage="lua"
-            defaultValue={DEFAULT_SOURCE}
-            theme="vs-dark"
-            onChange={onChange}
-            beforeMount={(monaco) => {
-              monaco.languages.registerCompletionItemProvider('lua', {
-                provideCompletionItems: (model: any, position: any) => {
-                  const word = model.getWordUntilPosition(position);
-                  return {
-                    suggestions: COMPLETIONS.map(([label, detail]) => ({
-                      label,
-                      detail,
-                      kind: monaco.languages.CompletionItemKind.Function,
-                      insertText: label,
-                      range: {
-                        startLineNumber: position.lineNumber,
-                        endLineNumber: position.lineNumber,
-                        startColumn: word.startColumn,
-                        endColumn: word.endColumn,
-                      },
-                    })),
-                  };
-                },
-              });
-            }}
-          />
-        </Card>
-
-        <Card style={{ padding: 16 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Session logs</div>
-          <div
-            style={{
-              height: 140,
-              overflowY: 'auto',
-              background: 'var(--night-2)',
-              border: '1px solid var(--line)',
-              borderRadius: 'var(--r2)',
-              padding: '8px 10px',
-              fontFamily: 'var(--mono)',
-              fontSize: 12,
-              lineHeight: 1.7,
-            }}
-          >
-            {logs.length === 0 ? (
-              <span style={{ color: 'var(--ink-3)' }}>
-                Request the live url to see log lines here.
-              </span>
-            ) : (
-              logs.map((line, index) => (
-                <div key={index}>
-                  <span style={{ color: 'var(--luna)', fontWeight: 700 }}>
-                    {line.level}
-                  </span>{' '}
-                  {line.message}
-                </div>
-              ))
+      <PageBody>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 10,
+          }}
+        >
+          <h1 style={{ fontSize: 18, fontWeight: 700 }}>Playground</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {liveUrl && (
+              <a
+                href={liveUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{ fontFamily: 'var(--mono)', fontSize: 12 }}
+              >
+                {liveUrl}
+              </a>
             )}
+            <span
+              style={{
+                fontFamily: 'var(--mono)',
+                fontSize: 11,
+                color: statusColor,
+              }}
+            >
+              ● {status}
+            </span>
           </div>
-        </Card>
-      </div>
+        </div>
+
+        <div style={{ display: 'grid', gap: 12 }}>
+          <Card>
+            <Editor
+              height="50vh"
+              defaultLanguage="lua"
+              defaultValue={DEFAULT_SOURCE}
+              theme="vs-dark"
+              onChange={onChange}
+              beforeMount={(monaco) => {
+                monaco.languages.registerCompletionItemProvider('lua', {
+                  provideCompletionItems: (model: any, position: any) => {
+                    const word = model.getWordUntilPosition(position);
+                    return {
+                      suggestions: COMPLETIONS.map(([label, detail]) => ({
+                        label,
+                        detail,
+                        kind: monaco.languages.CompletionItemKind.Function,
+                        insertText: label,
+                        range: {
+                          startLineNumber: position.lineNumber,
+                          endLineNumber: position.lineNumber,
+                          startColumn: word.startColumn,
+                          endColumn: word.endColumn,
+                        },
+                      })),
+                    };
+                  },
+                });
+              }}
+            />
+          </Card>
+
+          <Card style={{ padding: 16 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Session logs</div>
+            <div
+              style={{
+                height: 140,
+                overflowY: 'auto',
+                background: 'var(--night-2)',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--r2)',
+                padding: '8px 10px',
+                fontFamily: 'var(--mono)',
+                fontSize: 12,
+                lineHeight: 1.7,
+              }}
+            >
+              {logs.length === 0 ? (
+                <span style={{ color: 'var(--ink-3)' }}>
+                  Request the live url to see log lines here.
+                </span>
+              ) : (
+                logs.map((line, index) => (
+                  <div key={index}>
+                    <span style={{ color: 'var(--luna)', fontWeight: 700 }}>
+                      {line.level}
+                    </span>{' '}
+                    {line.message}
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+        </div>
+      </PageBody>
     </AuthGuard>
   ) : (
     <p style={{ color: 'var(--ink-3)' }}>Loading…</p>
