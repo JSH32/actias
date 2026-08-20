@@ -1,0 +1,118 @@
+.bench {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  grid-template-rows: auto 1fr auto;
+  gap: 0;
+  height: calc(100vh - 44px - 40px);
+  min-height: 480px;
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  overflow: hidden;
+  background: var(--night-1);
+}
+
+.topbar {
+  grid-column: 1 / 3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.liveUrl {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.liveUrl:hover {
+  color: var(--luna);
+}
+
+.status {
+  font-family: var(--mono);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.tree {
+  border-right: 1px solid var(--line);
+  padding: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--r2);
+  background: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+  text-align: left;
+}
+.file:hover {
+  background: var(--night-2);
+  color: var(--ink-1);
+}
+.fileActive {
+  composes: file;
+  background: var(--night-2);
+  color: var(--ink-1);
+}
+
+.entryDot {
+  color: var(--luna);
+  font-size: 9px;
+}
+
+.remove {
+  color: var(--ink-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+}
+.remove:hover {
+  color: var(--err);
+}
+
+.newFile {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  background: none;
+  border: none;
+  padding: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.newFile:hover {
+  color: var(--luna);
+}
+
+.editor {
+  min-width: 0;
+}
+
+.logs {
+  grid-column: 1 / 3;
+  border-top: 1px solid var(--line);
+  height: 110px;
+  overflow-y: auto;
+  padding: 6px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+  background: var(--night-2);
+}
