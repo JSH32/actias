@@ -98,6 +98,8 @@ pub struct Declarations {
     pub databases: Vec<String>,
     /// Names handed to `queue "name"`.
     pub queues: Vec<String>,
+    /// Names handed to `workflow "name"`.
+    pub workflows: Vec<String>,
 }
 
 /// The capability contract a revision was published with.
@@ -499,6 +501,39 @@ impl ActiasRuntime {
         )
     }
 
+    /// The listener key prefix workflow definitions register under; the
+    /// platform class fires `workflow:<definition>` when a run executes.
+    pub const WORKFLOW_EVENT_PREFIX: &'static str = "workflow:";
+
+    /// `workflow "name" (fn)` declares a durable workflow definition: the
+    /// function is the run body, registered like an event listener, and
+    /// the name joins the contract so publish-time passes and the console
+    /// can see it.
+    fn set_workflow_declaration(lua: &Lua) -> mlua::Result<()> {
+        lua.globals().set(
+            "workflow",
+            lua.create_function(|lua, name: String| {
+                Self::assert_declaration_phase(lua, "workflow")?;
+                if name.trim().is_empty() || name.contains('/') {
+                    return Err(mlua::Error::RuntimeError(
+                        "A workflow name is a non-empty string without '/'.".to_owned(),
+                    ));
+                }
+
+                if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+                    declarations.workflows.push(name.clone());
+                }
+
+                lua.create_function(move |lua, callback: mlua::Function| {
+                    lua.set_named_registry_value(
+                        &Self::listener_key(&format!("{}{name}", Self::WORKFLOW_EVENT_PREFIX)),
+                        callback,
+                    )
+                })
+            })?,
+        )
+    }
+
     /// Table of modules loaded so far, keyed by [`module_key`].
     ///
     /// # Errors
@@ -676,6 +711,7 @@ impl ActiasRuntime {
         });
 
         Self::set_event_declaration(&lua)?;
+        Self::set_workflow_declaration(&lua)?;
         Self::set_module_loaders(&lua)?;
 
         match profile {
@@ -703,7 +739,6 @@ impl ActiasRuntime {
             // profile instead of re-admitting these here.
             VmProfile::Workflow(source) => {
                 use crate::extensions::determinism::{ForbiddenExtension, JournaledUuidExtension};
-                let seed = source.seed();
                 lua.set_app_data(crate::extensions::determinism::DeterminismSource(source));
                 // Declaration surfaces (kv, queue, database, object)
                 // stay: they run at script top level during replay and
@@ -727,7 +762,7 @@ impl ActiasRuntime {
                     &ForbiddenExtension { name: "jwt" },
                     &ForbiddenExtension { name: "crypto" },
                 ])?;
-                crate::extensions::determinism::shim_stdlib(&lua.lua, seed)?;
+                crate::extensions::determinism::shim_stdlib(&lua.lua)?;
             }
         }
 
@@ -1082,7 +1117,7 @@ mod tests {
     struct Scripted {
         times: std::sync::Mutex<std::collections::VecDeque<i64>>,
         uuids: std::sync::Mutex<std::collections::VecDeque<String>>,
-        seed: i64,
+        rng: std::sync::Mutex<u64>,
     }
 
     impl crate::extensions::determinism::Determinism for Scripted {
@@ -1100,8 +1135,15 @@ mod tests {
                 .pop_front()
                 .unwrap_or_default()
         }
-        fn seed(&self) -> i64 {
-            self.seed
+        fn random(&self) -> f64 {
+            // xorshift64*, stepped per draw: engine-independent and
+            // fully determined by the seed, like the real source.
+            let mut state = self.rng.lock().expect("no poison");
+            *state ^= *state >> 12;
+            *state ^= *state << 25;
+            *state ^= *state >> 27;
+            let bits = state.wrapping_mul(0x2545F4914F6CDD1D);
+            (bits >> 11) as f64 / (1u64 << 53) as f64
         }
     }
 
@@ -1109,7 +1151,7 @@ mod tests {
         Arc::new(Scripted {
             times: std::sync::Mutex::new(times.iter().copied().collect()),
             uuids: std::sync::Mutex::new(uuids.iter().map(|s| s.to_string()).collect()),
-            seed,
+            rng: std::sync::Mutex::new(seed as u64 | 1),
         })
     }
 
