@@ -328,12 +328,14 @@ fn cache_load_error(error: Arc<anyhow::Error>) -> anyhow::Error {
 ///
 /// Cache misses resolve through the loader; moka deduplicates concurrent
 /// misses of one key into a single backend call. Failed loads are not
-/// cached, so an unknown identifier costs a lookup every time.
+/// cached, so an unknown identifier costs a lookup every time. The error
+/// keeps its cause chain, so the caller can tell an absent script from
+/// infrastructure failing.
 async fn resolve_script(
     caches: &WorkerCaches,
     client: &ScriptServiceClient<Channel>,
     identifier: String,
-) -> anyhow::Result<Script> {
+) -> Result<Script, Arc<anyhow::Error>> {
     caches
         .pointers
         .try_get_with(identifier.clone(), {
@@ -348,7 +350,6 @@ async fn resolve_script(
             }
         })
         .await
-        .map_err(cache_load_error)
 }
 
 /// Path the script or asset lookup sees: the request path with the routing
@@ -587,7 +588,19 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         }
     };
 
-    let script = resolve_script(&state.caches, &state.clients.script, identifier).await?;
+    // An identifier nobody owns is the visitor's typo (or a browser probing
+    // for /favicon.ico at the root), not an incident: a plain 404, no
+    // correlation id, no error log.
+    let script = match resolve_script(&state.caches, &state.clients.script, identifier).await {
+        Ok(script) => script,
+        Err(error) if target_absent(&error) => {
+            return Ok(text_response(
+                StatusCode::NOT_FOUND,
+                "No script with that identifier.",
+            ));
+        }
+        Err(error) => return Err(cache_load_error(error)),
+    };
 
     // Live output goes to the session's channel where `actias dev` tails it;
     // published scripts log to a per-script channel for `actias tail`.
@@ -1301,6 +1314,19 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("actias_objects_resident 0"), "{text}");
+    }
+
+    #[test]
+    fn a_backend_not_found_reads_as_target_absent() {
+        // The loader wraps the grpc status in anyhow; classification walks
+        // the chain, so the 404 mapping survives wrapping.
+        let absent = anyhow::Error::from(tonic::Status::not_found("no script by that name"));
+        assert!(target_absent(&absent));
+
+        // Infrastructure failing must never read as "no such script": a
+        // dead backend is an incident, not a visitor's typo.
+        let broken = anyhow::Error::from(tonic::Status::unavailable("backend down"));
+        assert!(!target_absent(&broken));
     }
 
     #[tokio::test(flavor = "multi_thread")]
