@@ -12,7 +12,8 @@
 }
 
 .topbar {
-  grid-column: 1 / 3;
+  grid-column: 1 / -1;
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -36,6 +37,8 @@
 }
 
 .tree {
+  grid-row: 2;
+  grid-column: 1;
   border-right: 1px solid var(--line);
   padding: 8px;
   overflow-y: auto;
@@ -102,11 +105,15 @@
 }
 
 .editor {
+  grid-row: 2;
+  grid-column: 2;
   min-width: 0;
+  min-height: 0;
 }
 
 .logs {
-  grid-column: 1 / 3;
+  grid-column: 1 / -1;
+  grid-row: 3;
   border-top: 1px solid var(--line);
   height: 110px;
   overflow-y: auto;
@@ -138,6 +145,8 @@
 }
 
 .pane {
+  grid-row: 2;
+  grid-column: 3;
   border-left: 1px solid var(--line);
   padding: 12px;
   overflow-y: auto;
