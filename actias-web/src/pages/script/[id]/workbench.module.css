@@ -292,3 +292,25 @@
   font-size: 11px;
   color: var(--ink-3);
 }
+
+.deadSession {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  align-self: start;
+  z-index: 10;
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--err-tint);
+  border-bottom: 1px solid var(--err);
+  color: var(--err);
+  font-size: 12px;
+}
+
+.deadReload {
+  background: none;
+  border: none;
+  color: var(--ink-1);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 12px;
+}
