@@ -48,6 +48,9 @@ export namespace script_service {
         queues?: string[];
         // Workflow definitions declared with &#x60;workflow &quot;name&quot;&#x60;.
         workflows?: string[];
+        // Step literals found in the sources: the console&#x27;s
+    // declared-possible skeleton, a superset of what may run.
+        workflowSteps?: string[];
     }
     export interface ScriptConfig {
         id?: string;

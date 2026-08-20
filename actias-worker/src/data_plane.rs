@@ -282,8 +282,16 @@ impl WorkerData for WorkerDataService {
         request: Request<ReadRequest>,
     ) -> Result<Response<ReadValue>, Status> {
         let request = request.into_inner();
-        let read = PlatformRead::QueueEvents {
-            since: request.since,
+        // The journal a class keeps is its own: queues have the delivery
+        // journal, workflows the replay journal.
+        let read = if request.class == actias_common::classes::WORKFLOW_CLASS {
+            PlatformRead::WorkflowJournal {
+                since: request.since,
+            }
+        } else {
+            PlatformRead::QueueEvents {
+                since: request.since,
+            }
         };
         self.read_routed(request, read).await
     }

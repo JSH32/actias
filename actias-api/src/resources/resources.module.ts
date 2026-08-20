@@ -9,6 +9,7 @@ import { ResourcesService } from './resources.service';
 import { QueuesController } from './queues.controller';
 import { DatabasesController } from './databases.controller';
 import { ObjectsController } from './objects.controller';
+import { WorkflowsController } from './workflows.controller';
 
 @Module({
   imports: [
@@ -35,7 +36,12 @@ import { ObjectsController } from './objects.controller';
       ),
     ),
   ],
-  controllers: [QueuesController, DatabasesController, ObjectsController],
+  controllers: [
+    QueuesController,
+    DatabasesController,
+    ObjectsController,
+    WorkflowsController,
+  ],
   providers: [ResourcesService],
 })
 export class ResourcesModule {}

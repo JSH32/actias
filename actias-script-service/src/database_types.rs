@@ -36,6 +36,8 @@ pub struct Capabilities {
     pub queues: Vec<String>,
     #[serde(default)]
     pub workflows: Vec<String>,
+    #[serde(default)]
+    pub workflow_steps: Vec<String>,
 }
 
 impl From<crate::proto_script_service::Capabilities> for Capabilities {
@@ -48,6 +50,7 @@ impl From<crate::proto_script_service::Capabilities> for Capabilities {
             databases: val.databases,
             queues: val.queues,
             workflows: val.workflows,
+            workflow_steps: val.workflow_steps,
         }
     }
 }
@@ -62,6 +65,7 @@ impl From<Capabilities> for crate::proto_script_service::Capabilities {
             databases: val.databases,
             queues: val.queues,
             workflows: val.workflows,
+            workflow_steps: val.workflow_steps,
         }
     }
 }

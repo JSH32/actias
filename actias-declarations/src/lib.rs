@@ -50,6 +50,12 @@ pub struct Declarations {
     /// Workflow definitions declared with `workflow "name"`.
     #[serde(default)]
     pub workflows: Vec<String>,
+    /// Step name literals found in the sources (`wf:step("name", ...)`),
+    /// a SUPERSET of what may run: the console's declared-possible
+    /// skeleton. Dynamically built names are invisible here and simply
+    /// appear as they execute.
+    #[serde(default)]
+    pub workflow_steps: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -77,6 +83,31 @@ fn module_key(name: &str) -> String {
 /// Returns text describing the failure: a missing entry point, a syntax
 /// error, or a runtime error in top-level code. Failing here is the point;
 /// it is the same error the worker would hit on the first request.
+/// Collects `wf:step("name"` string literals from lua source; a scan,
+/// not a parse, so it stays a superset and never a promise.
+fn scan_step_literals(files: &HashMap<String, String>) -> Vec<String> {
+    let mut names = Vec::new();
+    for (path, source) in files {
+        if !path.ends_with(".lua") {
+            continue;
+        }
+        for window in source.split(":step(") {
+            let trimmed = window.trim_start();
+            if let Some(rest) = trimmed.strip_prefix('"')
+                && let Some(end) = rest.find('"')
+            {
+                let name = &rest[..end];
+                if !name.is_empty() && !names.contains(&name.to_owned()) {
+                    names.push(name.to_owned());
+                }
+            }
+        }
+    }
+    // The first window precedes any match; splitting yields it too, so
+    // the loop above only ever sees text AFTER a `:step(`.
+    names
+}
+
 pub fn extract(files: HashMap<String, String>, entry_point: &str) -> Result<Declarations, String> {
     let entry_source = files
         .iter()
@@ -103,6 +134,7 @@ pub fn extract(files: HashMap<String, String>, entry_point: &str) -> Result<Decl
 
     install_declarations(&lua, &recorded).map_err(|e| e.to_string())?;
     install_stubs(&lua).map_err(|e| e.to_string())?;
+    let step_names = scan_step_literals(&files);
     install_loaders(&lua, files).map_err(|e| e.to_string())?;
 
     lua.load(entry_source)
@@ -110,7 +142,8 @@ pub fn extract(files: HashMap<String, String>, entry_point: &str) -> Result<Decl
         .exec()
         .map_err(|e| format!("Declaration pass failed: {e}"))?;
 
-    let declarations = recorded.lock().expect("no other holder").clone();
+    let mut declarations = recorded.lock().expect("no other holder").clone();
+    declarations.workflow_steps = step_names;
     Ok(declarations)
 }
 
