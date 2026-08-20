@@ -27,5 +27,13 @@ export type CapabilitiesDto = {
      * Queues declared with `queue "name"`.
      */
     queues: Array<string>;
+    /**
+     * Workflow definitions declared with `workflow "name"`.
+     */
+    workflows: Array<string>;
+    /**
+     * Step literals found at publish: the declared-possible superset.
+     */
+    workflowSteps: Array<string>;
 };
 

@@ -34,6 +34,16 @@ export class CapabilitiesDto {
    * Queues declared with `queue "name"`.
    */
   queues: string[];
+
+  /**
+   * Workflow definitions declared with `workflow "name"`.
+   */
+  workflows: string[];
+
+  /**
+   * Step literals found at publish: the declared-possible superset.
+   */
+  workflowSteps: string[];
 }
 
 export class ScriptConfigDto {
@@ -90,6 +100,8 @@ export class RevisionFullDto {
         objects: config.capabilities.objects ?? [],
         databases: config.capabilities.databases ?? [],
         queues: config.capabilities.queues ?? [],
+        workflows: config.capabilities.workflows ?? [],
+        workflowSteps: config.capabilities.workflowSteps ?? [],
       },
     };
     this.bundle =
