@@ -357,6 +357,9 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
                 let method = method.clone();
 
                 async move {
+                    // In workflow vms, effects live inside steps alone;
+                    // everywhere else this is a no-op.
+                    crate::platform::workflow::assert_effects_allowed(&lua)?;
                     // The colon-call receiver is the handle itself; what
                     // travels is everything after it, as plain values.
                     let mut values = args.into_iter();

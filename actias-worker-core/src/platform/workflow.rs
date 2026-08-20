@@ -57,6 +57,10 @@ pub enum EntryKind {
     /// A journaled ambient read (time, uuid): recorded on first
     /// execution, replayed identically forever.
     Ambient,
+    /// A step attempt failed: the error, journaled. `final: true` means
+    /// retries are exhausted and the run is parked failed until a
+    /// resume.
+    Failed,
 }
 
 impl EntryKind {
@@ -71,6 +75,7 @@ impl EntryKind {
             Self::Cancel => "CANCEL",
             Self::Completed => "COMPLETED",
             Self::Ambient => "AMBIENT",
+            Self::Failed => "FAILED",
         }
     }
 
@@ -85,6 +90,7 @@ impl EntryKind {
             "CANCEL" => Self::Cancel,
             "COMPLETED" => Self::Completed,
             "AMBIENT" => Self::Ambient,
+            "FAILED" => Self::Failed,
             _ => return None,
         })
     }
@@ -401,6 +407,179 @@ mod tests {
             })
         }
 
+        const RETRY_SOURCE: &str = r#"
+            tries = 0
+            workflow "flaky" (function(wf, input)
+                local report = wf:step("run-tests", {
+                    retries = 3,
+                    backoff = "40ms",
+                }, function()
+                    tries = tries + 1
+                    if tries < 3 then
+                        error("sandbox timeout")
+                    end
+                    return { passed = true, on_attempt = tries }
+                end)
+                return report
+            end)
+
+            workflow "doomed" (function(wf, input)
+                local report = wf:step("run-tests", {
+                    retries = 2,
+                    backoff = "30ms",
+                }, function()
+                    tries = tries + 1
+                    if tries <= 2 then
+                        error("sandbox timeout")
+                    end
+                    return { passed = true, on_attempt = tries }
+                end)
+                return report
+            end)
+
+            local jobs = queue "jobs"
+            workflow "leaky" (function(wf, input)
+                jobs:send({ n = 1 })
+                return {}
+            end)
+        "#;
+
+        async fn status_until(
+            handle: &crate::objects::ObjectHandle,
+            name: &str,
+            wanted: &str,
+        ) -> serde_json::Value {
+            for _ in 0..60 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let status = handle
+                    .call("__dispatch", call(name, "status", serde_json::json!([])))
+                    .await
+                    .expect("status answers");
+                if status["kind"] == wanted {
+                    return status;
+                }
+            }
+            serde_json::Value::Null
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn retries_park_with_backoff_and_converge() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(RETRY_SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            let first = handle
+                .call(
+                    "__dispatch",
+                    call("flaky/r1", "start", serde_json::json!([{}])),
+                )
+                .await
+                .expect("first attempt parks for its retry");
+            assert_eq!(first["status"], "parked", "{first}");
+
+            let done = status_until(&handle, "flaky/r1", "COMPLETED").await;
+            assert_eq!(done["kind"], "COMPLETED", "retries never converged");
+
+            let joined = handle
+                .call(
+                    "__dispatch",
+                    call("flaky/r1", "start", serde_json::json!([{}])),
+                )
+                .await
+                .expect("joins");
+            assert_eq!(joined["value"]["on_attempt"], 3, "{joined}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn exhausted_retries_fail_the_run_and_resume_reenters() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(RETRY_SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            handle
+                .call(
+                    "__dispatch",
+                    call("doomed/r1", "start", serde_json::json!([{}])),
+                )
+                .await
+                .expect("parks for retry");
+            // Attempt two fails on its own alarm; the run lands failed.
+            let mut failed = serde_json::Value::Null;
+            for _ in 0..60 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let joined = handle
+                    .call(
+                        "__dispatch",
+                        call("doomed/r1", "start", serde_json::json!([{}])),
+                    )
+                    .await
+                    .expect("join answers");
+                if joined["status"] == "failed" {
+                    failed = joined;
+                    break;
+                }
+            }
+            assert_eq!(failed["status"], "failed", "never failed: {failed}");
+
+            // Resume: fresh attempts at the failed step; the third body
+            // run succeeds, everything before it replays untouched.
+            let resumed = handle
+                .call(
+                    "__dispatch",
+                    call("doomed/r1", "resume", serde_json::json!([])),
+                )
+                .await
+                .expect("resume answers");
+            assert_eq!(resumed["status"], "completed", "{resumed}");
+            assert_eq!(resumed["value"]["on_attempt"], 3);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn effects_outside_steps_are_refused() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(RETRY_SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            let refused = handle
+                .call(
+                    "__dispatch",
+                    call("leaky/r1", "start", serde_json::json!([{}])),
+                )
+                .await;
+            let text = format!("{:#}", refused.expect_err("must refuse"));
+            assert!(
+                text.contains(crate::extensions::determinism::FORBIDDEN),
+                "wrong refusal: {text}"
+            );
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn a_sleep_parks_and_the_alarm_wakes_it_to_completion() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -685,6 +864,19 @@ pub fn pinned_revision(file: &std::path::Path) -> Option<String> {
     first.data["revision"].as_str().map(str::to_owned)
 }
 
+/// Refuses effects outside step bodies in workflow vms; a no-op in
+/// every other vm. The gate teaching text is the determinism module's.
+pub fn assert_effects_allowed(lua: &mlua::Lua) -> mlua::Result<()> {
+    if let Some(shared) = lua.app_data_ref::<std::sync::Arc<WfShared>>()
+        && !shared.effects_allowed()
+    {
+        return Err(mlua::Error::RuntimeError(
+            crate::extensions::determinism::FORBIDDEN.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// The journal off a read-only connection: a file that never held a
 /// journal reads as empty rather than erroring, so dashboards can probe
 /// any workflow identity.
@@ -736,6 +928,9 @@ pub fn at_step(entries: &[Entry]) -> serde_json::Value {
                 serde_json::json!(format!("await {}", gate.as_str().unwrap_or("?")))
             }
         }
+        Some(last) if last.kind == EntryKind::Failed => {
+            serde_json::json!(last.data["step"].as_str().unwrap_or("failed"))
+        }
         Some(last) if last.kind == EntryKind::Completed => serde_json::json!("done"),
         Some(last) if last.kind == EntryKind::Cancel => serde_json::json!("cancelled"),
         _ => last_result
@@ -758,6 +953,17 @@ pub fn run_status(entries: &[Entry]) -> serde_json::Value {
     let started = entries.first().map(|e| e.at);
     match entries.last() {
         None => serde_json::json!({ "status": "unstarted" }),
+        Some(last)
+            if last.kind == EntryKind::Failed && last.data["final"].as_bool().unwrap_or(false) =>
+        {
+            serde_json::json!({
+                "status": "failed",
+                "step": last.data["step"],
+                "error": last.data["error"],
+                "attempts": last.data["attempt"],
+                "started_at": started,
+            })
+        }
         Some(last) if last.kind == EntryKind::Timer => {
             let gate = &last.data["for"];
             if gate.is_null() {
@@ -789,6 +995,9 @@ struct Attempt {
     /// The instance's own key and name, for arming its alarm from verbs.
     own_key: String,
     name: String,
+    /// True for exactly one attempt after a resume dispatch: the step
+    /// whose final failure blocks the run consumes it and retries.
+    resume: bool,
 }
 
 impl Attempt {
@@ -811,6 +1020,12 @@ pub struct WfShared {
     /// attempt runner reads it back to tell a park from a failure, so
     /// nothing ever sniffs error strings.
     parked: std::sync::Mutex<Option<String>>,
+    /// Set when a step exhausts its retries: the run is failed, not
+    /// broken; a resume re-enters at that step.
+    failed: std::sync::Mutex<Option<String>>,
+    /// True while a step body executes: the one window where effects
+    /// (kv, objects, http-in-context) are allowed in a workflow vm.
+    in_step: std::sync::atomic::AtomicBool,
 }
 
 impl WfShared {
@@ -819,6 +1034,18 @@ impl WfShared {
     fn park(&self, reason: String) -> mlua::Error {
         *self.parked.lock().expect("no poisoned lock") = Some(reason);
         mlua::Error::RuntimeError("workflow parked".to_owned())
+    }
+
+    /// Fails the run: retries are exhausted, the journal holds the
+    /// final error, and only a resume re-enters the step.
+    fn fail(&self, reason: String) -> mlua::Error {
+        *self.failed.lock().expect("no poisoned lock") = Some(reason);
+        mlua::Error::RuntimeError("workflow failed".to_owned())
+    }
+
+    /// Whether a step body is executing right now: the effect window.
+    pub fn effects_allowed(&self) -> bool {
+        self.in_step.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -893,26 +1120,74 @@ impl mlua::UserData for WfHandle {
         methods.add_async_method(
             "step",
             |lua, _this, (name, a, b): (String, mlua::Value, Option<mlua::Function>)| async move {
-                let body = match (&a, b) {
-                    (mlua::Value::Function(function), _) => function.clone(),
-                    (_, Some(function)) => function,
+                let (body, options) = match (&a, b) {
+                    (mlua::Value::Function(function), _) => (function.clone(), None),
+                    (mlua::Value::Table(options), Some(function)) => {
+                        (function, Some(options.clone()))
+                    }
                     _ => {
                         return Err(mlua::Error::RuntimeError(
-                            "wf:step takes a name and a function.".to_owned(),
+                            "wf:step takes a name, optional options and a function.".to_owned(),
                         ));
                     }
                 };
+                // Enforced options: retries is the total attempt count,
+                // backoff doubles per attempt, timeout bounds the body.
+                let retries: i64 = options
+                    .as_ref()
+                    .and_then(|table| table.get("retries").ok())
+                    .unwrap_or(1i64)
+                    .max(1);
+                let backoff_ms = options
+                    .as_ref()
+                    .and_then(|table| table.get::<mlua::Value>("backoff").ok())
+                    .map(|value| match value {
+                        mlua::Value::String(raw) => {
+                            crate::extensions::objects::parse_duration_ms(&raw.to_str()?)
+                                .map_err(mlua::Error::RuntimeError)
+                        }
+                        mlua::Value::Integer(seconds) => Ok(seconds * 1000),
+                        mlua::Value::Nil => Ok(2000),
+                        _ => Err(mlua::Error::RuntimeError(
+                            "backoff is a duration.".to_owned(),
+                        )),
+                    })
+                    .transpose()?
+                    .unwrap_or(2000);
+                let timeout_ms = options
+                    .as_ref()
+                    .and_then(|table| table.get::<mlua::Value>("timeout").ok())
+                    .map(|value| match value {
+                        mlua::Value::String(raw) => {
+                            crate::extensions::objects::parse_duration_ms(&raw.to_str()?)
+                                .map_err(mlua::Error::RuntimeError)
+                        }
+                        mlua::Value::Integer(seconds) => Ok(seconds * 1000),
+                        mlua::Value::Nil => Ok(0),
+                        _ => Err(mlua::Error::RuntimeError(
+                            "timeout is a duration.".to_owned(),
+                        )),
+                    })
+                    .transpose()?
+                    .unwrap_or(0);
 
                 let shared = lua
                     .app_data_ref::<std::sync::Arc<WfShared>>()
                     .map(|shared| shared.clone())
                     .ok_or_else(|| mlua::Error::RuntimeError("Not a workflow vm.".to_owned()))?;
+                if shared.effects_allowed() {
+                    return Err(mlua::Error::RuntimeError(
+                        "Steps do not nest; perform one effect per step.".to_owned(),
+                    ));
+                }
 
-                // Replay: a recorded RESULT answers without running the
-                // body. A dangling INTENT (the crash window) re-runs it.
+                // Walk the cursor through this step's history: INTENT and
+                // non-final FAILED rows count attempts; RESULT replays; a
+                // final FAILED blocks unless this attempt is a resume.
                 enum Plan {
                     Replay(serde_json::Value),
-                    Run,
+                    Run { attempt: i64 },
+                    Blocked(String),
                 }
                 let plan = {
                     let mut guard = shared.attempt.lock().expect("no poisoned lock");
@@ -920,89 +1195,192 @@ impl mlua::UserData for WfHandle {
                         mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned())
                     })?;
 
-                    match attempt.pending.front() {
-                        Some(entry)
-                            if entry.kind == EntryKind::Intent
-                                && entry.data["step"] == name.as_str() =>
-                        {
-                            attempt.pending.pop_front();
-                            match attempt.pending.front() {
-                                Some(result)
-                                    if result.kind == EntryKind::Result
-                                        && result.data["step"] == name.as_str() =>
-                                {
-                                    let value = result.data["value"].clone();
+                    let mut attempts_seen: i64 = 0;
+                    let mut plan = None;
+                    while plan.is_none() {
+                        match attempt.pending.front() {
+                            Some(entry)
+                                if entry.kind == EntryKind::Intent
+                                    && entry.data["step"] == name.as_str() =>
+                            {
+                                attempts_seen += 1;
+                                attempt.pending.pop_front();
+                            }
+                            Some(entry)
+                                if entry.kind == EntryKind::Failed
+                                    && entry.data["step"] == name.as_str() =>
+                            {
+                                let is_final = entry.data["final"].as_bool().unwrap_or(false);
+                                let error =
+                                    entry.data["error"].as_str().unwrap_or("failed").to_owned();
+                                let trailing = attempt.pending.len() == 1;
+                                if is_final && trailing && !attempt.resume {
+                                    plan = Some(Plan::Blocked(error));
+                                } else if is_final && trailing && attempt.resume {
+                                    // The resume consumes the verdict and
+                                    // starts a fresh attempt sequence.
                                     attempt.pending.pop_front();
-                                    Plan::Replay(value)
+                                    attempt.resume = false;
+                                    attempts_seen = 0;
+                                    plan = Some(Plan::Run { attempt: 1 });
+                                } else {
+                                    // A historical failure (retried past,
+                                    // or resumed long ago): consumed.
+                                    attempt.pending.pop_front();
                                 }
-                                // INTENT without RESULT: the crash window;
-                                // the effect may or may not have happened,
-                                // so it runs again (idempotency keys are
-                                // the code's tool for the difference).
-                                _ => Plan::Run,
+                            }
+                            Some(entry)
+                                if entry.kind == EntryKind::Result
+                                    && entry.data["step"] == name.as_str() =>
+                            {
+                                let value = entry.data["value"].clone();
+                                attempt.pending.pop_front();
+                                plan = Some(Plan::Replay(value));
+                            }
+                            Some(entry) if attempts_seen == 0 => {
+                                return Err(mlua::Error::RuntimeError(format!(
+                                    "journal divergence: expected {:?}, code reached step '{name}'",
+                                    entry.kind
+                                )));
+                            }
+                            // Attempts consumed and nothing decided the
+                            // step: this run attempt continues it.
+                            _ => {
+                                plan = Some(Plan::Run {
+                                    attempt: attempts_seen.max(0) + 1,
+                                })
                             }
                         }
-                        Some(entry) => {
-                            return Err(mlua::Error::RuntimeError(format!(
-                                "journal divergence: expected {:?}, code reached step '{name}'",
-                                entry.kind
-                            )));
-                        }
-                        None => {
-                            let home = attempt.home.clone();
-                            home.with_storage(|storage| {
-                                append(
-                                    storage,
-                                    EntryKind::Intent,
-                                    &serde_json::json!({ "step": name }),
-                                )?;
-                                // The intent (and every journaled read
-                                // before it) is durable BEFORE the effect
-                                // runs: persist-intent, do, persist-result.
-                                storage.commit()?;
-                                storage.begin()
-                            })
-                            .map_err(mlua::Error::RuntimeError)?;
-                            Plan::Run
+                    }
+                    let plan = plan.expect("loop decides");
+
+                    if let Plan::Run { attempt: number } = plan {
+                        // A fresh attempt journals its intent before the
+                        // effect: persist-intent, do, persist-result.
+                        // Replayed attempts already journaled theirs.
+                        if number > attempts_seen {
+                            attempt
+                                .home
+                                .with_storage(|storage| {
+                                    append(
+                                        storage,
+                                        EntryKind::Intent,
+                                        &serde_json::json!({ "step": name, "attempt": number }),
+                                    )?;
+                                    storage.commit()?;
+                                    storage.begin()
+                                })
+                                .map_err(mlua::Error::RuntimeError)?;
                         }
                     }
+                    plan
                 };
 
                 match plan {
+                    Plan::Blocked(error) => Err(shared.fail(format!(
+                        "step '{name}' failed after {retries} attempts: {error}"
+                    ))),
                     Plan::Replay(value) => lua.to_value(&value),
-                    Plan::Run => {
-                        let value: mlua::Value = body.call_async(()).await?;
-                        let json: serde_json::Value = lua.from_value(value.clone())?;
-                        let shared = lua
+                    Plan::Run { attempt: number } => {
+                        shared
+                            .in_step
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        let outcome: Result<mlua::Value, mlua::Error> = if timeout_ms > 0 {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_millis(timeout_ms as u64),
+                                body.call_async(()),
+                            )
+                            .await
+                            {
+                                Ok(value) => value,
+                                Err(_) => Err(mlua::Error::RuntimeError(format!(
+                                    "step '{name}' timed out after {timeout_ms}ms"
+                                ))),
+                            }
+                        } else {
+                            body.call_async(()).await
+                        };
+                        shared
+                            .in_step
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+                        let shared_after = lua
                             .app_data_ref::<std::sync::Arc<WfShared>>()
-                            .map(|shared| shared.clone())
+                            .map(|handle| handle.clone())
                             .expect("checked above");
-                        let guard = shared.attempt.lock().expect("no poisoned lock");
-                        let attempt = guard.as_ref().expect("attempt is executing");
-                        attempt
-                            .home
-                            .with_storage(|storage| {
-                                append(
-                                    storage,
-                                    EntryKind::Result,
-                                    &serde_json::json!({ "step": name, "value": json }),
-                                )?;
-                                // persist-result: the effect's outcome is
-                                // durable before anything downstream can
-                                // observe it, so a later crash replays
-                                // the value instead of the effect.
-                                storage.commit()?;
-                                storage.begin()
-                            })
-                            .map_err(mlua::Error::RuntimeError)?;
-                        Ok(value)
+                        match outcome {
+                            Ok(value) => {
+                                let json: serde_json::Value = lua.from_value(value.clone())?;
+                                let guard = shared_after.attempt.lock().expect("no poisoned lock");
+                                let attempt = guard.as_ref().expect("attempt is executing");
+                                attempt
+                                    .home
+                                    .with_storage(|storage| {
+                                        append(
+                                            storage,
+                                            EntryKind::Result,
+                                            &serde_json::json!({
+                                                "step": name,
+                                                "value": json,
+                                                "attempt": number,
+                                            }),
+                                        )?;
+                                        storage.commit()?;
+                                        storage.begin()
+                                    })
+                                    .map_err(mlua::Error::RuntimeError)?;
+                                Ok(value)
+                            }
+                            Err(error) => {
+                                let text = error.to_string();
+                                let exhausted = number >= retries;
+                                {
+                                    let guard =
+                                        shared_after.attempt.lock().expect("no poisoned lock");
+                                    let attempt = guard.as_ref().expect("attempt is executing");
+                                    attempt
+                                        .home
+                                        .with_storage(|storage| {
+                                            append(
+                                                storage,
+                                                EntryKind::Failed,
+                                                &serde_json::json!({
+                                                    "step": name,
+                                                    "attempt": number,
+                                                    "error": text,
+                                                    "final": exhausted,
+                                                }),
+                                            )?;
+                                            storage.commit()?;
+                                            storage.begin()
+                                        })
+                                        .map_err(mlua::Error::RuntimeError)?;
+                                }
+                                if exhausted {
+                                    return Err(shared_after.fail(format!(
+                                        "step '{name}' failed after {retries} attempts: {text}"
+                                    )));
+                                }
+                                // Durable backoff: the alarm wakes the
+                                // replay, which re-reaches this step and
+                                // runs the next attempt.
+                                let wait = backoff_ms.saturating_mul(1 << (number - 1).min(16));
+                                {
+                                    let guard =
+                                        shared_after.attempt.lock().expect("no poisoned lock");
+                                    let attempt = guard.as_ref().expect("attempt is executing");
+                                    arm(attempt, wait).map_err(mlua::Error::RuntimeError)?;
+                                }
+                                Err(shared_after.park(format!(
+                                    "step '{name}' attempt {number} failed; retrying in {wait}ms"
+                                )))
+                            }
+                        }
                     }
                 }
             },
         );
 
-        // sleep(duration): real suspension. Live appends TIMER and arms
-        // the alarm; replay past a due timer just continues.
         methods.add_method("sleep", |lua, _this, duration: mlua::Value| {
             let delay_ms = match &duration {
                 mlua::Value::String(raw) => {
@@ -1191,12 +1569,16 @@ pub(crate) async fn dispatch(
                         .cloned()
                         .unwrap_or(serde_json::Value::Null),
                 ),
+                false,
             )
             .await
         }
+        // A resume re-enters at the failed step with fresh attempts;
+        // everything before it replays untouched.
+        "resume" => run_attempt(runtime, context, None, true).await,
         // The alarm is a wake: replay to the parked verb, which now
         // finds its timer due (or its signal arrived) and continues.
-        "alarm" => run_attempt(runtime, context, None).await,
+        "alarm" => run_attempt(runtime, context, None, false).await,
         "signal" => {
             let name = call
                 .args
@@ -1212,7 +1594,7 @@ pub(crate) async fn dispatch(
                     &serde_json::json!({ "name": name, "payload": payload }),
                 )
             })?;
-            run_attempt(runtime, context, None).await
+            run_attempt(runtime, context, None, false).await
         }
         "cancel" => {
             let reason = call
@@ -1252,6 +1634,7 @@ async fn run_attempt(
     runtime: &crate::runtime::ActiasRuntime,
     context: &super::PlatformContext<'_>,
     input: Option<serde_json::Value>,
+    resume: bool,
 ) -> Result<serde_json::Value, String> {
     let entries = context.home.with_storage(|storage| read_from(storage, 0))?;
 
@@ -1336,6 +1719,7 @@ async fn run_attempt(
         rng: seed,
         own_key: context.own_key.to_owned(),
         name: context.name.to_owned(),
+        resume,
     });
 
     let outcome: Result<mlua::Value, mlua::Error> = {
@@ -1368,6 +1752,11 @@ async fn run_attempt(
             // alarm are already durable.
             if let Some(reason) = shared.parked.lock().expect("no poisoned lock").take() {
                 return Ok(serde_json::json!({ "status": "parked", "reason": reason }));
+            }
+            // A failed run is a state, not a transport error: the
+            // journal holds the verdict and a resume re-enters it.
+            if let Some(reason) = shared.failed.lock().expect("no poisoned lock").take() {
+                return Ok(serde_json::json!({ "status": "failed", "reason": reason }));
             }
             Err(error.to_string())
         }
