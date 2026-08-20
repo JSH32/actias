@@ -29,7 +29,7 @@ schemars = "0.8.12"
 dirs = "5.0"
 tokio-tungstenite = "0.30.0"
 notify = "8.2.0"
-blake3 = "1.8.6"
+blake3 = { workspace = true }
 actias-declarations = { version = "0.1.0", path = "../actias-declarations" }
 
 # `actias test` runs bundles on the same runtime the platform uses, with

@@ -13,6 +13,7 @@ members = [
 
 [workspace.dependencies]
 actias-common = { path = "./actias-common" }
+blake3 = "1.8.6"
 tokio = { version = "1.23.0", features = ["full"] }
 tonic = "0.13.0"
 prost = "0.13.5"

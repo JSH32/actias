@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 actias-common = { workspace = true }
+blake3 = { workspace = true }
 mlua = { version = "0.11", features = [
     "luau-jit",
     "serialize",
