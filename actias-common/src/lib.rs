@@ -1,6 +1,7 @@
 use tracing::{Level, subscriber::SetGlobalDefaultError};
 use tracing_subscriber::FmtSubscriber;
 
+pub mod classes;
 pub mod config;
 pub mod logging;
 pub mod naming;
