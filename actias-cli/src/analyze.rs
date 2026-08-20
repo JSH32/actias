@@ -28,9 +28,28 @@ type KvNamespace = {
     delete: (self: KvNamespace, key: string) -> (),
     list: (self: KvNamespace) -> { [string]: any },
 }
+type ObjectHandle = {
+    get: (self: ObjectHandle, name: string) -> any,
+}
+type Database = {
+    exec: (self: Database, sql: string, params: { any }?) -> number,
+    query: (self: Database, sql: string, params: { any }?) -> { any },
+    query_one: (self: Database, sql: string, params: { any }?) -> any,
+    read: (self: Database, sql: string, params: { any }?) -> { any },
+    read_one: (self: Database, sql: string, params: { any }?) -> any,
+    batch: (self: Database, statements: { any }) -> any,
+}
+type Queue = {
+    send: (self: Queue, payload: any) -> boolean,
+    stats: (self: Queue) -> any,
+}
 local kv: (string) -> KvNamespace = nil :: any
 local secret: (string) -> string = nil :: any
 local on: (string) -> ((any) -> any) -> () = nil :: any
+local object: (string) -> ({ [string]: any }) -> ObjectHandle = nil :: any
+local objects: (string) -> ObjectHandle = nil :: any
+local database: (string) -> Database = nil :: any
+local queue: (string) -> Queue = nil :: any
 local json: { stringify: (any) -> string, parse: (string) -> any } = nil :: any
 local log: { debug: (any) -> (), info: (any) -> (), warn: (any) -> (), error: (any) -> () } = nil :: any
 local uuid: { v4: () -> string } = nil :: any
@@ -41,7 +60,7 @@ local http: any = nil :: any
 local crypto: any = nil :: any
 local jwt: any = nil :: any
 local script: any = nil :: any
-local _ = kv and secret and on and json and log and uuid and getfile and dofile and require and http and crypto and jwt and script
+local _ = kv and secret and on and object and objects and database and queue and json and log and uuid and getfile and dofile and require and http and crypto and jwt and script
 "#;
 
 /// Runs the strict type check over the project's bundle.
