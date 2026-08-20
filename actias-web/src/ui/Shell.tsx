@@ -12,6 +12,7 @@ import * as Dropdown from '@radix-ui/react-dropdown-menu';
 import api from '@/helpers/api';
 import {
   ClassCountDto,
+  WorkflowDefinitionDto,
   NamespaceDto,
   ObjectInstanceDto,
   ProjectDto,
@@ -192,6 +193,11 @@ export function Shell({ children }: React.PropsWithChildren) {
     ? 'scripts'
     : '';
 
+  const { data: navWorkflows } = useQuery({
+    queryKey: ['wf-defs', projectId],
+    queryFn: () => api.workflows.listDefinitions(projectId as string),
+    enabled: !isPublic && !!projectId && section === 'workflows',
+  });
   const { data: navNamespaces } = useQuery({
     queryKey: ['namespaces', projectId],
     queryFn: async () =>
@@ -410,6 +416,33 @@ export function Shell({ children }: React.PropsWithChildren) {
                         <span className={classes.subNavName}>{queue.name}</span>
                         <span className={classes.subNavCount}>
                           {queue.depth}
+                        </span>
+                      </Link>
+                    ),
+                  )}
+                </div>
+              )}
+
+              {section === 'workflows' && (navWorkflows?.length ?? 0) > 0 && (
+                <div className={classes.subNav}>
+                  <div className={classes.subNavLabel}>Workflows</div>
+                  {(navWorkflows ?? []).map(
+                    (definition: WorkflowDefinitionDto) => (
+                      <Link
+                        key={definition.name}
+                        href={`/project/${projectId}/workflows?wf=${encodeURIComponent(
+                          definition.name,
+                        )}`}
+                        className={
+                          router.query.wf === definition.name ||
+                          (!router.query.wf &&
+                            navWorkflows?.[0]?.name === definition.name)
+                            ? classes.subNavItemActive
+                            : classes.subNavItem
+                        }
+                      >
+                        <span className={classes.subNavName}>
+                          {definition.name}
                         </span>
                       </Link>
                     ),
