@@ -12,10 +12,10 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::proto_node_registry::{
-    AcquireLeaseRequest, AlarmRow, ClearAlarmRequest, DueAlarmsRequest, DueAlarmsResponse,
-    GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListInstancesRequest,
-    ListInstancesResponse, ListNodesResponse, Node, NodeRegistration, ObjectInstance,
-    RegisterNodeRequest, ReleaseLeaseRequest, SetAlarmRequest,
+    AcquireLeaseRequest, AlarmRow, ClassCount, ClearAlarmRequest, CountInstancesRequest,
+    CountInstancesResponse, DueAlarmsRequest, DueAlarmsResponse, GetLeaseRequest, GetNodeRequest,
+    HeartbeatRequest, Lease, ListInstancesRequest, ListInstancesResponse, ListNodesResponse, Node,
+    NodeRegistration, ObjectInstance, RegisterNodeRequest, ReleaseLeaseRequest, SetAlarmRequest,
     node_registry_service_server::NodeRegistryService,
 };
 
@@ -92,6 +92,30 @@ impl From<RegistryError> for Status {
                 Status::aborted("The lease was freed mid-claim; try again.")
             }
         }
+    }
+}
+
+/// A prefix made safe for `LIKE`: its wildcards become literals, so a
+/// user typing `%` searches for `%`.
+fn like_prefix(prefix: &str) -> String {
+    let mut escaped = String::with_capacity(prefix.len() + 1);
+    for character in prefix.chars() {
+        if matches!(character, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('%');
+    escaped
+}
+
+/// Rows one directory page may carry; unreasonable requests clamp here
+/// instead of erroring, because a picker retries with whatever it gets.
+fn page_size(requested: u32) -> i64 {
+    if requested == 0 {
+        100
+    } else {
+        i64::from(requested.min(500))
     }
 }
 
@@ -429,22 +453,50 @@ impl NodeRegistryService for NodeRegistry {
         &self,
         request: Request<ListInstancesRequest>,
     ) -> Result<Response<ListInstancesResponse>, Status> {
+        let request = request.get_ref();
         let project_ids: Vec<Uuid> = request
-            .get_ref()
             .project_ids
             .iter()
             .filter_map(|id| Uuid::from_str(id).ok())
             .collect();
+
+        // Empty filters match everything, so one query shape serves the
+        // full listing, the class browse and the type-ahead all alike.
+        let class_filter = request.class.clone();
+        let prefix = like_prefix(&request.name_prefix);
+        let limit = page_size(request.page_size);
+        let offset = i64::from(request.page) * limit;
+
+        let total: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM object_instances
+             WHERE scope_id = ANY($1)
+               AND ($2 = '' OR class = $2)
+               AND name LIKE $3",
+        )
+        .bind(&project_ids)
+        .bind(&class_filter)
+        .bind(&prefix)
+        .fetch_one(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
 
         // Cron rows scope to their script, so a project listing never
         // matches them: only resource identities surface here.
         let rows: Vec<(Uuid, String, String, Uuid, i64)> = sqlx::query_as(
             "SELECT scope_id, class, name, script_id,
                     (EXTRACT(EPOCH FROM created) * 1000)::BIGINT
-             FROM object_instances WHERE scope_id = ANY($1)
-             ORDER BY class, name",
+             FROM object_instances
+             WHERE scope_id = ANY($1)
+               AND ($2 = '' OR class = $2)
+               AND name LIKE $3
+             ORDER BY class, name
+             LIMIT $4 OFFSET $5",
         )
         .bind(&project_ids)
+        .bind(&class_filter)
+        .bind(&prefix)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.database)
         .await
         .map_err(RegistryError::Store)?;
@@ -461,6 +513,39 @@ impl NodeRegistryService for NodeRegistry {
                         created_ms,
                     },
                 )
+                .collect(),
+            total: total.max(0) as u64,
+        }))
+    }
+
+    async fn count_instances(
+        &self,
+        request: Request<CountInstancesRequest>,
+    ) -> Result<Response<CountInstancesResponse>, Status> {
+        let project_ids: Vec<Uuid> = request
+            .get_ref()
+            .project_ids
+            .iter()
+            .filter_map(|id| Uuid::from_str(id).ok())
+            .collect();
+
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT class, count(*) FROM object_instances
+             WHERE scope_id = ANY($1)
+             GROUP BY class ORDER BY class",
+        )
+        .bind(&project_ids)
+        .fetch_all(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(CountInstancesResponse {
+            counts: rows
+                .into_iter()
+                .map(|(class, count)| ClassCount {
+                    class,
+                    count: count.max(0) as u64,
+                })
                 .collect(),
         }))
     }
@@ -622,6 +707,7 @@ mod tests {
         let listed = registry
             .list_instances(Request::new(ListInstancesRequest {
                 project_ids: vec![project.to_string()],
+                ..Default::default()
             }))
             .await
             .expect("lists")
@@ -647,6 +733,7 @@ mod tests {
         let survives = registry
             .list_instances(Request::new(ListInstancesRequest {
                 project_ids: vec![project.to_string()],
+                ..Default::default()
             }))
             .await
             .expect("lists again")
@@ -748,6 +835,88 @@ mod tests {
             freed.is_err_and(|status| status.code() == tonic::Code::NotFound),
             "a dead holder must read as unheld"
         );
+    }
+
+    #[tokio::test]
+    async fn a_seeded_class_of_ten_thousand_pages_by_prefix() {
+        let (registry, database, _guard) = registry(60).await;
+        let project = Uuid::new_v4();
+        let script = Uuid::new_v4();
+
+        // Seeded directly: 10k claims through the rpc would test postgres
+        // insert speed, not the directory; the rows are the same.
+        sqlx::query(
+            "INSERT INTO object_instances (scope_id, class, name, script_id)
+             SELECT $1, 'UserCart', 'user-' || lpad(n::text, 5, '0'), $2
+             FROM generate_series(1, 10000) AS n",
+        )
+        .bind(project)
+        .bind(script)
+        .execute(&database)
+        .await
+        .expect("seeds");
+        sqlx::query(
+            "INSERT INTO object_instances (scope_id, class, name, script_id)
+             VALUES ($1, 'Warehouse', 'eu-west', $2)",
+        )
+        .bind(project)
+        .bind(script)
+        .execute(&database)
+        .await
+        .expect("seeds the small class");
+
+        let list = |class: &str, prefix: &str, page: u32, page_size: u32| {
+            let registry = &registry;
+            let request = ListInstancesRequest {
+                project_ids: vec![project.to_string()],
+                class: class.to_owned(),
+                name_prefix: prefix.to_owned(),
+                page_size,
+                page,
+            };
+            async move {
+                registry
+                    .list_instances(Request::new(request))
+                    .await
+                    .expect("lists")
+                    .into_inner()
+            }
+        };
+
+        // The counts answer the rail without touching a single name.
+        let counts = registry
+            .count_instances(Request::new(CountInstancesRequest {
+                project_ids: vec![project.to_string()],
+            }))
+            .await
+            .expect("counts")
+            .into_inner()
+            .counts;
+        assert_eq!(
+            counts
+                .iter()
+                .map(|row| (row.class.as_str(), row.count))
+                .collect::<Vec<_>>(),
+            vec![("UserCart", 10_000), ("Warehouse", 1)],
+        );
+
+        // A prefix narrows 10k to the ten `user-0042x` names, paged.
+        let narrowed = list("UserCart", "user-0042", 0, 4).await;
+        assert_eq!(narrowed.total, 10, "user-00420..user-00429");
+        assert_eq!(narrowed.instances.len(), 4);
+        assert_eq!(narrowed.instances[0].name, "user-00420");
+        let last_page = list("UserCart", "user-0042", 2, 4).await;
+        assert_eq!(last_page.instances.len(), 2, "10 rows = pages of 4,4,2");
+        assert_eq!(last_page.instances[1].name, "user-00429");
+
+        // A LIKE wildcard in the prefix is a literal, not a wildcard.
+        let literal = list("UserCart", "user-%", 0, 10).await;
+        assert_eq!(literal.total, 0, "nobody is named 'user-%...'");
+
+        // The unfiltered listing clamps instead of returning 10k rows.
+        let unfiltered = list("", "", 0, 0).await;
+        assert_eq!(unfiltered.total, 10_001);
+        assert_eq!(unfiltered.instances.len(), 100, "the default page");
     }
 
     #[tokio::test]

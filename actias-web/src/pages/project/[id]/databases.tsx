@@ -91,9 +91,24 @@ function Databases({
     queryKey: ['databases', project.id],
     queryFn: () => api.resources.listDatabases(project.id),
   });
-  const { data: objects } = useQuery({
-    queryKey: ['object-instances', project.id],
-    queryFn: () => api.resources.listObjects(project.id),
+  // One filtered directory page names exactly the selected object; a
+  // per-user class never gets enumerated for one row's metadata.
+  const { data: objectMatch } = useQuery({
+    queryKey: [
+      'object-instance',
+      project.id,
+      selectedObj?.class,
+      selectedObj?.name,
+    ],
+    queryFn: () =>
+      api.resources.listObjects(
+        project.id,
+        selectedObj!.class,
+        selectedObj!.name,
+        0,
+        10,
+      ),
+    enabled: !!selectedObj,
   });
 
   const active =
@@ -107,7 +122,7 @@ function Databases({
     ? {
         ...selectedObj,
         declaredBy:
-          (objects ?? []).find(
+          (objectMatch?.items ?? []).find(
             (entry: ObjectInstanceDto) =>
               entry.class === selectedObj.class &&
               entry.name === selectedObj.name,

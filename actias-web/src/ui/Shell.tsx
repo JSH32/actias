@@ -11,6 +11,7 @@ import { useQuery } from '@tanstack/react-query';
 import * as Dropdown from '@radix-ui/react-dropdown-menu';
 import api from '@/helpers/api';
 import {
+  ClassCountDto,
   NamespaceDto,
   ObjectInstanceDto,
   ProjectDto,
@@ -69,6 +70,80 @@ function PublicChrome({ children }: React.PropsWithChildren) {
         </nav>
       </header>
       <main>{children}</main>
+    </div>
+  );
+}
+
+/** Instances that render inline before a class becomes a picker: past
+ * this a class is per-user shaped, looked up by name, never browsed. */
+const INLINE_INSTANCE_LIMIT = 10;
+
+/**
+ * One object class in the SOURCES rail. Small classes list their
+ * instances outright; a large one shows its count and a type-ahead that
+ * asks the directory for prefix matches as you type.
+ */
+function RailObjectClass({
+  projectId,
+  klass,
+  count,
+  railObj,
+}: {
+  projectId: string;
+  klass: string;
+  count: number;
+  railObj: string | null;
+}) {
+  const [term, setTerm] = React.useState('');
+  const small = count <= INLINE_INSTANCE_LIMIT;
+  const { data } = useQuery({
+    queryKey: ['object-instances', projectId, klass, small ? '' : term],
+    queryFn: () =>
+      api.resources.listObjects(
+        projectId,
+        klass,
+        small ? '' : term,
+        0,
+        INLINE_INSTANCE_LIMIT,
+      ),
+    enabled: small || term.length > 0,
+  });
+  const matches = data?.items ?? [];
+  const beyond = (data?.total ?? 0) - matches.length;
+
+  return (
+    <div>
+      <div className={classes.railSectionHead}>
+        <span className={classes.railName}>{klass}</span>
+        <span className={classes.railMeta}>{count}</span>
+      </div>
+      {!small && (
+        <input
+          className={classes.railFind}
+          placeholder={`Find by name in ${count}`}
+          value={term}
+          onChange={(event) => setTerm(event.target.value)}
+        />
+      )}
+      {matches.map((instance: ObjectInstanceDto) => (
+        <Link
+          key={`${instance.class}/${instance.name}`}
+          href={`/project/${projectId}/databases?obj=${encodeURIComponent(
+            `${instance.class}/${instance.name}`,
+          )}`}
+          className={
+            railObj === `${instance.class}/${instance.name}`
+              ? classes.railItemActive
+              : classes.railItem
+          }
+          title={`class ${instance.class}, runs ${instance.declaredBy}`}
+        >
+          <span className={classes.railName}>{instance.name}</span>
+        </Link>
+      ))}
+      {!small && term && beyond > 0 && (
+        <p className={classes.railNote}>{beyond} more match; keep typing.</p>
+      )}
     </div>
   );
 }
@@ -156,9 +231,9 @@ export function Shell({ children }: React.PropsWithChildren) {
     queryFn: () => api.resources.listDatabases(projectId as string),
     enabled: !isPublic && !!projectId && section === 'databases',
   });
-  const { data: navObjects } = useQuery({
-    queryKey: ['object-instances', projectId],
-    queryFn: () => api.resources.listObjects(projectId as string),
+  const { data: objectCounts } = useQuery({
+    queryKey: ['object-counts', projectId],
+    queryFn: () => api.resources.countObjects(projectId as string),
     enabled: !isPublic && !!projectId && section === 'databases',
   });
   const queueDepthTotal = (navQueues ?? []).reduce(
@@ -463,7 +538,7 @@ export function Shell({ children }: React.PropsWithChildren) {
               </Link>
             ))}
           </div>
-          {(navObjects?.length ?? 0) > 0 && (
+          {(objectCounts?.length ?? 0) > 0 && (
             <div className={classes.railSection}>
               <div className={classes.railSectionHead}>
                 <Icon name="kv" size={13} />
@@ -473,22 +548,14 @@ export function Shell({ children }: React.PropsWithChildren) {
                 Each durable object owns a private SQLite file. Reading one
                 places you on its node.
               </p>
-              {(navObjects ?? []).map((instance: ObjectInstanceDto) => (
-                <Link
-                  key={`${instance.class}/${instance.name}`}
-                  href={`/project/${projectId}/databases?obj=${encodeURIComponent(
-                    `${instance.class}/${instance.name}`,
-                  )}`}
-                  className={
-                    railObj === `${instance.class}/${instance.name}`
-                      ? classes.railItemActive
-                      : classes.railItem
-                  }
-                  title={`class ${instance.class}, runs ${instance.declaredBy}`}
-                >
-                  <span className={classes.railName}>{instance.name}</span>
-                  <span className={classes.railMeta}>{instance.class}</span>
-                </Link>
+              {(objectCounts ?? []).map((row: ClassCountDto) => (
+                <RailObjectClass
+                  key={row.class}
+                  projectId={projectId as string}
+                  klass={row.class}
+                  count={row.count}
+                  railObj={railObj}
+                />
               ))}
             </div>
           )}

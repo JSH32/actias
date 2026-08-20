@@ -1,8 +1,9 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { ClassCountDto } from '../models/ClassCountDto';
 import type { DatabaseOverviewDto } from '../models/DatabaseOverviewDto';
-import type { ObjectInstanceDto } from '../models/ObjectInstanceDto';
+import type { ObjectPageDto } from '../models/ObjectPageDto';
 import type { QueueEventDto } from '../models/QueueEventDto';
 import type { QueueMessageDto } from '../models/QueueMessageDto';
 import type { QueueStatsDto } from '../models/QueueStatsDto';
@@ -164,17 +165,52 @@ export class ResourcesService {
     }
 
     /**
-     * Durable object instances the directory knows, user classes only.
+     * Durable object instances the directory knows, user classes only;
+     * filterable by class and name prefix, always paged, because a
+     * per-user class holds one instance per user.
      * @param project
-     * @returns ObjectInstanceDto
+     * @param _class
+     * @param prefix
+     * @param page
+     * @param pageSize
+     * @returns ObjectPageDto
      * @throws ApiError
      */
     public listObjects(
         project: string,
-    ): CancelablePromise<Array<ObjectInstanceDto>> {
+        _class?: string,
+        prefix?: string,
+        page?: number,
+        pageSize?: number,
+    ): CancelablePromise<ObjectPageDto> {
         return this.httpRequest.request({
             method: 'GET',
             url: '/api/project/{project}/resources/objects',
+            path: {
+                'project': project,
+            },
+            query: {
+                'class': _class,
+                'prefix': prefix,
+                'page': page,
+                'pageSize': pageSize,
+            },
+        });
+    }
+
+    /**
+     * How many instances each user class holds: what the rail renders
+     * before anyone asks for names.
+     * @param project
+     * @returns ClassCountDto
+     * @throws ApiError
+     */
+    public countObjects(
+        project: string,
+    ): CancelablePromise<Array<ClassCountDto>> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/project/{project}/resources/objects/counts',
             path: {
                 'project': project,
             },

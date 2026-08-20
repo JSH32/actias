@@ -38,9 +38,14 @@ service NodeRegistryService {
     // with the freshest copy.
     rpc GetLease(GetLeaseRequest) returns (Lease);
 
-    // Every object identity ever claimed for the given scripts: the
-    // instance directory, which outlives the contracts that declared it.
+    // Object identities from the instance directory, which outlives the
+    // contracts that declared them; filterable by class and name prefix,
+    // always paged, because per-user classes grow with the user table.
     rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse);
+
+    // How many directory identities each class holds, per project: what
+    // a console rail shows before anyone asks for actual names.
+    rpc CountInstances(CountInstancesRequest) returns (CountInstancesResponse);
 
     // Mirrors one object's armed alarm; setting replaces. Written by the
     // hosting node asynchronously, OFF the call's transaction, so a
@@ -58,6 +63,29 @@ service NodeRegistryService {
 
 message ListInstancesRequest {
     repeated string project_ids = 1;
+    // Only this class's identities; empty lists every class.
+    string class = 2;
+    // Only names starting with this prefix; how a type-ahead picker
+    // narrows a class too large to browse. Empty matches everything.
+    string name_prefix = 3;
+    // Rows per page; the server clamps unreasonable values.
+    uint32 page_size = 4;
+    // Zero-based page over the filtered, (class, name)-ordered rows.
+    uint32 page = 5;
+}
+
+message CountInstancesRequest {
+    repeated string project_ids = 1;
+}
+
+message ClassCount {
+    string class = 1;
+    uint64 count = 2;
+}
+
+message CountInstancesResponse {
+    // One row per class holding at least one identity, class-ordered.
+    repeated ClassCount counts = 1;
 }
 
 message ObjectInstance {
@@ -75,6 +103,9 @@ message ObjectInstance {
 
 message ListInstancesResponse {
     repeated ObjectInstance instances = 1;
+    // Rows matching the filter across every page, so a picker can say
+    // "12,340 more".
+    uint64 total = 2;
 }
 
 message GetNodeRequest {

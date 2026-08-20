@@ -61,13 +61,21 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<Lease>;
-        // Every object identity ever claimed for the given scripts: the
-    // instance directory, which outlives the contracts that declared it.
+        // Object identities from the instance directory, which outlives the
+    // contracts that declared them; filterable by class and name prefix,
+    // always paged, because per-user classes grow with the user table.
         listInstances(
             data: ListInstancesRequest,
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ListInstancesResponse>;
+        // How many directory identities each class holds, per project: what
+    // a console rail shows before anyone asks for actual names.
+        countInstances(
+            data: CountInstancesRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<CountInstancesResponse>;
         // Mirrors one object&#x27;s armed alarm; setting replaces. Written by the
     // hosting node asynchronously, OFF the call&#x27;s transaction, so a
     // spurious row (a rolled-back arm) only ever costs a wasted wake.
@@ -93,6 +101,26 @@ export namespace node_registry {
     }
     export interface ListInstancesRequest {
         projectIds?: string[];
+        // Only this class&#x27;s identities; empty lists every class.
+        class?: string;
+        // Only names starting with this prefix; how a type-ahead picker
+    // narrows a class too large to browse. Empty matches everything.
+        namePrefix?: string;
+        // Rows per page; the server clamps unreasonable values.
+        pageSize?: number;
+        // Zero-based page over the filtered, (class, name)-ordered rows.
+        page?: number;
+    }
+    export interface CountInstancesRequest {
+        projectIds?: string[];
+    }
+    export interface ClassCount {
+        class?: string;
+        count?: number;
+    }
+    export interface CountInstancesResponse {
+        // One row per class holding at least one identity, class-ordered.
+        counts?: node_registry.ClassCount[];
     }
     export interface ObjectInstance {
         // Identity scope: the project for resource classes. Cron rows scope
@@ -108,6 +136,9 @@ export namespace node_registry {
     }
     export interface ListInstancesResponse {
         instances?: node_registry.ObjectInstance[];
+        // Rows matching the filter across every page, so a picker can say
+    // &quot;12,340 more&quot;.
+        total?: number;
     }
     export interface GetNodeRequest {
         nodeId?: string;

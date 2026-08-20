@@ -23,8 +23,9 @@ import { script_service } from 'src/protobufs/script_service';
 import { node_registry } from 'src/protobufs/node_registry';
 import { worker_data } from 'src/protobufs/worker_data';
 import {
+  ClassCountDto,
   DatabaseOverviewDto,
-  ObjectInstanceDto,
+  ObjectPageDto,
   QueueEventDto,
   QueueMessageDto,
   QueueStatsDto,
@@ -36,6 +37,12 @@ import {
 
 /** The platform class each resource kind rides on. */
 const CLASSES = { queues: '__queue', databases: '__database' } as const;
+
+/** Rows one directory page may carry; larger asks clamp, never error. */
+export function clampPageSize(requested?: number): number {
+  if (!requested || requested <= 0 || Number.isNaN(requested)) return 100;
+  return Math.min(Math.floor(requested), 500);
+}
 
 /**
  * A project's object-backed resources: queues and sql databases. Identity
@@ -196,20 +203,30 @@ export class ResourcesController {
     ]);
   }
 
-  /** Durable object instances the directory knows, user classes only. */
+  /** Durable object instances the directory knows, user classes only;
+   * filterable by class and name prefix, always paged, because a
+   * per-user class holds one instance per user. */
   @Get('objects')
   @AclByProject(AccessFields.SCRIPT_READ)
   @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  @ApiQuery({ name: 'class', required: false, type: String })
+  @ApiQuery({ name: 'prefix', required: false, type: String })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
   async listObjects(
     @EntityParam('project', Projects) project: Projects,
-  ): Promise<ObjectInstanceDto[]> {
-    const page = await lastValueFrom(
+    @Query('class') className?: string,
+    @Query('prefix') prefix?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ): Promise<ObjectPageDto> {
+    const scripts = await lastValueFrom(
       this.scripts
         .listScripts({ projectId: project.id, pageSize: 500, page: 1 })
         .pipe(toHttpException()),
     );
     const identifiers = new Map(
-      (page.scripts || []).map((script) => [
+      (scripts.scripts || []).map((script) => [
         script.id,
         script.publicIdentifier,
       ]),
@@ -217,16 +234,45 @@ export class ResourcesController {
 
     const directory = await lastValueFrom(
       this.registry
-        .listInstances({ projectIds: [project.id] })
+        .listInstances({
+          projectIds: [project.id],
+          class: className ?? '',
+          namePrefix: prefix ?? '',
+          pageSize: clampPageSize(Number(pageSize)),
+          page: Math.max(0, Math.floor(Number(page) || 0)),
+        })
         .pipe(toHttpException()),
     );
-    return (directory.instances || [])
-      .filter((instance) => !instance.class.startsWith('__'))
-      .map((instance) => ({
-        class: instance.class,
-        name: instance.name,
-        declaredBy: identifiers.get(instance.scriptId) ?? '',
-      }));
+    return {
+      items: (directory.instances || [])
+        .filter((instance) => !instance.class.startsWith('__'))
+        .map((instance) => ({
+          class: instance.class,
+          name: instance.name,
+          declaredBy: identifiers.get(instance.scriptId) ?? '',
+        })),
+      total: Number(directory.total ?? 0),
+    };
+  }
+
+  /** How many instances each user class holds: what the rail renders
+   * before anyone asks for names. */
+  @Get('objects/counts')
+  @AclByProject(AccessFields.SCRIPT_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async countObjects(
+    @EntityParam('project', Projects) project: Projects,
+  ): Promise<ClassCountDto[]> {
+    const counted = await lastValueFrom(
+      this.registry
+        .countInstances({ projectIds: [project.id] })
+        .pipe(toHttpException()),
+    );
+    // Platform classes have their own sections; the rail's object group
+    // is user classes alone.
+    return (counted.counts || [])
+      .filter((row) => !row.class.startsWith('__'))
+      .map((row) => ({ class: row.class, count: Number(row.count ?? 0) }));
   }
 
   /** The queue's journal after `since`: enqueued, delivered, retried and
@@ -447,7 +493,11 @@ export class ResourcesController {
 
     const directory = await lastValueFrom(
       this.registry
-        .listInstances({ projectIds: [project.id] })
+        .listInstances({
+          projectIds: [project.id],
+          class: CLASSES[kind],
+          pageSize: 500,
+        })
         .pipe(toHttpException()),
     );
     for (const instance of directory.instances || []) {
