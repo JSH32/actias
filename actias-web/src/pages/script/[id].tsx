@@ -160,6 +160,7 @@ const Script = () => {
               [
                 ['kv', 'KV namespaces'],
                 ['databases', 'Databases'],
+                ['queues', 'Queues'],
                 ['objects', 'Object classes'],
                 ['events', 'Events'],
                 ['secrets', 'Secrets'],

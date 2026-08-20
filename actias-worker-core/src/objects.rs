@@ -109,6 +109,9 @@ pub struct TaskOptions {
     /// The output gate: runs after any call that wrote, before its caller
     /// hears the result. Snapshot shipping lives here.
     pub after_write: Option<AfterWrite>,
+    /// Delivery limits for `__queue` instances; the default is the
+    /// production policy.
+    pub queue: crate::platform::queue::QueuePolicy,
 }
 
 pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> ObjectHandle {
@@ -119,7 +122,9 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         storage,
         hibernate_after,
         after_write,
+        queue,
     } = options;
+    runtime.set_app_data(queue);
 
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
 
@@ -132,9 +137,10 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
             .load_alarm()
             .ok()
             .flatten()
-            .map(|(due_ms, class, own_key)| PendingAlarm {
+            .map(|(due_ms, class, name, own_key)| PendingAlarm {
                 due_ms,
                 class,
+                name,
                 own_key,
             });
         runtime.set_app_data(AlarmCell(std::cell::RefCell::new(pending)));
@@ -226,6 +232,7 @@ async fn fire_alarm(
         serde_json::json!({
             "class": alarm.class,
             "method": "alarm",
+            "name": alarm.name,
             "args": [],
             "chain": [alarm.own_key],
         }),
@@ -265,7 +272,13 @@ async fn guarded_dispatch(
     if let Some(seconds) = call_budget {
         runtime.begin_call_budget(seconds);
     }
-    let result = dispatch(runtime, method, payload).await;
+    // Platform-implemented classes never enter the vm; everything else is
+    // the Lua dispatch, user classes and Lua-bodied platform classes alike.
+    let result = if crate::platform::handles(method, &payload) {
+        crate::platform::dispatch(runtime, payload).await
+    } else {
+        dispatch(runtime, method, payload).await
+    };
     runtime.end_call_budget();
 
     if has_storage && let Some(cell) = runtime.app_data_ref::<crate::storage::StorageCell>() {
@@ -291,13 +304,14 @@ async fn guarded_dispatch(
                         .load_alarm()
                         .ok()
                         .flatten()
-                        .map(
-                            |(due_ms, class, own_key)| crate::extensions::objects::PendingAlarm {
+                        .map(|(due_ms, class, name, own_key)| {
+                            crate::extensions::objects::PendingAlarm {
                                 due_ms,
                                 class,
+                                name,
                                 own_key,
-                            },
-                        );
+                            }
+                        });
                 drop(storage);
                 if let Some(cell) = runtime.app_data_ref::<crate::extensions::objects::AlarmCell>()
                 {
@@ -737,6 +751,7 @@ mod tests {
                     secrets: vec![],
                     objects: vec![],
                     databases: vec![],
+                    queues: vec![],
                 }),
             }),
             ..Default::default()
@@ -1480,6 +1495,164 @@ mod tests {
             .expect("marks read");
         let marks = marks.as_i64().unwrap_or(0);
         assert!(marks >= 2, "the schedule must self-perpetuate: {marks}");
+    }
+
+    /// The queue substrate end to end: send enqueues, the alarm loop
+    /// delivers to the `on "queue:<name>"` listener, and the payload
+    /// survives the json round trip through sqlite.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_queue_delivers_sent_messages_to_the_listener() {
+        const SOURCE: &str = r#"
+            got = nil
+            on "queue:jobs" (function(message)
+                sleep_ms(5)
+                got = message
+            end)
+            function get_got() return got end
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("q.db")).expect("opens"),
+                ),
+                ..Default::default()
+            },
+        );
+
+        handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "__queue", "name": "jobs", "method": "send",
+                    "args": [{"kind": "render", "frame": 17}],
+                }),
+            )
+            .await
+            .expect("send enqueues");
+
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let got = handle
+            .call("get_got", serde_json::Value::Null)
+            .await
+            .expect("read back");
+        assert_eq!(got["kind"], "render", "payload round-trips: {got}");
+        assert_eq!(got["frame"], 17);
+    }
+
+    /// A refused delivery retries with backoff and succeeds on the second
+    /// attempt; nothing is lost and nothing dead-letters.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_delivery_retries_until_the_handler_accepts() {
+        const SOURCE: &str = r#"
+            tries = 0
+            on "queue:jobs" (function(message)
+                tries = tries + 1
+                if tries < 2 then error("not yet") end
+            end)
+            function get_tries() return tries end
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("q.db")).expect("opens"),
+                ),
+                // Compressed backoff: production waits seconds, the test
+                // needs the retry inside its own window.
+                queue: crate::platform::queue::QueuePolicy {
+                    backoff_base_ms: 20,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "__queue", "name": "jobs", "method": "send", "args": ["once"],
+                }),
+            )
+            .await
+            .expect("send enqueues");
+
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let tries = handle
+            .call("get_tries", serde_json::Value::Null)
+            .await
+            .expect("tries read");
+        assert_eq!(tries.as_i64(), Some(2), "one refusal, one delivery");
+
+        let stats = handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "__queue", "name": "jobs", "method": "stats", "args": [],
+                }),
+            )
+            .await
+            .expect("stats");
+        assert_eq!(stats["depth"], 0, "the retried message was consumed");
+        assert_eq!(stats["dead_letters"], 0);
+    }
+
+    /// A poison message exhausts its attempts and lands in the dead-letter
+    /// table instead of blocking the queue forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_poison_message_dead_letters_after_max_attempts() {
+        const SOURCE: &str = r#"
+            on "queue:jobs" (function(message)
+                error("always refuses")
+            end)
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("q.db")).expect("opens"),
+                ),
+                // Compressed backoff so all five attempts fit the test.
+                queue: crate::platform::queue::QueuePolicy {
+                    backoff_base_ms: 5,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "__queue", "name": "jobs", "method": "send", "args": ["poison"],
+                }),
+            )
+            .await
+            .expect("send enqueues");
+
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        let stats = handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "__queue", "name": "jobs", "method": "stats", "args": [],
+                }),
+            )
+            .await
+            .expect("stats");
+        assert_eq!(stats["depth"], 0, "the poison message left the queue");
+        assert_eq!(
+            stats["dead_letters"], 1,
+            "and landed in the dead-letter table"
+        );
     }
 
     #[test]

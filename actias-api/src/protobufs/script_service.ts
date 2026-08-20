@@ -44,6 +44,8 @@ export namespace script_service {
         objects?: string[];
         // Databases declared with &#x60;database &quot;name&quot;&#x60;.
         databases?: string[];
+        // Queues declared with &#x60;queue &quot;name&quot;&#x60;.
+        queues?: string[];
     }
     export interface ScriptConfig {
         id?: string;

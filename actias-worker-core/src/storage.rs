@@ -209,7 +209,7 @@ impl SqliteStorage {
     ///
     /// # Errors
     /// Returns SQLite's message for anything but the missing table.
-    pub fn peek_alarm(&mut self) -> Result<Option<(i64, String, String)>, String> {
+    pub fn peek_alarm(&mut self) -> Result<Option<(i64, String, String, String)>, String> {
         match self.load_alarm_row() {
             Ok(alarm) => Ok(alarm),
             Err(error) if error.contains("no such table") => Ok(None),
@@ -217,20 +217,21 @@ impl SqliteStorage {
         }
     }
 
-    /// The persisted alarm, if one is set: (due unix ms, class, own key).
+    /// The persisted alarm, if one is set: (due unix ms, class, instance
+    /// name, own key).
     ///
     /// # Errors
     /// Returns SQLite's message.
-    pub fn load_alarm(&mut self) -> Result<Option<(i64, String, String)>, String> {
+    pub fn load_alarm(&mut self) -> Result<Option<(i64, String, String, String)>, String> {
         self.ensure_meta()?;
         self.load_alarm_row()
     }
 
     /// The alarm row itself, assuming the table exists.
-    fn load_alarm_row(&mut self) -> Result<Option<(i64, String, String)>, String> {
+    fn load_alarm_row(&mut self) -> Result<Option<(i64, String, String, String)>, String> {
         let mut statement = self
             .connection
-            .prepare("SELECT due_ms, class, own_key FROM __actias_alarm")
+            .prepare("SELECT due_ms, class, name, own_key FROM __actias_alarm")
             .map_err(|e| e.to_string())?;
         let mut rows = statement.query([]).map_err(|e| e.to_string())?;
 
@@ -239,6 +240,7 @@ impl SqliteStorage {
                 row.get(0).map_err(|e| e.to_string())?,
                 row.get(1).map_err(|e| e.to_string())?,
                 row.get(2).map_err(|e| e.to_string())?,
+                row.get(3).map_err(|e| e.to_string())?,
             ))),
             None => Ok(None),
         }
@@ -248,15 +250,21 @@ impl SqliteStorage {
     ///
     /// # Errors
     /// Returns SQLite's message.
-    pub fn save_alarm(&mut self, due_ms: i64, class: &str, own_key: &str) -> Result<(), String> {
+    pub fn save_alarm(
+        &mut self,
+        due_ms: i64,
+        class: &str,
+        name: &str,
+        own_key: &str,
+    ) -> Result<(), String> {
         self.ensure_meta()?;
         self.connection
             .execute("DELETE FROM __actias_alarm", [])
             .map_err(|e| e.to_string())?;
         self.connection
             .execute(
-                "INSERT INTO __actias_alarm (due_ms, class, own_key) VALUES (?, ?, ?)",
-                rusqlite::params![due_ms, class, own_key],
+                "INSERT INTO __actias_alarm (due_ms, class, name, own_key) VALUES (?, ?, ?, ?)",
+                rusqlite::params![due_ms, class, name, own_key],
             )
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -275,11 +283,19 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// The bare connection, for platform-owned statements. The script
+    /// guard exists only around script-issued SQL; platform modules drive
+    /// the connection directly, the way the alarm and migration helpers
+    /// here do.
+    pub(crate) fn platform(&mut self) -> &mut rusqlite::Connection {
+        &mut self.connection
+    }
+
     /// The reserved platform table; `__` prefixes are refused to scripts.
     fn ensure_meta(&mut self) -> Result<(), String> {
         self.connection
             .execute(
-                "CREATE TABLE IF NOT EXISTS __actias_alarm                  (due_ms INTEGER NOT NULL, class TEXT NOT NULL, own_key TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS __actias_alarm                  (due_ms INTEGER NOT NULL, class TEXT NOT NULL, name TEXT NOT NULL, own_key TEXT NOT NULL)",
                 [],
             )
             .map_err(|e| e.to_string())?;

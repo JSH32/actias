@@ -32,6 +32,10 @@ pub const DATABASE_CLASS: &str = "__database";
 /// event, whose alarm re-arms the next occurrence and fires the listener.
 pub const CRON_CLASS: &str = "__cron";
 
+/// The built-in class behind `queue "name"`: its sqlite is the message
+/// store, its alarm loop is the delivery loop.
+pub const QUEUE_CLASS: &str = "__queue";
+
 /// Milliseconds until a cron event's next occurrence. The expression is
 /// whatever follows `cron:`; classic five-field expressions gain a seconds
 /// column, since the parser wants six.
@@ -86,6 +90,9 @@ pub struct PendingAlarm {
     pub due_ms: i64,
     /// Class whose `alarm` method runs.
     pub class: String,
+    /// Instance name, so the alarm dispatch identifies its object the way
+    /// every other dispatch does.
+    pub name: String,
     /// The object's own key, seeding the alarm dispatch's call chain.
     pub own_key: String,
 }
@@ -176,6 +183,19 @@ impl LuaExtension for ObjectExtension {
                 ActiasRuntime::assert_contract_allows(lua, ContractKind::Database, &name)?;
                 ActiasRuntime::record_database_declaration(lua, &name);
                 instance_handle(lua, DATABASE_CLASS.to_owned(), name)
+            })?,
+        )?;
+
+        // `queue "name"`: a durable message queue, sugar over an object of
+        // the built-in class. `:send` enqueues; the revision declaring
+        // `on "queue:<name>"` consumes, driven by the object's alarm.
+        lua.globals().set(
+            "queue",
+            lua.create_function(|lua, name: String| {
+                ActiasRuntime::assert_declaration_phase(lua, "queue")?;
+                ActiasRuntime::assert_contract_allows(lua, ContractKind::Queue, &name)?;
+                ActiasRuntime::record_queue_declaration(lua, &name);
+                instance_handle(lua, QUEUE_CLASS.to_owned(), name)
             })?,
         )?;
 
@@ -379,18 +399,21 @@ fn cron_class(lua: &Lua) -> mlua::Result<Table> {
     // Errors are contained here in rust rather than by a lua pcall: the
     // handler may yield (async platform calls), and Luau cannot yield
     // across a pcall's C boundary. A failing handler is logged and the
-    // alarm method still succeeds, so the re-arm always commits.
+    // caller keeps running, so a bad handler can never kill a schedule or
+    // a delivery loop. The boolean is the delivery verdict: cron ignores
+    // it, queues retry on false.
     lua.globals().set(
         "__fire_event",
         lua.create_async_function(|lua, (event, payload): (String, mlua::Value)| async move {
             let Ok(listener) = ActiasRuntime::listener_in(&lua, &event) else {
-                actias_common::tracing::warn!(event, "no listener registered for cron event");
-                return Ok(());
+                actias_common::tracing::warn!(event, "no listener registered for event");
+                return Ok(false);
             };
             if let Err(error) = listener.call_async::<mlua::Value>(payload).await {
-                actias_common::tracing::warn!(%error, event, "cron handler failed");
+                actias_common::tracing::warn!(%error, event, "event handler failed");
+                return Ok(false);
             }
-            Ok(())
+            Ok(true)
         })?,
     )?;
 
@@ -420,9 +443,10 @@ fn cron_class(lua: &Lua) -> mlua::Result<Table> {
     .eval()
 }
 
-/// Which class the pinned vm is currently dispatching for.
+/// Which class and instance the pinned vm is currently dispatching for.
 struct CurrentDispatch {
     class: String,
+    name: String,
 }
 
 /// `state:set_alarm(duration)`: at most one alarm per object; setting
@@ -442,9 +466,9 @@ fn set_alarm(lua: &Lua, (_this, duration): (Table, mlua::Value)) -> mlua::Result
         }
     };
 
-    let class = lua
+    let (class, name) = lua
         .app_data_ref::<CurrentDispatch>()
-        .map(|current| current.class.clone())
+        .map(|current| (current.class.clone(), current.name.clone()))
         .ok_or_else(|| {
             mlua::Error::RuntimeError("set_alarm only works inside an object method.".to_owned())
         })?;
@@ -456,13 +480,14 @@ fn set_alarm(lua: &Lua, (_this, duration): (Table, mlua::Value)) -> mlua::Result
     let alarm = PendingAlarm {
         due_ms: unix_now_ms() + delay_ms,
         class,
+        name,
         own_key,
     };
 
     if let Some(cell) = lua.app_data_ref::<crate::storage::StorageCell>() {
         cell.0
             .borrow_mut()
-            .save_alarm(alarm.due_ms, &alarm.class, &alarm.own_key)
+            .save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
             .map_err(mlua::Error::RuntimeError)?;
     }
 
@@ -562,6 +587,7 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
             lua.set_app_data(CallChain(call.chain.clone()));
             lua.set_app_data(CurrentDispatch {
                 class: call.class.clone(),
+                name: call.name.clone(),
             });
 
             let classes: Table = lua.named_registry_value(CLASSES_KEY)?;
@@ -591,6 +617,10 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
                     (state, true)
                 }
             };
+
+            // The object knows its own name; the queue class keys its
+            // event off it, and user code gets it for free.
+            state.set("name", call.name.as_str())?;
 
             // A database applies its pending migrations before anything
             // else, once per vm life: the tracking rows ride the call's

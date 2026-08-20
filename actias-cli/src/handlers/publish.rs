@@ -57,6 +57,12 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
             declared.databases.join(", ").purple()
         );
     }
+    if !declared.queues.is_empty() {
+        println!(
+            "📬 Declares queues: {}",
+            declared.queues.join(", ").purple()
+        );
+    }
 
     let mut config_dto: ScriptConfigDto = script_config.clone().into();
     config_dto.capabilities = Some(CapabilitiesDto {
@@ -65,6 +71,7 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         secrets: declared.secrets,
         objects: declared.objects,
         databases: declared.databases,
+        queues: declared.queues,
     });
 
     let mut bundle = script_config.to_bundle().map_err(Error::Script)?;
