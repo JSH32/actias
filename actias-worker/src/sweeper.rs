@@ -39,7 +39,7 @@ pub fn scan_due(data_dir: &Path) -> Vec<String> {
         let Ok(mut storage) = SqliteStorage::open_read_only(&path) else {
             continue;
         };
-        let Ok(Some((due_ms, _class, own_key))) = storage.peek_alarm() else {
+        let Ok(Some((due_ms, _class, _name, own_key))) = storage.peek_alarm() else {
             continue;
         };
         if due_ms <= unix_now_ms() && !own_key.is_empty() {
@@ -123,7 +123,7 @@ mod tests {
     fn file_with_alarm(dir: &Path, name: &str, own_key: &str, offset_ms: i64) {
         let mut storage = SqliteStorage::open(&dir.join(name)).expect("opens");
         storage
-            .save_alarm(unix_now_ms() + offset_ms, "Keeper", own_key)
+            .save_alarm(unix_now_ms() + offset_ms, "Keeper", "watchdog", own_key)
             .expect("saves");
     }
 

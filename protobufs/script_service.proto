@@ -47,6 +47,8 @@ message Capabilities {
     repeated string objects = 4;
     // Databases declared with `database "name"`.
     repeated string databases = 5;
+    // Queues declared with `queue "name"`.
+    repeated string queues = 6;
 }
 
 message ScriptConfig {

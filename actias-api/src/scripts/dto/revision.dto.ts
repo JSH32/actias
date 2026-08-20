@@ -29,6 +29,11 @@ export class CapabilitiesDto {
    * Databases declared with `database "name"`.
    */
   databases: string[];
+
+  /**
+   * Queues declared with `queue "name"`.
+   */
+  queues: string[];
 }
 
 export class ScriptConfigDto {
@@ -84,6 +89,7 @@ export class RevisionFullDto {
         secrets: config.capabilities.secrets ?? [],
         objects: config.capabilities.objects ?? [],
         databases: config.capabilities.databases ?? [],
+        queues: config.capabilities.queues ?? [],
       },
     };
     this.bundle =

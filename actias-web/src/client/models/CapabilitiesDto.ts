@@ -23,5 +23,9 @@ export type CapabilitiesDto = {
      * Databases declared with `database "name"`.
      */
     databases: Array<string>;
+    /**
+     * Queues declared with `queue "name"`.
+     */
+    queues: Array<string>;
 };
 

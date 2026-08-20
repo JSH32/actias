@@ -128,6 +128,8 @@ pub struct AppState {
     pub armed_crons: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Idle time before a pinned vm hibernates.
     pub object_idle_after: Duration,
+    /// Queue delivery limits every pinned task spawns with.
+    pub queue_policy: actias_worker_core::platform::queue::QueuePolicy,
     /// This node's registry identity, filled in once registration lands;
     /// object claims speak as it.
     pub node_identity: Arc<std::sync::RwLock<Option<String>>>,
@@ -631,6 +633,7 @@ pub struct ObjectRouting {
     internal_http: reqwest::Client,
     internal_token: String,
     idle_after: Duration,
+    queue_policy: actias_worker_core::platform::queue::QueuePolicy,
     node_identity: Arc<std::sync::RwLock<Option<String>>>,
     registry: NodeRegistryServiceClient<Channel>,
     kv: KvServiceClient<Channel>,
@@ -663,6 +666,7 @@ impl ObjectRouting {
             internal_http: state.internal_http.clone(),
             internal_token: state.internal_token.clone(),
             idle_after: state.object_idle_after,
+            queue_policy: state.queue_policy.clone(),
             node_identity: state.node_identity.clone(),
             registry: state.registry.clone(),
             kv: state.clients.kv.clone(),
@@ -848,6 +852,7 @@ impl ObjectRouting {
                         storage: Some(storage),
                         hibernate_after: Some(routing.idle_after),
                         after_write: Some(after_write),
+                        queue: routing.queue_policy.clone(),
                     },
                 ))
             })
@@ -1400,6 +1405,7 @@ mod tests {
             object_db_max_bytes: 64 * 1024 * 1024,
             armed_crons: Arc::default(),
             object_idle_after: Duration::from_secs(300),
+            queue_policy: Default::default(),
             node_identity: Arc::default(),
             registry: NodeRegistryServiceClient::new(
                 Channel::from_static("http://127.0.0.1:1").connect_lazy(),

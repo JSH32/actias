@@ -266,6 +266,7 @@ fn prepare(config: &ScriptConfig) -> Result<Arc<PreparedRevision>, String> {
                 secrets: declared.secrets,
                 objects: declared.objects,
                 databases: declared.databases,
+                queues: declared.queues,
             }),
         }),
         ..Default::default()

@@ -96,6 +96,8 @@ pub struct Declarations {
     pub objects: Vec<String>,
     /// Names handed to `database "name"`.
     pub databases: Vec<String>,
+    /// Names handed to `queue "name"`.
+    pub queues: Vec<String>,
 }
 
 /// The capability contract a revision was published with.
@@ -109,6 +111,7 @@ pub struct Contract {
     secrets: HashSet<String>,
     objects: HashSet<String>,
     databases: HashSet<String>,
+    queues: HashSet<String>,
     /// Kept as declared (ordered, duplicates meaningless but harmless);
     /// cron arming reads these.
     events: Vec<String>,
@@ -120,6 +123,7 @@ pub enum ContractKind {
     Secret,
     Object,
     Database,
+    Queue,
 }
 
 /// A revision compiled once and shared by every request that runs it.
@@ -183,6 +187,7 @@ impl PreparedRevision {
                 secrets: capabilities.secrets.into_iter().collect(),
                 objects: capabilities.objects.into_iter().collect(),
                 databases: capabilities.databases.into_iter().collect(),
+                queues: capabilities.queues.into_iter().collect(),
                 events: capabilities.events,
             });
 
@@ -377,6 +382,7 @@ impl ActiasRuntime {
             ContractKind::Secret => (&contract.secrets, "Secret"),
             ContractKind::Object => (&contract.objects, "Object class"),
             ContractKind::Database => (&contract.databases, "Database"),
+            ContractKind::Queue => (&contract.queues, "Queue"),
         };
 
         if allowed.contains(name) {
@@ -407,6 +413,13 @@ impl ActiasRuntime {
     pub fn record_database_declaration(lua: &Lua, name: &str) {
         if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
             declarations.databases.push(name.to_owned());
+        }
+    }
+
+    /// Notes a `queue "name"` declaration for [`Self::declarations`].
+    pub fn record_queue_declaration(lua: &Lua, name: &str) {
+        if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+            declarations.queues.push(name.to_owned());
         }
     }
 
@@ -447,6 +460,12 @@ impl ActiasRuntime {
                 if let Some(_expr) = event.strip_prefix("cron:") {
                     crate::extensions::objects::cron_delay_ms(&event)
                         .map_err(mlua::Error::RuntimeError)?;
+                } else if let Some(name) = event.strip_prefix("queue:") {
+                    if name.trim().is_empty() {
+                        return Err(mlua::Error::RuntimeError(
+                            "A queue event names its queue: on \"queue:<name>\".".to_owned(),
+                        ));
+                    }
                 } else if !Self::EVENTS.contains(&event.as_str()) {
                     return Err(mlua::Error::RuntimeError(format!(
                         "Invalid event '{event}', expected one of: {}.",
@@ -1061,6 +1080,7 @@ mod tests {
                     secrets: secrets.iter().map(|s| s.to_string()).collect(),
                     objects: vec![],
                     databases: vec![],
+                    queues: vec![],
                 }),
                 ..Default::default()
             }),

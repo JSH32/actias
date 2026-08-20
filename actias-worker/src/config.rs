@@ -35,6 +35,10 @@ pub struct Config {
     pub object_db_max_bytes: u64,
     /// Idle seconds before a pinned object vm hibernates.
     pub object_idle_secs: u64,
+    /// Deliveries attempted before a queue message dead-letters.
+    pub queue_max_attempts: i64,
+    /// First queue retry delay in milliseconds; doubles per attempt.
+    pub queue_backoff_base_ms: i64,
     /// Seconds between cold-alarm sweeps of the object data dir.
     pub object_sweep_secs: u64,
     /// Shared secret authenticating node-to-node object forwards.
@@ -85,6 +89,8 @@ impl Config {
             object_data_dir: get_env_or("OBJECT_DATA_DIR", "./objects-data".to_owned()),
             object_db_max_bytes: get_env_or::<u64>("OBJECT_DB_MAX_MB", 64) * 1024 * 1024,
             object_idle_secs: get_env_or("OBJECT_IDLE_SECS", 300),
+            queue_max_attempts: get_env_or("QUEUE_MAX_ATTEMPTS", 5),
+            queue_backoff_base_ms: get_env_or("QUEUE_BACKOFF_BASE_MS", 2000),
             object_sweep_secs: get_env_or("OBJECT_SWEEP_SECS", 30),
             // Development default; a deployment must set its own.
             internal_token: get_env_or("INTERNAL_TOKEN", "dev-internal-token".to_owned()),

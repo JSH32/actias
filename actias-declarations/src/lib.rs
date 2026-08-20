@@ -44,6 +44,9 @@ pub struct Declarations {
     /// Databases declared with `database "name"`.
     #[serde(default)]
     pub databases: Vec<String>,
+    /// Queues declared with `queue "name"`.
+    #[serde(default)]
+    pub queues: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -165,6 +168,19 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 .lock()
                 .expect("no other holder")
                 .databases
+                .push(name);
+            stub(lua)
+        })?,
+    )?;
+
+    let queue_recorded = recorded.clone();
+    lua.globals().set(
+        "queue",
+        lua.create_function(move |lua, name: String| {
+            queue_recorded
+                .lock()
+                .expect("no other holder")
+                .queues
                 .push(name);
             stub(lua)
         })?,
@@ -321,6 +337,7 @@ mod tests {
                 }
                 local Other = objects "Elsewhere"
                 local db = database "main"
+                local renders = queue "gpu"
                 "#,
             )]),
             "main.lua",
@@ -333,6 +350,7 @@ mod tests {
         // Declaring records; referencing does not.
         assert_eq!(declarations.objects, vec!["Room"]);
         assert_eq!(declarations.databases, vec!["main"]);
+        assert_eq!(declarations.queues, vec!["gpu"]);
     }
 
     #[test]

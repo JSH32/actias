@@ -140,6 +140,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         object_data_dir: std::path::PathBuf::from(config.object_data_dir),
         object_db_max_bytes: config.object_db_max_bytes,
         object_idle_after: std::time::Duration::from_secs(config.object_idle_secs),
+        queue_policy: actias_worker_core::platform::queue::QueuePolicy {
+            max_attempts: config.queue_max_attempts,
+            backoff_base_ms: config.queue_backoff_base_ms,
+        },
         node_identity,
         registry: registry_client,
         base_domain: config.base_domain,

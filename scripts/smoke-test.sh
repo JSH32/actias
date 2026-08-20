@@ -127,9 +127,20 @@ on "cron:*/2 * * * * *" (function(event)
     db:exec("INSERT INTO cron_marks VALUES (?)", { event.scheduled_at })
 end)
 
+-- A durable queue: send enqueues into the queue object's own sqlite, the
+-- alarm loop delivers to this listener, which records the receipt where
+-- the smoke test can count it.
+local jobs = queue "jobs"
+on "queue:jobs" (function(message)
+    db:exec("INSERT INTO queue_done VALUES (?)", { message.n })
+end)
+
 on "fetch" (function(request)
     if string.find(request.context_uri or "", "/arm") then
         AlarmKeeper:get("watchdog"):arm("15s")
+    end
+    if string.find(request.context_uri or "", "/enqueue") then
+        jobs:send({ n = 1 })
     end
     ns:set("visited", true)
     log.info("hello from production")
@@ -144,6 +155,7 @@ on "fetch" (function(request)
             hits = Hits:get("global"):bump(),
             marks = db:read_one("SELECT COUNT(*) AS n FROM alarm_marks").n,
             crons = db:read_one("SELECT COUNT(*) AS n FROM cron_marks").n,
+            queued = db:read_one("SELECT COUNT(*) AS n FROM queue_done").n,
             db_rows = (function()
                 -- The visits table exists because the migration applied at
                 -- the database's first touch; nothing creates it here.
@@ -172,6 +184,10 @@ SQL
 "$REPO/target/debug/actias-cli" sql main create cron_marks --directory "$DEVDIR/published"
 cat > "$DEVDIR/published/migrations/main/0003_cron_marks.sql" <<'SQL'
 CREATE TABLE cron_marks (at INTEGER);
+SQL
+"$REPO/target/debug/actias-cli" sql main create queue_done --directory "$DEVDIR/published"
+cat > "$DEVDIR/published/migrations/main/0004_queue_done.sql" <<'SQL'
+CREATE TABLE queue_done (n INTEGER);
 SQL
 printf '<h1>served without a vm</h1>' > "$DEVDIR/published/page.html"
 
@@ -272,6 +288,25 @@ C2=$(curl -sf "$WORKER/$IDENT/" | jq .crons)
 [ -n "$C1" ] && [ "$C2" -gt "$C1" ] 2>/dev/null \
     || { echo "cron did not keep firing ($C1 -> '$C2')"; exit 1; }
 echo "cron fired: $C1 then $C2 marks"
+
+echo "== queue delivers to its consumer"
+# Three sends through the producer handle; the queue object's alarm loop
+# delivers each to the listener, whose receipts the poll counts.
+Q_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.queues[0]')
+[ "$Q_DECLARED" = "jobs" ] \
+    || { echo "the queue was not in the stored contract (got '$Q_DECLARED')"; exit 1; }
+curl -sf "$WORKER/$IDENT/enqueue" -o /dev/null
+curl -sf "$WORKER/$IDENT/enqueue" -o /dev/null
+curl -sf "$WORKER/$IDENT/enqueue" -o /dev/null
+QN=0
+for _ in $(seq 1 15); do
+    QN=$(curl -sf "$WORKER/$IDENT/" | jq .queued 2>/dev/null || echo 0)
+    [ "$QN" -ge 3 ] 2>/dev/null && break
+    sleep 1
+done
+[ "$QN" -ge 3 ] 2>/dev/null \
+    || { echo "queue deliveries did not land ($QN of 3)"; exit 1; }
+echo "queue delivered $QN message(s) to the consumer"
 
 echo "== object state survives losing the data volume"
 # The disk is a leased cache; the blob store is the truth. Wipe every
