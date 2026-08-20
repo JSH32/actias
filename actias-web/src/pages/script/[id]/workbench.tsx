@@ -9,7 +9,7 @@ import * as React from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ContextMenu from '@radix-ui/react-context-menu';
 import api, { showError } from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
@@ -102,6 +102,7 @@ interface RunnerAnswer {
 
 function Workbench() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const scriptId = router.query.id as string | undefined;
 
   const { data: script } = useQuery({
@@ -123,6 +124,10 @@ function Workbench() {
   const [pane, setPane] = React.useState<'run' | 'history' | null>('run');
   const [answer, setAnswer] = React.useState<RunnerAnswer | null>(null);
   const [diffFiles, setDiffFiles] = React.useState<Record<
+    string,
+    string
+  > | null>(null);
+  const [liveFiles, setLiveFiles] = React.useState<Record<
     string,
     string
   > | null>(null);
@@ -196,6 +201,27 @@ function Workbench() {
   React.useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  // The live revision's tree, kept around so the top bar can say
+  // honestly whether the working tree matches what the script serves.
+  React.useEffect(() => {
+    if (!script?.currentRevisionId) {
+      setLiveFiles(null);
+      return;
+    }
+    api.revisions
+      .getRevision(script.currentRevisionId, true)
+      .then((revision) => {
+        const tree: Record<string, string> = {};
+        for (const file of revision.bundle?.files ?? []) {
+          if (file.filePath.endsWith('.lua') && file.content) {
+            tree[file.filePath] = decode(file.content);
+          }
+        }
+        setLiveFiles(tree);
+      })
+      .catch(() => setLiveFiles(null));
+  }, [script?.currentRevisionId]);
 
   /** The config face: entry point and globs come from script.json. */
   const parsedConfig = React.useCallback(() => {
@@ -359,6 +385,8 @@ function Workbench() {
           title: 'Published',
           message: `Revision ${revision.id.slice(0, 8)} is live.`,
         });
+        queryClient.invalidateQueries({ queryKey: ['script', scriptId] });
+        queryClient.invalidateQueries({ queryKey: ['revisions', script.id] });
       })
       .catch(showError)
       .finally(() => setPublishing(false));
@@ -417,6 +445,14 @@ function Workbench() {
         ? 'var(--err)'
         : 'var(--ink-3)';
   const entryPoint = parsedConfig().entryPoint;
+  const dirtyPaths = liveFiles
+    ? Object.keys(files)
+        .filter((path) => path !== CONFIG_FILE)
+        .concat(Object.keys(liveFiles))
+        .filter((path, index, all) => all.indexOf(path) === index)
+        .filter((path) => (files[path] ?? '') !== (liveFiles[path] ?? ''))
+    : [];
+  const dirtyCount = dirtyPaths.length;
   const paths = Object.keys(files).sort((a, b) => {
     if (a === CONFIG_FILE) return 1;
     if (b === CONFIG_FILE) return -1;
@@ -452,6 +488,14 @@ function Workbench() {
         <span className={classes.status} style={{ color: statusColor }}>
           ● {status}
         </span>
+        {dirtyCount > 0 && (
+          <span className={classes.dirty} title={dirtyPaths.join(', ')}>
+            {dirtyCount} file{dirtyCount === 1 ? '' : 's'} differ from live
+          </span>
+        )}
+        {dirtyCount === 0 && liveFiles && (
+          <span className={classes.clean}>matches live</span>
+        )}
         <button
           className={pane === 'run' ? classes.paneTabActive : classes.paneTab}
           onClick={() => setPane(pane === 'run' ? null : 'run')}
