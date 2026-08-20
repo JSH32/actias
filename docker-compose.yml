@@ -48,7 +48,6 @@ services:
 
   scylla:
     image: scylladb/scylla
-    container_name: scylla
     volumes:
       - scylla_data:/var/lib/scylla
     healthcheck:

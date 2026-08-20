@@ -359,7 +359,9 @@ echo "$TBL" | jq -e '(.tables | map(.name) | index("visits") != null) and .sizeB
 CONSOLE=$(curl -sf -X POST "$API/project/$PROJECT_ID/databases/main/query" \
     -H "$AUTH" -H 'Content-Type: application/json' \
     -d '{"sql":"SELECT COUNT(*) AS n FROM visits"}')
-echo "$CONSOLE" | jq -e '.rows[0][0].n >= 1 or (.rows[0].n >= 1)' >/dev/null \
+# Rows come back as objects; indexing one with a number aborts jq, so
+# the shape probe uses `?` instead of `or`.
+echo "$CONSOLE" | jq -e '(.rows[0].n? // .rows[0][0].n? // 0) >= 1' >/dev/null \
     || { echo "the query console did not read visits: $CONSOLE"; exit 1; }
 echo "resources listing, stats, tables and console all answered"
 
@@ -465,9 +467,42 @@ echo "== revision preview urls"
 # the path form and the subdomain form (Host header, since nothing here
 # resolves *.scripts.localhost) must both serve the old code.
 OLD_REV=$(curl -sf "$API/script/$SCRIPT_ID" -H "$AUTH" | jq -r .currentRevisionId)
+# Version two keeps every declaration: objects run the owner's CURRENT
+# revision whoever calls them, so the old revision's preview handler
+# still reaches Hits/AlarmKeeper/jobs through this code. Dropping a
+# class from the current revision correctly breaks calls to it, which is
+# its own (deliberate) platform behavior, not this section's subject.
 cat > "$DEVDIR/published/main.lua" <<'LUA'
 local ns = kv "smoke"
 local token = secret "smoke-token"
+local db = database "main"
+
+local Hits = object "Hits" {
+    bump = function(state)
+        state.sql:exec("CREATE TABLE IF NOT EXISTS hits (at INTEGER)")
+        state.sql:exec("INSERT INTO hits VALUES (?)", { 1 })
+        return state.sql:query_one("SELECT COUNT(*) AS n FROM hits").n
+    end,
+}
+
+local AlarmKeeper = object "AlarmKeeper" {
+    arm = function(state, duration)
+        state:set_alarm(duration)
+        return true
+    end,
+    alarm = function(state)
+        db:exec("INSERT INTO alarm_marks VALUES (?)", { state.now() })
+    end,
+}
+
+on "cron:*/2 * * * * *" (function(event)
+    db:exec("INSERT INTO cron_marks VALUES (?)", { event.scheduled_at })
+end)
+
+local jobs = queue "jobs"
+on "queue:jobs" (function(message)
+    db:exec("INSERT INTO queue_done VALUES (?)", { message.n })
+end)
 
 on "fetch" (function(request)
     log.info("hello from production")
