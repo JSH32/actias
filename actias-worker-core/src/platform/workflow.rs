@@ -685,6 +685,65 @@ pub fn pinned_revision(file: &std::path::Path) -> Option<String> {
     first.data["revision"].as_str().map(str::to_owned)
 }
 
+/// The journal off a read-only connection: a file that never held a
+/// journal reads as empty rather than erroring, so dashboards can probe
+/// any workflow identity.
+pub fn read_journal_readonly(
+    storage: &mut crate::storage::SqliteStorage,
+) -> Result<Vec<Entry>, String> {
+    read_journal_readonly_from(storage, 0)
+}
+
+/// Like [`read_journal_readonly`], from a cursor.
+pub fn read_journal_readonly_from(
+    storage: &mut crate::storage::SqliteStorage,
+    since: i64,
+) -> Result<Vec<Entry>, String> {
+    if !storage.table_exists("__actias_wf_journal")? {
+        return Ok(Vec::new());
+    }
+    read_from(storage, since)
+}
+
+/// The status a journal tells on its own: replay determinism means the
+/// tail IS the state. Terminal kinds win; a trailing timer is a park
+/// (sleeping, or awaiting unless its signal already arrived); anything
+/// else reads as running.
+pub fn run_status(entries: &[Entry]) -> serde_json::Value {
+    if let Some(cancelled) = entries.iter().find(|e| e.kind == EntryKind::Cancel) {
+        return serde_json::json!({
+            "status": "cancelled",
+            "reason": cancelled.data["reason"],
+            "at": cancelled.at,
+        });
+    }
+    if let Some(done) = entries.iter().find(|e| e.kind == EntryKind::Completed) {
+        return serde_json::json!({ "status": "completed", "at": done.at });
+    }
+    let started = entries.first().map(|e| e.at);
+    match entries.last() {
+        None => serde_json::json!({ "status": "unstarted" }),
+        Some(last) if last.kind == EntryKind::Timer => {
+            let gate = &last.data["for"];
+            if gate.is_null() {
+                serde_json::json!({
+                    "status": "sleeping",
+                    "due_ms": last.data["due_ms"],
+                    "started_at": started,
+                })
+            } else {
+                serde_json::json!({
+                    "status": "awaiting",
+                    "signal": gate,
+                    "due_ms": last.data["due_ms"],
+                    "started_at": started,
+                })
+            }
+        }
+        Some(_) => serde_json::json!({ "status": "running", "started_at": started }),
+    }
+}
+
 /// One run-attempt's replay state: the journal tail not yet consumed,
 /// and the instance's deterministic generator. Live mode is simply the
 /// tail running out.

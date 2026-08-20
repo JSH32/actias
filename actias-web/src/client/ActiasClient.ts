@@ -18,6 +18,7 @@ import { ScriptsService } from './services/ScriptsService';
 import { SecretsService } from './services/SecretsService';
 import { TokensService } from './services/TokensService';
 import { UsersService } from './services/UsersService';
+import { WorkflowsService } from './services/WorkflowsService';
 
 type HttpRequestConstructor = new (config: OpenAPIConfig) => BaseHttpRequest;
 
@@ -36,6 +37,7 @@ export class ActiasClient {
     public readonly secrets: SecretsService;
     public readonly tokens: TokensService;
     public readonly users: UsersService;
+    public readonly workflows: WorkflowsService;
 
     public readonly request: BaseHttpRequest;
 
@@ -65,6 +67,7 @@ export class ActiasClient {
         this.secrets = new SecretsService(this.request);
         this.tokens = new TokensService(this.request);
         this.users = new UsersService(this.request);
+        this.workflows = new WorkflowsService(this.request);
     }
 }
 

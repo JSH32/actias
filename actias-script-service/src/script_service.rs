@@ -293,6 +293,7 @@ impl ScriptService {
             databases: derived.databases,
             queues: derived.queues,
             workflows: derived.workflows,
+            workflow_steps: derived.workflow_steps,
         });
 
         // Identity is project-scoped, so single-owner declarations must be
@@ -1610,6 +1611,7 @@ mod tests {
                     databases: vec![],
                     queues: vec![],
                     workflows: vec![],
+                    workflow_steps: vec![],
                 }),
             }),
             bundle: Some(Bundle {

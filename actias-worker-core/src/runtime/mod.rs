@@ -1423,6 +1423,7 @@ mod tests {
                     databases: vec![],
                     queues: vec![],
                     workflows: vec![],
+                    workflow_steps: vec![],
                 }),
                 ..Default::default()
             }),

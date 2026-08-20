@@ -51,6 +51,9 @@ message Capabilities {
     repeated string queues = 6;
     // Workflow definitions declared with `workflow "name"`.
     repeated string workflows = 7;
+    // Step literals found in the sources: the console's
+    // declared-possible skeleton, a superset of what may run.
+    repeated string workflow_steps = 8;
 }
 
 message ScriptConfig {

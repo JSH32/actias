@@ -83,6 +83,11 @@ pub enum PlatformRead {
     /// authorizer script SQL runs with; how the console browses an
     /// object's storage without dispatching into its vm.
     Query { sql: String },
+    /// A workflow run's derived status plus journal head facts.
+    WorkflowStatus,
+    /// The workflow journal after `since`, oldest first: what the CI
+    /// view folds.
+    WorkflowJournal { since: i64 },
 }
 
 impl PlatformRead {
@@ -92,6 +97,7 @@ impl PlatformRead {
     pub fn stats_for_class(class: &str) -> Option<Self> {
         match class {
             crate::extensions::objects::QUEUE_CLASS => Some(Self::QueueStats),
+            actias_common::classes::WORKFLOW_CLASS => Some(Self::WorkflowStatus),
             crate::extensions::objects::DATABASE_CLASS => Some(Self::DatabaseOverview),
             class if class.starts_with("__") => None,
             _ => Some(Self::DatabaseOverview),
@@ -114,6 +120,19 @@ impl PlatformRead {
             Self::QueueMessages => serde_json::to_value(queue::read_messages(&mut storage)?),
             Self::DatabaseOverview => serde_json::to_value(database::read_overview(&mut storage)?),
             Self::Query { sql } => serde_json::to_value(storage.query(sql, &[])?),
+            Self::WorkflowStatus => {
+                let entries = workflow::read_journal_readonly(&mut storage)?;
+                let status = workflow::run_status(&entries);
+                return Ok(serde_json::json!({
+                    "status": status,
+                    "entries": entries.len(),
+                    "started_at": entries.first().map(|e| e.at),
+                    "updated_at": entries.last().map(|e| e.at),
+                }));
+            }
+            Self::WorkflowJournal { since } => {
+                serde_json::to_value(workflow::read_journal_readonly_from(&mut storage, *since)?)
+            }
         };
         value.map_err(|e| e.to_string())
     }
