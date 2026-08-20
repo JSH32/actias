@@ -170,3 +170,50 @@ fn statement(args: &[serde_json::Value]) -> Result<(String, Vec<serde_json::Valu
         .unwrap_or_default();
     Ok((text.to_owned(), params))
 }
+
+/// One user table's shape, for dashboards.
+#[derive(serde::Serialize)]
+pub struct TableInfo {
+    pub name: String,
+    pub rows: i64,
+}
+
+/// The database's user tables and their row counts, reusable by any read
+/// path that can open the file (a snapshot, a replica, an api endpoint)
+/// without dispatching at all. Reserved and internal tables stay hidden.
+pub fn read_overview(
+    storage: &mut crate::storage::SqliteStorage,
+) -> Result<Vec<TableInfo>, String> {
+    let connection = storage.platform();
+
+    let names: Vec<String> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' \
+                 AND name NOT LIKE '__actias_%' AND name NOT LIKE 'sqlite_%' \
+                 ORDER BY name",
+            )
+            .map_err(|e| e.to_string())?;
+        let names = statement
+            .query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        names
+    };
+
+    let mut tables = Vec::new();
+    for name in names {
+        // Identifier interpolation is safe here: the name came from
+        // sqlite_master, quoted against exotic table names.
+        let rows = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM \"{}\"", name.replace('"', "\"\"")),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        tables.push(TableInfo { name, rows });
+    }
+    Ok(tables)
+}

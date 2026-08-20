@@ -5,6 +5,9 @@ const config: any = {
       : `http://localhost:${process.env.PORT}`,
   // Templates for script urls; _IDENTIFIER_ and _REVISION_ are the
   // placeholders. Read at request time, so the container env decides.
+  // Websockets cannot ride the dev proxy (no upgrade), so sockets always
+  // dial the api origin directly.
+  wsRoot: process.env.API_URL,
   workerBase: process.env.WORKER_BASE || 'http://localhost:3002/_IDENTIFIER_',
   workerRevisionBase:
     process.env.WORKER_REVISION_BASE ||
