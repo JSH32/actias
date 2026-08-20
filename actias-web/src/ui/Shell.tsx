@@ -99,7 +99,7 @@ function RailObjectClass({
   const { data } = useQuery({
     queryKey: ['object-instances', projectId, klass, small ? '' : term],
     queryFn: () =>
-      api.resources.listObjects(
+      api.objects.listObjects(
         projectId,
         klass,
         small ? '' : term,
@@ -200,13 +200,13 @@ export function Shell({ children }: React.PropsWithChildren) {
   const { data: navQueues } = useQuery({
     queryKey: ['queue-nav', projectId],
     queryFn: async () => {
-      const queues = await api.resources.listQueues(projectId as string);
+      const queues = await api.queues.listQueues(projectId as string);
       return Promise.all(
         queues.slice(0, 12).map(async (queue) => ({
           name: queue.name,
           depth:
             (
-              await api.resources
+              await api.queues
                 .queueStats(projectId as string, queue.name)
                 .catch(() => null)
             )?.depth ?? 0,
@@ -228,12 +228,12 @@ export function Shell({ children }: React.PropsWithChildren) {
   });
   const { data: navDatabases } = useQuery({
     queryKey: ['databases', projectId],
-    queryFn: () => api.resources.listDatabases(projectId as string),
+    queryFn: () => api.databases.listDatabases(projectId as string),
     enabled: !isPublic && !!projectId && section === 'databases',
   });
   const { data: objectCounts } = useQuery({
     queryKey: ['object-counts', projectId],
-    queryFn: () => api.resources.countObjects(projectId as string),
+    queryFn: () => api.objects.countObjects(projectId as string),
     enabled: !isPublic && !!projectId && section === 'databases',
   });
   const queueDepthTotal = (navQueues ?? []).reduce(
@@ -259,13 +259,13 @@ export function Shell({ children }: React.PropsWithChildren) {
     queryFn: () => {
       if (railObj) {
         const [className, ...rest] = railObj.split('/');
-        return api.resources.objectOverview(
+        return api.objects.objectOverview(
           projectId as string,
           className,
           rest.join('/'),
         );
       }
-      return api.resources.databaseOverview(projectId as string, railDb!);
+      return api.databases.databaseOverview(projectId as string, railDb!);
     },
     enabled:
       !isPublic &&

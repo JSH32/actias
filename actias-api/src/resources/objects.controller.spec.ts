@@ -1,5 +1,6 @@
 import { of } from 'rxjs';
-import { ResourcesController, clampPageSize } from './resources.controller';
+import { ObjectsController } from './objects.controller';
+import { ResourcesService, clampPageSize } from './resources.service';
 
 const PROJECT = { id: 'project-1' } as any;
 
@@ -17,15 +18,19 @@ function controller() {
   const listScripts = jest.fn(() => of({ scripts: [] }));
 
   const grpc = (service: object) => ({ getService: () => service } as any);
-  const instance = new ResourcesController(
+  const resources = new ResourcesService(
     grpc({ listScripts }),
     grpc({ listInstances, countInstances }),
     grpc({}),
-    { get: jest.fn() } as any,
+    { get: jest.fn(() => 'internal-token') } as any,
   );
-  instance.onModuleInit();
+  resources.onModuleInit();
 
-  return { instance, listInstances, countInstances };
+  return {
+    instance: new ObjectsController(resources),
+    listInstances,
+    countInstances,
+  };
 }
 
 describe('the directory page cap', () => {

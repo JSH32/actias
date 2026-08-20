@@ -344,19 +344,19 @@ echo "== dashboard resources speak for the platform's own storage"
 # stats and tables come off the worker's sqlite through the api proxy;
 # the console reads through the same transport scripts use. Identity is
 # the name alone, scoped to the project.
-RQ=$(curl -sf "$API/project/$PROJECT_ID/resources/queues" -H "$AUTH")
+RQ=$(curl -sf "$API/project/$PROJECT_ID/queues" -H "$AUTH")
 echo "$RQ" | jq -e '.[0].name == "jobs" and .[0].orphaned == false and (.[0].declaredBy | length) > 0' >/dev/null \
     || { echo "queue listing did not surface the contract queue: $RQ"; exit 1; }
-RD=$(curl -sf "$API/project/$PROJECT_ID/resources/databases" -H "$AUTH")
+RD=$(curl -sf "$API/project/$PROJECT_ID/databases" -H "$AUTH")
 echo "$RD" | jq -e 'map(.name) | index("main") != null' >/dev/null \
     || { echo "database listing missed main: $RD"; exit 1; }
-QST=$(curl -sf "$API/project/$PROJECT_ID/resources/queues/jobs/stats" -H "$AUTH")
+QST=$(curl -sf "$API/project/$PROJECT_ID/queues/jobs/stats" -H "$AUTH")
 echo "$QST" | jq -e '.depth >= 0 and .deadLetters >= 0' >/dev/null \
     || { echo "queue stats did not read: $QST"; exit 1; }
-TBL=$(curl -sf "$API/project/$PROJECT_ID/resources/databases/main/overview" -H "$AUTH")
+TBL=$(curl -sf "$API/project/$PROJECT_ID/databases/main/overview" -H "$AUTH")
 echo "$TBL" | jq -e '(.tables | map(.name) | index("visits") != null) and .sizeBytes > 0' >/dev/null \
     || { echo "database overview missed visits or its size: $TBL"; exit 1; }
-CONSOLE=$(curl -sf -X POST "$API/project/$PROJECT_ID/resources/databases/main/query" \
+CONSOLE=$(curl -sf -X POST "$API/project/$PROJECT_ID/databases/main/query" \
     -H "$AUTH" -H 'Content-Type: application/json' \
     -d '{"sql":"SELECT COUNT(*) AS n FROM visits"}')
 echo "$CONSOLE" | jq -e '.rows[0][0].n >= 1 or (.rows[0].n >= 1)' >/dev/null \
