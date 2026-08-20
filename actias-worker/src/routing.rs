@@ -373,8 +373,7 @@ impl ObjectRouting {
         fresh_replica_file(&self.state, object_id).await
     }
 
-    /// One hop to the lease holder's /_object endpoint; its answer is the
-    /// answer.
+    /// One hop to the lease holder's data plane; its answer is the answer.
     async fn forward(
         &self,
         holder: &str,
@@ -393,44 +392,39 @@ impl ObjectRouting {
             .map_err(|e| format!("The object's home could not be resolved: {e}"))?
             .into_inner();
 
-        let response = self
-            .state
-            .internal_http
-            .post(format!("http://{}/_object", node.address))
-            .header("x-actias-internal", self.state.internal_token.clone())
-            .json(&serde_json::json!({
-                "scopeId": key.scope(),
-                "class": target.class,
-                "name": target.name,
-                "method": target.method,
-                "arguments": target.arguments,
-                // The chain already includes the target; the receiver
-                // dispatches without extending again.
-                "chain": chain,
-                // The true producer survives the hop; the receiver must
-                // not substitute the owner it resolves.
-                "caller": target.caller.as_ref().map(|caller| serde_json::json!({
-                    "script": caller.script,
-                    "revision": caller.revision,
-                })),
-            }))
-            .send()
-            .await
-            .map_err(|e| format!("The object's home did not answer: {e}"))?;
+        let mut client = crate::data_plane::peer_client(&self.state, &node.address).await?;
+        let call = actias_worker_core::proto::worker_data::ObjectCall {
+            scope_id: key.scope().to_owned(),
+            class: target.class.clone(),
+            name: target.name.clone(),
+            method: target.method.clone(),
+            arguments_json: serde_json::Value::Array(target.arguments.clone()).to_string(),
+            // The chain already includes the target; the receiver
+            // dispatches without extending again.
+            chain,
+            // The true producer survives the hop; the receiver must not
+            // substitute the owner it resolves.
+            caller: target.caller.as_ref().map(|caller| {
+                actias_worker_core::proto::worker_data::Caller {
+                    script: caller.script.clone(),
+                    revision: caller.revision.clone(),
+                }
+            }),
+            // This hop is the one a first hop is allowed; spent now.
+            first_hop: false,
+        };
 
-        let body: serde_json::Value = response
-            .json()
+        let result = client
+            .dispatch(crate::data_plane::authed(&self.state.internal_token, call))
             .await
-            .map_err(|e| format!("The object's home answered garbage: {e}"))?;
-        match body.get("error") {
-            Some(error) if !error.is_null() => {
-                Err(error.as_str().unwrap_or("forwarded call failed").to_owned())
-            }
-            _ => Ok(body
-                .get("result")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null)),
+            .map_err(|e| format!("The object's home did not answer: {}", e.message()))?
+            .into_inner();
+
+        if !result.error.is_empty() {
+            return Err(result.error);
         }
+        serde_json::from_str(&result.result_json)
+            .map_err(|e| format!("The object's home answered garbage: {e}"))
     }
 
     /// The routing body; `allow_forward` is false for calls that already

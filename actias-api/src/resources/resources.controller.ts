@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -11,6 +12,7 @@ import {
 import { ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ClientGrpc } from '@nestjs/microservices';
 import { ConfigService } from '@nestjs/config';
+import { Metadata } from '@grpc/grpc-js';
 import { lastValueFrom } from 'rxjs';
 import { AclByProject } from 'src/project/acl/acl.guard';
 import { AccessFields } from 'src/project/acl/accessFields';
@@ -19,6 +21,7 @@ import { Projects } from 'src/entities/Projects';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
 import { node_registry } from 'src/protobufs/node_registry';
+import { worker_data } from 'src/protobufs/worker_data';
 import {
   DatabaseOverviewDto,
   ObjectInstanceDto,
@@ -47,10 +50,12 @@ const CLASSES = { queues: '__queue', databases: '__database' } as const;
 export class ResourcesController {
   private scripts: script_service.ScriptService;
   private registry: node_registry.NodeRegistryService;
+  private workers: worker_data.WorkerData;
 
   constructor(
     @Inject('SCRIPT_SERVICE') private readonly scriptClient: ClientGrpc,
     @Inject('NODE_REGISTRY') private readonly registryClient: ClientGrpc,
+    @Inject('WORKER_DATA') private readonly workerClient: ClientGrpc,
     private readonly config: ConfigService,
   ) {}
 
@@ -63,6 +68,18 @@ export class ResourcesController {
       this.registryClient.getService<node_registry.NodeRegistryService>(
         'NodeRegistryService',
       );
+    this.workers =
+      this.workerClient.getService<worker_data.WorkerData>('WorkerData');
+  }
+
+  /** Every data-plane call carries the cluster-internal secret. */
+  private internalMetadata(): Metadata {
+    const metadata = new Metadata();
+    metadata.set(
+      'x-actias-internal',
+      this.config.get<string>('worker.internalToken'),
+    );
+    return metadata;
   }
 
   @Get('queues')
@@ -90,13 +107,7 @@ export class ResourcesController {
     @EntityParam('project', Projects) project: Projects,
     @Param('name') name: string,
   ): Promise<QueueStatsDto> {
-    const stats = (await this.dispatchObject(
-      project,
-      CLASSES.queues,
-      name,
-      'stats',
-      [],
-    )) as {
+    const stats = (await this.workerRead(project, CLASSES.queues, name)) as {
       depth?: number;
       in_flight?: number;
       oldest_pending?: number;
@@ -119,13 +130,9 @@ export class ResourcesController {
     @EntityParam('project', Projects) project: Projects,
     @Param('name') name: string,
   ): Promise<QueueMessageDto[]> {
-    const rows = (await this.dispatchObject(
-      project,
-      CLASSES.queues,
-      name,
-      'messages',
-      [],
-    )) as Record<string, unknown>[] | null;
+    const rows = (await this.workerRead(project, CLASSES.queues, name, {
+      messages: true,
+    })) as Record<string, unknown>[] | null;
     return (Array.isArray(rows) ? rows : []).map((row) => ({
       id: Number(row.id),
       state: String(row.state ?? ''),
@@ -233,13 +240,21 @@ export class ResourcesController {
     @Param('name') name: string,
     @Query('since') since?: string,
   ): Promise<QueueEventDto[]> {
-    const events = await this.dispatchObject(
-      project,
-      CLASSES.queues,
-      name,
-      'events',
-      [Number(since ?? 0)],
+    const value = await lastValueFrom(
+      this.workers
+        .readJournal(
+          {
+            scopeId: project.id,
+            class: CLASSES.queues,
+            name,
+            since: Number(since ?? 0),
+            firstHop: true,
+          },
+          this.internalMetadata(),
+        )
+        .pipe(toHttpException()),
     );
+    const events = this.parseValue(value.valueJson);
     return Array.isArray(events) ? (events as QueueEventDto[]) : [];
   }
 
@@ -270,7 +285,9 @@ export class ResourcesController {
     @Body() body: SqlQueryDto,
   ): Promise<SqlRowsDto> {
     this.refusePlatformClass(className);
-    const rows = await this.workerStats(project, className, name, body.sql);
+    const rows = await this.workerRead(project, className, name, {
+      sql: body.sql,
+    });
     return { rows: Array.isArray(rows) ? rows : [] };
   }
 
@@ -300,7 +317,7 @@ export class ResourcesController {
     className: string,
     name: string,
   ): Promise<DatabaseOverviewDto> {
-    const overview = (await this.workerStats(project, className, name)) as {
+    const overview = (await this.workerRead(project, className, name)) as {
       size_bytes?: number;
       tables?: {
         name: string;
@@ -447,35 +464,50 @@ export class ResourcesController {
     return [...declared.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /** One typed platform read off the worker's local file or replica;
-   * with `sql`, one read-only statement instead of the class overview. */
-  private async workerStats(
+  /** One typed platform read over the data plane, answered from the
+   * freshest copy the worker can reach (its file, the holder's, the
+   * replica). With `sql`, one read-only statement instead of the class
+   * overview; with `messages`, the queue's message rows. */
+  private async workerRead(
     project: Projects,
     className: string,
     name: string,
-    sql?: string,
+    options: { sql?: string; messages?: boolean } = {},
   ): Promise<Record<string, unknown> | unknown[] | null> {
-    const base = this.config.get<string>('worker.internalUrl');
-    const url =
-      `${base}/_platform/stats?project=${encodeURIComponent(project.id)}` +
-      `&class=${encodeURIComponent(className)}&name=${encodeURIComponent(
-        name,
-      )}` +
-      (sql ? `&sql=${encodeURIComponent(sql)}` : '');
-
-    const response = await fetch(url, {
-      headers: {
-        'x-actias-internal': this.config.get<string>('worker.internalToken'),
-      },
-    }).catch(() => null);
-    if (!response || !response.ok) {
-      throw new BadGatewayException('The worker did not answer the read.');
-    }
-    return response.json();
+    const value = await lastValueFrom(
+      this.workers
+        .readStats(
+          {
+            scopeId: project.id,
+            class: className,
+            name,
+            sql: options.sql,
+            messages: options.messages ?? false,
+            firstHop: true,
+          },
+          this.internalMetadata(),
+        )
+        .pipe(toHttpException()),
+    );
+    return this.parseValue(value.valueJson);
   }
 
-  /** One method call through the worker's object transport; lands on any
-   * node and forwards once to the holder. */
+  /** The json a read answered with; an empty or `null` value reads as
+   * "no observable state yet". */
+  private parseValue(
+    json: string | undefined,
+  ): Record<string, unknown> | unknown[] | null {
+    if (!json) return null;
+    try {
+      return JSON.parse(json);
+    } catch {
+      throw new BadGatewayException('The worker answered garbage.');
+    }
+  }
+
+  /** One method call through the worker's data plane; lands on any node
+   * and forwards once to the holder. A method failure is the object's
+   * own user-safe error and surfaces as a 400. */
   private async dispatchObject(
     project: Projects,
     className: string,
@@ -483,33 +515,25 @@ export class ResourcesController {
     method: string,
     args: unknown[],
   ): Promise<unknown> {
-    const base = this.config.get<string>('worker.internalUrl');
-    const response = await fetch(`${base}/_object`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-actias-internal': this.config.get<string>('worker.internalToken'),
-      },
-      body: JSON.stringify({
-        scopeId: project.id,
-        firstHop: true,
-        class: className,
-        name,
-        method,
-        arguments: args,
-      }),
-    }).catch(() => null);
-    if (!response) {
-      throw new BadGatewayException('The worker did not answer.');
+    const result = await lastValueFrom(
+      this.workers
+        .dispatch(
+          {
+            scopeId: project.id,
+            class: className,
+            name,
+            method,
+            argumentsJson: JSON.stringify(args),
+            firstHop: true,
+          },
+          this.internalMetadata(),
+        )
+        .pipe(toHttpException()),
+    );
+    if (result.error) {
+      throw new BadRequestException(result.error);
     }
-    const answer = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new BadGatewayException(
-        typeof answer === 'string' ? answer : 'The call failed.',
-      );
-    }
-    // The object transport wraps its value: { result: value }.
-    return (answer as { result?: unknown })?.result;
+    return this.parseValue(result.resultJson);
   }
 
   private async dispatchSql(

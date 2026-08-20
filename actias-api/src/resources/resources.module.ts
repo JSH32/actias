@@ -22,6 +22,15 @@ import { ResourcesController } from './resources.controller';
         'externalServices.scriptServiceUri',
       ),
     ),
+    ClientsModule.registerAsync(
+      grpcClient(
+        'WORKER_DATA',
+        'worker_data',
+        [`${protoBasePath}/worker_data.proto`],
+        // Any worker node's data plane; calls forward to the holder.
+        'worker.grpcUrl',
+      ),
+    ),
   ],
   controllers: [ResourcesController],
 })

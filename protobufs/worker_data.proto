@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package worker_data;
+
+// The worker's data plane, served by every worker node: object method
+// dispatch and typed reads against object storage. This is the only way
+// into an object from outside a vm; the api's dashboard calls and
+// worker-to-worker forwards both travel it. Callers authenticate with the
+// cluster-internal token in `x-actias-internal` metadata; nothing here is
+// ever reachable from outside the cluster.
+service WorkerData {
+    // One object method call. The receiving node resolves the owner
+    // script's current revision itself, so every route into an object
+    // runs the same code. Method failures ride the result envelope
+    // (they are the object's own user-safe errors, addressed to the
+    // calling script); a Status means the transport itself failed.
+    rpc Dispatch(ObjectCall) returns (CallResult);
+
+    // One typed read against an object's storage, no vm: queue stats or
+    // message rows, a database or user object's overview, or one
+    // read-only SQL statement under the script authorizer. Routed to the
+    // freshest copy: the local file, else the lease holder's node, else
+    // the shipped snapshot replica, else null.
+    rpc ReadStats(ReadRequest) returns (ReadValue);
+
+    // The queue's journal after the `since` cursor, oldest first; routed
+    // exactly like ReadStats.
+    rpc ReadJournal(ReadRequest) returns (ReadValue);
+}
+
+// What one object call carries: the identity and the call, never code
+// coordinates.
+message ObjectCall {
+    // The identity scope: the project id (cron objects never travel this
+    // transport; their scope is their script).
+    string scope_id = 1;
+    string class = 2;
+    string name = 3;
+    string method = 4;
+    // The call's arguments as one json array; user method arguments are
+    // arbitrary values, so they stay json on the wire.
+    string arguments_json = 5;
+    // The object-call stack this call rides on, target included when the
+    // sender already extended it; what makes cycles refusable.
+    repeated string chain = 6;
+    // The producing script's identity, carried across hops; absent for
+    // dashboard dispatches, which have no script behind them.
+    optional Caller caller = 7;
+    // True when the caller is not a worker: a first hop may forward once
+    // to the lease holder. Worker-to-worker calls arrive with the hop
+    // already spent, so a stale lease view can never bounce a call
+    // between nodes.
+    bool first_hop = 8;
+}
+
+// The calling script's identity as it travels between nodes.
+message Caller {
+    // Public identifier, the name a human recognizes.
+    string script = 1;
+    // Revision id the caller executed as.
+    string revision = 2;
+}
+
+// One dispatched call's outcome.
+message CallResult {
+    // The method's return value, json-encoded; meaningful only when
+    // `error` is empty.
+    string result_json = 1;
+    // The call's failure exactly as the object's runtime produced it,
+    // user-safe; empty on success.
+    string error = 2;
+}
+
+// What one read asks for; ReadStats and ReadJournal share it because
+// both name an object and route the same way.
+message ReadRequest {
+    // The identity scope: the project id.
+    string scope_id = 1;
+    string class = 2;
+    string name = 3;
+    // One read-only SQL statement under the same authorizer script SQL
+    // runs with, instead of the class's typed overview (ReadStats only).
+    optional string sql = 4;
+    // The queue's live and dead message rows instead of its stats
+    // summary (ReadStats only, queue class only).
+    bool messages = 5;
+    // Journal cursor: rows strictly after this id (ReadJournal only).
+    int64 since = 6;
+    // True when the caller is not a worker: a first hop may forward once
+    // to the lease holder for the freshest copy. A forwarded read
+    // answers from what its node has and never forwards again.
+    bool first_hop = 7;
+}
+
+// One read's answer.
+message ReadValue {
+    // The value, json-encoded; `null` when the object has no observable
+    // state anywhere (nothing local, nothing ever shipped), which reads
+    // as empty, not as an error.
+    string value_json = 1;
+}

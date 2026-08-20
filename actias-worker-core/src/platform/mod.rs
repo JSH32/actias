@@ -112,9 +112,7 @@ impl PlatformRead {
             }
             Self::QueueMessages => serde_json::to_value(queue::read_messages(&mut storage)?),
             Self::DatabaseOverview => serde_json::to_value(database::read_overview(&mut storage)?),
-            Self::Query { sql } => {
-                serde_json::to_value(storage.query(sql, &[])?)
-            }
+            Self::Query { sql } => serde_json::to_value(storage.query(sql, &[])?),
         };
         value.map_err(|e| e.to_string())
     }
