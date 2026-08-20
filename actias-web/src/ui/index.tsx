@@ -7,6 +7,7 @@
 import React from 'react';
 import * as RadixTabs from '@radix-ui/react-tabs';
 import classes from './ui.module.css';
+import { Mark } from './Mark';
 
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   /** Exactly one primary button per view; the rest stay quiet. */
@@ -112,3 +113,24 @@ export function Tabs({
 }
 
 export const TabPanel = RadixTabs.Content;
+
+/** The design's empty state: the mark, a quiet title, and the cli line
+ * that teaches instead of apologizing. */
+export function EmptyState({
+  title,
+  body,
+  cli,
+}: {
+  title: string;
+  body: string;
+  cli?: string;
+}) {
+  return (
+    <div className={classes.emptyState}>
+      <Mark size={28} />
+      <div className={classes.emptyTitle}>{title}</div>
+      <p className={classes.emptyBody}>{body}</p>
+      {cli && <code className={classes.emptyCli}>{cli}</code>}
+    </div>
+  );
+}

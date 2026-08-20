@@ -6,7 +6,7 @@ import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
 import { ProjectDto } from '@/client';
-import { Button, Card, Field } from '@/ui';
+import { Button, Card, EmptyState, Field } from '@/ui';
 import classes from './projects.module.css';
 
 function Projects() {
@@ -83,13 +83,12 @@ function Projects() {
       </div>
 
       {projects && projects.length === 0 ? (
-        <Card className={classes.empty}>
-          <p>
-            No projects yet. A project is the box everything else lives in.
-            Make one, then publish a script into it: the script gets a URL the
-            moment the first revision lands.
-          </p>
-          <code className={classes.cli}>actias projects create</code>
+        <Card>
+          <EmptyState
+            title="No projects yet"
+            body="A project is the box everything else lives in. Make one, then publish a script into it: the script gets a URL the moment the first revision lands."
+            cli="actias project create"
+          />
         </Card>
       ) : (
         <Card>

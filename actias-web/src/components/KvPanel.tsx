@@ -9,7 +9,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { NamespaceDto, PairDto, ProjectDto } from '@/client';
-import { Button, Card, Chip, Field } from '@/ui';
+import { Button, Card, Chip, EmptyState, Field } from '@/ui';
 import classes from './KvPanel.module.css';
 import shared from '../pages/projects.module.css';
 
@@ -183,11 +183,12 @@ export default function KvPanel({
             production sees.
           </p>
           {pairs && pairs.length === 0 ? (
-            <Card className={shared.empty}>
-              <p>Nothing stored yet.</p>
-              <code className={shared.cli}>
-                actias kv {project.name} {active} set &lt;key&gt; &lt;value&gt;
-              </code>
+            <Card>
+              <EmptyState
+                title="Nothing stored yet"
+                body="Any script that declares this namespace shares these exact pairs."
+                cli={`actias kv ${project.name} ${active} set <key> <value>`}
+              />
             </Card>
           ) : (
             <Card>
