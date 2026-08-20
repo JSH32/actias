@@ -47,7 +47,7 @@ const paths: Record<string, string[]> = {
 
 export type IconName = keyof typeof paths;
 
-export function Icon({ name, size = 15 }: { name: IconName; size?: number }) {
+export function Icon({ name, size = 17 }: { name: IconName; size?: number }) {
   return (
     <svg
       width={size}
@@ -55,7 +55,7 @@ export function Icon({ name, size = 15 }: { name: IconName; size?: number }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.5}
+      strokeWidth={1.7}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden

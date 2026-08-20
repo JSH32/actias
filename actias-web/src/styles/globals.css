@@ -20,3 +20,34 @@ a {
   text-decoration: none;
   color: inherit;
 }
+
+/* The design's global details, verbatim from the output screens. */
+a {
+  color: var(--luna);
+}
+a:hover {
+  color: #c9f1d5;
+}
+::selection {
+  background: rgba(167, 139, 250, 0.3);
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--luna);
+  outline-offset: 2px;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--night-0);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 999px;
+  border: 2px solid var(--night-0);
+}
