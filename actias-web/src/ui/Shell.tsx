@@ -17,7 +17,14 @@ import { Mark } from './Mark';
 import classes from './Shell.module.css';
 
 /** Routes outside the portal: they get the public chrome, not the shell. */
-const publicRoutes = [/^\/$/, /^\/login/, /^\/register/, /^\/blog/, /^\/posts/, /^\/404/];
+const publicRoutes = [
+  /^\/$/,
+  /^\/login/,
+  /^\/register/,
+  /^\/blog/,
+  /^\/posts/,
+  /^\/404/,
+];
 
 const globalNav: { label: string; href: string; icon: IconName }[] = [
   { label: 'All projects', href: '/projects', icon: 'projects' },
@@ -76,7 +83,7 @@ export function Shell({ children }: React.PropsWithChildren) {
     queryFn: () => api.scripts.getScript(routeId as string),
     enabled: !isPublic && onScript && !!routeId,
   });
-  const projectId = onProject ? routeId : (routeScript?.projectId ?? null);
+  const projectId = onProject ? routeId : routeScript?.projectId ?? null;
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],

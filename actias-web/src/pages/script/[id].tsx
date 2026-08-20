@@ -2,7 +2,6 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
 import { getPublicConfig } from '@/pages/api/config';
@@ -10,6 +9,7 @@ import { RevisionDataDto } from '@/client';
 import LogTail from '@/components/LogTail';
 import { Button, Card, CapabilityKind, Chip, TabPanel, Tabs } from '@/ui';
 import shared from '../projects.module.css';
+import { toast } from '@/ui/toast';
 
 /** Where one revision previews, current or not. */
 const previewUrl = (identifier: string, revisionId: string) =>
@@ -59,9 +59,14 @@ const Script = () => {
   const { data: revisions } = useQuery({
     queryKey: ['revisions', script?.id],
     queryFn: async () =>
-      ((await api.scripts.revisionList(script?.id as string, 1)) as unknown as {
-        items: RevisionDataDto[];
-      }).items,
+      (
+        (await api.scripts.revisionList(
+          script?.id as string,
+          1,
+        )) as unknown as {
+          items: RevisionDataDto[];
+        }
+      ).items,
     enabled: !!script,
   });
 
@@ -99,7 +104,7 @@ const Script = () => {
     api.scripts
       .setRevision(script.id, revisionId)
       .then(() => {
-        notifications.show({
+        toast({
           title: 'Live revision moved',
           message: 'The alias points at the selected revision.',
         });
@@ -109,17 +114,14 @@ const Script = () => {
   };
 
   const deleteRevision = (revision: RevisionDataDto) => {
-    api.revisions
-      .deleteRevision(revision.id)
-      .then(reload)
-      .catch(showError);
+    api.revisions.deleteRevision(revision.id).then(reload).catch(showError);
   };
 
   const deleteScript = () => {
     api.scripts
       .deleteScript(script.id)
       .then(() => {
-        notifications.show({
+        toast({
           title: 'Script deleted',
           message: script.publicIdentifier,
         });
@@ -194,8 +196,8 @@ const Script = () => {
         </div>
       </div>
       <p style={{ color: 'var(--ink-2)', maxWidth: '60ch', marginBottom: 12 }}>
-        Revisions are immutable published bundles. Exactly one is live;
-        rolling back points the live alias at an older one.
+        Revisions are immutable published bundles. Exactly one is live; rolling
+        back points the live alias at an older one.
       </p>
 
       <Tabs
@@ -266,8 +268,8 @@ const Script = () => {
             <Card style={{ padding: 16 }}>
               <div style={{ fontWeight: 700, marginBottom: 4 }}>Aliases</div>
               <p style={{ color: 'var(--ink-2)', marginBottom: 12 }}>
-                Named pointers to revisions; moving one is a rollback, so a
-                move and a create are the same call.
+                Named pointers to revisions; moving one is a rollback, so a move
+                and a create are the same call.
               </p>
               {aliases?.aliases?.length ? (
                 aliases.aliases.map(
@@ -280,9 +282,7 @@ const Script = () => {
                         lineHeight: 2,
                       }}
                     >
-                      <span style={{ color: 'var(--luna)' }}>
-                        {alias.name}
-                      </span>{' '}
+                      <span style={{ color: 'var(--luna)' }}>{alias.name}</span>{' '}
                       <span style={{ color: 'var(--ink-3)' }}>→</span>{' '}
                       <span style={{ color: 'var(--ink-2)' }}>
                         {alias.revisionId.slice(0, 8)}

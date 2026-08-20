@@ -1,16 +1,16 @@
-import { Button, Center, Stack, Title } from '@mantine/core';
-import { IconHome } from '@tabler/icons-react';
 import Link from 'next/link';
+import { EmptyState } from '@/ui';
 
-export default function Actias404() {
+export default function NotFound() {
   return (
-    <Center>
-      <Stack align="center">
-        <Title>404 - Page Not Found</Title>
-        <Link href={`/`}>
-          <Button leftSection={<IconHome />}>Home</Button>
-        </Link>
-      </Stack>
-    </Center>
+    <div style={{ paddingTop: 64 }}>
+      <EmptyState
+        title="Nothing lives at this address"
+        body="The page moved, never existed, or its identifier changed."
+      />
+      <p style={{ textAlign: 'center' }}>
+        <Link href="/">Back home</Link>
+      </p>
+    </div>
   );
 }

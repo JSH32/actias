@@ -1,9 +1,9 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { Button, Card, Field } from '@/ui';
+import { toast } from '@/ui/toast';
 
 export default function Register() {
   const router = useRouter();
@@ -20,7 +20,7 @@ export default function Register() {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
       if (data.get('password') !== data.get('confirmPassword')) {
-        notifications.show({
+        toast({
           title: 'Passwords do not match',
           message: 'Retype them and try again.',
           color: 'red',
@@ -40,7 +40,7 @@ export default function Register() {
       api.users
         .createUser(body as Parameters<typeof api.users.createUser>[0])
         .then(() => {
-          notifications.show({
+          toast({
             title: 'Registered!',
             message: 'You can log in now.',
           });

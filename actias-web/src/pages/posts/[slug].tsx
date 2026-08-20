@@ -7,33 +7,46 @@ import { serialize } from 'next-mdx-remote/serialize';
 import { NextSeo } from 'next-seo';
 import Link from 'next/link';
 
-import {
-  ActionIcon,
-  Anchor,
-  Code,
-  Divider,
-  Group,
-  Table as ReactTable,
-  Stack,
-  Title,
-} from '@mantine/core';
-
-import { IconArrowNarrowLeft } from '@tabler/icons-react';
-
 import type { MDXComponents } from 'mdx/types';
 import rehypeAutolinkHeadings from 'rehype-autolink-headings';
 import rehypeSlug from 'rehype-slug';
 
 import { PostMeta, getPostFromSlug, getSlugs } from '@/helpers/blog';
-import { CodeHighlight } from '@mantine/code-highlight';
 
 interface MDXPost {
   source: MDXRemoteSerializeResult<Record<string, unknown>>;
   meta: PostMeta;
 }
 
+/** Prose renders in Newsreader per the type sheet; code stays mono. */
+const codeBlock: React.CSSProperties = {
+  background: 'var(--night-2)',
+  border: '1px solid var(--line)',
+  borderRadius: 'var(--r2)',
+  fontFamily: 'var(--mono)',
+  fontSize: 13,
+  padding: '12px 14px',
+  overflowX: 'auto',
+  margin: '12px 0',
+};
+
+const heading =
+  (size: number) =>
+  // eslint-disable-next-line react/display-name
+  (props: object) => (
+    <h2
+      style={{
+        fontFamily: 'var(--ui)',
+        fontSize: size,
+        fontWeight: 700,
+        margin: '24px 0 8px',
+      }}
+      {...props}
+    />
+  );
+
 const components: MDXComponents = {
-  img: (props: any) => (
+  img: (props: { src?: string; alt?: string }) => (
     // eslint-disable-next-line @next/next/no-img-element
     <img
       style={{ objectFit: 'cover', maxWidth: '100%' }}
@@ -41,55 +54,72 @@ const components: MDXComponents = {
       alt={props.alt}
     />
   ),
-  ReactTable,
-  code: (props: any) => <Code {...props} />,
-  pre: (props: any) => {
-    const matches = (props.children.props.className || '').match(
-      /language-(?<lang>.*)/,
-    );
-
-    return (
-      <Stack>
-        <CodeHighlight
-          code={props.children.props.children}
-          language={
-            matches && matches.groups && matches.groups.lang
-              ? matches.groups.lang
-              : ''
-          }
-        />
-      </Stack>
-    );
+  code: (props: object) => (
+    <code
+      style={{
+        fontFamily: 'var(--mono)',
+        fontSize: '0.9em',
+        color: 'var(--kind-db)',
+      }}
+      {...props}
+    />
+  ),
+  pre: (props: React.HTMLAttributes<HTMLPreElement>) => {
+    const child = props.children as
+      | React.ReactElement<{ children?: string }>
+      | undefined;
+    return <pre style={codeBlock}>{child?.props?.children}</pre>;
   },
-  h1: (props: any) => <Title order={1} {...props} />,
-  h2: (props: any) => <Title order={2} {...props} />,
-  h3: (props: any) => <Title order={3} {...props} />,
-  h4: (props: any) => <Title order={4} {...props} />,
-  h5: (props: any) => <Title order={5} {...props} />,
-  h6: (props: any) => <Title order={6} {...props} />,
-  a: (props: any) => <Anchor {...props} />,
+  h1: heading(24),
+  h2: heading(20),
+  h3: heading(17),
+  h4: heading(15),
+  h5: heading(14),
+  h6: heading(13),
 };
 
 export default function PostPage({ post }: { post: MDXPost }) {
   return (
-    <>
+    <div
+      style={{
+        maxWidth: 680,
+        margin: '32px auto',
+        padding: '0 24px',
+        fontFamily: 'var(--prose)',
+        fontSize: 16,
+        lineHeight: 1.7,
+      }}
+    >
       <NextSeo title={post.meta.title} description={post.meta.excerpt} />
-      <Group>
-        <Link href={'/blog'} passHref>
-          <ActionIcon
-            mt={'10px'}
-            variant="transparent"
-            aria-label="back to blog list"
-          >
-            <IconArrowNarrowLeft size={34} />
-          </ActionIcon>
-        </Link>
-        <Title order={1}>{post.meta.title}</Title>
-      </Group>
-      <Divider mt="10px" />
-
+      <Link
+        href="/blog"
+        style={{
+          fontFamily: 'var(--mono)',
+          fontSize: 12,
+          color: 'var(--ink-3)',
+        }}
+      >
+        ← blog
+      </Link>
+      <h1
+        style={{
+          fontFamily: 'var(--ui)',
+          fontSize: 26,
+          fontWeight: 700,
+          margin: '8px 0 4px',
+        }}
+      >
+        {post.meta.title}
+      </h1>
+      <hr
+        style={{
+          border: 'none',
+          borderTop: '1px solid var(--line)',
+          margin: '12px 0 20px',
+        }}
+      />
       <MDXRemote {...post.source} components={components} />
-    </>
+    </div>
   );
 }
 
@@ -99,7 +129,6 @@ export const getStaticProps: GetStaticProps = async ({ params }) => {
   const mdxSource = await serialize(content, {
     mdxOptions: {
       rehypePlugins: [
-        // rehypeHighlight,
         rehypeSlug,
         [rehypeAutolinkHeadings, { behavior: 'wrap' }],
       ],

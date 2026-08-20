@@ -1,5 +1,22 @@
-@import url("fonts.css");
+/* The base reset the design system stands on: the night surface owns the
+ * whole viewport, text inherits the token inks, boxes size predictably.
+ * Element margins keep their defaults; pages set their own rhythm. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--night-0);
+  color: var(--ink-1);
+  font-family: var(--ui);
+}
 
 a {
   text-decoration: none;
+  color: inherit;
 }

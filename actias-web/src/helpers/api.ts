@@ -1,7 +1,6 @@
 import { ActiasClient } from '@/client';
-import { UseFormReturnType } from '@mantine/form';
-import { notifications } from '@mantine/notifications';
 import { getPublicConfig } from '@/pages/api/config';
+import { toast } from '@/ui/toast';
 
 const client = new ActiasClient({
   BASE: getPublicConfig('apiRoot'),
@@ -23,29 +22,12 @@ interface StandardError {
 type Error = ValidationError | StandardError;
 
 /**
- * Show error either on form or notification depending on error.
- *
- * @param error error object received from {@link ActiasClient}.
- * @param form mantine form to show possible errors on.
- */
-export const errorForm = (
-  error: { body: ValidationError },
-  form: UseFormReturnType<any, any>,
-) => {
-  if ('errors' in error?.body) {
-    form.setErrors(error.body.errors);
-  } else {
-    showError(error);
-  }
-};
-
-/**
  * Show error either on notification.
  *
  * @param error error object received from {@link ActiasClient}.
  */
 export const showError = (error: { body: Error }) =>
-  notifications.show({
+  toast({
     color: 'red',
     title: 'Error',
     message: error?.body?.message || 'Something went wrong',

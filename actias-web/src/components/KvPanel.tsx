@@ -6,12 +6,12 @@
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
-import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { NamespaceDto, PairDto, ProjectDto } from '@/client';
 import { Button, Card, Chip, EmptyState, Field } from '@/ui';
 import classes from './KvPanel.module.css';
 import shared from '../pages/projects.module.css';
+import { toast } from '@/ui/toast';
 
 export default function KvPanel({
   project,
@@ -84,7 +84,7 @@ export default function KvPanel({
     api.kv
       .deleteNamespace(project.id, active as string)
       .then(() => {
-        notifications.show({ title: 'Namespace deleted', message: active! });
+        toast({ title: 'Namespace deleted', message: active! });
         setSelected(null);
         invalidate();
       })

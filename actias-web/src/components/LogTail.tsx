@@ -39,7 +39,8 @@ const LogTail = ({ scriptId }: { scriptId: string }) => {
     if (!token) return;
 
     const apiRoot = (
-      (getPublicConfig('wsRoot') as string) || (getPublicConfig('apiRoot') as string)
+      (getPublicConfig('wsRoot') as string) ||
+      (getPublicConfig('apiRoot') as string)
     ).replace(/\/$/, '');
     const socket = new WebSocket(
       `${apiRoot.replace(/^http/, 'ws')}/liveScript?token=${encodeURIComponent(

@@ -1,175 +1,110 @@
-import { PaginatedResponseDto, RegistrationCodeDto } from '@/client';
-import { AuthGuard } from '@/helpers/auth';
+import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  ActionIcon,
-  Button,
-  Divider,
-  Group,
-  Modal,
-  NumberInput,
-  Pagination,
-  Stack,
-  Table,
-  Title,
-} from '@mantine/core';
-import { useCallback, useState } from 'react';
 import api, { showError } from '@/helpers/api';
-import { IconCopy, IconTrash } from '@tabler/icons-react';
-import { notifications } from '@mantine/notifications';
-import { useClipboard, useDisclosure } from '@mantine/hooks';
+import { AuthGuard } from '@/helpers/auth';
+import { Button, Card, Field } from '@/ui';
+import { toast } from '@/ui/toast';
+import classes from './projects.module.css';
 
-const Admin = () => {
-  const [page, setPage] = useState(1);
+interface RegistrationCode {
+  id: string;
+  uses: number;
+}
+
+function Admin() {
   const queryClient = useQueryClient();
 
-  const { data: codes } = useQuery<PaginatedResponseDto>({
-    queryKey: ['registration-codes', page],
-    queryFn: () => api.admin.listRegistrationCodes(page),
+  const { data: codes } = useQuery({
+    queryKey: ['registration-codes'],
+    queryFn: async () =>
+      (
+        (await api.admin.listRegistrationCodes(1)) as unknown as {
+          items: RegistrationCode[];
+        }
+      ).items,
   });
 
-  const reloadCodes = useCallback(() => {
-    setPage(1);
+  const reload = () =>
     queryClient.invalidateQueries({ queryKey: ['registration-codes'] });
-  }, [queryClient]);
 
-  const deleteCode = useCallback(
-    (code: string) => {
-      api.admin
-        .deleteRegistrationCode(code)
-        .then(() => {
-          notifications.show({
-            title: 'Deleted code!',
-            message: `Deleted code: ${code}`,
-          });
+  const createCode = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const uses = Number(new FormData(event.currentTarget).get('uses') ?? 1);
+    api.admin
+      .newRegistrationCode(uses)
+      .then(() => {
+        toast({ title: 'Code created', message: `${uses} use(s)` });
+        reload();
+      })
+      .catch(showError);
+  };
 
-          reloadCodes();
-        })
-        .catch(showError);
-    },
-    [reloadCodes],
-  );
-
-  const [codeModalOpened, codeModalControl] = useDisclosure(false);
-
-  const createCode = useCallback(
-    (uses: number) => {
-      api.admin
-        .newRegistrationCode(uses)
-        .then(() => {
-          notifications.show({
-            title: 'Created code!',
-            message: `Created code with ${uses} uses`,
-          });
-
-          codeModalControl.close();
-          reloadCodes();
-        })
-        .catch(showError);
-    },
-    [codeModalControl, reloadCodes],
-  );
-
-  const clipboard = useClipboard();
+  const deleteCode = (code: string) => {
+    api.admin
+      .deleteRegistrationCode(code)
+      .then(() => {
+        toast({ title: 'Code deleted', message: code });
+        reload();
+      })
+      .catch(showError);
+  };
 
   return (
-    <Stack>
-      <Title>Admin</Title>
-      <Divider />
-      <Stack>
-        <Title order={2}>Registration Codes</Title>
-        <Table>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Code</Table.Th>
-              <Table.Th>Uses</Table.Th>
-              <Table.Th>Created At</Table.Th>
-              <Table.Th>Actions</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {(codes as any)?.items?.map((code: RegistrationCodeDto) => (
-              <Table.Tr key={code.id}>
-                <Table.Td>{code.id}</Table.Td>
-                <Table.Td>{code.uses}</Table.Td>
-                <Table.Td>{code.createdAt}</Table.Td>
-                <Table.Td>
-                  <Group>
-                    <ActionIcon
-                      variant="default"
-                      onClick={() => deleteCode(code.id)}
-                      size={30}
-                    >
-                      <IconTrash size="1rem" />
-                    </ActionIcon>
-                    <ActionIcon
-                      variant="default"
-                      onClick={() => {
-                        clipboard.copy(code.id);
-                        notifications.show({
-                          title: 'Copied',
-                          message: `Copied ${code.id} to clipboard.`,
-                        });
-                      }}
-                      size={30}
-                    >
-                      <IconCopy size="1rem" />
-                    </ActionIcon>
-                  </Group>
-                </Table.Td>
-              </Table.Tr>
+    <div style={{ maxWidth: 560 }}>
+      <h1 style={{ fontSize: 18, fontWeight: 700, marginBottom: 12 }}>
+        Registration codes
+      </h1>
+      <Card style={{ padding: 16, marginBottom: 12 }}>
+        <form onSubmit={createCode} style={{ display: 'flex', gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <Field
+              label="Uses"
+              name="uses"
+              type="number"
+              defaultValue={1}
+              min={1}
+              required
+            />
+          </div>
+          <div style={{ alignSelf: 'flex-end' }}>
+            <Button type="submit" variant="primary">
+              New code
+            </Button>
+          </div>
+        </form>
+      </Card>
+      <Card>
+        <table className={classes.table}>
+          <thead>
+            <tr>
+              <th>code</th>
+              <th>uses left</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {(codes ?? []).map((code: RegistrationCode) => (
+              <tr key={code.id}>
+                <td
+                  className={classes.name}
+                  style={{ fontFamily: 'var(--mono)', fontSize: 12 }}
+                >
+                  {code.id}
+                </td>
+                <td className={classes.meta}>{code.uses}</td>
+                <td style={{ textAlign: 'right' }}>
+                  <Button variant="danger" onClick={() => deleteCode(code.id)}>
+                    Delete
+                  </Button>
+                </td>
+              </tr>
             ))}
-          </Table.Tbody>
-        </Table>
-        <Pagination
-          value={codes?.page}
-          onChange={setPage}
-          total={codes?.lastPage || 1}
-        />
-        <CreateRegistrationModal
-          onSubmit={createCode}
-          onClose={codeModalControl.close}
-          opened={codeModalOpened}
-        />
-        <Button w={'120px'} onClick={() => codeModalControl.open()}>
-          Create Code
-        </Button>
-      </Stack>
-    </Stack>
+          </tbody>
+        </table>
+      </Card>
+    </div>
   );
-};
-
-const CreateRegistrationModal: React.FC<{
-  onSubmit: (uses: number) => void;
-  onClose: () => void;
-  opened: boolean;
-}> = ({ onSubmit, onClose, opened }) => {
-  const [uses, setUses] = useState<number>(1);
-
-  return (
-    <Modal opened={opened} onClose={onClose} title="Create registration code">
-      <NumberInput
-        placeholder="Uses"
-        label="Code uses"
-        withAsterisk
-        value={uses}
-        onChange={(value) => setUses(Number(value))}
-      />
-
-      <Group align="right" mt="md">
-        <Button
-          type="submit"
-          onClick={() => {
-            onSubmit(uses);
-            onClose();
-          }}
-        >
-          Create Code
-        </Button>
-      </Group>
-    </Modal>
-  );
-};
+}
 
 export default function AdminPage() {
   return (
