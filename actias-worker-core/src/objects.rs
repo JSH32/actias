@@ -1764,6 +1764,272 @@ mod tests {
         );
     }
 
+    /// The inspector's contract: the journal carries message ids,
+    /// producers and per-attempt error text; dead letters requeue through
+    /// retry_dead and deliver; drop discards for good.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_journal_carries_producers_and_dead_letters_requeue() {
+        const SOURCE: &str = r#"
+            accept = false
+            got = nil
+            on "queue:jobs" (function(message)
+                if not accept then error("not ready: refusing") end
+                got = message
+            end)
+            function allow() accept = true end
+            function deny() accept = false end
+            function get_got() return got end
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("q.db")).expect("opens"),
+                ),
+                // Two attempts at a compressed backoff: dead fast.
+                queue: crate::platform::queue::QueuePolicy {
+                    max_attempts: 2,
+                    backoff_base_ms: 5,
+                },
+                ..Default::default()
+            },
+        );
+        let dispatch = |method: &str, args: serde_json::Value| {
+            serde_json::json!({
+                "class": "__queue", "name": "jobs", "method": method, "args": args,
+                "caller": { "script": "todo-api", "revision": "c47d1b90" },
+            })
+        };
+
+        handle
+            .call(
+                "__dispatch",
+                dispatch("send", serde_json::json!([{ "n": 1 }])),
+            )
+            .await
+            .expect("send enqueues");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // The journal: enqueued names the producer, the dead letter its
+        // last error.
+        let events = handle
+            .call("__dispatch", dispatch("events", serde_json::json!([0])))
+            .await
+            .expect("events read");
+        let events = events.as_array().expect("events are rows");
+        let enqueued = events
+            .iter()
+            .find(|event| event["kind"] == "enqueued")
+            .expect("the enqueue was journaled");
+        assert_eq!(enqueued["detail"]["producer_script"], "todo-api");
+        assert_eq!(enqueued["detail"]["producer_revision"], "c47d1b90");
+        let dead = events
+            .iter()
+            .find(|event| event["kind"] == "dead-lettered")
+            .expect("the dead letter was journaled");
+        assert!(
+            dead["detail"]["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("not ready")),
+            "the attempt's error text is recorded: {dead}"
+        );
+
+        // Requeue and let the now-willing handler consume it.
+        handle
+            .call("allow", serde_json::Value::Null)
+            .await
+            .expect("allow");
+        let requeued = handle
+            .call("__dispatch", dispatch("retry_dead", serde_json::json!([])))
+            .await
+            .expect("retry_dead");
+        assert_eq!(requeued.as_i64(), Some(1), "one dead letter requeued");
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        let got = handle
+            .call("get_got", serde_json::Value::Null)
+            .await
+            .expect("read back");
+        assert_eq!(got["n"], 1, "the requeued message delivered: {got}");
+        let stats = handle
+            .call("__dispatch", dispatch("stats", serde_json::json!([])))
+            .await
+            .expect("stats");
+        assert_eq!(stats["depth"], 0);
+        assert_eq!(stats["dead_letters"], 0);
+
+        // A second poison message dies again; drop discards it for good.
+        handle
+            .call("deny", serde_json::Value::Null)
+            .await
+            .expect("deny");
+        handle
+            .call(
+                "__dispatch",
+                dispatch("send", serde_json::json!(["poison"])),
+            )
+            .await
+            .expect("send enqueues");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let messages = handle
+            .call("__dispatch", dispatch("messages", serde_json::json!([])))
+            .await
+            .expect("messages read");
+        let dead_row = messages
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["state"] == "dead"))
+            .expect("the poison row is listed dead")
+            .clone();
+        let dropped = handle
+            .call(
+                "__dispatch",
+                dispatch("drop_message", serde_json::json!([dead_row["id"]])),
+            )
+            .await
+            .expect("drop");
+        assert_eq!(dropped, serde_json::Value::Bool(true));
+        let stats = handle
+            .call("__dispatch", dispatch("stats", serde_json::json!([])))
+            .await
+            .expect("stats");
+        assert_eq!(stats["dead_letters"], 0, "the drop removed it");
+    }
+
+    /// Message ids are never reused: a delivered message's id stays
+    /// retired, so a journal id names exactly one message ever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn message_ids_never_reuse_after_delivery() {
+        const SOURCE: &str = r#"
+            on "queue:jobs" (function(message) end)
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("q.db")).expect("opens"),
+                ),
+                ..Default::default()
+            },
+        );
+        let dispatch = |method: &str, args: serde_json::Value| {
+            serde_json::json!({
+                "class": "__queue", "name": "jobs", "method": method, "args": args,
+            })
+        };
+
+        handle
+            .call("__dispatch", dispatch("send", serde_json::json!(["first"])))
+            .await
+            .expect("send");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        handle
+            .call(
+                "__dispatch",
+                dispatch("send", serde_json::json!(["second"])),
+            )
+            .await
+            .expect("send");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let events = handle
+            .call("__dispatch", dispatch("events", serde_json::json!([0])))
+            .await
+            .expect("events read");
+        let ids: Vec<i64> = events
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter(|event| event["kind"] == "enqueued")
+            .filter_map(|event| event["detail"]["id"].as_i64())
+            .collect();
+        assert_eq!(ids.len(), 2, "both enqueues journaled: {events}");
+        assert!(
+            ids[1] > ids[0],
+            "the second message must not reuse the delivered id: {ids:?}"
+        );
+    }
+
+    /// A version 1 queue file (rowid ids that could reuse) is carried to
+    /// version 2 on first touch: rows survive, and new ids resume past
+    /// the highest existing one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_v1_queue_file_migrates_and_keeps_its_rows() {
+        const SOURCE: &str = r#"
+            on "queue:jobs" (function(message) error("hold the queue") end)
+        "#;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("q.db");
+        {
+            // Hand-build the v1 schema: plain rowid ids, version cell 1.
+            let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
+            storage
+                .platform()
+                .execute_batch(
+                    "CREATE TABLE __actias_queue_messages (
+                        id INTEGER PRIMARY KEY,
+                        payload TEXT NOT NULL,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        next_at INTEGER NOT NULL,
+                        enqueued_at INTEGER NOT NULL
+                    );
+                    CREATE TABLE __actias_queue_dead (
+                        id INTEGER, payload TEXT, attempts INTEGER,
+                        enqueued_at INTEGER, died_at INTEGER
+                    );
+                    INSERT INTO __actias_queue_messages VALUES (7, '\"held\"', 0, 9999999999999, 1);",
+                )
+                .expect("v1 schema builds");
+            storage.set_schema_version(1).expect("stamps v1");
+        }
+
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&file).expect("reopens")),
+                ..Default::default()
+            },
+        );
+        let dispatch = |method: &str, args: serde_json::Value| {
+            serde_json::json!({
+                "class": "__queue", "name": "jobs", "method": method, "args": args,
+            })
+        };
+
+        // First touch migrates; the held row survives it.
+        let rows = handle
+            .call("__dispatch", dispatch("messages", serde_json::json!([])))
+            .await
+            .expect("messages read");
+        assert_eq!(rows[0]["id"], 7, "the v1 row carried over: {rows}");
+
+        // New ids resume past the carried-over ones.
+        handle
+            .call("__dispatch", dispatch("send", serde_json::json!(["fresh"])))
+            .await
+            .expect("send");
+        let rows = handle
+            .call("__dispatch", dispatch("messages", serde_json::json!([])))
+            .await
+            .expect("messages read");
+        let ids: Vec<i64> = rows
+            .as_array()
+            .expect("rows")
+            .iter()
+            .filter_map(|row| row["id"].as_i64())
+            .collect();
+        assert!(ids.contains(&7), "old row still listed: {ids:?}");
+        assert!(
+            ids.iter().any(|id| *id > 7),
+            "new ids resume past the old ones: {ids:?}"
+        );
+    }
+
     #[test]
     fn cron_expressions_read_both_shapes() {
         use crate::extensions::objects::cron_delay_ms;

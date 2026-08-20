@@ -171,20 +171,47 @@ fn statement(args: &[serde_json::Value]) -> Result<(String, Vec<serde_json::Valu
     Ok((text.to_owned(), params))
 }
 
+/// One column's shape, straight from SQLite's own table metadata.
+#[derive(serde::Serialize)]
+pub struct ColumnInfo {
+    pub name: String,
+    /// The declared type text; empty for untyped columns.
+    #[serde(rename = "type")]
+    pub column_type: String,
+    pub not_null: bool,
+    pub primary_key: bool,
+}
+
 /// One user table's shape, for dashboards.
 #[derive(serde::Serialize)]
 pub struct TableInfo {
     pub name: String,
     pub rows: i64,
+    pub columns: Vec<ColumnInfo>,
 }
 
-/// The database's user tables and their row counts, reusable by any read
-/// path that can open the file (a snapshot, a replica, an api endpoint)
-/// without dispatching at all. Reserved and internal tables stay hidden.
-pub fn read_overview(
-    storage: &mut crate::storage::SqliteStorage,
-) -> Result<Vec<TableInfo>, String> {
+/// What the dashboard's database viewer reads in one call.
+#[derive(serde::Serialize)]
+pub struct Overview {
+    /// The database file's size in bytes (page count times page size).
+    pub size_bytes: i64,
+    pub tables: Vec<TableInfo>,
+}
+
+/// The database's file size and user tables with their shapes, reusable
+/// by any read path that can open the file (a snapshot, a replica, an api
+/// endpoint) without dispatching at all. Reserved and internal tables
+/// stay hidden. Column metadata comes from the platform connection, which
+/// the script authorizer never restricts.
+pub fn read_overview(storage: &mut crate::storage::SqliteStorage) -> Result<Overview, String> {
     let connection = storage.platform();
+
+    let page_count: i64 = connection
+        .pragma_query_value(None, "page_count", |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    let page_size: i64 = connection
+        .pragma_query_value(None, "page_size", |row| row.get(0))
+        .map_err(|e| e.to_string())?;
 
     let names: Vec<String> = {
         let mut statement = connection
@@ -194,26 +221,51 @@ pub fn read_overview(
                  ORDER BY name",
             )
             .map_err(|e| e.to_string())?;
-        let names = statement
+        statement
             .query_map([], |row| row.get(0))
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        names
+            .map_err(|e| e.to_string())?
     };
 
     let mut tables = Vec::new();
     for name in names {
         // Identifier interpolation is safe here: the name came from
         // sqlite_master, quoted against exotic table names.
+        let quoted = name.replace('"', "\"\"");
         let rows = connection
-            .query_row(
-                &format!("SELECT COUNT(*) FROM \"{}\"", name.replace('"', "\"\"")),
-                [],
-                |row| row.get(0),
-            )
+            .query_row(&format!("SELECT COUNT(*) FROM \"{quoted}\""), [], |row| {
+                row.get(0)
+            })
             .map_err(|e| e.to_string())?;
-        tables.push(TableInfo { name, rows });
+
+        let columns = {
+            let mut statement = connection
+                .prepare(&format!("PRAGMA table_info(\"{quoted}\")"))
+                .map_err(|e| e.to_string())?;
+            statement
+                .query_map([], |row| {
+                    Ok(ColumnInfo {
+                        name: row.get(1)?,
+                        column_type: row.get(2)?,
+                        not_null: row.get::<_, i64>(3)? != 0,
+                        primary_key: row.get::<_, i64>(5)? != 0,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+        };
+
+        tables.push(TableInfo {
+            name,
+            rows,
+            columns,
+        });
     }
-    Ok(tables)
+
+    Ok(Overview {
+        size_bytes: page_count * page_size,
+        tables,
+    })
 }
