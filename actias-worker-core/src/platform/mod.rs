@@ -35,6 +35,20 @@ pub(crate) struct Call {
     /// fired listener's outbound object calls extend it.
     #[serde(default)]
     pub chain: Vec<String>,
+    /// Who is calling, when the router knows: the queue journal records
+    /// it as the producer. Platform-internal dispatches (alarms) have
+    /// none.
+    #[serde(default)]
+    pub caller: Option<Caller>,
+}
+
+/// The calling script's identity, as the router sees it.
+#[derive(Deserialize, Clone)]
+pub(crate) struct Caller {
+    /// Public identifier, the name a human recognizes.
+    pub script: String,
+    /// Revision id the caller executed as.
+    pub revision: String,
 }
 
 /// What a platform method may touch, passed explicitly: the object's own
@@ -46,6 +60,54 @@ pub(crate) struct PlatformContext<'a> {
     pub name: &'a str,
     /// The object's own key, seeding any alarm it arms.
     pub own_key: &'a str,
+}
+
+/// One typed dashboard read against an object's file. The transport layer
+/// (the worker's internal endpoint today, the WorkerData service later)
+/// only maps its parameters onto a variant and picks which file answers
+/// (local, replica); everything from file to structured value, including
+/// what a file that predates the schema contains, is this module's
+/// business.
+pub enum PlatformRead {
+    /// Queue depth, in flight, oldest pending and dead letters.
+    QueueStats,
+    /// Queue journal rows after `since`, oldest first.
+    QueueEvents { since: i64 },
+    /// The queue's live and dead message rows with display states.
+    QueueMessages,
+    /// A database's file size and user tables with their shapes.
+    DatabaseOverview,
+}
+
+impl PlatformRead {
+    /// The overview read a dashboard asks for by class name; [`None`] for
+    /// classes without one.
+    pub fn stats_for_class(class: &str) -> Option<Self> {
+        match class {
+            crate::extensions::objects::QUEUE_CLASS => Some(Self::QueueStats),
+            crate::extensions::objects::DATABASE_CLASS => Some(Self::DatabaseOverview),
+            _ => None,
+        }
+    }
+
+    /// Runs the read against a file, opened read-only. Blocking SQLite io;
+    /// async callers wrap it in `spawn_blocking`.
+    ///
+    /// # Errors
+    /// Returns the user-safe text of whatever failed, like a dispatched
+    /// method would.
+    pub fn run(&self, file: &std::path::Path) -> Result<serde_json::Value, String> {
+        let mut storage = crate::storage::SqliteStorage::open_read_only(file)?;
+        let value = match self {
+            Self::QueueStats => serde_json::to_value(queue::read_stats(&mut storage)?),
+            Self::QueueEvents { since } => {
+                serde_json::to_value(queue::read_events(&mut storage, *since)?)
+            }
+            Self::QueueMessages => serde_json::to_value(queue::read_messages(&mut storage)?),
+            Self::DatabaseOverview => serde_json::to_value(database::read_overview(&mut storage)?),
+        };
+        value.map_err(|e| e.to_string())
+    }
 }
 
 /// Whether `payload` targets a platform class; the `__` prefix is
@@ -94,31 +156,32 @@ pub(crate) async fn dispatch(
 }
 
 /// Fires the script's listener for `event` and reports the delivery
-/// verdict. Errors are contained here rather than by a Lua pcall: the
-/// handler may yield (async platform calls), and Luau cannot yield across
-/// a pcall's C boundary. A failing handler is logged and never unwinds
-/// into the platform method that fired it.
+/// verdict: [`Ok`] on success, the user-safe failure text otherwise (the
+/// queue journals it per attempt). Errors are contained here rather than
+/// by a Lua pcall: the handler may yield (async platform calls), and Luau
+/// cannot yield across a pcall's C boundary. A failing handler is logged
+/// and never unwinds into the platform method that fired it.
 pub(crate) async fn fire_listener(
     runtime: &ActiasRuntime,
     event: &str,
     payload: &serde_json::Value,
-) -> bool {
+) -> Result<(), String> {
     let Ok(listener) = runtime.listener(event) else {
         actias_common::tracing::warn!(event, "no listener registered for event");
-        return false;
+        return Err(format!("no listener registered for '{event}'"));
     };
     let argument = match runtime.to_value(payload) {
         Ok(argument) => argument,
         Err(error) => {
             actias_common::tracing::warn!(%error, event, "event payload did not convert");
-            return false;
+            return Err(format!("event payload did not convert: {error}"));
         }
     };
     if let Err(error) = listener.call_async::<mlua::Value>(argument).await {
         actias_common::tracing::warn!(%error, event, "event handler failed");
-        return false;
+        return Err(error.to_string());
     }
-    true
+    Ok(())
 }
 
 /// Arms this object's one alarm `delay_ms` from now; setting replaces.

@@ -200,17 +200,53 @@ impl SqliteStorage {
             .map_err(|e| e.to_string())
     }
 
+    /// The file's schema version (SQLite's user_version cell); 0 means
+    /// fresh, and each platform class owns what its numbers mean.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn schema_version(&mut self) -> Result<i64, String> {
+        self.connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Stamps the file's schema version.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn set_schema_version(&mut self, version: i64) -> Result<(), String> {
+        self.connection
+            .pragma_update(None, "user_version", version)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Whether the file holds a table of that name; how read paths decide
+    /// what a file that predates a schema (a fresh object, an old
+    /// snapshot, a replica) contains, instead of classifying errors.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn table_exists(&mut self, name: &str) -> Result<bool, String> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+                [name],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())
+    }
+
     /// Like [`Self::load_alarm`] but safe on read-only connections: a file
     /// that never held an alarm simply has no table, which reads as none.
     ///
     /// # Errors
-    /// Returns SQLite's message for anything but the missing table.
+    /// Returns SQLite's message.
     pub fn peek_alarm(&mut self) -> Result<Option<(i64, String, String, String)>, String> {
-        match self.load_alarm_row() {
-            Ok(alarm) => Ok(alarm),
-            Err(error) if error.contains("no such table") => Ok(None),
-            Err(error) => Err(error),
+        if !self.table_exists(ALARM_TABLE)? {
+            return Ok(None);
         }
+        self.load_alarm_row()
     }
 
     /// The persisted alarm, if one is set: (due unix ms, class, instance
@@ -298,6 +334,10 @@ impl SqliteStorage {
         Ok(())
     }
 }
+
+/// The alarm table's name, for existence probes; must match the DDL in
+/// [`SqliteStorage::ensure_meta`].
+const ALARM_TABLE: &str = "__actias_alarm";
 
 /// What script-issued SQL may do. Platform paths (the dispatch
 /// transaction, meta tables, pragmas at open) run without this guard;

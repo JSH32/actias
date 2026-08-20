@@ -50,7 +50,8 @@ async fn fire(
         "cron": context.name,
         "scheduled_at": unix_now_ms(),
     });
-    super::fire_listener(runtime, context.name, &payload).await;
+    // The verdict is already logged; a cron fire has no retry story.
+    let _ = super::fire_listener(runtime, context.name, &payload).await;
 
     Ok(serde_json::Value::Null)
 }
