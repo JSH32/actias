@@ -6,8 +6,9 @@ import {
   Inject,
   Param,
   Post,
+  Query,
 } from '@nestjs/common';
-import { ApiParam, ApiTags } from '@nestjs/swagger';
+import { ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ClientGrpc } from '@nestjs/microservices';
 import { ConfigService } from '@nestjs/config';
 import { lastValueFrom } from 'rxjs';
@@ -19,6 +20,7 @@ import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
 import { node_registry } from 'src/protobufs/node_registry';
 import {
+  QueueEventDto,
   QueueStatsDto,
   ResourceInstanceDto,
   SqlQueryDto,
@@ -84,7 +86,13 @@ export class ResourcesController {
     @Param('script') script: string,
     @Param('name') name: string,
   ): Promise<QueueStatsDto> {
-    const stats = (await this.workerStats(script, CLASSES.queues, name)) as {
+    const stats = (await this.dispatchObject(
+      script,
+      CLASSES.queues,
+      name,
+      'stats',
+      [],
+    )) as {
       depth?: number;
       oldest_pending?: number;
       dead_letters?: number;
@@ -94,6 +102,28 @@ export class ResourcesController {
       oldestPending: stats?.oldest_pending ?? undefined,
       deadLetters: stats?.dead_letters ?? 0,
     };
+  }
+
+  /** The queue's journal after `since`: enqueued, delivered, retried and
+   * dead-lettered, oldest first. */
+  @Get('queues/:script/:name/events')
+  @AclByProject(AccessFields.SCRIPT_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  @ApiQuery({ name: 'since', required: false, type: Number })
+  async queueEvents(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('script') script: string,
+    @Param('name') name: string,
+    @Query('since') since?: string,
+  ): Promise<QueueEventDto[]> {
+    const events = await this.dispatchObject(
+      script,
+      CLASSES.queues,
+      name,
+      'events',
+      [Number(since ?? 0)],
+    );
+    return Array.isArray(events) ? (events as QueueEventDto[]) : [];
   }
 
   @Get('databases/:script/:name/tables')
@@ -222,13 +252,15 @@ export class ResourcesController {
     return response.json();
   }
 
-  /** One sql call through the worker's object transport. */
-  private async dispatchSql(
+  /** One method call through the worker's object transport; lands on any
+   * node and forwards once to the holder. */
+  private async dispatchObject(
     scriptId: string,
-    database: string,
-    method: 'read' | 'query',
-    body: SqlQueryDto,
-  ): Promise<SqlRowsDto> {
+    className: string,
+    name: string,
+    method: string,
+    args: unknown[],
+  ): Promise<unknown> {
     const base = this.config.get<string>('worker.internalUrl');
     const response = await fetch(`${base}/_object`, {
       method: 'POST',
@@ -239,23 +271,38 @@ export class ResourcesController {
       body: JSON.stringify({
         scriptId,
         firstHop: true,
-        class: '__database',
-        name: database,
+        class: className,
+        name,
         method,
-        arguments: [body.sql, body.params ?? []],
+        arguments: args,
       }),
     }).catch(() => null);
     if (!response) {
-      throw new BadGatewayException('The worker did not answer the query.');
+      throw new BadGatewayException('The worker did not answer.');
     }
     const answer = await response.json().catch(() => null);
     if (!response.ok) {
       throw new BadGatewayException(
-        typeof answer === 'string' ? answer : 'The query failed.',
+        typeof answer === 'string' ? answer : 'The call failed.',
       );
     }
-    // The object transport wraps its value: { result: rows }.
-    const rows = (answer as { result?: unknown })?.result;
+    // The object transport wraps its value: { result: value }.
+    return (answer as { result?: unknown })?.result;
+  }
+
+  private async dispatchSql(
+    scriptId: string,
+    database: string,
+    method: 'read' | 'query',
+    body: SqlQueryDto,
+  ): Promise<SqlRowsDto> {
+    const rows = await this.dispatchObject(
+      scriptId,
+      '__database',
+      database,
+      method,
+      [body.sql, body.params ?? []],
+    );
     return { rows: Array.isArray(rows) ? rows : rows == null ? [] : [rows] };
   }
 }

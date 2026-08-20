@@ -64,6 +64,42 @@ const CREATE_DEAD: &str = "CREATE TABLE IF NOT EXISTS __actias_queue_dead (
 /// How many due messages one alarm firing works through before re-arming.
 const DELIVERY_BATCH: i64 = 16;
 
+/// The inspector's journal: every message state change, ring-buffered.
+const CREATE_EVENTS: &str = "CREATE TABLE IF NOT EXISTS __actias_queue_events (
+        seq INTEGER PRIMARY KEY,
+        at INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        detail TEXT NOT NULL
+    )";
+
+/// Journal rows kept; older ones fall off the ring.
+const EVENT_RING: i64 = 300;
+
+/// Appends one journal row and trims the ring; called inside the call's
+/// transaction, so events and the state they describe commit together.
+fn record_event(
+    connection: &mut rusqlite::Connection,
+    kind: &str,
+    detail: &str,
+) -> Result<(), String> {
+    connection
+        .execute(CREATE_EVENTS, [])
+        .map_err(|e| e.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO __actias_queue_events (at, kind, detail) VALUES (?, ?, ?)",
+            rusqlite::params![unix_now_ms(), kind, detail],
+        )
+        .map_err(|e| e.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM __actias_queue_events WHERE seq <=              (SELECT MAX(seq) FROM __actias_queue_events) - ?",
+            rusqlite::params![EVENT_RING],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Routes one `__queue` method call.
 ///
 /// # Errors
@@ -101,6 +137,13 @@ pub(crate) async fn dispatch(
         ),
         "alarm" => deliver(runtime, context).await,
         "stats" => stats(context),
+        "events" => events(
+            context,
+            call.args
+                .first()
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0),
+        ),
         other => Err(format!(
             "Object class '{QUEUE_CLASS}' has no method '{other}'."
         )),
@@ -123,6 +166,7 @@ fn send(
                 rusqlite::params![text, now, now],
             )
             .map_err(|e| e.to_string())?;
+        record_event(connection, "enqueued", &text.chars().take(120).collect::<String>())?;
         Ok(())
     })?;
 
@@ -184,6 +228,11 @@ async fn deliver(
                         rusqlite::params![message.id],
                     )
                     .map_err(|e| e.to_string())?;
+                record_event(
+                    connection,
+                    "delivered",
+                    &message.payload.chars().take(120).collect::<String>(),
+                )?;
             } else if message.attempts + 1 >= policy.max_attempts {
                 connection
                     .execute(
@@ -199,6 +248,11 @@ async fn deliver(
                         rusqlite::params![message.id],
                     )
                     .map_err(|e| e.to_string())?;
+                record_event(
+                    connection,
+                    "dead-lettered",
+                    &format!("after {} attempts", message.attempts + 1),
+                )?;
             } else {
                 let backoff = (policy.backoff_base_ms << message.attempts).min(3_600_000);
                 connection
@@ -208,6 +262,11 @@ async fn deliver(
                         rusqlite::params![unix_now_ms() + backoff, message.id],
                     )
                     .map_err(|e| e.to_string())?;
+                record_event(
+                    connection,
+                    "retried",
+                    &format!("attempt {}, next in {}ms", message.attempts + 1, backoff),
+                )?;
             }
             Ok(())
         })?;
@@ -271,4 +330,52 @@ pub fn read_stats(storage: &mut crate::storage::SqliteStorage) -> Result<Stats, 
 fn stats(context: &super::PlatformContext<'_>) -> Result<serde_json::Value, String> {
     let stats = context.home.with_storage(read_stats)?;
     serde_json::to_value(stats).map_err(|e| e.to_string())
+}
+
+/// One journal row, plain data for the inspector.
+#[derive(Serialize)]
+pub struct QueueEvent {
+    pub seq: i64,
+    pub at: i64,
+    pub kind: String,
+    pub detail: String,
+}
+
+/// Journal rows after `since`, oldest first; reusable by any read path
+/// that can open the file.
+pub fn read_events(
+    storage: &mut crate::storage::SqliteStorage,
+    since: i64,
+) -> Result<Vec<QueueEvent>, String> {
+    let connection = storage.platform();
+    connection
+        .execute(CREATE_EVENTS, [])
+        .map_err(|e| e.to_string())?;
+    let mut statement = connection
+        .prepare(
+            "SELECT seq, at, kind, detail FROM __actias_queue_events \
+             WHERE seq > ? ORDER BY seq LIMIT 200",
+        )
+        .map_err(|e| e.to_string())?;
+    let events = statement
+        .query_map(rusqlite::params![since], |row| {
+            Ok(QueueEvent {
+                seq: row.get(0)?,
+                at: row.get(1)?,
+                kind: row.get(2)?,
+                detail: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(events)
+}
+
+/// The `events` method: [`read_events`] over this object's own storage.
+fn events(context: &super::PlatformContext<'_>, since: i64) -> Result<serde_json::Value, String> {
+    let events = context
+        .home
+        .with_storage(|storage| read_events(storage, since))?;
+    serde_json::to_value(events).map_err(|e| e.to_string())
 }

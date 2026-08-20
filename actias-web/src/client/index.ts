@@ -31,6 +31,7 @@ export type { NewRevisionResponseDto } from './models/NewRevisionResponseDto';
 export type { PaginatedResponseDto } from './models/PaginatedResponseDto';
 export { PairDto } from './models/PairDto';
 export type { ProjectDto } from './models/ProjectDto';
+export type { QueueEventDto } from './models/QueueEventDto';
 export type { QueueStatsDto } from './models/QueueStatsDto';
 export type { RegistrationCodeDto } from './models/RegistrationCodeDto';
 export type { RegistrationConfigDto } from './models/RegistrationConfigDto';
