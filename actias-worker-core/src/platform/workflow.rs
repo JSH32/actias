@@ -383,6 +383,164 @@ mod tests {
             assert_eq!(counters["kind"], "COMPLETED");
         }
 
+        const FAMILY_SOURCE: &str = r#"
+            workflow "child" (function(wf, input)
+                if input.slow then
+                    wf:sleep("60s")
+                end
+                return { doubled = input.n * 2 }
+            end)
+
+            workflow "parent" (function(wf, input)
+                local a = wf:spawn("child", { n = 1 })
+                local b = wf:spawn("child", { n = 2 })
+                -- The join is awaiting each child's completion signal;
+                -- signals arrive in completion order, the scan matches.
+                local rb = wf:await(b.signal)
+                local ra = wf:await(a.signal)
+                return { a = ra.value.doubled, b = rb.value.doubled }
+            end)
+
+            workflow "guardian" (function(wf, input)
+                wf:spawn("child", { n = 1, slow = true })
+                wf:await("never-comes")
+                return {}
+            end)
+        "#;
+
+        /// A tiny in-test placement: one workflow vm per identity, all
+        /// sharing this router, so spawn, notify and cancel route for
+        /// real without a worker.
+        fn family_router(dir: std::path::PathBuf) -> crate::extensions::objects::ObjectRouter {
+            use crate::extensions::objects::{ObjectRouter, ObjectTarget};
+            type Registry =
+                tokio::sync::Mutex<std::collections::HashMap<String, crate::objects::ObjectHandle>>;
+            let registry: Arc<Registry> = Arc::default();
+            let cell: Arc<std::sync::OnceLock<ObjectRouter>> = Arc::default();
+
+            let registry_for = registry.clone();
+            let cell_for = cell.clone();
+            let dir_for = dir.clone();
+            let router: ObjectRouter = Arc::new(move |target: ObjectTarget| {
+                let registry = registry_for.clone();
+                let cell = cell_for.clone();
+                let dir = dir_for.clone();
+                Box::pin(async move {
+                    let key = format!("{}/{}", target.class, target.name);
+                    let handle = {
+                        let mut map = registry.lock().await;
+                        if let Some(handle) = map.get(&key) {
+                            handle.clone()
+                        } else {
+                            let (runtime, _shared) = workflow_vm(FAMILY_SOURCE, false).await;
+                            let router = cell.get().expect("router installed").clone();
+                            runtime.set_app_data::<ObjectRouter>(router);
+                            let file =
+                                dir.join(format!("{}.db", target.name.replace(['/', ':'], "_")));
+                            let handle = spawn_object_task(
+                                runtime,
+                                TaskOptions {
+                                    storage: Some(
+                                        crate::storage::SqliteStorage::open(&file).expect("opens"),
+                                    ),
+                                    ..Default::default()
+                                },
+                            );
+                            map.insert(key.clone(), handle.clone());
+                            handle
+                        }
+                    };
+                    handle
+                        .call(
+                            "__dispatch",
+                            serde_json::json!({
+                                "class": target.class,
+                                "name": target.name,
+                                "method": target.method,
+                                "args": target.arguments,
+                                "chain": [format!("p/{key}")],
+                            }),
+                        )
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+            });
+            cell.set(router.clone()).ok();
+            router
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn spawned_children_complete_and_the_parent_joins_them() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let router = family_router(dir.path().to_path_buf());
+
+            let started = router(crate::extensions::objects::ObjectTarget {
+                class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                name: "parent/p1".to_owned(),
+                method: "start".to_owned(),
+                arguments: vec![serde_json::json!({})],
+                chain: Vec::new(),
+                caller: None,
+            })
+            .await
+            .expect("parent starts");
+            // The parent may park while the completion signals land.
+            let _ = started;
+
+            let mut done = serde_json::Value::Null;
+            for _ in 0..60 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let joined = router(crate::extensions::objects::ObjectTarget {
+                    class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                    name: "parent/p1".to_owned(),
+                    method: "start".to_owned(),
+                    arguments: vec![serde_json::json!({})],
+                    chain: Vec::new(),
+                    caller: None,
+                })
+                .await
+                .expect("join answers");
+                if joined["status"] == "completed" {
+                    done = joined;
+                    break;
+                }
+            }
+            assert_eq!(done["status"], "completed", "parent never joined: {done}");
+            assert_eq!(done["value"]["a"], 2, "{done}");
+            assert_eq!(done["value"]["b"], 4);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cancelling_the_parent_reaches_its_children() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let router = family_router(dir.path().to_path_buf());
+
+            let call_target = |method: &str, name: &str| crate::extensions::objects::ObjectTarget {
+                class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                name: name.to_owned(),
+                method: method.to_owned(),
+                arguments: vec![serde_json::json!({})],
+                chain: Vec::new(),
+                caller: None,
+            };
+            let parked = router(call_target("start", "guardian/g1"))
+                .await
+                .expect("parent parks");
+            assert_eq!(parked["status"], "parked", "{parked}");
+
+            let cancelled = router(call_target("cancel", "guardian/g1"))
+                .await
+                .expect("cancel answers");
+            assert_eq!(cancelled["status"], "cancelled");
+
+            // The child was spawned with a 60s sleep; only propagation
+            // can end it this decade.
+            let child_status = router(call_target("status", "child/g1.0"))
+                .await
+                .expect("child status answers");
+            assert_eq!(child_status["kind"], "CANCEL", "{child_status}");
+        }
+
         const PARKING_SOURCE: &str = r#"
             workflow "waity" (function(wf, input)
                 if input.mode == "sleep" then
@@ -1473,9 +1631,32 @@ impl mlua::UserData for WfHandle {
                 let now = crate::extensions::objects::unix_now_ms();
 
                 // The gate row: live appends it; replay finds it first.
+                // An await whose gate never journaled (the run parked at
+                // an earlier verb) may instead meet its signal directly:
+                // consume it and never park at all. Deterministic, since
+                // the journal is.
                 match attempt.pending.front() {
                     Some(entry)
                         if entry.kind == EntryKind::Timer && entry.data["for"] == name.as_str() => {
+                    }
+                    Some(_)
+                        if attempt.pending.iter().any(|entry| {
+                            entry.kind == EntryKind::Signal && entry.data["name"] == name.as_str()
+                        }) =>
+                    {
+                        let offset = attempt
+                            .pending
+                            .iter()
+                            .position(|entry| {
+                                entry.kind == EntryKind::Signal
+                                    && entry.data["name"] == name.as_str()
+                            })
+                            .expect("checked above");
+                        let signal = attempt
+                            .pending
+                            .remove(offset)
+                            .expect("position came from this deque");
+                        return lua.to_value(&signal.data["payload"]);
                     }
                     Some(entry) => {
                         return Err(mlua::Error::RuntimeError(format!(
@@ -1505,13 +1686,21 @@ impl mlua::UserData for WfHandle {
                     }
                 }
 
-                // The gate is journaled; the answer is whatever follows.
+                // The gate is journaled; the answer is the FIRST
+                // matching signal anywhere after it. Signals arrive in
+                // completion order, not await order (children finish
+                // when they finish), so the scan is forward, and the
+                // rule is deterministic because the journal is.
                 let due = attempt.pending.front().expect("checked").data["due_ms"].as_i64();
-                if attempt.pending.get(1).is_some_and(|next| {
-                    next.kind == EntryKind::Signal && next.data["name"] == name.as_str()
-                }) {
+                let matched = attempt.pending.iter().skip(1).position(|entry| {
+                    entry.kind == EntryKind::Signal && entry.data["name"] == name.as_str()
+                });
+                if let Some(offset) = matched {
                     attempt.pending.pop_front();
-                    let signal = attempt.pending.pop_front().expect("checked");
+                    let signal = attempt
+                        .pending
+                        .remove(offset)
+                        .expect("position came from this deque");
                     return lua.to_value(&signal.data["payload"]);
                 }
                 match due {
@@ -1531,7 +1720,162 @@ impl mlua::UserData for WfHandle {
                 }
             },
         );
+
+        // spawn(definition, input): a child run whose id derives from
+        // this run's; the CHILD row is the deterministic record, the
+        // start dispatch is the effect. Returns a job handle whose
+        // completion signal `wf:all` awaits.
+        methods.add_async_method(
+            "spawn",
+            |lua, _this, (definition, input): (String, mlua::Value)| async move {
+                let shared = lua
+                    .app_data_ref::<std::sync::Arc<WfShared>>()
+                    .map(|shared| shared.clone())
+                    .ok_or_else(|| {
+                        mlua::Error::RuntimeError("Not a workflow vm.".to_owned())
+                    })?;
+                let input_json: serde_json::Value = lua.from_value(input)?;
+
+                enum Plan {
+                    Replay(String),
+                    Launch(String, String),
+                }
+                let plan = {
+                    let mut guard = shared.attempt.lock().expect("no poisoned lock");
+                    let attempt = guard.as_mut().ok_or_else(|| {
+                        mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned())
+                    })?;
+                    match attempt.pending.front() {
+                        Some(entry)
+                            if entry.kind == EntryKind::Child
+                                && entry.data["definition"] == definition.as_str() =>
+                        {
+                            let child = entry.data["child"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned();
+                            attempt.pending.pop_front();
+                            Plan::Replay(child)
+                        }
+                        Some(entry) => {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "journal divergence: expected {:?}, code reached spawn '{definition}'",
+                                entry.kind
+                            )));
+                        }
+                        None => {
+                            // The ordinal makes the child id deterministic
+                            // AND unique per spawn site.
+                            let ordinal = attempt
+                                .home
+                                .with_storage(|storage| {
+                                    let entries = read_from(storage, 0)?;
+                                    Ok(entries
+                                        .iter()
+                                        .filter(|e| e.kind == EntryKind::Child)
+                                        .count())
+                                })
+                                .map_err(mlua::Error::RuntimeError)?;
+                            let run_id = attempt
+                                .name
+                                .split('/')
+                                .nth(1)
+                                .unwrap_or("run")
+                                .to_owned();
+                            let child = format!("{definition}/{run_id}.{ordinal}");
+                            attempt
+                                .home
+                                .with_storage(|storage| {
+                                    append(
+                                        storage,
+                                        EntryKind::Child,
+                                        &serde_json::json!({
+                                            "definition": definition,
+                                            "child": child,
+                                            "input": input_json,
+                                        }),
+                                    )?;
+                                    storage.commit()?;
+                                    storage.begin()
+                                })
+                                .map_err(mlua::Error::RuntimeError)?;
+                            Plan::Launch(child, attempt.name.clone())
+                        }
+                    }
+                };
+
+                let child_name = match plan {
+                    Plan::Replay(child) => child,
+                    Plan::Launch(child, parent) => {
+                        let router = lua
+                            .app_data_ref::<crate::extensions::objects::ObjectRouter>()
+                            .map(|router| router.clone())
+                            .ok_or_else(|| {
+                                mlua::Error::RuntimeError(
+                                    "Objects are not available in this runtime.".to_owned(),
+                                )
+                            })?;
+                        let (definition_part, name_part) =
+                            child.split_once('/').unwrap_or((child.as_str(), ""));
+                        router(crate::extensions::objects::ObjectTarget {
+                            class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                            name: format!("{definition_part}/{name_part}"),
+                            method: "start".to_owned(),
+                            arguments: vec![input_json.clone(), serde_json::json!(parent)],
+                            chain: Vec::new(),
+                            caller: None,
+                        })
+                        .await
+                        .map_err(mlua::Error::RuntimeError)?;
+                        child
+                    }
+                };
+
+                let job = lua.create_table()?;
+                job.set("name", child_name.clone())?;
+                job.set("signal", format!("__child:{child_name}"))?;
+                Ok(job)
+            },
+        );
     }
+}
+
+/// Tells a parent run its child reached a terminal state, as the
+/// `__child:<name>` signal `wf:all` awaits. Best effort: a missing
+/// router (embedded runs) or a gone parent only logs.
+async fn notify_parent(
+    runtime: &crate::runtime::ActiasRuntime,
+    parent: &Option<String>,
+    own_name: &str,
+    payload: serde_json::Value,
+) {
+    let Some(parent) = parent.clone() else { return };
+    let Some(router) = runtime
+        .app_data_ref::<crate::extensions::objects::ObjectRouter>()
+        .map(|router| router.clone())
+    else {
+        return;
+    };
+    let signal_name = format!("__child:{own_name}");
+    // Fire and forget: a child completing INSIDE its parent's spawn call
+    // would deadlock the parent's mailbox if this awaited inline. The
+    // signal row is the durable handoff; delivery drives the wake.
+    tokio::spawn(async move {
+        let outcome = router(crate::extensions::objects::ObjectTarget {
+            class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+            name: parent.clone(),
+            method: "signal".to_owned(),
+            arguments: vec![serde_json::json!(signal_name), payload],
+            chain: Vec::new(),
+            caller: None,
+        })
+        .await;
+        if let Err(error) = outcome {
+            actias_common::tracing::warn!(
+                %error, parent, "child completion did not reach its parent"
+            );
+        }
+    });
 }
 
 /// Arms the instance's one alarm through both homes, like any platform
@@ -1563,12 +1907,16 @@ pub(crate) async fn dispatch(
             run_attempt(
                 runtime,
                 context,
-                Some(
+                Some((
                     call.args
                         .first()
                         .cloned()
                         .unwrap_or(serde_json::Value::Null),
-                ),
+                    call.args
+                        .get(1)
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned),
+                )),
                 false,
             )
             .await
@@ -1603,13 +1951,40 @@ pub(crate) async fn dispatch(
                 .and_then(|value| value.as_str())
                 .unwrap_or("cancelled")
                 .to_owned();
-            context.home.with_storage(|storage| {
+            let children: Vec<String> = context.home.with_storage(|storage| {
+                let entries = read_from(storage, 0)?;
                 append(
                     storage,
                     EntryKind::Cancel,
                     &serde_json::json!({ "reason": reason }),
-                )
+                )?;
+                Ok(entries
+                    .iter()
+                    .filter(|e| e.kind == EntryKind::Child)
+                    .filter_map(|e| e.data["child"].as_str().map(str::to_owned))
+                    .collect())
             })?;
+            // Cancellation is structured: every spawned child gets the
+            // same verdict, best effort, before the caller hears ours.
+            if let Some(router) = runtime
+                .app_data_ref::<crate::extensions::objects::ObjectRouter>()
+                .map(|router| router.clone())
+            {
+                for child in children {
+                    let outcome = router(crate::extensions::objects::ObjectTarget {
+                        class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                        name: child.clone(),
+                        method: "cancel".to_owned(),
+                        arguments: vec![serde_json::json!(reason.clone())],
+                        chain: Vec::new(),
+                        caller: None,
+                    })
+                    .await;
+                    if let Err(error) = outcome {
+                        actias_common::tracing::warn!(%error, child, "cancel did not reach the child");
+                    }
+                }
+            }
             Ok(serde_json::json!({ "status": "cancelled", "reason": reason }))
         }
         "status" => {
@@ -1633,7 +2008,7 @@ pub(crate) async fn dispatch(
 async fn run_attempt(
     runtime: &crate::runtime::ActiasRuntime,
     context: &super::PlatformContext<'_>,
-    input: Option<serde_json::Value>,
+    input: Option<(serde_json::Value, Option<String>)>,
     resume: bool,
 ) -> Result<serde_json::Value, String> {
     let entries = context.home.with_storage(|storage| read_from(storage, 0))?;
@@ -1654,7 +2029,7 @@ async fn run_attempt(
     if entries.is_empty() && input.is_none() {
         return Ok(serde_json::Value::Null);
     }
-    let input = input.unwrap_or(serde_json::Value::Null);
+    let (input, parent_arg) = input.unwrap_or((serde_json::Value::Null, None));
 
     // The definition is the instance name's first segment; the caller id
     // after it is the run's identity.
@@ -1671,10 +2046,11 @@ async fn run_attempt(
         ))
         .map_err(|_| format!("No workflow '{definition}' is declared by the owning script."))?;
 
-    let (seed, input, pending) = match entries.first() {
+    let (seed, input, parent, pending) = match entries.first() {
         Some(started) if started.kind == EntryKind::Started => (
             started.data["seed"].as_i64().unwrap_or(1) as u64,
             started.data["input"].clone(),
+            started.data["parent"].as_str().map(str::to_owned),
             entries[1..].to_vec(),
         ),
         Some(other) => {
@@ -1699,10 +2075,11 @@ async fn run_attempt(
                         "seed": seed,
                         "revision": revision,
                         "engine": "luau",
+                        "parent": parent_arg,
                     }),
                 )
             })?;
-            (seed, input, Vec::new())
+            (seed, input, parent_arg, Vec::new())
         }
     };
 
@@ -1744,6 +2121,13 @@ async fn run_attempt(
                     &serde_json::json!({ "value": json }),
                 )
             })?;
+            notify_parent(
+                runtime,
+                &parent,
+                context.name,
+                serde_json::json!({ "status": "completed", "value": json }),
+            )
+            .await;
             Ok(serde_json::json!({ "status": "completed", "value": json }))
         }
         Err(error) => {
@@ -1755,7 +2139,15 @@ async fn run_attempt(
             }
             // A failed run is a state, not a transport error: the
             // journal holds the verdict and a resume re-enters it.
-            if let Some(reason) = shared.failed.lock().expect("no poisoned lock").take() {
+            let failed_reason = shared.failed.lock().expect("no poisoned lock").take();
+            if let Some(reason) = failed_reason {
+                notify_parent(
+                    runtime,
+                    &parent,
+                    context.name,
+                    serde_json::json!({ "status": "failed", "reason": reason }),
+                )
+                .await;
                 return Ok(serde_json::json!({ "status": "failed", "reason": reason }));
             }
             Err(error.to_string())
