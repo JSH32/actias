@@ -168,6 +168,26 @@ export class WorkflowsController {
     return { id, ...((outcome ?? {}) as Record<string, unknown>) };
   }
 
+  /** Re-enters a failed run at its failed step with fresh attempts;
+   * everything before it replays untouched. */
+  @Post(':definition/runs/:id/resume')
+  @AclByProject(AccessFields.SCRIPT_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async resume(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('definition') definition: string,
+    @Param('id') id: string,
+  ): Promise<Record<string, unknown>> {
+    const outcome = await this.resources.dispatchObject(
+      project,
+      WORKFLOW_CLASS,
+      `${definition}/${id}`,
+      'resume',
+      [],
+    );
+    return (outcome ?? {}) as Record<string, unknown>;
+  }
+
   /** Delivers a named signal into the run; a parked await resumes. */
   @Post(':definition/runs/:id/signal')
   @AclByProject(AccessFields.SCRIPT_WRITE)
