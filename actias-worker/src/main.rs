@@ -177,24 +177,23 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let http = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 
+    // The goodbye fires AT the shutdown signal, not after the drain:
+    // graceful drain waits on peers' persistent h2 channels and can
+    // outlive the sigkill window, and the node stops being routable the
+    // moment it stops accepting anyway. Deregistering frees this node's
+    // leases at once, so a deploy's replacement claims them immediately
+    // instead of serving a ttl's worth of dead forwards. Best effort; a
+    // crash still ages out, and the epoch fence covers the drain window.
     let registry_for_goodbye = state.registry.clone();
     let identity_for_goodbye = state.node_identity.clone();
-
-    // Either listener failing takes the process down: a worker whose data
-    // plane is dark would strand every object homed on it.
-    tokio::try_join!(async { http.await.map_err(anyhow::Error::from) }, async {
-        data_plane.await.map_err(anyhow::Error::from)
-    },)?;
-
-    // The goodbye: deregistering frees this node's leases at once, so a
-    // deploy's replacement claims them immediately instead of serving a
-    // ttl's worth of dead forwards. Best effort; a crash still ages out.
-    let node_id = identity_for_goodbye
-        .read()
-        .expect("no poisoned lock")
-        .clone();
-    if let Some(node_id) = node_id {
-        let mut registry = registry_for_goodbye.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let node_id = identity_for_goodbye
+            .read()
+            .expect("no poisoned lock")
+            .clone();
+        let Some(node_id) = node_id else { return };
+        let mut registry = registry_for_goodbye;
         let goodbye = registry.deregister(
             actias_worker_core::proto::node_registry::DeregisterRequest {
                 node_id: node_id.clone(),
@@ -205,9 +204,17 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Ok(Err(error)) => {
                 actias_common::tracing::warn!(%error, "deregistration failed; age-out covers it")
             }
-            Err(_) => actias_common::tracing::warn!("deregistration timed out; age-out covers it"),
+            Err(_) => {
+                actias_common::tracing::warn!("deregistration timed out; age-out covers it")
+            }
         }
-    }
+    });
+
+    // Either listener failing takes the process down: a worker whose data
+    // plane is dark would strand every object homed on it.
+    tokio::try_join!(async { http.await.map_err(anyhow::Error::from) }, async {
+        data_plane.await.map_err(anyhow::Error::from)
+    },)?;
 
     Ok(())
 }
