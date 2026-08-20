@@ -211,6 +211,13 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
         })?,
     )?;
 
+    // `workflows "name"` is a lookup, not a declaration: it records
+    // nothing and hands back a handle stub.
+    lua.globals().set(
+        "workflows",
+        lua.create_function(move |lua, _name: String| stub(lua))?,
+    )?;
+
     let on_recorded = recorded.clone();
     lua.globals().set(
         "on",

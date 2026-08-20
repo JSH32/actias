@@ -528,7 +528,10 @@ impl ActiasRuntime {
                     lua.set_named_registry_value(
                         &Self::listener_key(&format!("{}{name}", Self::WORKFLOW_EVENT_PREFIX)),
                         callback,
-                    )
+                    )?;
+                    // The declaration hands back the same handle
+                    // `workflows "name"` mints for cross-script callers.
+                    crate::extensions::objects::workflow_definition_handle(lua, name.clone())
                 })
             })?,
         )
@@ -1256,6 +1259,89 @@ mod tests {
             text.contains(crate::extensions::determinism::FORBIDDEN),
             "wrong refusal: {text}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workflow_handles_route_start_and_run_methods() {
+        let lua = runtime_running(
+            r#"
+            local orders = workflow "fulfill" (function(wf, input)
+                return { ok = true }
+            end)
+            on "fetch" (function()
+                local run = orders:start({ n = 7 }, { id = "order-9" })
+                local st = run:status()
+                return { started = run.started, st = st }
+            end)
+            "#,
+        )
+        .await
+        .expect("loads");
+
+        // A recording router standing in for the object machinery.
+        let seen: Arc<std::sync::Mutex<Vec<(String, String, String)>>> = Arc::default();
+        let recorder = seen.clone();
+        let router: crate::extensions::objects::ObjectRouter = Arc::new(move |target| {
+            let recorder = recorder.clone();
+            Box::pin(async move {
+                recorder.lock().expect("no poison").push((
+                    target.class.clone(),
+                    target.name.clone(),
+                    target.method.clone(),
+                ));
+                Ok(serde_json::json!({ "status": "parked", "reason": "test" }))
+            })
+        });
+        lua.set_app_data::<crate::extensions::objects::ObjectRouter>(router);
+
+        let listener = lua
+            .listener(ActiasRuntime::FETCH_EVENT)
+            .expect("registered");
+        let value: mlua::Value = listener.call_async(()).await.expect("answers");
+        let answer: serde_json::Value = lua.from_value(value).expect("serializes");
+        assert_eq!(answer["started"]["status"], "parked", "{answer}");
+        assert_eq!(answer["st"]["status"], "parked");
+
+        let calls = seen.lock().expect("no poison").clone();
+        assert_eq!(
+            calls,
+            vec![
+                (
+                    "__workflow".to_owned(),
+                    "fulfill/order-9".to_owned(),
+                    "start".to_owned()
+                ),
+                (
+                    "__workflow".to_owned(),
+                    "fulfill/order-9".to_owned(),
+                    "status".to_owned()
+                ),
+            ],
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn starting_without_an_id_is_refused() {
+        let lua = runtime_running(
+            r#"
+            local orders = workflows "fulfill"
+            on "fetch" (function()
+                return orders:start({ n = 1 })
+            end)
+            "#,
+        )
+        .await
+        .expect("loads");
+        let router: crate::extensions::objects::ObjectRouter =
+            Arc::new(|_target| Box::pin(async move { Ok(serde_json::Value::Null) }));
+        lua.set_app_data::<crate::extensions::objects::ObjectRouter>(router);
+
+        let listener = lua
+            .listener(ActiasRuntime::FETCH_EVENT)
+            .expect("registered");
+        let refused = listener.call_async::<mlua::Value>(()).await;
+        let text = format!("{:#}", refused.expect_err("must refuse"));
+        assert!(text.contains("the run's identity"), "wrong refusal: {text}");
     }
 
     async fn runtime_running(source: &str) -> mlua::Result<ActiasRuntime> {

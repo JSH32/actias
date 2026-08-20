@@ -27,7 +27,7 @@ const CLASSES_KEY: &str = "object_classes";
 /// object identities cross service boundaries; re-exported here where the
 /// runtime consumes them. The router special-cases [`DATABASE_CLASS`]'s
 /// read methods for the mailbox bypass.
-pub use actias_common::classes::{CRON_CLASS, DATABASE_CLASS, QUEUE_CLASS};
+pub use actias_common::classes::{CRON_CLASS, DATABASE_CLASS, QUEUE_CLASS, WORKFLOW_CLASS};
 
 /// Milliseconds until a cron event's next occurrence. The expression is
 /// whatever follows `cron:`; classic five-field expressions gain a seconds
@@ -201,6 +201,17 @@ impl LuaExtension for ObjectExtension {
             })?,
         )?;
 
+        // `workflows "name"`: the definition handle, same one the
+        // declaration returns; cross-script callers start and address
+        // runs through it.
+        lua.globals().set(
+            "workflows",
+            lua.create_function(|lua, name: String| {
+                ActiasRuntime::assert_declaration_phase(lua, "workflows")?;
+                workflow_definition_handle(lua, name)
+            })?,
+        )?;
+
         // `objects "Class"`: reference a class declared elsewhere. It mints
         // the same handle; whether the class exists is the callee's truth.
         // Platform classes are not addressable this way.
@@ -255,6 +266,75 @@ fn class_handle(lua: &Lua, class: String) -> mlua::Result<Table> {
         })?,
     )?;
 
+    Ok(handle)
+}
+
+/// The workflow definition handle `workflow "name" (fn)` returns and
+/// `workflows "name"` looks up: `start` mints a run and kicks its first
+/// attempt, `get` addresses an existing run. Run handles are ordinary
+/// instance handles on the workflow class, so signal/cancel/status route
+/// like any object method.
+pub(crate) fn workflow_definition_handle(lua: &Lua, definition: String) -> mlua::Result<Table> {
+    let handle = lua.create_table()?;
+    handle.set("__definition", definition)?;
+
+    let meta = lua.create_table()?;
+    meta.set(
+        "__index",
+        lua.create_function(|lua, (this, method): (Table, String)| {
+            let definition: String = this.get("__definition")?;
+            match method.as_str() {
+                "start" => lua.create_async_function(move |lua, args: mlua::MultiValue| {
+                    let definition = definition.clone();
+                    async move {
+                        let mut values = args.into_iter();
+                        let _receiver = values.next();
+                        let input = values
+                            .next()
+                            .map(|value| lua.from_value::<serde_json::Value>(value))
+                            .transpose()?
+                            .unwrap_or(serde_json::Value::Null);
+                        let id = values
+                            .next()
+                            .and_then(|value| match value {
+                                mlua::Value::Table(opts) => {
+                                    opts.get::<Option<String>>("id").ok().flatten()
+                                }
+                                _ => None,
+                            })
+                            .ok_or_else(|| {
+                                mlua::Error::RuntimeError(
+                                    "start takes the input and { id = \"...\" }; the id is \
+                                     the run's identity, so a retried start joins it."
+                                        .to_owned(),
+                                )
+                            })?;
+                        if id.trim().is_empty() || id.contains('/') {
+                            return Err(mlua::Error::RuntimeError(
+                                "A run id is a non-empty string without '/'.".to_owned(),
+                            ));
+                        }
+
+                        let name = format!("{definition}/{id}");
+                        let run = instance_handle(&lua, WORKFLOW_CLASS.to_owned(), name.clone())?;
+                        let start: mlua::Function = run.get("start")?;
+                        let outcome: mlua::Value = start
+                            .call_async((run.clone(), lua.to_value(&input)?))
+                            .await?;
+                        run.set("started", outcome)?;
+                        Ok(run)
+                    }
+                }),
+                "get" => lua.create_function(move |lua, (_this, id): (Table, String)| {
+                    instance_handle(lua, WORKFLOW_CLASS.to_owned(), format!("{definition}/{id}"))
+                }),
+                other => Err(mlua::Error::RuntimeError(format!(
+                    "A workflow definition handle has start and get, not '{other}'."
+                ))),
+            }
+        })?,
+    )?;
+    handle.set_metatable(Some(meta))?;
     Ok(handle)
 }
 
