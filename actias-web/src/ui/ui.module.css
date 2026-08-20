@@ -137,6 +137,9 @@
   border-bottom-color: var(--luna);
 }
 
+/* Deliberately frameless (owner ruling 2026-08-21): when the resource
+ * does not exist there is nothing to frame, so the moth and the words
+ * just sit in the dark. */
 .emptyState {
   min-height: 320px;
   display: flex;
@@ -147,9 +150,6 @@
   padding: 40px;
   text-align: center;
   color: var(--ink-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r3);
-  background: var(--night-1);
 }
 .emptyState svg {
   opacity: 0.12;

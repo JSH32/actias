@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
 import { PairDto, ProjectDto } from '@/client';
-import { Button, EmptyState, Field } from '@/ui';
+import { EmptyState, Field } from '@/ui';
 import {
   CopyButton,
   Drawer,
@@ -208,11 +208,13 @@ export default function KvPanel({
             <Field label="Name" name="name" required autoFocus />
             <div className={shared.dialogActions}>
               <Dialog.Close asChild>
-                <Button type="button">Cancel</Button>
+                <button className={classes.ghostButton} type="button">
+                  Cancel
+                </button>
               </Dialog.Close>
-              <Button type="submit" variant="primary">
+              <button className={classes.accentButton} type="submit">
                 Create
-              </Button>
+              </button>
             </div>
           </form>
         </Dialog.Content>
@@ -299,11 +301,19 @@ export default function KvPanel({
                           <Field label="Value" name="value" required />
                           <div className={shared.dialogActions}>
                             <Dialog.Close asChild>
-                              <Button type="button">Cancel</Button>
+                              <button
+                                className={classes.ghostButton}
+                                type="button"
+                              >
+                                Cancel
+                              </button>
                             </Dialog.Close>
-                            <Button type="submit" variant="primary">
+                            <button
+                              className={classes.accentButton}
+                              type="submit"
+                            >
                               Create pair
-                            </Button>
+                            </button>
                           </div>
                         </form>
                       </Dialog.Content>

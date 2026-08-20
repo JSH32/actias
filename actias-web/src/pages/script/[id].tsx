@@ -7,16 +7,8 @@ import { AuthGuard } from '@/helpers/auth';
 import { getPublicConfig } from '@/pages/api/config';
 import { RevisionDataDto } from '@/client';
 import LogTail from '@/components/LogTail';
-import {
-  Button,
-  Card,
-  CapabilityKind,
-  Chip,
-  PageBody,
-  TabPanel,
-  Tabs,
-} from '@/ui';
-import shared from '../projects.module.css';
+import { StatePill, copyText } from '@/components/inspector';
+import classes from '../../components/inspector.module.css';
 import { toast } from '@/ui/toast';
 
 /** Where one revision previews, current or not. */
@@ -25,38 +17,59 @@ const previewUrl = (identifier: string, revisionId: string) =>
     .replaceAll('_IDENTIFIER_', identifier)
     .replaceAll('_REVISION_', revisionId);
 
-/** The contract card's sections as design 02 draws them: declarations
- * grouped by what they are, each colored by kind. */
-const contractSections: {
+/** Where a named environment serves, via the worker's alias path form. */
+const aliasUrl = (identifier: string, alias: string) =>
+  (getPublicConfig('workerBase') as string).replaceAll(
+    '_IDENTIFIER_',
+    `_alias/${identifier}/${alias}`,
+  );
+
+/** The contract card's groups as design 02 draws them: what the script
+ * can hold, what wakes it, what it may read. */
+const contractGroups: {
   title: string;
-  entries: { key: string; label: string; kind: CapabilityKind }[];
+  entries: { key: string; label: string; token: string }[];
 }[] = [
   {
-    title: 'storage',
+    title: 'STORAGE',
     entries: [
-      { key: 'kv', label: 'kv', kind: 'kv' },
-      { key: 'databases', label: 'database', kind: 'db' },
-      { key: 'queues', label: 'queue', kind: 'event' },
+      { key: 'kv', label: 'kv', token: 'var(--kind-kv)' },
+      { key: 'databases', label: 'database', token: 'var(--kind-db)' },
+      { key: 'queues', label: 'queue', token: 'var(--kind-event)' },
+      { key: 'objects', label: 'object', token: 'var(--kind-obj)' },
     ],
   },
   {
-    title: 'objects',
-    entries: [{ key: 'objects', label: 'object', kind: 'obj' }],
+    title: 'EVENTS',
+    entries: [{ key: 'events', label: 'on', token: 'var(--kind-event)' }],
   },
   {
-    title: 'events',
-    entries: [{ key: 'events', label: 'on', kind: 'event' }],
-  },
-  {
-    title: 'secrets',
-    entries: [{ key: 'secrets', label: 'secret', kind: 'secret' }],
+    title: 'SECRETS',
+    entries: [{ key: 'secrets', label: 'secret', token: 'var(--kind-secret)' }],
   },
 ];
+
+/** A publish time as the design's "4h ago". */
+function ago(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+type Tab = 'overview' | 'revisions' | 'logs' | 'settings';
 
 const Script = () => {
   const router = useRouter();
   const queryClient = useQueryClient();
   const scriptId = router.query.id as string | undefined;
+  const [tab, setTab] = React.useState<Tab>('overview');
+  // The two-step "set live": first click arms, second confirms.
+  const [armedLive, setArmedLive] = React.useState<string | null>(null);
+  const [confirmName, setConfirmName] = React.useState('');
 
   const { data: script } = useQuery({
     queryKey: ['script', scriptId],
@@ -97,16 +110,18 @@ const Script = () => {
   }, [queryClient, scriptId]);
 
   if (!script) {
-    return <p style={{ color: 'var(--ink-3)' }}>Loading…</p>;
+    return <p style={{ color: 'var(--ink-3)', padding: 20 }}>Loading…</p>;
   }
 
   const liveUrl = (getPublicConfig('workerBase') as string).replaceAll(
     '_IDENTIFIER_',
     script.publicIdentifier,
   );
+  const liveHost = liveUrl.replace(/^https?:\/\//, '');
   const capabilities = currentRevision?.scriptConfig?.capabilities as
     | Record<string, string[]>
     | undefined;
+  const shortRev = script.currentRevisionId?.slice(0, 8);
 
   const setRevision = (revisionId: string) => {
     api.scripts
@@ -116,6 +131,7 @@ const Script = () => {
           title: 'Live revision moved',
           message: 'The alias points at the selected revision.',
         });
+        setArmedLive(null);
         reload();
       })
       .catch(showError);
@@ -139,273 +155,449 @@ const Script = () => {
   };
 
   return (
-    <div>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: 4,
-        }}
-      >
-        <div>
-          <h1
-            style={{
-              fontSize: 18,
-              fontWeight: 700,
-              fontFamily: 'var(--mono)',
-            }}
-          >
-            {script.publicIdentifier}
-          </h1>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              marginTop: 4,
-            }}
-          >
-            <span
-              title={script.currentRevisionId ? 'serving' : 'no live revision'}
+    <div className={classes.frame}>
+      <div className={classes.frameHead}>
+        <div className={classes.headTop}>
+          <div className={classes.headMain}>
+            <div
               style={{
-                width: 8,
-                height: 8,
-                borderRadius: 99,
-                background: script.currentRevisionId
-                  ? 'var(--luna)'
-                  : 'var(--ink-3)',
-              }}
-            />
-            <a
-              href={liveUrl}
-              target="_blank"
-              rel="noreferrer"
-              style={{
-                fontFamily: 'var(--mono)',
-                fontSize: 12,
-                color: 'var(--ink-2)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
               }}
             >
-              {liveUrl.replace(/^https?:\/\//, '')}
-            </a>
-            {script.currentRevisionId && (
-              <Chip>rev {script.currentRevisionId.slice(0, 8)}</Chip>
-            )}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <a href={liveUrl} target="_blank" rel="noreferrer">
-            <Button>Visit</Button>
-          </a>
-          <Link href={`/script/${script.id}/workbench`}>
-            <Button variant="quiet">Open workbench</Button>
-          </Link>
-        </div>
-      </div>
-      <p style={{ color: 'var(--ink-2)', maxWidth: '60ch', marginBottom: 12 }}>
-        Revisions are immutable published bundles. Exactly one is live; rolling
-        back points the live alias at an older one.
-      </p>
-
-      <Tabs
-        tabs={[
-          { value: 'overview', label: 'Overview' },
-          { value: 'revisions', label: `Revisions` },
-          { value: 'logs', label: 'Logs' },
-          { value: 'settings', label: 'Settings' },
-        ]}
-        defaultValue="overview"
-      >
-        <TabPanel value="overview">
-          <div style={{ display: 'grid', gap: 12, maxWidth: 640 }}>
-            <Card style={{ padding: 16 }}>
-              <div style={{ fontWeight: 700 }}>Capability contract</div>
-              <p
+              <h1
                 style={{
-                  color: 'var(--ink-3)',
-                  fontFamily: 'var(--mono)',
-                  fontSize: 11,
-                  margin: '2px 0 12px',
+                  margin: 0,
+                  font: '650 20px var(--mono)',
+                  letterSpacing: '-0.01em',
                 }}
               >
-                derived at publish
-                {script.currentRevisionId
-                  ? ` · revision ${script.currentRevisionId.slice(0, 8)}`
-                  : ''}
-              </p>
-              {capabilities ? (
-                contractSections.map((section) => {
-                  const chips = section.entries.flatMap(
-                    ({ key, label, kind }) =>
-                      (capabilities[key] ?? []).map((name) => (
-                        <Chip key={`${key}:${name}`} kind={kind}>
-                          {label} &quot;{name}&quot;
-                        </Chip>
-                      )),
-                  );
-                  if (!chips.length) return null;
-                  return (
-                    <div key={section.title} style={{ marginBottom: 10 }}>
+                {script.publicIdentifier}
+              </h1>
+              <StatePill
+                state={script.currentRevisionId ? 'serving' : 'unpublished'}
+                color={
+                  script.currentRevisionId ? 'var(--luna)' : 'var(--ink-3)'
+                }
+                pulse={!!script.currentRevisionId}
+              />
+              <button
+                className={classes.metaChip}
+                onClick={() => copyText(liveUrl)}
+                title="Copy the serving url"
+              >
+                {liveHost}
+              </button>
+            </div>
+            <p className={classes.lede}>
+              Revisions are immutable published bundles. Exactly one is live;
+              rolling back points the live alias at an older one. The capability
+              contract is read from the script&apos;s declarations at publish.
+            </p>
+          </div>
+          <div className={classes.pageActions}>
+            <a href={liveUrl} target="_blank" rel="noreferrer">
+              <button className={classes.ghostButton}>
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M12 6h-6a2 2 0 0 0 -2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-6" />
+                  <path d="M11 13l9 -9" />
+                  <path d="M15 4h5v5" />
+                </svg>
+                Visit
+              </button>
+            </a>
+            <Link href={`/script/${script.id}/workbench`}>
+              <button className={classes.accentButton}>
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M7 8l-4 4l4 4" />
+                  <path d="M17 8l4 4l-4 4" />
+                  <path d="M14 4l-4 16" />
+                </svg>
+                Open editor
+              </button>
+            </Link>
+          </div>
+        </div>
+        <div className={classes.tabs}>
+          {(
+            [
+              ['overview', 'Overview', null],
+              ['revisions', 'Revisions', revisions?.length ?? null],
+              ['logs', 'Logs', null],
+              ['settings', 'Settings', null],
+            ] as [Tab, string, number | null][]
+          ).map(([value, label, count]) => (
+            <button
+              key={value}
+              className={tab === value ? classes.tabActive : classes.tab}
+              onClick={() => setTab(value)}
+            >
+              {label}
+              {count != null && (
+                <span className={classes.tabCount}>{count}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        {tab === 'overview' && (
+          <div
+            style={{
+              padding: 20,
+              display: 'grid',
+              gridTemplateColumns: '1.25fr 1fr',
+              gap: 16,
+              alignItems: 'start',
+            }}
+          >
+            <div className={classes.card}>
+              <div className={classes.cardHead}>
+                <span className={classes.cardTitle}>Capability contract</span>
+                <span className={classes.cardMeta}>
+                  derived at publish{shortRev ? ` · revision ${shortRev}` : ''}
+                </span>
+              </div>
+              <div className={classes.cardBody}>
+                {capabilities ? (
+                  contractGroups.map((group) => {
+                    const chips = group.entries.flatMap(
+                      ({ key, label, token }) =>
+                        (capabilities[key] ?? []).map((name) => (
+                          <span
+                            key={`${key}:${name}`}
+                            className={classes.kindChip}
+                          >
+                            <span
+                              className={classes.kindDot}
+                              style={{ background: token }}
+                            />
+                            {label}{' '}
+                            <span className={classes.kindName}>{name}</span>
+                          </span>
+                        )),
+                    );
+                    if (!chips.length) return null;
+                    return (
                       <div
+                        key={group.title}
                         style={{
-                          fontFamily: 'var(--mono)',
-                          fontSize: 10,
-                          letterSpacing: '0.08em',
-                          textTransform: 'uppercase',
-                          color: 'var(--ink-3)',
-                          marginBottom: 4,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 8,
                         }}
                       >
-                        {section.title}
+                        <span className={classes.sectionLabel}>
+                          {group.title}
+                        </span>
+                        <div
+                          style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}
+                        >
+                          {chips}
+                        </div>
                       </div>
-                      <div
-                        style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}
-                      >
-                        {chips}
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <p style={{ color: 'var(--ink-3)' }}>
-                  No revision published yet.
-                </p>
-              )}
-            </Card>
-            <Card style={{ padding: 16 }}>
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>Aliases</div>
-              <p style={{ color: 'var(--ink-2)', marginBottom: 12 }}>
-                Named pointers to revisions; moving one is a rollback, so a move
-                and a create are the same call.
-              </p>
-              {aliases?.aliases?.length ? (
-                aliases.aliases.map(
-                  (alias: { name: string; revisionId: string }) => (
-                    <div
-                      key={alias.name}
-                      style={{
-                        fontFamily: 'var(--mono)',
-                        fontSize: 12,
-                        lineHeight: 2,
-                      }}
-                    >
-                      <span style={{ color: 'var(--luna)' }}>{alias.name}</span>{' '}
-                      <span style={{ color: 'var(--ink-3)' }}>→</span>{' '}
-                      <span style={{ color: 'var(--ink-2)' }}>
-                        {alias.revisionId.slice(0, 8)}
-                      </span>
-                    </div>
-                  ),
-                )
-              ) : (
-                <code
-                  style={{
-                    fontFamily: 'var(--mono)',
-                    fontSize: 12,
-                    color: 'var(--ink-3)',
-                  }}
-                >
-                  actias alias {'{script}'} set staging {'{revision}'}
-                </code>
-              )}
-            </Card>
-          </div>
-        </TabPanel>
+                    );
+                  })
+                ) : (
+                  <p style={{ margin: 0, color: 'var(--ink-3)', fontSize: 12 }}>
+                    No revision published yet.
+                  </p>
+                )}
+              </div>
+            </div>
 
-        <TabPanel value="revisions">
-          <Card>
-            <table className={shared.table}>
-              <thead>
-                <tr>
-                  <th>revision</th>
-                  <th>created</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {(revisions ?? []).map((revision: RevisionDataDto) => {
-                  const isLive = revision.id === script.currentRevisionId;
-                  return (
-                    <tr key={revision.id}>
-                      <td
-                        className={shared.name}
-                        style={{ fontFamily: 'var(--mono)', fontSize: 12 }}
-                      >
-                        {isLive && (
-                          <span
-                            style={{
-                              display: 'inline-block',
-                              width: 6,
-                              height: 6,
-                              borderRadius: 99,
-                              background: 'var(--luna)',
-                              marginRight: 8,
-                            }}
-                          />
-                        )}
-                        {revision.id.slice(0, 8)}
-                      </td>
-                      <td className={shared.meta}>
-                        {new Date(revision.created).toLocaleString()}
-                      </td>
-                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div className={classes.card}>
+                <div className={classes.cardHead}>
+                  <span className={classes.cardTitle}>Environments</span>
+                  <span className={classes.cardMeta}>editable futures</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div className={classes.envRow}>
+                    <span className={classes.envName}>live</span>
+                    <span className={classes.envTarget}>
+                      {shortRev ?? 'unpublished'}
+                    </span>
+                    <span className={classes.envHint}>alias</span>
+                  </div>
+                  {(aliases?.aliases ?? []).map(
+                    (alias: { name: string; revisionId: string }) => (
+                      <div key={alias.name} className={classes.envRow}>
+                        <span className={classes.envName}>{alias.name}</span>
+                        <span className={classes.envTarget}>
+                          {alias.revisionId.slice(0, 8)}
+                        </span>
                         <a
-                          href={previewUrl(
-                            script.publicIdentifier,
-                            revision.id,
-                          )}
+                          className={classes.envOpen}
+                          href={aliasUrl(script.publicIdentifier, alias.name)}
                           target="_blank"
                           rel="noreferrer"
-                          style={{ marginRight: 8 }}
                         >
-                          <Button>Preview</Button>
+                          open
                         </a>
-                        {!isLive && (
-                          <>
-                            <Button
-                              variant="quiet"
-                              style={{ marginRight: 8 }}
-                              onClick={() => setRevision(revision.id)}
-                            >
-                              Make live
-                            </Button>
-                            <Button
-                              variant="danger"
-                              onClick={() => deleteRevision(revision)}
-                            >
-                              Delete
-                            </Button>
-                          </>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </Card>
-        </TabPanel>
+                      </div>
+                    ),
+                  )}
+                  {!aliases?.aliases?.length && (
+                    <div className={classes.envRow}>
+                      <span
+                        className={classes.envTarget}
+                        style={{ gridColumn: '1 / -1' }}
+                      >
+                        actias alias {'{script}'} set staging {'{revision}'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
 
-        <TabPanel value="logs">
-          <LogTail scriptId={script.id} />
-        </TabPanel>
-
-        <TabPanel value="settings">
-          <Card style={{ padding: 16, maxWidth: 640 }}>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>
-              Delete this script
+              <div className={classes.card}>
+                <div className={classes.cardBody} style={{ gap: 11 }}>
+                  <span className={classes.cardTitle}>Quick facts</span>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                    }}
+                  >
+                    <div className={classes.fact}>
+                      <span className={classes.factLabel}>
+                        Current revision
+                      </span>
+                      <button
+                        className={classes.factValue}
+                        style={{
+                          background: 'none',
+                          border: 0,
+                          padding: 0,
+                          cursor: 'pointer',
+                        }}
+                        onClick={() =>
+                          script.currentRevisionId &&
+                          copyText(script.currentRevisionId)
+                        }
+                        title="Copy the full revision id"
+                      >
+                        {shortRev ?? 'none'}
+                      </button>
+                    </div>
+                    {currentRevision?.created && (
+                      <div className={classes.fact}>
+                        <span className={classes.factLabel}>Published</span>
+                        <span className={classes.factValue}>
+                          {ago(currentRevision.created)}
+                        </span>
+                      </div>
+                    )}
+                    <div className={classes.fact}>
+                      <span className={classes.factLabel}>Identifier</span>
+                      <span className={classes.factValue}>
+                        {script.publicIdentifier}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-            <p style={{ color: 'var(--ink-2)', marginBottom: 12 }}>
-              Deletes every revision and stops serving its URL. There is no
-              undo.
+          </div>
+        )}
+
+        {tab === 'revisions' && (
+          <div style={{ padding: 20 }}>
+            <div className={classes.card}>
+              <div
+                className={classes.tableHead}
+                style={{
+                  gridTemplateColumns: '110px 1fr 90px 250px',
+                  position: 'static',
+                }}
+              >
+                <span>revision</span>
+                <span>published</span>
+                <span>state</span>
+                <span style={{ textAlign: 'right' }}>actions</span>
+              </div>
+              {(revisions ?? []).map((revision: RevisionDataDto) => {
+                const isLive = revision.id === script.currentRevisionId;
+                return (
+                  <div
+                    key={revision.id}
+                    className={classes.row}
+                    style={{ gridTemplateColumns: '110px 1fr 90px 250px' }}
+                  >
+                    <span className={classes.cellMono}>
+                      {revision.id.slice(0, 8)}
+                    </span>
+                    <span className={classes.cellDim}>
+                      {new Date(revision.created).toLocaleString()}
+                    </span>
+                    <span>
+                      {isLive ? (
+                        <StatePill state="live" color="var(--luna)" />
+                      ) : (
+                        <span className={classes.cellDim}>&mdash;</span>
+                      )}
+                    </span>
+                    <span
+                      className={classes.cellRight}
+                      style={{ display: 'flex', gap: 8, justifyContent: 'end' }}
+                    >
+                      <a
+                        href={previewUrl(script.publicIdentifier, revision.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <button className={classes.smallButton}>preview</button>
+                      </a>
+                      {!isLive && (
+                        <>
+                          <button
+                            className={classes.smallButton}
+                            style={
+                              armedLive === revision.id
+                                ? { color: 'var(--warn)' }
+                                : undefined
+                            }
+                            onClick={() =>
+                              armedLive === revision.id
+                                ? setRevision(revision.id)
+                                : setArmedLive(revision.id)
+                            }
+                          >
+                            {armedLive === revision.id
+                              ? 'confirm?'
+                              : 'set live'}
+                          </button>
+                          <button
+                            className={classes.smallButton}
+                            style={{ color: 'var(--err)' }}
+                            onClick={() => deleteRevision(revision)}
+                          >
+                            delete
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+              {!revisions?.length && (
+                <div className={classes.emptyRows}>
+                  Nothing published yet. <code>actias publish</code> creates the
+                  first revision.
+                </div>
+              )}
+            </div>
+            <p
+              className={classes.lede}
+              style={{ marginTop: 12, maxWidth: '72ch' }}
+            >
+              Setting a revision current is two-step; deleting one is immediate
+              and not reversible.
             </p>
-            <Button variant="danger" onClick={deleteScript}>
-              Delete script
-            </Button>
-          </Card>
-        </TabPanel>
-      </Tabs>
+          </div>
+        )}
+
+        {tab === 'logs' && (
+          <div
+            style={{
+              height: '100%',
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              padding: 20,
+            }}
+          >
+            <LogTail scriptId={script.id} />
+          </div>
+        )}
+
+        {tab === 'settings' && (
+          <div
+            style={{
+              maxWidth: 640,
+              padding: 20,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+            }}
+          >
+            <div className={classes.card}>
+              <div className={classes.cardBody} style={{ gap: 6 }}>
+                <span className={classes.cardTitle}>Identifier</span>
+                <p className={classes.lede}>
+                  Identifiers are immutable.{' '}
+                  <code>{script.publicIdentifier}</code> is the script&apos;s
+                  subdomain, and revisions already published reference it. There
+                  is nothing to rename here.
+                </p>
+              </div>
+            </div>
+            <div
+              className={classes.card}
+              style={{ borderColor: 'rgba(240, 138, 138, 0.35)' }}
+            >
+              <div className={classes.cardBody} style={{ gap: 10 }}>
+                <span className={classes.cardTitle}>Danger zone</span>
+                <p className={classes.lede}>
+                  Removes every revision and frees the identifier. Not
+                  reversible. Type <code>{script.publicIdentifier}</code> to
+                  confirm.
+                </p>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    className={classes.searchInput}
+                    style={{
+                      border: '1px solid var(--line)',
+                      borderRadius: 'var(--r2)',
+                      height: 30,
+                      padding: '0 10px',
+                      flex: 1,
+                    }}
+                    placeholder={script.publicIdentifier}
+                    value={confirmName}
+                    onChange={(event) => setConfirmName(event.target.value)}
+                  />
+                  <button
+                    className={classes.dangerButton}
+                    disabled={confirmName !== script.publicIdentifier}
+                    style={
+                      confirmName !== script.publicIdentifier
+                        ? { opacity: 0.45, cursor: 'default' }
+                        : undefined
+                    }
+                    onClick={deleteScript}
+                  >
+                    Delete script
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
@@ -413,9 +605,7 @@ const Script = () => {
 export default function ScriptPage() {
   return (
     <AuthGuard>
-      <PageBody>
-        <Script />
-      </PageBody>
+      <Script />
     </AuthGuard>
   );
 }
