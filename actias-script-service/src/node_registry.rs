@@ -11,9 +11,9 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::proto_node_registry::{
-    AcquireLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListNodesResponse, Node,
-    NodeRegistration, RegisterNodeRequest, ReleaseLeaseRequest,
-    node_registry_service_server::NodeRegistryService,
+    AcquireLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListInstancesRequest,
+    ListInstancesResponse, ListNodesResponse, Node, NodeRegistration, ObjectInstance,
+    RegisterNodeRequest, ReleaseLeaseRequest, node_registry_service_server::NodeRegistryService,
 };
 
 /// One registry row.
@@ -181,6 +181,22 @@ impl NodeRegistryService for NodeRegistry {
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
 
+        // The claim carries its preimage; the directory keeps it so the
+        // data stays enumerable after the declaring revision is gone. A
+        // claim without identity (old callers, tests) records nothing.
+        if let Ok(script_id) = Uuid::from_str(&request.script_id) {
+            sqlx::query(
+                "INSERT INTO object_instances (script_id, class, name) VALUES ($1, $2, $3)
+                 ON CONFLICT (script_id, class, name) DO NOTHING",
+            )
+            .bind(script_id)
+            .bind(&request.class)
+            .bind(&request.name)
+            .execute(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        }
+
         let holder: Option<Uuid> =
             sqlx::query_scalar("SELECT node_id FROM leases WHERE object_id = $1")
                 .bind(&request.object_id)
@@ -242,6 +258,41 @@ impl NodeRegistryService for NodeRegistry {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         Ok(Response::new(()))
+    }
+
+    async fn list_instances(
+        &self,
+        request: Request<ListInstancesRequest>,
+    ) -> Result<Response<ListInstancesResponse>, Status> {
+        let script_ids: Vec<Uuid> = request
+            .get_ref()
+            .script_ids
+            .iter()
+            .filter_map(|id| Uuid::from_str(id).ok())
+            .collect();
+
+        let rows: Vec<(Uuid, String, String, i64)> = sqlx::query_as(
+            "SELECT script_id, class, name,
+                    (EXTRACT(EPOCH FROM created) * 1000)::BIGINT
+             FROM object_instances WHERE script_id = ANY($1)
+             ORDER BY class, name",
+        )
+        .bind(&script_ids)
+        .fetch_all(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(ListInstancesResponse {
+            instances: rows
+                .into_iter()
+                .map(|(script_id, class, name, created_ms)| ObjectInstance {
+                    script_id: script_id.to_string(),
+                    class,
+                    name,
+                    created_ms,
+                })
+                .collect(),
+        }))
     }
 }
 
@@ -373,6 +424,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_claim_records_its_identity_in_the_directory() {
+        let (registry, _database, _container) = registry(60).await;
+        let node = register(&registry, "10.0.0.9:80").await;
+        let script = Uuid::new_v4();
+
+        let claim = |name: &str| AcquireLeaseRequest {
+            object_id: format!("hash-{name}"),
+            node_id: node.clone(),
+            script_id: script.to_string(),
+            class: "__queue".to_owned(),
+            name: name.to_owned(),
+        };
+        registry
+            .acquire_lease(Request::new(claim("jobs")))
+            .await
+            .expect("claims");
+        // A re-claim is a directory no-op, not a duplicate.
+        registry
+            .acquire_lease(Request::new(claim("jobs")))
+            .await
+            .expect("re-claims");
+
+        let listed = registry
+            .list_instances(Request::new(ListInstancesRequest {
+                script_ids: vec![script.to_string()],
+            }))
+            .await
+            .expect("lists")
+            .into_inner();
+        assert_eq!(listed.instances.len(), 1, "one identity, once");
+        assert_eq!(listed.instances[0].name, "jobs");
+        assert_eq!(listed.instances[0].class, "__queue");
+
+        // The directory outlives the lease: release frees the object,
+        // the identity stays enumerable.
+        registry
+            .release_lease(Request::new(ReleaseLeaseRequest {
+                object_id: "hash-jobs".to_owned(),
+                node_id: node.clone(),
+            }))
+            .await
+            .expect("releases");
+        let survives = registry
+            .list_instances(Request::new(ListInstancesRequest {
+                script_ids: vec![script.to_string()],
+            }))
+            .await
+            .expect("lists again")
+            .into_inner();
+        assert_eq!(survives.instances.len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_lease_is_exclusive_until_its_holder_dies() {
         let (registry, database, _guard) = registry(45).await;
 
@@ -388,6 +492,7 @@ mod tests {
                     .acquire_lease(Request::new(AcquireLeaseRequest {
                         object_id: object,
                         node_id: node,
+                        ..Default::default()
                     }))
                     .await
                     .expect("claim answers")
@@ -429,6 +534,7 @@ mod tests {
             .acquire_lease(Request::new(AcquireLeaseRequest {
                 object_id: object.clone(),
                 node_id: holder.clone(),
+                ..Default::default()
             }))
             .await
             .expect("claims");
@@ -445,6 +551,7 @@ mod tests {
             .acquire_lease(Request::new(AcquireLeaseRequest {
                 object_id: object.clone(),
                 node_id: stranger.clone(),
+                ..Default::default()
             }))
             .await
             .expect("claim answers")
@@ -463,6 +570,7 @@ mod tests {
             .acquire_lease(Request::new(AcquireLeaseRequest {
                 object_id: object,
                 node_id: stranger,
+                ..Default::default()
             }))
             .await
             .expect("claim answers")

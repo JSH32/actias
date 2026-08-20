@@ -32,6 +32,26 @@ service NodeRegistryService {
     // Releases a lease the node still holds; a rehoming courtesy, never
     // required for correctness.
     rpc ReleaseLease(ReleaseLeaseRequest) returns (google.protobuf.Empty);
+
+    // Every object identity ever claimed for the given scripts: the
+    // instance directory, which outlives the contracts that declared it.
+    rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse);
+}
+
+message ListInstancesRequest {
+    repeated string script_ids = 1;
+}
+
+message ObjectInstance {
+    string script_id = 1;
+    string class = 2;
+    string name = 3;
+    // Unix milliseconds of the first claim.
+    int64 created_ms = 4;
+}
+
+message ListInstancesResponse {
+    repeated ObjectInstance instances = 1;
 }
 
 message GetNodeRequest {
@@ -42,6 +62,12 @@ message AcquireLeaseRequest {
     // blake3 of the object identity, hex.
     string object_id = 1;
     string node_id = 2;
+    // The identity the hash was made from; recorded in the instance
+    // directory so object data stays enumerable after the declaring
+    // revision is gone.
+    string script_id = 3;
+    string class = 4;
+    string name = 5;
 }
 
 message Lease {

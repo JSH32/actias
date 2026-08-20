@@ -53,6 +53,26 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;
+        // Every object identity ever claimed for the given scripts: the
+    // instance directory, which outlives the contracts that declared it.
+        listInstances(
+            data: ListInstancesRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ListInstancesResponse>;
+    }
+    export interface ListInstancesRequest {
+        scriptIds?: string[];
+    }
+    export interface ObjectInstance {
+        scriptId?: string;
+        class?: string;
+        name?: string;
+        // Unix milliseconds of the first claim.
+        createdMs?: number;
+    }
+    export interface ListInstancesResponse {
+        instances?: node_registry.ObjectInstance[];
     }
     export interface GetNodeRequest {
         nodeId?: string;
@@ -61,6 +81,12 @@ export namespace node_registry {
         // blake3 of the object identity, hex.
         objectId?: string;
         nodeId?: string;
+        // The identity the hash was made from; recorded in the instance
+    // directory so object data stays enumerable after the declaring
+    // revision is gone.
+        scriptId?: string;
+        class?: string;
+        name?: string;
     }
     export interface Lease {
         objectId?: string;
