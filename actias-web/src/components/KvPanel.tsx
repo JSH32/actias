@@ -183,13 +183,11 @@ export default function KvPanel({
             production sees.
           </p>
           {pairs && pairs.length === 0 ? (
-            <Card>
-              <EmptyState
-                title="Nothing stored yet"
-                body="Any script that declares this namespace shares these exact pairs."
-                cli={`actias kv ${project.name} ${active} set <key> <value>`}
-              />
-            </Card>
+            <EmptyState
+              title="Nothing stored yet"
+              body="Any script that declares this namespace shares these exact pairs."
+              cli={`actias kv ${project.name} ${active} set <key> <value>`}
+            />
           ) : (
             <Card>
               <table className={shared.table}>
