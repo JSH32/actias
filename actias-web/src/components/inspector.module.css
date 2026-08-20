@@ -1002,57 +1002,27 @@
   flex-shrink: 0;
 }
 
-/* Design 07's access matrix: member column, one 16px bit box per
- * permission, owner bits locked luna. */
-.matrixHeadCell {
-  padding: 8px 16px;
-  display: flex;
-  align-items: flex-end;
-  font: 500 11px var(--ui);
-  color: var(--ink-2);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+/* Design 07's members screen: a roster whose ACCESS column is a
+ * read/write fingerprint per resource, beside a panel that says what
+ * the selected member's bits actually permit, in words. */
+.memberRow {
+  composes: row;
+  height: 48px;
+  grid-template-columns: minmax(0, 1fr) 104px 128px 30px;
 }
-.matrixGroupHead {
-  border-left: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 3px;
-  padding: 8px 0 6px;
-}
-.matrixGroupName {
-  font: 500 10px var(--mono);
-  color: var(--ink-3);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.matrixBitNames {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  width: 100%;
-  font: 400 10px var(--mono);
-  color: var(--ink-3);
-  text-align: center;
-}
-.matrixRow {
-  display: grid;
-  height: 44px;
-  align-items: stretch;
-  border-bottom: 1px solid var(--line-soft);
-}
-.matrixRow:last-child {
-  border-bottom: 0;
-}
-.matrixMember {
-  padding: 0 16px;
+.memberCol {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
 }
-.matrixAvatar {
+.memberId {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.memberAvatar {
   width: 24px;
   height: 24px;
   border-radius: 4px;
@@ -1065,66 +1035,228 @@
   border: 1px solid rgba(167, 139, 250, 0.35);
   color: var(--kind-obj);
 }
-.matrixAvatarOwner {
-  composes: matrixAvatar;
+.memberAvatarOwner {
+  composes: memberAvatar;
   background: var(--luna-tint);
   border-color: var(--luna-edge);
   color: var(--luna);
 }
-.matrixName {
+.memberName {
   font: 500 12px var(--mono);
   color: var(--ink-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ownerChip {
-  margin-left: auto;
+.memberEmail {
   font: 400 10px var(--mono);
-  color: var(--luna);
-  border: 1px solid var(--luna-edge);
-  background: var(--luna-tint);
-  border-radius: var(--r1);
-  padding: 1px 5px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 0;
 }
-.matrixCell {
-  border-left: 1px solid var(--line-soft);
+
+/* The named shape a member's bits happen to spell; Custom is any other
+ * combination, worth a warmer tint because someone chose it by hand. */
+.rolePill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--night-2);
+  font: 500 11px var(--mono);
+  color: var(--ink-2);
+  white-space: nowrap;
+  justify-self: start;
+}
+.rolePillOwner {
+  composes: rolePill;
+  border-color: var(--luna-edge);
+  background: var(--luna-tint);
+  color: var(--luna);
+}
+.rolePillCustom {
+  composes: rolePill;
+  border-color: rgba(245, 201, 123, 0.35);
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+
+/* Six bars in read/write pairs, resource order matching the legend. */
+.fingerprint {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
 }
-.matrixCellGroupStart {
-  composes: matrixCell;
-  border-left-color: var(--line);
+.fpPair {
+  display: flex;
+  gap: 2px;
 }
-.bitBox {
-  width: 16px;
-  height: 16px;
+.fpCell {
+  width: 8px;
+  height: 15px;
   border-radius: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
   background: var(--night-2);
   border: 1px solid var(--line);
-  cursor: pointer;
 }
-.bitBoxOn {
-  composes: bitBox;
+.fpCellOn {
+  composes: fpCell;
   background: var(--luna);
   border-color: var(--luna);
 }
-.bitBoxLocked {
-  composes: bitBox;
-  background: var(--luna-tint);
-  border-color: var(--luna-edge);
-  cursor: not-allowed;
-}
-.matrixRemove {
-  border-left: 1px solid var(--line-soft);
+.fpLegend {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 7px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  font: 400 10px var(--mono);
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+}
+.fpLegendWords {
+  margin-left: auto;
+  letter-spacing: 0;
+}
+
+.memberSplit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 440px);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1020px) {
+  .memberSplit {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The four preset cards; clicking one rewrites the grant list whole. */
+.presetGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.presetCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--night-2);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.presetCard:hover:not(:disabled) {
+  border-color: var(--luna-edge);
+}
+.presetCard:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.presetCardActive {
+  composes: presetCard;
+  border-color: var(--luna-edge);
+  background: var(--luna-tint);
+}
+.presetName {
+  font: 650 12px var(--ui);
+  color: var(--ink-1);
+}
+.presetCardActive .presetName {
+  color: var(--luna);
+}
+.presetWords {
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
+
+/* One bordered stack of resource groups; each bit is a worded row with
+ * a switch, because the words are the point of the panel. */
+.permGroups {
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  overflow: hidden;
+}
+.permGroup {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.permGroup + .permGroup {
+  border-top: 1px solid var(--line-soft);
+}
+.permGroupName {
+  font: 500 10px var(--mono);
+  color: var(--luna);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.permRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.permRowText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.permBit {
+  font: 500 12px var(--mono);
+  color: var(--ink-1);
+}
+.permBitOff {
+  composes: permBit;
+  color: var(--ink-3);
+}
+.permWords {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.switch {
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--night-0);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 120ms, border-color 120ms;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--ink-3);
+  transition: transform 120ms, background 120ms;
+}
+.switchOn {
+  composes: switch;
+  background: var(--luna);
+  border-color: var(--luna);
+}
+.switchOn::after {
+  transform: translateX(13px);
+  background: var(--night-0);
+}
+.switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
