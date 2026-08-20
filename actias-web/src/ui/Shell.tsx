@@ -7,6 +7,10 @@
 import React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { useQuery } from '@tanstack/react-query';
+import * as Dropdown from '@radix-ui/react-dropdown-menu';
+import api from '@/helpers/api';
+import { ProjectDto } from '@/client';
 import { useLogout, useUser } from '@/helpers/auth';
 import { Icon, IconName } from './icons';
 import { Mark } from './Mark';
@@ -57,8 +61,36 @@ export function Shell({ children }: React.PropsWithChildren) {
   const router = useRouter();
   const { data: user } = useUser();
   const logout = useLogout();
+  const isPublic = publicRoutes.some((route) => route.test(router.pathname));
 
-  if (publicRoutes.some((route) => route.test(router.pathname))) {
+  const routeId = typeof router.query.id === 'string' ? router.query.id : null;
+  const onProject = router.pathname.startsWith('/project/');
+  const onScript = router.pathname.startsWith('/script/');
+
+  // A script page still lives inside its project; the sidebar resolves
+  // the owner so the project section never disappears mid-navigation.
+  const { data: routeScript } = useQuery({
+    queryKey: ['script', routeId],
+    queryFn: () => api.scripts.getScript(routeId as string),
+    enabled: !isPublic && onScript && !!routeId,
+  });
+  const projectId = onProject ? routeId : (routeScript?.projectId ?? null);
+
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: async () => {
+      const page = (await api.project.listProjects(1)) as unknown as {
+        items: ProjectDto[];
+      };
+      return page.items;
+    },
+    enabled: !isPublic && !!user,
+  });
+  const currentProject = projects?.find(
+    (entry: ProjectDto) => entry.id === projectId,
+  );
+
+  if (isPublic) {
     return <PublicChrome>{children}</PublicChrome>;
   }
 
@@ -73,31 +105,71 @@ export function Shell({ children }: React.PropsWithChildren) {
           <Mark size={20} />
           <span>ACTIAS</span>
         </Link>
+        {user && (
+          <Dropdown.Root>
+            <Dropdown.Trigger asChild>
+              <button className={classes.switcher}>
+                <span className={classes.switcherBadge}>
+                  {(currentProject?.name ?? 'p').slice(0, 1)}
+                </span>
+                <span className={classes.switcherLabel}>
+                  {currentProject?.name ?? 'Select project'}
+                </span>
+                <span className={classes.switcherChevron}>▾</span>
+              </button>
+            </Dropdown.Trigger>
+            <Dropdown.Portal>
+              <Dropdown.Content
+                className={classes.switcherMenu}
+                sideOffset={4}
+                align="start"
+              >
+                {(projects ?? []).map((entry: ProjectDto) => (
+                  <Dropdown.Item
+                    key={entry.id}
+                    className={classes.switcherItem}
+                    onSelect={() => router.push(`/project/${entry.id}`)}
+                  >
+                    {entry.name}
+                  </Dropdown.Item>
+                ))}
+                <Dropdown.Item
+                  className={classes.switcherItem}
+                  onSelect={() => router.push('/projects')}
+                >
+                  All projects…
+                </Dropdown.Item>
+              </Dropdown.Content>
+            </Dropdown.Portal>
+          </Dropdown.Root>
+        )}
         <nav className={classes.nav}>
-          {typeof router.query.id === 'string' &&
-            router.pathname.startsWith('/project/') && (
-              <>
-                <div className={classes.navLabel}>Project</div>
-                {projectNav.map((item) => {
-                  const href = `/project/${router.query.id}${
-                    item.slug ? `/${item.slug}` : ''
-                  }`;
-                  const active = item.slug
-                    ? router.asPath.split('?')[0].endsWith(`/${item.slug}`)
-                    : router.asPath.split('?')[0].endsWith(String(router.query.id));
-                  return (
-                    <Link
-                      key={item.slug}
-                      href={href}
-                      className={active ? classes.navLinkActive : classes.navLink}
-                    >
-                      <Icon name={item.icon} />
-                      <span>{item.label}</span>
-                    </Link>
-                  );
-                })}
-              </>
-            )}
+          {projectId && (
+            <>
+              <div className={classes.navLabel}>Project</div>
+              {projectNav.map((item) => {
+                const href = `/project/${projectId}${
+                  item.slug ? `/${item.slug}` : ''
+                }`;
+                const path = router.asPath.split('?')[0];
+                const active = onProject
+                  ? item.slug
+                    ? path.endsWith(`/${item.slug}`)
+                    : path.endsWith(projectId)
+                  : false;
+                return (
+                  <Link
+                    key={item.slug}
+                    href={href}
+                    className={active ? classes.navLinkActive : classes.navLink}
+                  >
+                    <Icon name={item.icon} />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </>
+          )}
           <div className={classes.navLabel}>Workspace</div>
           {globalNav.map((item) => (
             <Link
