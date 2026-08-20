@@ -29,9 +29,10 @@ const CREATE_JOURNAL: &str = "CREATE TABLE IF NOT EXISTS __actias_wf_journal (
         format INTEGER NOT NULL
     )";
 
-/// Everything a journal row can record. The set is closed on purpose:
-/// replay must understand every kind it can meet, so a new kind is a
-/// format bump, never a silent addition.
+/// Everything a journal row can record. Replay must understand every
+/// kind it can meet; when the set or the row shapes change, the
+/// version-cell ladder in [`ensure_schema`] migrates old files once,
+/// visibly, exactly as the queue's v1 to v2 rebuild did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum EntryKind {
@@ -64,35 +65,17 @@ pub enum EntryKind {
 }
 
 impl EntryKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Started => "STARTED",
-            Self::Intent => "INTENT",
-            Self::Result => "RESULT",
-            Self::Timer => "TIMER",
-            Self::Signal => "SIGNAL",
-            Self::Child => "CHILD",
-            Self::Cancel => "CANCEL",
-            Self::Completed => "COMPLETED",
-            Self::Ambient => "AMBIENT",
-            Self::Failed => "FAILED",
-        }
+    /// The wire spelling, straight from the serde derive: one source of
+    /// truth for both directions.
+    fn as_str(self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default()
     }
 
     fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "STARTED" => Self::Started,
-            "INTENT" => Self::Intent,
-            "RESULT" => Self::Result,
-            "TIMER" => Self::Timer,
-            "SIGNAL" => Self::Signal,
-            "CHILD" => Self::Child,
-            "CANCEL" => Self::Cancel,
-            "COMPLETED" => Self::Completed,
-            "AMBIENT" => Self::Ambient,
-            "FAILED" => Self::Failed,
-            _ => return None,
-        })
+        serde_json::from_value(serde_json::Value::String(text.to_owned())).ok()
     }
 }
 
@@ -117,10 +100,15 @@ pub fn ensure_schema(storage: &mut crate::storage::SqliteStorage) -> Result<(), 
     if version >= SCHEMA_VERSION {
         return Ok(());
     }
-    storage
-        .platform()
-        .execute(CREATE_JOURNAL, [])
-        .map_err(|e| e.to_string())?;
+    // The migration ladder: each arm carries one version forward, runs
+    // exactly once per file (the version cell is the record), and rides
+    // the call's transaction. New journal formats add arms here.
+    if version == 0 {
+        storage
+            .platform()
+            .execute(CREATE_JOURNAL, [])
+            .map_err(|e| e.to_string())?;
+    }
     storage.set_schema_version(SCHEMA_VERSION)
 }
 
@@ -1184,6 +1172,10 @@ pub struct WfShared {
     /// True while a step body executes: the one window where effects
     /// (kv, objects, http-in-context) are allowed in a workflow vm.
     in_step: std::sync::atomic::AtomicBool,
+    /// Step results substituted by the test harness: a faked step never
+    /// runs its body but journals exactly like a real one, so replay
+    /// cannot tell tests from production.
+    fakes: std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl WfShared {
@@ -1204,6 +1196,12 @@ impl WfShared {
     /// Whether a step body is executing right now: the effect window.
     pub fn effects_allowed(&self) -> bool {
         self.in_step.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Installs test fakes: step name to the value its body would have
+    /// returned.
+    pub fn set_fakes(&self, fakes: std::collections::HashMap<String, serde_json::Value>) {
+        *self.fakes.lock().expect("no poisoned lock") = fakes;
     }
 }
 
@@ -1440,10 +1438,20 @@ impl mlua::UserData for WfHandle {
                     ))),
                     Plan::Replay(value) => lua.to_value(&value),
                     Plan::Run { attempt: number } => {
+                        // A test fake stands in for the body but walks
+                        // the same journal path, so replay is identical.
+                        let fake = shared
+                            .fakes
+                            .lock()
+                            .expect("no poisoned lock")
+                            .get(&name)
+                            .cloned();
                         shared
                             .in_step
                             .store(true, std::sync::atomic::Ordering::Relaxed);
-                        let outcome: Result<mlua::Value, mlua::Error> = if timeout_ms > 0 {
+                        let outcome: Result<mlua::Value, mlua::Error> = if let Some(value) = fake {
+                            lua.to_value(&value)
+                        } else if timeout_ms > 0 {
                             match tokio::time::timeout(
                                 std::time::Duration::from_millis(timeout_ms as u64),
                                 body.call_async(()),

@@ -313,6 +313,219 @@ fn test_secrets(config: &ScriptConfig) -> Result<HashMap<String, String>, String
 }
 
 /// Runs every test file and prints per-case results.
+/// Everything workflow tests need per file: the vms the harness spawned
+/// (advance drives their alarms) and the temp dir their journals live in.
+struct WorkflowHost {
+    runs: tokio::sync::Mutex<Vec<(String, actias_worker_core::objects::ObjectHandle)>>,
+    dir: tempfile::TempDir,
+}
+
+/// Installs `start_workflow` and `advance` plus the `actias.test`
+/// module: workflows run in their own enforced-determinism vms over
+/// real journals; only time is virtual and only faked steps skip their
+/// bodies.
+fn install_workflow_testing(
+    runtime: &ActiasRuntime,
+    prepared: Arc<PreparedRevision>,
+    client: KvServiceClient<tonic::transport::Channel>,
+    key: [u8; 32],
+) -> Result<(), String> {
+    use actias_worker_core::platform::workflow::WfShared;
+    use mlua::LuaSerdeExt;
+
+    let host = Arc::new(WorkflowHost {
+        runs: tokio::sync::Mutex::default(),
+        dir: tempfile::tempdir().map_err(|e| e.to_string())?,
+    });
+
+    let start_host = host.clone();
+    let start = runtime
+        .create_async_function(
+            move |lua, (definition, input, opts): (String, mlua::Value, Option<mlua::Table>)| {
+                let host = start_host.clone();
+                let prepared = prepared.clone();
+                let client = client.clone();
+                async move {
+                    let input: serde_json::Value = lua.from_value(input)?;
+                    let mut fakes = std::collections::HashMap::new();
+                    if let Some(options) = opts
+                        && let Ok(steps) = options.get::<mlua::Table>("steps")
+                    {
+                        for pair in steps.pairs::<String, mlua::Value>() {
+                            let (step, value) = pair?;
+                            fakes.insert(step, lua.from_value(value)?);
+                        }
+                    }
+
+                    let shared = Arc::new(WfShared::default());
+                    shared.set_fakes(fakes);
+                    let vm = ActiasRuntime::with_profile(
+                        prepared,
+                        client,
+                        actias_worker_core::egress::EgressClient::new(
+                            actias_worker_core::egress::EgressPolicy::new([], false),
+                        )
+                        .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
+                        None,
+                        Some(Arc::new(key)),
+                        None,
+                        actias_worker_core::runtime::VmProfile::Workflow(shared.clone()),
+                    )
+                    .await?;
+                    vm.set_app_data(shared);
+
+                    let ordinal = host.runs.lock().await.len();
+                    let name = format!("{definition}/test-{ordinal}");
+                    let file = host.dir.path().join(format!("wf-{ordinal}.db"));
+                    let handle = actias_worker_core::objects::spawn_object_task(
+                        vm,
+                        actias_worker_core::objects::TaskOptions {
+                            storage: Some(
+                                actias_worker_core::storage::SqliteStorage::open(&file)
+                                    .map_err(mlua::Error::RuntimeError)?,
+                            ),
+                            ..Default::default()
+                        },
+                    );
+                    host.runs.lock().await.push((name.clone(), handle.clone()));
+
+                    let dispatch = move |method: &str, args: serde_json::Value| {
+                        let handle = handle.clone();
+                        let name = name.clone();
+                        let method = method.to_owned();
+                        async move {
+                            handle
+                                .call(
+                                    "__dispatch",
+                                    serde_json::json!({
+                                        "class": actias_common::classes::WORKFLOW_CLASS,
+                                        "name": name,
+                                        "method": method,
+                                        "args": args,
+                                        "chain": [format!("test/__workflow/{name}")],
+                                    }),
+                                )
+                                .await
+                                .map_err(|e| mlua::Error::RuntimeError(e.to_string()))
+                        }
+                    };
+
+                    dispatch("start", serde_json::json!([input])).await?;
+
+                    // The handle the test holds: joins, reads and pokes
+                    // go through the same dispatch surface as callers.
+                    let wf = lua.create_table()?;
+                    let join = dispatch.clone();
+                    wf.set(
+                        "result",
+                        lua.create_async_function(move |lua, _: mlua::MultiValue| {
+                            let join = join.clone();
+                            async move {
+                                let outcome = join("start", serde_json::json!([])).await?;
+                                lua.to_value(&outcome["value"])
+                            }
+                        })?,
+                    )?;
+                    let status = dispatch.clone();
+                    wf.set(
+                        "status",
+                        lua.create_async_function(move |lua, _: mlua::MultiValue| {
+                            let status = status.clone();
+                            async move {
+                                let outcome = status("start", serde_json::json!([])).await?;
+                                lua.to_value(&outcome["status"])
+                            }
+                        })?,
+                    )?;
+                    let signaller = dispatch.clone();
+                    wf.set(
+                        "signal",
+                        lua.create_async_function(
+                            move |lua, (_this, name, payload): (mlua::Table, String, mlua::Value)| {
+                                let signaller = signaller.clone();
+                                async move {
+                                    let payload: serde_json::Value = lua.from_value(payload)?;
+                                    signaller(
+                                        "signal",
+                                        serde_json::json!([name, payload]),
+                                    )
+                                    .await?;
+                                    Ok(())
+                                }
+                            },
+                        )?,
+                    )?;
+                    Ok(wf)
+                }
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    let advance_host = host;
+    let advance = runtime
+        .create_async_function(move |_lua, duration: mlua::Value| {
+            let host = advance_host.clone();
+            async move {
+                let ms = match &duration {
+                    mlua::Value::String(raw) => {
+                        actias_worker_core::extensions::objects::parse_duration_ms(&raw.to_str()?)
+                            .map_err(mlua::Error::RuntimeError)?
+                    }
+                    mlua::Value::Integer(seconds) => seconds * 1000,
+                    _ => {
+                        return Err(mlua::Error::RuntimeError(
+                            "advance takes a duration: \"10m\", \"24h\" or seconds.".to_owned(),
+                        ));
+                    }
+                };
+                actias_worker_core::extensions::objects::advance_clock_for_tests(ms);
+                // The clock moved; every hosted run gets its wake, so
+                // due timers fire now instead of in wall time.
+                let runs = host.runs.lock().await.clone();
+                for (name, handle) in runs {
+                    let _ = handle
+                        .call(
+                            "__dispatch",
+                            serde_json::json!({
+                                "class": actias_common::classes::WORKFLOW_CLASS,
+                                "name": name,
+                                "method": "alarm",
+                                "args": [],
+                                "chain": [format!("test/__workflow/{name}")],
+                            }),
+                        )
+                        .await;
+                }
+                Ok(())
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    runtime
+        .globals()
+        .set("start_workflow", start.clone())
+        .map_err(|e| e.to_string())?;
+    runtime
+        .globals()
+        .set("advance", advance.clone())
+        .map_err(|e| e.to_string())?;
+
+    // `require("actias.test")` is the documented spelling; the globals
+    // stay for brevity.
+    let module = runtime.create_table().map_err(|e| e.to_string())?;
+    module
+        .set("start_workflow", start)
+        .map_err(|e| e.to_string())?;
+    module.set("advance", advance).map_err(|e| e.to_string())?;
+    if let Ok(test) = runtime.globals().get::<mlua::Function>("test") {
+        module.set("test", test).map_err(|e| e.to_string())?;
+    }
+    runtime
+        .set_module("actias.test", mlua::Value::Table(module))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
     let files = test_files(config)?;
     if files.is_empty() {
@@ -351,6 +564,7 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
         }
 
         let client = serve_fake_kv(store).await?;
+        let client_for_workflows = client.clone();
         let egress = actias_worker_core::egress::EgressClient::new(
             actias_worker_core::egress::EgressPolicy::new([], false),
         )
@@ -381,6 +595,8 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
             )
             .exec()
             .map_err(|e| e.to_string())?;
+
+        install_workflow_testing(&runtime, prepared.clone(), client_for_workflows, key)?;
 
         // The handler under test, dispatched exactly as a request would be.
         if let Ok(listener) = runtime.listener(ActiasRuntime::FETCH_EVENT) {
@@ -448,6 +664,64 @@ mod tests {
         let mut config = config;
         config.project_path = Some(dir.to_path_buf());
         config
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_refund_example_passes_on_the_virtual_clock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = project(
+            dir.path(),
+            r#"
+            workflow "order-fulfillment" (function(wf, order)
+                local charge = wf:step("charge-card", { retries = 3, timeout = "30s" }, function()
+                    error("the fake stands in; this body never runs")
+                end)
+                if charge.status_code ~= 200 then
+                    return { status = "payment-failed" }
+                end
+                wf:sleep("10m")
+                local approval = wf:await("manager-approval", { timeout = "24h" })
+                if approval == nil then
+                    wf:step("refund", function()
+                        error("faked too")
+                    end)
+                    return { status = "refunded" }
+                end
+                return { status = "fulfilled" }
+            end)
+            on "fetch" (function() return { body = "ok" } end)
+            "#,
+            r#"
+            local t = require("actias.test")
+
+            t.test("refunds when approval never comes", function()
+                local wf = t.start_workflow("order-fulfillment", { id = "o1" }, {
+                    steps = {
+                        ["charge-card"] = { status_code = 200, body = { id = "ch_1" } },
+                        ["refund"] = { status_code = 200 },
+                    },
+                })
+                t.advance("10m")
+                t.advance("24h")
+                assert(wf:result().status == "refunded", "expected the refund path")
+            end)
+
+            t.test("a signal fulfills instead", function()
+                local wf = t.start_workflow("order-fulfillment", { id = "o2" }, {
+                    steps = {
+                        ["charge-card"] = { status_code = 200, body = { id = "ch_2" } },
+                    },
+                })
+                t.advance("10m")
+                wf:signal("manager-approval", { approved_by = "prof" })
+                assert(wf:result().status == "fulfilled", "expected fulfillment")
+            end)
+            "#,
+        );
+
+        let summary = run_tests(&config).await.expect("suite runs");
+        assert_eq!(summary.passed, 2, "both virtual-clock cases pass");
+        assert_eq!(summary.failed, 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
