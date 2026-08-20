@@ -134,7 +134,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
 
   const { data: queues } = useQuery({
     queryKey: ['queues', project.id],
-    queryFn: () => api.resources.listQueues(project.id),
+    queryFn: () => api.queues.listQueues(project.id),
   });
   const active =
     (queues ?? []).find(
@@ -143,13 +143,13 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
 
   const { data: stats } = useQuery({
     queryKey: ['queue-stats', project.id, active?.name],
-    queryFn: () => api.resources.queueStats(project.id, active!.name),
+    queryFn: () => api.queues.queueStats(project.id, active!.name),
     enabled: !!active,
     refetchInterval: paused ? false : 3000,
   });
   const { data: messages } = useQuery({
     queryKey: ['queue-messages', project.id, active?.name],
-    queryFn: () => api.resources.queueMessages(project.id, active!.name),
+    queryFn: () => api.queues.queueMessages(project.id, active!.name),
     enabled: !!active,
     refetchInterval: paused ? false : 2500,
   });
@@ -166,7 +166,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
     let stopped = false;
     const poll = async () => {
       try {
-        const fresh = await api.resources.queueEvents(
+        const fresh = await api.queues.queueEvents(
           project.id,
           active.name,
           cursor.current,
@@ -192,7 +192,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
     queryClient.invalidateQueries({ queryKey: ['queue-messages', project.id] });
   };
   const retryAll = useMutation({
-    mutationFn: () => api.resources.retryDead(project.id, active!.name),
+    mutationFn: () => api.queues.retryDead(project.id, active!.name),
     onSuccess: (result) => {
       toast({ title: `Requeued ${result.requeued} dead letter(s)` });
       refresh();
@@ -201,7 +201,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
   });
   const retryOne = useMutation({
     mutationFn: (id: number) =>
-      api.resources.retryMessage(project.id, active!.name, String(id)),
+      api.queues.retryMessage(project.id, active!.name, String(id)),
     onSuccess: () => {
       toast({ title: 'Requeued' });
       setSelectedRow(null);
@@ -211,7 +211,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
   });
   const dropOne = useMutation({
     mutationFn: (id: number) =>
-      api.resources.dropMessage(project.id, active!.name, String(id)),
+      api.queues.dropMessage(project.id, active!.name, String(id)),
     onSuccess: () => {
       toast({ title: 'Dropped' });
       setSelectedRow(null);

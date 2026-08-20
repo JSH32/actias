@@ -89,7 +89,7 @@ function Databases({
 
   const { data: databases } = useQuery({
     queryKey: ['databases', project.id],
-    queryFn: () => api.resources.listDatabases(project.id),
+    queryFn: () => api.databases.listDatabases(project.id),
   });
   // One filtered directory page names exactly the selected object; a
   // per-user class never gets enumerated for one row's metadata.
@@ -101,7 +101,7 @@ function Databases({
       selectedObj?.name,
     ],
     queryFn: () =>
-      api.resources.listObjects(
+      api.objects.listObjects(
         project.id,
         selectedObj!.class,
         selectedObj!.name,
@@ -139,12 +139,12 @@ function Databases({
     queryKey: ['db-overview', project.id, sourceKey],
     queryFn: () =>
       objectSource
-        ? api.resources.objectOverview(
+        ? api.objects.objectOverview(
             project.id,
             objectSource.class,
             objectSource.name,
           )
-        : api.resources.databaseOverview(project.id, active!.name),
+        : api.databases.databaseOverview(project.id, active!.name),
     enabled: !!active || !!objectSource,
     refetchInterval: 5000,
   });
@@ -161,13 +161,13 @@ function Databases({
         table!.name,
       )} LIMIT ${PAGE_SIZE} OFFSET ${page * PAGE_SIZE}`;
       return objectSource
-        ? api.resources.objectQuery(
+        ? api.objects.objectQuery(
             project.id,
             objectSource.class,
             objectSource.name,
             { sql },
           )
-        : api.resources.query(project.id, active!.name, { sql });
+        : api.databases.query(project.id, active!.name, { sql });
     },
     enabled: (!!active || !!objectSource) && !!table && tab === 'browse',
   });
@@ -185,13 +185,13 @@ function Databases({
     setRunning(true);
     const started = performance.now();
     const call = objectSource
-      ? api.resources.objectQuery(
+      ? api.objects.objectQuery(
           project.id,
           objectSource.class,
           objectSource.name,
           { sql },
         )
-      : api.resources[mode](project.id, active!.name, { sql });
+      : api.databases[mode](project.id, active!.name, { sql });
     call
       .then((result) => {
         setConsoleRows(result.rows);

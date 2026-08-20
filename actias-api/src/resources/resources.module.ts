@@ -5,7 +5,10 @@ import { AclModule } from 'src/project/acl/acl.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { ProjectModule } from 'src/project/project.module';
 import { ScriptModule } from 'src/scripts/scripts.module';
-import { ResourcesController } from './resources.controller';
+import { ResourcesService } from './resources.service';
+import { QueuesController } from './queues.controller';
+import { DatabasesController } from './databases.controller';
+import { ObjectsController } from './objects.controller';
 
 @Module({
   imports: [
@@ -32,6 +35,7 @@ import { ResourcesController } from './resources.controller';
       ),
     ),
   ],
-  controllers: [ResourcesController],
+  controllers: [QueuesController, DatabasesController, ObjectsController],
+  providers: [ResourcesService],
 })
 export class ResourcesModule {}
