@@ -1,24 +1,11 @@
 import { AuthGuard } from '@/helpers/auth';
 import api from '@/helpers/api';
 import { getPublicConfig } from '@/pages/api/config';
-import {
-  Anchor,
-  Badge,
-  Breadcrumbs,
-  Code,
-  Group,
-  Loader,
-  Paper,
-  ScrollArea,
-  Stack,
-  Text,
-  Title,
-} from '@mantine/core';
+import { Card } from '@/ui';
 import { useQuery } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import React, { useEffect, useRef, useState } from 'react';
-import { breadcrumbs } from '@/helpers/util';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
@@ -167,37 +154,49 @@ const Playground = () => {
         ) + '/'
       : undefined;
 
+  const statusColor =
+    status === 'live'
+      ? 'var(--luna)'
+      : status === 'closed'
+      ? 'var(--err)'
+      : 'var(--ink-3)';
+
   return script ? (
     <AuthGuard>
-      <Breadcrumbs>
-        {breadcrumbs([
-          { title: 'Home', href: '/projects' },
-          { title: script.publicIdentifier, href: `/script/${script.id}` },
-          { title: 'playground', href: `/script/${script.id}/playground` },
-        ])}
-      </Breadcrumbs>
-
-      <Group justify="space-between" mt="md" mb="xs">
-        <Title order={3}>Playground</Title>
-        <Group>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 10,
+        }}
+      >
+        <h1 style={{ fontSize: 18, fontWeight: 700 }}>Playground</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {liveUrl && (
-            <Anchor href={liveUrl} target="_blank" size="sm">
+            <a
+              href={liveUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ fontFamily: 'var(--mono)', fontSize: 12 }}
+            >
               {liveUrl}
-            </Anchor>
+            </a>
           )}
-          <Badge
-            color={
-              status === 'live' ? 'green' : status === 'closed' ? 'red' : 'gray'
-            }
-            variant="light"
+          <span
+            style={{
+              fontFamily: 'var(--mono)',
+              fontSize: 11,
+              color: statusColor,
+            }}
           >
-            {status}
-          </Badge>
-        </Group>
-      </Group>
+            ● {status}
+          </span>
+        </div>
+      </div>
 
-      <Stack>
-        <Paper withBorder>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <Card>
           <Editor
             height="50vh"
             defaultLanguage="lua"
@@ -226,30 +225,43 @@ const Playground = () => {
               });
             }}
           />
-        </Paper>
+        </Card>
 
-        <Paper withBorder p="md">
-          <Title order={5} mb="xs">
-            Session logs
-          </Title>
-          <ScrollArea h={140}>
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Session logs</div>
+          <div
+            style={{
+              height: 140,
+              overflowY: 'auto',
+              background: 'var(--night-2)',
+              border: '1px solid var(--line)',
+              borderRadius: 'var(--r2)',
+              padding: '8px 10px',
+              fontFamily: 'var(--mono)',
+              fontSize: 12,
+              lineHeight: 1.7,
+            }}
+          >
             {logs.length === 0 ? (
-              <Text c="dimmed" size="sm">
+              <span style={{ color: 'var(--ink-3)' }}>
                 Request the live url to see log lines here.
-              </Text>
+              </span>
             ) : (
               logs.map((line, index) => (
-                <Code block key={index} mb={2}>
-                  {line.level}: {line.message}
-                </Code>
+                <div key={index}>
+                  <span style={{ color: 'var(--luna)', fontWeight: 700 }}>
+                    {line.level}
+                  </span>{' '}
+                  {line.message}
+                </div>
               ))
             )}
-          </ScrollArea>
-        </Paper>
-      </Stack>
+          </div>
+        </Card>
+      </div>
     </AuthGuard>
   ) : (
-    <Loader />
+    <p style={{ color: 'var(--ink-3)' }}>Loading…</p>
   );
 };
 

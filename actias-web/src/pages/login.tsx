@@ -1,10 +1,10 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { useSignIn, useUser } from '@/helpers/auth';
 import { Button, Card, Field } from '@/ui';
+import { toast } from '@/ui/toast';
 
 export default function Login() {
   const router = useRouter();
@@ -28,7 +28,7 @@ export default function Login() {
           localStorage.setItem('token', res.token);
           api.users.me().then((me) => {
             signIn(res.token, me);
-            notifications.show({
+            toast({
               title: 'Logged in!',
               message: `Welcome ${me.username}`,
             });

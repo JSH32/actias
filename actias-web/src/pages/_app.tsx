@@ -1,6 +1,3 @@
-import '@mantine/core/styles.css';
-import '@mantine/notifications/styles.css';
-import '@mantine/code-highlight/styles.css';
 import '@fontsource/archivo/400.css';
 import '@fontsource/archivo/500.css';
 import '@fontsource/archivo/600.css';
@@ -16,9 +13,8 @@ import { useState } from 'react';
 import NextApp, { AppProps, AppContext } from 'next/app';
 import { getCookie } from 'cookies-next';
 import Head from 'next/head';
-import { MantineProvider } from '@mantine/core';
-import { Notifications } from '@mantine/notifications';
 import { Shell } from '@/ui/Shell';
+import { Toaster } from '@/ui/toast';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 export default function App(props: AppProps) {
@@ -41,18 +37,10 @@ export default function App(props: AppProps) {
           <script src="/api/config" defer />
         </Head>
 
-        <MantineProvider
-          defaultColorScheme="dark"
-          theme={{
-            fontFamily: 'Greycliff CF, sans-serif',
-            primaryColor: 'grape',
-          }}
-        >
-          <Notifications />
-          <Shell>
-            <Component {...pageProps} />
-          </Shell>
-        </MantineProvider>
+        <Toaster />
+        <Shell>
+          <Component {...pageProps} />
+        </Shell>
       </QueryClientProvider>
     </>
   );

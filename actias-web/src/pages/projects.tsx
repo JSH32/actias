@@ -2,12 +2,12 @@ import * as React from 'react';
 import { useRouter } from 'next/router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
-import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { AuthGuard } from '@/helpers/auth';
 import { ProjectDto } from '@/client';
 import { Button, Card, EmptyState, Field } from '@/ui';
 import classes from './projects.module.css';
+import { toast } from '@/ui/toast';
 
 function Projects() {
   const router = useRouter();
@@ -33,7 +33,7 @@ function Projects() {
       api.project
         .createProject({ name })
         .then((res) => {
-          notifications.show({
+          toast({
             title: 'Project created',
             message: `${res.name} is ready; publish a script into it.`,
           });

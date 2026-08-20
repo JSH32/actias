@@ -6,12 +6,12 @@
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
-import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { AclListDto, ProjectDto, UserDto } from '@/client';
 import { Button, Card } from '@/ui';
 import shared from '../pages/projects.module.css';
 import classes from './KvPanel.module.css';
+import { toast } from '@/ui/toast';
 
 /** Permission strings group as RESOURCE_BIT; the matrix renders groups. */
 function groupPermissions(all: string[]): [string, string[]][] {
@@ -50,9 +50,11 @@ export default function AccessPanel({
   const { data: candidates } = useQuery({
     queryKey: ['user-search', search],
     queryFn: async () =>
-      ((await api.users.searchUsers(search, 1)) as unknown as {
-        items: UserDto[];
-      }).items,
+      (
+        (await api.users.searchUsers(search, 1)) as unknown as {
+          items: UserDto[];
+        }
+      ).items,
     enabled: inviteOpen,
   });
 
@@ -90,7 +92,7 @@ export default function AccessPanel({
     api.acl
       .putAcl(user.id, project.id, reads)
       .then(() => {
-        notifications.show({
+        toast({
           title: 'Member added',
           message: `${user.username} can read this project.`,
         });
@@ -107,9 +109,9 @@ export default function AccessPanel({
       <div className={classes.head}>
         <p className={classes.lede}>
           Read and write are separate bits per resource, so read-without-write
-          is the normal case rather than an edge case. Granting KV_WRITE lets
-          a member change values production reads on the next request; it does
-          not let them publish, that is SCRIPT_WRITE.
+          is the normal case rather than an edge case. Granting KV_WRITE lets a
+          member change values production reads on the next request; it does not
+          let them publish, that is SCRIPT_WRITE.
         </p>
         {write && (
           <Dialog.Root open={inviteOpen} onOpenChange={setInviteOpen}>

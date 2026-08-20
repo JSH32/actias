@@ -7,11 +7,11 @@ import * as React from 'react';
 import { useRouter } from 'next/router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
-import { notifications } from '@mantine/notifications';
 import api, { showError } from '@/helpers/api';
 import { ProjectDto, ScriptDto } from '@/client';
 import { Button, Card, EmptyState, Field } from '@/ui';
 import classes from '../pages/projects.module.css';
+import { toast } from '@/ui/toast';
 
 export default function ScriptsPanel({
   project,
@@ -48,7 +48,7 @@ export default function ScriptsPanel({
       api.scripts
         .createScript(project.id, { publicIdentifier })
         .then((res) => {
-          notifications.show({
+          toast({
             title: 'Script created',
             message: `${res.publicIdentifier} exists; publish a revision to serve it.`,
           });
@@ -65,7 +65,7 @@ export default function ScriptsPanel({
       api.scripts
         .deleteScript(script.id)
         .then(() => {
-          notifications.show({
+          toast({
             title: 'Script deleted',
             message: script.publicIdentifier,
           });
