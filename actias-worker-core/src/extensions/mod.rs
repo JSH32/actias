@@ -1,4 +1,5 @@
 pub mod crypto;
+pub mod determinism;
 pub mod http;
 pub mod jwt;
 pub mod kv;

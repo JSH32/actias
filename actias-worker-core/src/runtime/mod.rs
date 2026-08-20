@@ -315,6 +315,19 @@ impl PreparedRevision {
     }
 }
 
+/// Which extension surface a vm gets. Standard is every script vm;
+/// Workflow is the enforced-determinism profile from
+/// docs/WORKFLOWS.md, where effects are refused outside steps and
+/// ambient nondeterminism journals.
+#[derive(Clone)]
+pub enum VmProfile {
+    Standard,
+    /// The enforced-determinism surface; carries the instance's
+    /// determinism source because the entry point runs during
+    /// construction and every read from the first line on must journal.
+    Workflow(std::sync::Arc<dyn crate::extensions::determinism::Determinism>),
+}
+
 impl ActiasRuntime {
     /// Registry key holding the table of modules loaded so far.
     const MODULE_REGISTRY: &'static str = "module_registry";
@@ -594,6 +607,33 @@ impl ActiasRuntime {
         secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
         time_limit: Option<u64>,
     ) -> mlua::Result<Self> {
+        Self::with_profile(
+            prepared,
+            kv_client,
+            egress,
+            logs,
+            secrets_key,
+            time_limit,
+            VmProfile::Standard,
+        )
+        .await
+    }
+
+    /// Like [`Self::new`], but choosing the vm's extension profile. The
+    /// workflow profile is the enforced-determinism surface: effects are
+    /// refused by name, time and uuids journal through the vm's
+    /// [`crate::extensions::determinism::DeterminismSource`], and
+    /// `math.random` runs off the instance seed applied by
+    /// [`Self::apply_determinism`].
+    pub async fn with_profile(
+        prepared: Arc<PreparedRevision>,
+        kv_client: KvServiceClient<tonic::transport::Channel>,
+        egress: crate::egress::EgressClient,
+        logs: Option<crate::extensions::log::LogPublisher>,
+        secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
+        time_limit: Option<u64>,
+        profile: VmProfile,
+    ) -> mlua::Result<Self> {
         trace!("Initializing lua runtime");
 
         let lua = Self {
@@ -638,24 +678,58 @@ impl ActiasRuntime {
         Self::set_event_declaration(&lua)?;
         Self::set_module_loaders(&lua)?;
 
-        lua.register_extensions(&[
-            &JsonExtension,
-            &UuidExtension,
-            &crate::extensions::http::HttpExtension { egress },
-            &KvExtension {
-                kv_client: kv_client.clone(),
-                project_id: prepared.script.project_id.clone(),
-            },
-            &crate::extensions::secrets::SecretsExtension {
-                kv_client,
-                project_id: prepared.script.project_id.clone(),
-                key: secrets_key,
-            },
-            &crate::extensions::log::LogExtension { publisher: logs },
-            &JwtExtension,
-            &CryptoExtension,
-            &crate::extensions::objects::ObjectExtension,
-        ])?;
+        match profile {
+            VmProfile::Standard => lua.register_extensions(&[
+                &JsonExtension,
+                &UuidExtension,
+                &crate::extensions::http::HttpExtension { egress },
+                &KvExtension {
+                    kv_client: kv_client.clone(),
+                    project_id: prepared.script.project_id.clone(),
+                },
+                &crate::extensions::secrets::SecretsExtension {
+                    kv_client,
+                    project_id: prepared.script.project_id.clone(),
+                    key: secrets_key,
+                },
+                &crate::extensions::log::LogExtension { publisher: logs },
+                &JwtExtension,
+                &CryptoExtension,
+                &crate::extensions::objects::ObjectExtension,
+            ])?,
+            // Workflow code keeps json and log; every effect surface is
+            // refused by name at the boundary, and uuid journals. The
+            // step verb (W3) builds effect contexts with the standard
+            // profile instead of re-admitting these here.
+            VmProfile::Workflow(source) => {
+                use crate::extensions::determinism::{ForbiddenExtension, JournaledUuidExtension};
+                let seed = source.seed();
+                lua.set_app_data(crate::extensions::determinism::DeterminismSource(source));
+                // Declaration surfaces (kv, queue, database, object)
+                // stay: they run at script top level during replay and
+                // only return handles. Guarding the handles' effectful
+                // METHODS is the step verb's dispatch-level business.
+                lua.register_extensions(&[
+                    &JsonExtension,
+                    &JournaledUuidExtension,
+                    &KvExtension {
+                        kv_client: kv_client.clone(),
+                        project_id: prepared.script.project_id.clone(),
+                    },
+                    &crate::extensions::secrets::SecretsExtension {
+                        kv_client,
+                        project_id: prepared.script.project_id.clone(),
+                        key: secrets_key,
+                    },
+                    &crate::extensions::log::LogExtension { publisher: logs },
+                    &crate::extensions::objects::ObjectExtension,
+                    &ForbiddenExtension { name: "http" },
+                    &ForbiddenExtension { name: "jwt" },
+                    &ForbiddenExtension { name: "crypto" },
+                ])?;
+                crate::extensions::determinism::shim_stdlib(&lua.lua, seed)?;
+            }
+        }
 
         lua.globals().set(
             "script",
@@ -1003,6 +1077,145 @@ mod tests {
     }
 
     /// A full runtime over `source` as main.lua, with unconnectable clients.
+    /// A determinism source with scripted answers, standing in for the
+    /// journal cursor W3 installs.
+    struct Scripted {
+        times: std::sync::Mutex<std::collections::VecDeque<i64>>,
+        uuids: std::sync::Mutex<std::collections::VecDeque<String>>,
+        seed: i64,
+    }
+
+    impl crate::extensions::determinism::Determinism for Scripted {
+        fn time(&self) -> i64 {
+            self.times
+                .lock()
+                .expect("no poison")
+                .pop_front()
+                .unwrap_or(0)
+        }
+        fn uuid(&self) -> String {
+            self.uuids
+                .lock()
+                .expect("no poison")
+                .pop_front()
+                .unwrap_or_default()
+        }
+        fn seed(&self) -> i64 {
+            self.seed
+        }
+    }
+
+    fn scripted(times: &[i64], uuids: &[&str], seed: i64) -> Arc<Scripted> {
+        Arc::new(Scripted {
+            times: std::sync::Mutex::new(times.iter().copied().collect()),
+            uuids: std::sync::Mutex::new(uuids.iter().map(|s| s.to_string()).collect()),
+            seed,
+        })
+    }
+
+    async fn workflow_running(
+        source: &str,
+        determinism: Arc<Scripted>,
+    ) -> mlua::Result<ActiasRuntime> {
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+        ActiasRuntime::with_profile(
+            prepared_with(vec![lua_file("main.lua", source)]),
+            crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
+            crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
+                .expect("client builds"),
+            None,
+            None,
+            None,
+            VmProfile::Workflow(determinism),
+        )
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workflow_code_cannot_reach_http_outside_a_step() {
+        let lua = workflow_running(
+            r#"
+            on "fetch" (function()
+                return http.make_request({ uri = "http://example.com" })
+            end)
+            "#,
+            scripted(&[], &[], 1),
+        )
+        .await
+        .expect("loads");
+
+        let listener = lua.listener("fetch").expect("registered");
+        let outcome = listener.call_async::<mlua::Value>(()).await;
+        let text = format!("{:#}", outcome.expect_err("must refuse"));
+        assert!(
+            text.contains(crate::extensions::determinism::FORBIDDEN),
+            "wrong refusal: {text}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shimmed_time_and_uuid_read_from_the_source_in_order() {
+        let source = r#"
+            on "fetch" (function()
+                return { t1 = os.time(), t2 = os.time(), id = uuid.v4() }
+            end)
+        "#;
+        let run = |times: Vec<i64>, uuids: Vec<&'static str>| async move {
+            let lua = workflow_running(source, scripted(&times, &uuids, 1))
+                .await
+                .expect("loads");
+            let listener = lua.listener("fetch").expect("registered");
+            let value: mlua::Value = listener.call_async(()).await.expect("answers");
+            serde_json::to_value(&value).expect("serializes")
+        };
+
+        let first = run(vec![100, 250], vec!["id-a"]).await;
+        assert_eq!(first["t1"], 100, "{first}");
+        assert_eq!(first["t2"], 250, "time journals per read");
+        assert_eq!(first["id"], "id-a");
+
+        // Replay: the same scripted answers reproduce the same values,
+        // which is the whole promise.
+        let replay = run(vec![100, 250], vec!["id-a"]).await;
+        assert_eq!(first, replay);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn random_is_seed_stable_and_reseeding_is_refused() {
+        let source = r#"
+            on "fetch" (function(mode)
+                if mode == "reseed" then
+                    math.randomseed(42)
+                    return {}
+                end
+                return { math.random(1000000), math.random(1000000) }
+            end)
+        "#;
+        let draw = |seed: i64| async move {
+            let lua = workflow_running(source, scripted(&[], &[], seed))
+                .await
+                .expect("loads");
+            let listener = lua.listener("fetch").expect("registered");
+            let value: mlua::Value = listener.call_async("draw").await.expect("answers");
+            serde_json::to_value(&value).expect("serializes")
+        };
+
+        let first = draw(7).await;
+        let same_seed = draw(7).await;
+        assert_eq!(first, same_seed, "one seed, one sequence");
+
+        let lua = workflow_running(source, scripted(&[], &[], 7))
+            .await
+            .expect("loads");
+        let listener = lua.listener("fetch").expect("registered");
+        let refused = listener.call_async::<mlua::Value>("reseed").await;
+        let text = format!("{:#}", refused.expect_err("reseeding must refuse"));
+        assert!(
+            text.contains(crate::extensions::determinism::FORBIDDEN),
+            "wrong refusal: {text}"
+        );
+    }
+
     async fn runtime_running(source: &str) -> mlua::Result<ActiasRuntime> {
         let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
 
