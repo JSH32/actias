@@ -16,11 +16,10 @@ import { useState } from 'react';
 import NextApp, { AppProps, AppContext } from 'next/app';
 import { getCookie } from 'cookies-next';
 import Head from 'next/head';
-import { MantineProvider, AppShell } from '@mantine/core';
+import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
-import { Header } from '@/components/Header';
+import { Shell } from '@/ui/Shell';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import classes from './App.module.css';
 
 export default function App(props: AppProps) {
   const { Component, pageProps } = props;
@@ -50,12 +49,9 @@ export default function App(props: AppProps) {
           }}
         >
           <Notifications />
-          <AppShell header={{ height: 60 }} padding="md">
-            <Header />
-            <AppShell.Main className={classes.main}>
-              <Component {...pageProps} />
-            </AppShell.Main>
-          </AppShell>
+          <Shell>
+            <Component {...pageProps} />
+          </Shell>
         </MantineProvider>
       </QueryClientProvider>
     </>
