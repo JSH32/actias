@@ -462,6 +462,17 @@ struct PlatformStatsQuery {
 /// overviews straight off the sqlite file, no vm, bounded staleness by
 /// design. The holder reads its live file; any other node serves from
 /// the snapshot replica, so any worker can answer.
+/// The identity an object key was built from: (script id, class, name);
+/// the lease claim carries it so the instance directory stays complete.
+fn split_key(key: &str) -> (String, String, String) {
+    let mut parts = key.splitn(3, '/');
+    (
+        parts.next().unwrap_or_default().to_owned(),
+        parts.next().unwrap_or_default().to_owned(),
+        parts.next().unwrap_or_default().to_owned(),
+    )
+}
+
 async fn platform_stats_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -790,7 +801,16 @@ impl ObjectRouting {
             let lease = self
                 .registry
                 .clone()
-                .acquire_lease(AcquireLeaseRequest { object_id, node_id })
+                .acquire_lease({
+                    let (script_id, class, name) = split_key(key);
+                    AcquireLeaseRequest {
+                        object_id,
+                        node_id,
+                        script_id,
+                        class,
+                        name,
+                    }
+                })
                 .await
                 .map_err(|e| ResolveError::Other(e.to_string()))?
                 .into_inner();
@@ -814,6 +834,7 @@ impl ObjectRouting {
         // instance names are user-chosen text.
         let object_id = blake3::hash(key.as_bytes()).to_hex().to_string();
         let file = self.data_dir.join(format!("{object_id}.db"));
+        let identity_key = key.to_owned();
 
         self.host
             .get_or_spawn(key, &self.prepared.revision_id, || async move {
@@ -834,9 +855,15 @@ impl ObjectRouting {
                 let lease = routing
                     .registry
                     .clone()
-                    .acquire_lease(AcquireLeaseRequest {
-                        object_id: object_id.clone(),
-                        node_id,
+                    .acquire_lease({
+                        let (script_id, class, name) = split_key(&identity_key);
+                        AcquireLeaseRequest {
+                            object_id: object_id.clone(),
+                            node_id,
+                            script_id,
+                            class,
+                            name,
+                        }
                     })
                     .await
                     .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?
