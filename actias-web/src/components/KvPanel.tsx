@@ -24,6 +24,7 @@ export default function KvPanel({
   const [selected, setSelected] = React.useState<string | null>(null);
   const [nsOpen, setNsOpen] = React.useState(false);
   const [pairOpen, setPairOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState<PairDto | null>(null);
 
   const { data: namespaces } = useQuery({
     queryKey: ['namespaces', project.id],
@@ -68,6 +69,7 @@ export default function KvPanel({
       })
       .then(() => {
         setPairOpen(false);
+        setEditing(null);
         invalidate();
       })
       .catch(showError);
@@ -140,7 +142,13 @@ export default function KvPanel({
             <span className={classes.nsTitle}>{active}</span>
             {write && (
               <div style={{ display: 'flex', gap: 8 }}>
-                <Dialog.Root open={pairOpen} onOpenChange={setPairOpen}>
+                <Dialog.Root
+                  open={pairOpen}
+                  onOpenChange={(open) => {
+                    setPairOpen(open);
+                    if (!open) setEditing(null);
+                  }}
+                >
                   <Dialog.Trigger asChild>
                     <Button variant="primary">New pair</Button>
                   </Dialog.Trigger>
@@ -148,17 +156,30 @@ export default function KvPanel({
                     <Dialog.Overlay className={shared.overlay} />
                     <Dialog.Content className={shared.dialog}>
                       <Dialog.Title className={shared.dialogTitle}>
-                        Set pair
+                        {editing ? `Edit ${editing.key}` : 'Set pair'}
                       </Dialog.Title>
                       <form onSubmit={setPair}>
-                        <Field label="Key" name="key" required autoFocus />
+                        <Field
+                          label="Key"
+                          name="key"
+                          required
+                          autoFocus={!editing}
+                          defaultValue={editing?.key}
+                          readOnly={!!editing}
+                        />
                         <Field
                           label="Type (string, integer, number, boolean, json)"
                           name="type"
-                          defaultValue="string"
+                          defaultValue={String(editing?.type ?? 'string')}
                           required
                         />
-                        <Field label="Value" name="value" required />
+                        <Field
+                          label="Value"
+                          name="value"
+                          required
+                          autoFocus={!!editing}
+                          defaultValue={editing?.value}
+                        />
                         <div className={shared.dialogActions}>
                           <Dialog.Close asChild>
                             <Button type="button">Cancel</Button>
@@ -201,7 +222,18 @@ export default function KvPanel({
                 </thead>
                 <tbody>
                   {(pairs ?? []).map((pair: PairDto) => (
-                    <tr key={pair.key}>
+                    <tr
+                      key={pair.key}
+                      style={write ? { cursor: 'pointer' } : undefined}
+                      onClick={
+                        write
+                          ? () => {
+                              setEditing(pair);
+                              setPairOpen(true);
+                            }
+                          : undefined
+                      }
+                    >
                       <td className={shared.name}>{pair.key}</td>
                       <td>
                         <Chip kind="kv">{pair.type ?? 'string'}</Chip>
@@ -211,7 +243,10 @@ export default function KvPanel({
                         <td style={{ textAlign: 'right' }}>
                           <Button
                             variant="danger"
-                            onClick={() => deletePair(pair)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              deletePair(pair);
+                            }}
                           >
                             Delete
                           </Button>
