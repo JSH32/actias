@@ -14,6 +14,7 @@
 pub mod cron;
 pub mod database;
 pub mod queue;
+pub mod workflow;
 
 use mlua::LuaSerdeExt;
 use serde::Deserialize;
