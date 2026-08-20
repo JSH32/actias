@@ -101,16 +101,27 @@ pub struct PendingAlarm {
 
 /// Milliseconds since the unix epoch, the clock `state.now()` exposes and
 /// the alarm loop schedules against.
+/// The virtual-clock offset `actias test` advances; zero everywhere
+/// else, so production time is wall time.
+static TEST_CLOCK_OFFSET_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Fast-forwards every platform clock in this process: test harness
+/// machinery, which is why a 24h await times out in a millisecond test.
+pub fn advance_clock_for_tests(ms: i64) {
+    TEST_CLOCK_OFFSET_MS.fetch_add(ms.max(0), std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn unix_now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+        + TEST_CLOCK_OFFSET_MS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A duration written the way scripts write them: "500ms", "30s", "10m",
 /// "24h", "7d", or a bare number of seconds.
-pub(crate) fn parse_duration_ms(raw: &str) -> Result<i64, String> {
+pub fn parse_duration_ms(raw: &str) -> Result<i64, String> {
     let raw = raw.trim();
     if let Ok(seconds) = raw.parse::<f64>() {
         return Ok((seconds * 1000.0) as i64);
