@@ -5,6 +5,7 @@
  * on Radix primitives, never hand-rolled a11y.
  */
 import React from 'react';
+import * as RadixTabs from '@radix-ui/react-tabs';
 import classes from './ui.module.css';
 
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -80,3 +81,34 @@ export const Field = React.forwardRef<HTMLInputElement, InputProps>(
     );
   },
 );
+
+/** Design 02's tab row: line-bottomed triggers, luna underline on the
+ * active one. Content panels come from the caller. */
+export function Tabs({
+  tabs,
+  defaultValue,
+  children,
+}: {
+  tabs: { value: string; label: string }[];
+  defaultValue: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <RadixTabs.Root defaultValue={defaultValue}>
+      <RadixTabs.List className={classes.tabList}>
+        {tabs.map((tab) => (
+          <RadixTabs.Trigger
+            key={tab.value}
+            value={tab.value}
+            className={classes.tab}
+          >
+            {tab.label}
+          </RadixTabs.Trigger>
+        ))}
+      </RadixTabs.List>
+      {children}
+    </RadixTabs.Root>
+  );
+}
+
+export const TabPanel = RadixTabs.Content;

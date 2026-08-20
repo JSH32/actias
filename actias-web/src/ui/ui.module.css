@@ -103,3 +103,29 @@
 .input::placeholder {
   color: var(--ink-3);
 }
+
+.tabList {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+
+.tab {
+  font-family: var(--ui);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--ink-1);
+}
+.tab[data-state='active'] {
+  color: var(--ink-1);
+  border-bottom-color: var(--luna);
+}
