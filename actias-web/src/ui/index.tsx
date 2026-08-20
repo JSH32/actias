@@ -21,9 +21,11 @@ const variantClass: Record<NonNullable<ButtonProps['variant']>, string> = {
   danger: classes.buttonDanger,
 };
 
-export function Button({ variant = 'default', ...rest }: ButtonProps) {
-  return <button className={variantClass[variant]} {...rest} />;
-}
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  function Button({ variant = 'default', ...rest }, ref) {
+    return <button ref={ref} className={variantClass[variant]} {...rest} />;
+  },
+);
 
 export function Card(props: React.HTMLAttributes<HTMLDivElement>) {
   const { className, ...rest } = props;
