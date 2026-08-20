@@ -61,6 +61,15 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<Lease>;
+        // A graceful shutdown&#x27;s goodbye: deletes the node row immediately,
+    // freeing its leases through the same cascade age-out uses, so a
+    // deploy never serves a minute of dead forwards while the ttl runs
+    // out. Best effort; a crash still ages out.
+        deregister(
+            data: DeregisterRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
         // Object identities from the instance directory, which outlives the
     // contracts that declared them; filterable by class and name prefix,
     // always paged, because per-user classes grow with the user table.
@@ -177,6 +186,9 @@ export namespace node_registry {
     export interface GetLeaseRequest {
         // blake3 of the object identity, hex.
         objectId?: string;
+    }
+    export interface DeregisterRequest {
+        nodeId?: string;
     }
     export interface SetAlarmRequest {
         // blake3 of the object identity, hex.

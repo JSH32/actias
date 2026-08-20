@@ -38,6 +38,12 @@ service NodeRegistryService {
     // with the freshest copy.
     rpc GetLease(GetLeaseRequest) returns (Lease);
 
+    // A graceful shutdown's goodbye: deletes the node row immediately,
+    // freeing its leases through the same cascade age-out uses, so a
+    // deploy never serves a minute of dead forwards while the ttl runs
+    // out. Best effort; a crash still ages out.
+    rpc Deregister(DeregisterRequest) returns (google.protobuf.Empty);
+
     // Object identities from the instance directory, which outlives the
     // contracts that declared them; filterable by class and name prefix,
     // always paged, because per-user classes grow with the user table.
@@ -149,6 +155,10 @@ message ReleaseLeaseRequest {
 message GetLeaseRequest {
     // blake3 of the object identity, hex.
     string object_id = 1;
+}
+
+message DeregisterRequest {
+    string node_id = 1;
 }
 
 message SetAlarmRequest {
