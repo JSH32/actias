@@ -209,6 +209,24 @@ message Script {
     optional string current_revision_id = 5;
 }
 
+message ResolveClassOwnerRequest {
+    // Project the object identity is scoped to.
+    string project_id = 1;
+    // Object class the owner is resolved for: a user class resolves its
+    // declaring script, `__queue` the consumer (`on "queue:<name>"`),
+    // `__database` a declarer.
+    string class = 2;
+    // Instance name; platform classes resolve by it, user classes by the
+    // class alone.
+    string name = 3;
+}
+
+// The script whose current revision's code an object of the asked-about
+// identity runs.
+message ClassOwner {
+    string script_id = 1;
+}
+
 service ScriptService {
     rpc QueryScript(FindScriptRequest) returns (Script);
     rpc ListScripts(ListScriptRequest) returns (ListScriptResponse);
@@ -233,6 +251,11 @@ service ScriptService {
 
     // Which of these content hashes the blob store does not hold yet.
     rpc MissingBlobs(MissingBlobsRequest) returns (MissingBlobsResponse);
+
+    // Which script's code an object identity runs, derived from the
+    // project's current capability contracts; NOT_FOUND when no current
+    // contract owns it.
+    rpc ResolveClassOwner(ResolveClassOwnerRequest) returns (ClassOwner);
 
     // Named environments over revisions; set is upsert, so a move and a
     // create are the same call.

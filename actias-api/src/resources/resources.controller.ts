@@ -20,22 +20,27 @@ import { toHttpException } from 'src/exceptions/grpc.exception';
 import { script_service } from 'src/protobufs/script_service';
 import { node_registry } from 'src/protobufs/node_registry';
 import {
+  DatabaseOverviewDto,
+  ObjectInstanceDto,
   QueueEventDto,
+  QueueMessageDto,
   QueueStatsDto,
   ResourceInstanceDto,
+  RetriedDto,
   SqlQueryDto,
   SqlRowsDto,
-  TableInfoDto,
 } from './dto/resources.dto';
 
 /** The platform class each resource kind rides on. */
 const CLASSES = { queues: '__queue', databases: '__database' } as const;
 
 /**
- * A project's object-backed resources: queues and sql databases. Listings
- * are the union of what live contracts declare and what the instance
- * directory records, so data outlives the revision that declared it;
- * numbers come from the worker's typed platform reads.
+ * A project's object-backed resources: queues and sql databases. Identity
+ * is project-scoped ((project, class, name)); which script's code an
+ * object runs is the data plane's business, so reads and calls carry the
+ * project, never a script. Listings are the union of what live contracts
+ * declare and what the instance directory records, so data outlives the
+ * revision that declared it.
  */
 @ApiTags('resources')
 @Controller('project/:project/resources')
@@ -78,46 +83,158 @@ export class ResourcesController {
     return this.listResources(project, 'databases');
   }
 
-  @Get('queues/:script/:name/stats')
+  @Get('queues/:name/stats')
   @AclByProject(AccessFields.SCRIPT_READ)
   @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
   async queueStats(
     @EntityParam('project', Projects) project: Projects,
-    @Param('script') script: string,
     @Param('name') name: string,
   ): Promise<QueueStatsDto> {
     const stats = (await this.dispatchObject(
-      script,
+      project,
       CLASSES.queues,
       name,
       'stats',
       [],
     )) as {
       depth?: number;
+      in_flight?: number;
       oldest_pending?: number;
       dead_letters?: number;
     } | null;
     return {
       depth: stats?.depth ?? 0,
+      inFlight: stats?.in_flight ?? 0,
       oldestPending: stats?.oldest_pending ?? undefined,
       deadLetters: stats?.dead_letters ?? 0,
     };
   }
 
+  /** Live and dead message rows, newest first; delivered messages are in
+   * the journal. */
+  @Get('queues/:name/messages')
+  @AclByProject(AccessFields.SCRIPT_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async queueMessages(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('name') name: string,
+  ): Promise<QueueMessageDto[]> {
+    const rows = (await this.dispatchObject(
+      project,
+      CLASSES.queues,
+      name,
+      'messages',
+      [],
+    )) as Record<string, unknown>[] | null;
+    return (Array.isArray(rows) ? rows : []).map((row) => ({
+      id: Number(row.id),
+      state: String(row.state ?? ''),
+      attempts: Number(row.attempts ?? 0),
+      preview: String(row.preview ?? ''),
+      size: Number(row.size ?? 0),
+      enqueuedMs: Number(row.enqueued_ms ?? 0),
+      nextMs: row.next_ms == null ? undefined : Number(row.next_ms),
+      diedMs: row.died_ms == null ? undefined : Number(row.died_ms),
+    }));
+  }
+
+  /** Requeues every dead letter; they start their attempts over. */
+  @Post('queues/:name/retry-dead')
+  @AclByProject(AccessFields.SCRIPT_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async retryDead(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('name') name: string,
+  ): Promise<RetriedDto> {
+    const count = await this.dispatchObject(
+      project,
+      CLASSES.queues,
+      name,
+      'retry_dead',
+      [],
+    );
+    return { requeued: Number(count ?? 0) };
+  }
+
+  /** Requeues one dead letter by id. */
+  @Post('queues/:name/messages/:id/retry')
+  @AclByProject(AccessFields.SCRIPT_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async retryMessage(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('name') name: string,
+    @Param('id') id: string,
+  ): Promise<RetriedDto> {
+    const count = await this.dispatchObject(
+      project,
+      CLASSES.queues,
+      name,
+      'retry_message',
+      [Number(id)],
+    );
+    return { requeued: Number(count ?? 0) };
+  }
+
+  /** Discards one message, live or dead. */
+  @Post('queues/:name/messages/:id/drop')
+  @AclByProject(AccessFields.SCRIPT_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async dropMessage(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('name') name: string,
+    @Param('id') id: string,
+  ): Promise<void> {
+    await this.dispatchObject(project, CLASSES.queues, name, 'drop_message', [
+      Number(id),
+    ]);
+  }
+
+  /** Durable object instances the directory knows, user classes only. */
+  @Get('objects')
+  @AclByProject(AccessFields.SCRIPT_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async listObjects(
+    @EntityParam('project', Projects) project: Projects,
+  ): Promise<ObjectInstanceDto[]> {
+    const page = await lastValueFrom(
+      this.scripts
+        .listScripts({ projectId: project.id, pageSize: 500, page: 1 })
+        .pipe(toHttpException()),
+    );
+    const identifiers = new Map(
+      (page.scripts || []).map((script) => [
+        script.id,
+        script.publicIdentifier,
+      ]),
+    );
+
+    const directory = await lastValueFrom(
+      this.registry
+        .listInstances({ projectIds: [project.id] })
+        .pipe(toHttpException()),
+    );
+    return (directory.instances || [])
+      .filter((instance) => !instance.class.startsWith('__'))
+      .map((instance) => ({
+        class: instance.class,
+        name: instance.name,
+        declaredBy: identifiers.get(instance.scriptId) ?? '',
+      }));
+  }
+
   /** The queue's journal after `since`: enqueued, delivered, retried and
    * dead-lettered, oldest first. */
-  @Get('queues/:script/:name/events')
+  @Get('queues/:name/events')
   @AclByProject(AccessFields.SCRIPT_READ)
   @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
   @ApiQuery({ name: 'since', required: false, type: Number })
   async queueEvents(
     @EntityParam('project', Projects) project: Projects,
-    @Param('script') script: string,
     @Param('name') name: string,
     @Query('since') since?: string,
   ): Promise<QueueEventDto[]> {
     const events = await this.dispatchObject(
-      script,
+      project,
       CLASSES.queues,
       name,
       'events',
@@ -126,16 +243,43 @@ export class ResourcesController {
     return Array.isArray(events) ? (events as QueueEventDto[]) : [];
   }
 
-  @Get('databases/:script/:name/tables')
+  @Get('databases/:name/overview')
   @AclByProject(AccessFields.DATABASE_READ)
   @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
-  async databaseTables(
+  async databaseOverview(
     @EntityParam('project', Projects) project: Projects,
-    @Param('script') script: string,
     @Param('name') name: string,
-  ): Promise<TableInfoDto[]> {
-    const overview = await this.workerStats(script, CLASSES.databases, name);
-    return Array.isArray(overview) ? (overview as TableInfoDto[]) : [];
+  ): Promise<DatabaseOverviewDto> {
+    const overview = (await this.workerStats(
+      project,
+      CLASSES.databases,
+      name,
+    )) as {
+      size_bytes?: number;
+      tables?: {
+        name: string;
+        rows: number;
+        columns?: {
+          name: string;
+          type: string;
+          not_null: boolean;
+          primary_key: boolean;
+        }[];
+      }[];
+    } | null;
+    return {
+      sizeBytes: overview?.size_bytes ?? 0,
+      tables: (overview?.tables ?? []).map((table) => ({
+        name: table.name,
+        rows: table.rows,
+        columns: (table.columns ?? []).map((column) => ({
+          name: column.name,
+          type: column.type,
+          notNull: column.not_null,
+          primaryKey: column.primary_key,
+        })),
+      })),
+    };
   }
 
   /**
@@ -143,29 +287,27 @@ export class ResourcesController {
    * design; the script-guard authorizer applies exactly as it does to
    * script sql.
    */
-  @Post('databases/:script/:name/query')
+  @Post('databases/:name/query')
   @AclByProject(AccessFields.DATABASE_READ)
   @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
   async query(
     @EntityParam('project', Projects) project: Projects,
-    @Param('script') script: string,
     @Param('name') name: string,
     @Body() body: SqlQueryDto,
   ): Promise<SqlRowsDto> {
-    return this.dispatchSql(script, name, 'read', body);
+    return this.dispatchSql(project, name, 'read', body);
   }
 
   /** Executes a statement through the owner, transactional, single-writer. */
-  @Post('databases/:script/:name/execute')
+  @Post('databases/:name/execute')
   @AclByProject(AccessFields.DATABASE_WRITE)
   @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
   async execute(
     @EntityParam('project', Projects) project: Projects,
-    @Param('script') script: string,
     @Param('name') name: string,
     @Body() body: SqlQueryDto,
   ): Promise<SqlRowsDto> {
-    return this.dispatchSql(script, name, 'query', body);
+    return this.dispatchSql(project, name, 'query', body);
   }
 
   /** The union listing: declared by live contracts, present in the directory, or both. */
@@ -179,9 +321,15 @@ export class ResourcesController {
         .pipe(toHttpException()),
     );
     const scripts = page.scripts || [];
+    const identifiers = new Map(
+      scripts.map((script) => [script.id, script.publicIdentifier]),
+    );
 
+    // Identity is the name alone; a name several scripts declare is one
+    // resource, and the first declarer (stable script order) fills the
+    // "declared by" chip.
     const declared = new Map<string, ResourceInstanceDto>();
-    await Promise.all(
+    const contracts = await Promise.all(
       scripts
         .filter((script) => script.currentRevisionId)
         .map(async (script) => {
@@ -194,34 +342,57 @@ export class ResourcesController {
               })
               .pipe(toHttpException()),
           );
-          for (const name of revision.scriptConfig?.capabilities?.[kind] ??
-            []) {
-            declared.set(`${script.id}/${name}`, {
-              name,
-              scriptId: script.id,
-              scriptIdentifier: script.publicIdentifier,
-              orphaned: false,
-            });
-          }
+          const capabilities = revision.scriptConfig?.capabilities;
+          return {
+            script,
+            names: capabilities?.[kind] ?? [],
+            // A queue's consumer (`on "queue:<name>"`) outranks its
+            // producers for the "declared by" chip, mirroring owner
+            // resolution.
+            consumed:
+              kind === 'queues'
+                ? (capabilities?.events ?? [])
+                    .filter((event) => event.startsWith('queue:'))
+                    .map((event) => event.slice('queue:'.length))
+                : [],
+          };
         }),
     );
+    const sorted = contracts.sort((a, b) =>
+      a.script.id.localeCompare(b.script.id),
+    );
+    for (const { script, names } of sorted) {
+      for (const name of names) {
+        if (!declared.has(name)) {
+          declared.set(name, {
+            name,
+            declaredBy: script.publicIdentifier,
+            orphaned: false,
+          });
+        }
+      }
+    }
+    for (const { script, consumed } of sorted) {
+      for (const name of consumed) {
+        declared.set(name, {
+          name,
+          declaredBy: script.publicIdentifier,
+          orphaned: false,
+        });
+      }
+    }
 
     const directory = await lastValueFrom(
       this.registry
-        .listInstances({ scriptIds: scripts.map((script) => script.id) })
+        .listInstances({ projectIds: [project.id] })
         .pipe(toHttpException()),
-    );
-    const identifiers = new Map(
-      scripts.map((script) => [script.id, script.publicIdentifier]),
     );
     for (const instance of directory.instances || []) {
       if (instance.class !== CLASSES[kind]) continue;
-      const key = `${instance.scriptId}/${instance.name}`;
-      if (!declared.has(key)) {
-        declared.set(key, {
+      if (!declared.has(instance.name)) {
+        declared.set(instance.name, {
           name: instance.name,
-          scriptId: instance.scriptId,
-          scriptIdentifier: identifiers.get(instance.scriptId) ?? '',
+          declaredBy: identifiers.get(instance.scriptId) ?? '',
           orphaned: true,
         });
       }
@@ -232,13 +403,13 @@ export class ResourcesController {
 
   /** One typed platform read off the worker's local file or replica. */
   private async workerStats(
-    scriptId: string,
+    project: Projects,
     className: string,
     name: string,
   ): Promise<Record<string, unknown> | unknown[] | null> {
     const base = this.config.get<string>('worker.internalUrl');
-    const url = `${base}/_platform/stats?script=${encodeURIComponent(
-      scriptId,
+    const url = `${base}/_platform/stats?project=${encodeURIComponent(
+      project.id,
     )}&class=${encodeURIComponent(className)}&name=${encodeURIComponent(name)}`;
 
     const response = await fetch(url, {
@@ -255,7 +426,7 @@ export class ResourcesController {
   /** One method call through the worker's object transport; lands on any
    * node and forwards once to the holder. */
   private async dispatchObject(
-    scriptId: string,
+    project: Projects,
     className: string,
     name: string,
     method: string,
@@ -269,7 +440,7 @@ export class ResourcesController {
         'x-actias-internal': this.config.get<string>('worker.internalToken'),
       },
       body: JSON.stringify({
-        scriptId,
+        scopeId: project.id,
         firstHop: true,
         class: className,
         name,
@@ -291,13 +462,13 @@ export class ResourcesController {
   }
 
   private async dispatchSql(
-    scriptId: string,
+    project: Projects,
     database: string,
     method: 'read' | 'query',
     body: SqlQueryDto,
   ): Promise<SqlRowsDto> {
     const rows = await this.dispatchObject(
-      scriptId,
+      project,
       '__database',
       database,
       method,

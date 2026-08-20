@@ -3,17 +3,18 @@ import { IsArray, IsOptional, IsString } from 'class-validator';
 
 /**
  * One queue or database a project holds: declared by a live contract,
- * present in the instance directory, or both.
+ * present in the instance directory, or both. Identity is the name,
+ * scoped to the project; the declaring script is metadata.
  */
 export class ResourceInstanceDto {
   @ApiProperty()
   name: string;
 
-  @ApiProperty()
-  scriptId: string;
-
-  @ApiProperty({ description: 'Public identifier of the owning script.' })
-  scriptIdentifier: string;
+  @ApiProperty({
+    description:
+      'Public identifier of a script declaring it; empty when only the directory remembers it.',
+  })
+  declaredBy: string;
 
   @ApiProperty({
     description:
@@ -23,8 +24,11 @@ export class ResourceInstanceDto {
 }
 
 export class QueueStatsDto {
-  @ApiProperty()
+  @ApiProperty({ description: 'Every message still queued.' })
   depth: number;
+
+  @ApiProperty({ description: 'Messages due now, in delivery.' })
+  inFlight: number;
 
   @ApiProperty({ required: false, nullable: true })
   oldestPending?: number;
@@ -33,12 +37,84 @@ export class QueueStatsDto {
   deadLetters: number;
 }
 
+/** One live or dead message row, as the inspector's table shows it. */
+export class QueueMessageDto {
+  @ApiProperty()
+  id: number;
+
+  @ApiProperty({ description: 'pending, in-flight or dead.' })
+  state: string;
+
+  @ApiProperty()
+  attempts: number;
+
+  @ApiProperty({ description: 'Payload prefix.' })
+  preview: string;
+
+  @ApiProperty({ description: 'Payload size in bytes.' })
+  size: number;
+
+  @ApiProperty()
+  enqueuedMs: number;
+
+  @ApiProperty({ required: false, nullable: true })
+  nextMs?: number;
+
+  @ApiProperty({ required: false, nullable: true })
+  diedMs?: number;
+}
+
+export class ColumnInfoDto {
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty({ description: 'Declared SQLite type; empty when untyped.' })
+  type: string;
+
+  @ApiProperty()
+  notNull: boolean;
+
+  @ApiProperty()
+  primaryKey: boolean;
+}
+
 export class TableInfoDto {
   @ApiProperty()
   name: string;
 
   @ApiProperty()
   rows: number;
+
+  @ApiProperty({ type: [ColumnInfoDto] })
+  columns: ColumnInfoDto[];
+}
+
+/** The database viewer's one-call read: file size plus table shapes. */
+export class DatabaseOverviewDto {
+  @ApiProperty({ description: 'Database file size in bytes.' })
+  sizeBytes: number;
+
+  @ApiProperty({ type: [TableInfoDto] })
+  tables: TableInfoDto[];
+}
+
+/** One durable object instance the directory knows. */
+export class ObjectInstanceDto {
+  @ApiProperty({ description: 'The object class.' })
+  class: string;
+
+  @ApiProperty({ description: 'The instance name.' })
+  name: string;
+
+  @ApiProperty({
+    description: 'Public identifier of the script whose code it runs.',
+  })
+  declaredBy: string;
+}
+
+export class RetriedDto {
+  @ApiProperty({ description: 'How many dead letters were requeued.' })
+  requeued: number;
 }
 
 export class SqlQueryDto {
@@ -67,6 +143,11 @@ export class QueueEventDto {
   @ApiProperty()
   kind: string;
 
-  @ApiProperty()
-  detail: string;
+  @ApiProperty({
+    description:
+      'Structured event detail: message id, payload preview, producer, per-attempt error.',
+    type: 'object',
+    additionalProperties: true,
+  })
+  detail: Record<string, unknown>;
 }

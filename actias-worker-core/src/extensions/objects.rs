@@ -23,18 +23,11 @@ use crate::runtime::{ActiasRuntime, ContractKind};
 /// Registry key of the class-name-to-methods table in this vm.
 const CLASSES_KEY: &str = "object_classes";
 
-/// The built-in class behind `database "name"`; the `__` prefix is
-/// reserved, so no user class can collide with it. Public because the
-/// router special-cases its read methods for the mailbox bypass.
-pub const DATABASE_CLASS: &str = "__database";
-
-/// The built-in class behind `on "cron:<expr>"`: one instance per cron
-/// event, whose alarm re-arms the next occurrence and fires the listener.
-pub const CRON_CLASS: &str = "__cron";
-
-/// The built-in class behind `queue "name"`: its sqlite is the message
-/// store, its alarm loop is the delivery loop.
-pub const QUEUE_CLASS: &str = "__queue";
+/// The built-in class names live in [`actias_common::classes`], because
+/// object identities cross service boundaries; re-exported here where the
+/// runtime consumes them. The router special-cases [`DATABASE_CLASS`]'s
+/// read methods for the mailbox bypass.
+pub use actias_common::classes::{CRON_CLASS, DATABASE_CLASS, QUEUE_CLASS};
 
 /// Milliseconds until a cron event's next occurrence. The expression is
 /// whatever follows `cron:`; classic five-field expressions gain a seconds
@@ -63,6 +56,16 @@ pub fn cron_delay_ms(event: &str) -> Result<i64, String> {
 /// created on their first dispatched call.
 const STATE_KEY: &str = "object_state";
 
+/// The calling script's identity, when the routing layer knows it; the
+/// queue journal records it as a message's producer.
+#[derive(Clone)]
+pub struct CallerIdentity {
+    /// Public identifier, the name a human recognizes.
+    pub script: String,
+    /// Revision id the caller executed as.
+    pub revision: String,
+}
+
 /// One routed method call.
 pub struct ObjectTarget {
     pub class: String,
@@ -73,6 +76,9 @@ pub struct ObjectTarget {
     /// target that appears here, because its mailbox is busy underneath
     /// this very call.
     pub chain: Vec<String>,
+    /// Filled by the routing layer, which knows whose vm the call left;
+    /// [`None`] for calls with no script behind them (dashboard reads).
+    pub caller: Option<CallerIdentity>,
 }
 
 /// The call chain the currently dispatched method arrived on; app data in
@@ -299,6 +305,8 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
                         method,
                         arguments,
                         chain,
+                        // The router knows whose vm this is; it fills this.
+                        caller: None,
                     })
                     .await
                     .map_err(mlua::Error::RuntimeError)?;

@@ -15,13 +15,13 @@ use std::time::Duration;
 
 use actias_common::tracing::{debug, warn};
 use actias_worker_core::extensions::objects::unix_now_ms;
-use actias_worker_core::proto::script_service::FindScriptRequest;
-use actias_worker_core::proto::script_service::find_script_request::Query;
+use actias_worker_core::identity::ObjectKey;
 use actias_worker_core::storage::SqliteStorage;
 
-use crate::server::{AppState, ObjectRouting, cached_revision};
+use crate::routing::{ObjectRouting, owner_prepared};
+use crate::server::AppState;
 
-/// Object keys (script/class/name) whose persisted alarm is due.
+/// Object keys (scope/class/name) whose persisted alarm is due.
 ///
 /// Pure scan over the data dir; read-only opens, no waking. Files without
 /// an alarm, or unreadable ones, are simply skipped.
@@ -74,44 +74,27 @@ pub async fn run(state: AppState, every: Duration) {
     }
 }
 
-/// Makes one object resident under its current revision; its own task
-/// does the rest.
+/// Makes one object resident under its owner's current revision; its own
+/// task does the rest.
 async fn wake(state: &AppState, own_key: &str) -> Result<(), String> {
-    let script_id = own_key
-        .split('/')
-        .next()
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| format!("'{own_key}' is not an object key"))?;
+    let key =
+        ObjectKey::parse(own_key).ok_or_else(|| format!("'{own_key}' is not an object key"))?;
 
-    let script = state
-        .clients
-        .script
-        .clone()
-        .query_script(FindScriptRequest {
-            query: Some(Query::Id(script_id.to_owned())),
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .into_inner();
+    // The owner's current revision is what a wake runs, exactly like any
+    // other touch; the routing resolves it again internally, off the same
+    // cache.
+    let owner = owner_prepared(state, &key).await?;
 
-    let Some(revision_id) = script.current_revision_id.clone() else {
-        return Err("script has no current revision".to_owned());
-    };
-
-    let prepared = cached_revision(state, script, revision_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    ObjectRouting::new(state, prepared)
-        .resolve_handle(own_key)
+    ObjectRouting::new(state, owner)
+        .resolve_handle(&key)
         .await
         .map(|_| ())
         .map_err(|error| match error {
             // Someone else holds it now; their sweep is responsible.
-            crate::server::ResolveError::Elsewhere(holder) => {
+            crate::routing::ResolveError::Elsewhere(holder) => {
                 format!("homed on {holder}; not ours to wake")
             }
-            crate::server::ResolveError::Other(error) => error,
+            crate::routing::ResolveError::Other(error) => error,
         })
 }
 

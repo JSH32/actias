@@ -30,8 +30,11 @@ impl LogPublisher {
     /// Publishes one line and returns immediately.
     ///
     /// Logging must never slow a script down or fail a request, so delivery
-    /// is a detached task and a failed publish is only traced.
-    fn publish(&self, level: &str, message: String) {
+    /// is a detached task and a failed publish is only traced. Public so
+    /// the platform can put its own lines on a stream (a live session's
+    /// failure belongs in front of its developer), not only script `log.*`
+    /// calls.
+    pub fn publish(&self, level: &str, message: String) {
         let line = LogLine {
             level: level.to_owned(),
             message,

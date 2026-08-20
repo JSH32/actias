@@ -308,24 +308,55 @@ done
     || { echo "queue deliveries did not land ($QN of 3)"; exit 1; }
 echo "queue delivered $QN message(s) to the consumer"
 
+echo "== a second script produces into the same project-scoped queue"
+# Identity is (project, class, name): a sibling script declaring
+# `queue "jobs"` reaches the SAME queue, and its send is delivered by the
+# consumer script's code. A second consumer would be refused at publish.
+PRODUCER_IDENT="smokeprod$SUFFIX"
+PRODUCER_ID=$(curl -sf -X POST "$API/project/$PROJECT_ID/scripts" -H "$AUTH" -H 'Content-Type: application/json' \
+    -d "{\"publicIdentifier\":\"$PRODUCER_IDENT\"}" | jq -r .id)
+mkdir -p "$DEVDIR/producer"
+cat > "$DEVDIR/producer/script.json" <<EOF
+{"id":"$PRODUCER_ID","entryPoint":"main.lua","includes":["**/*.lua"],"ignore":[]}
+EOF
+cat > "$DEVDIR/producer/main.lua" <<'LUA'
+local jobs = queue "jobs"
+
+on "fetch" (function(request)
+    jobs:send({ n = 99 })
+    return { body = "sent", headers = {} }
+end)
+LUA
+"$REPO/target/debug/actias-cli" publish "$DEVDIR/producer"
+curl -sf "$WORKER/$PRODUCER_IDENT/" -o /dev/null
+QN2=0
+for _ in $(seq 1 15); do
+    QN2=$(curl -sf "$WORKER/$IDENT/" | jq .queued 2>/dev/null || echo 0)
+    [ "$QN2" -ge 4 ] 2>/dev/null && break
+    sleep 1
+done
+[ "$QN2" -ge 4 ] 2>/dev/null \
+    || { echo "the sibling producer's message did not reach the consumer ($QN2 of 4)"; exit 1; }
+echo "sibling script produced into the shared queue; consumer count $QN2"
+
 echo "== dashboard resources speak for the platform's own storage"
 # The union listing knows the queue and database from the contract; the
 # stats and tables come off the worker's sqlite through the api proxy;
-# the console reads through the same transport scripts use.
+# the console reads through the same transport scripts use. Identity is
+# the name alone, scoped to the project.
 RQ=$(curl -sf "$API/project/$PROJECT_ID/resources/queues" -H "$AUTH")
-echo "$RQ" | jq -e '.[0].name == "jobs" and .[0].orphaned == false' >/dev/null \
+echo "$RQ" | jq -e '.[0].name == "jobs" and .[0].orphaned == false and (.[0].declaredBy | length) > 0' >/dev/null \
     || { echo "queue listing did not surface the contract queue: $RQ"; exit 1; }
 RD=$(curl -sf "$API/project/$PROJECT_ID/resources/databases" -H "$AUTH")
 echo "$RD" | jq -e 'map(.name) | index("main") != null' >/dev/null \
     || { echo "database listing missed main: $RD"; exit 1; }
-QSID=$(echo "$RQ" | jq -r '.[0].scriptId')
-QST=$(curl -sf "$API/project/$PROJECT_ID/resources/queues/$QSID/jobs/stats" -H "$AUTH")
+QST=$(curl -sf "$API/project/$PROJECT_ID/resources/queues/jobs/stats" -H "$AUTH")
 echo "$QST" | jq -e '.depth >= 0 and .deadLetters >= 0' >/dev/null \
     || { echo "queue stats did not read: $QST"; exit 1; }
-TBL=$(curl -sf "$API/project/$PROJECT_ID/resources/databases/$QSID/main/tables" -H "$AUTH")
-echo "$TBL" | jq -e 'map(.name) | index("visits") != null' >/dev/null \
-    || { echo "table overview missed visits: $TBL"; exit 1; }
-CONSOLE=$(curl -sf -X POST "$API/project/$PROJECT_ID/resources/databases/$QSID/main/query" \
+TBL=$(curl -sf "$API/project/$PROJECT_ID/resources/databases/main/overview" -H "$AUTH")
+echo "$TBL" | jq -e '(.tables | map(.name) | index("visits") != null) and .sizeBytes > 0' >/dev/null \
+    || { echo "database overview missed visits or its size: $TBL"; exit 1; }
+CONSOLE=$(curl -sf -X POST "$API/project/$PROJECT_ID/resources/databases/main/query" \
     -H "$AUTH" -H 'Content-Type: application/json' \
     -d '{"sql":"SELECT COUNT(*) AS n FROM visits"}')
 echo "$CONSOLE" | jq -e '.rows[0][0].n >= 1 or (.rows[0].n >= 1)' >/dev/null \
