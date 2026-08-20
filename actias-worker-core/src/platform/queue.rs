@@ -74,6 +74,23 @@ pub(crate) async fn dispatch(
     context: &super::PlatformContext<'_>,
     call: &super::Call,
 ) -> Result<serde_json::Value, String> {
+    // Schema setup happens once per file: the version cell is the record,
+    // and the day a second schema version exists, its migration belongs
+    // right here.
+    context.home.with_storage(|storage| {
+        if !storage.is_fresh()? {
+            return Ok(());
+        }
+        let connection = storage.platform();
+        connection
+            .execute(CREATE_MESSAGES, [])
+            .map_err(|e| e.to_string())?;
+        connection
+            .execute(CREATE_DEAD, [])
+            .map_err(|e| e.to_string())?;
+        storage.mark_initialized()
+    })?;
+
     match call.method.as_str() {
         "send" => send(
             context,
@@ -100,9 +117,6 @@ fn send(
 
     context.home.with_storage(|storage| {
         let connection = storage.platform();
-        connection
-            .execute(CREATE_MESSAGES, [])
-            .map_err(|e| e.to_string())?;
         connection
             .execute(
                 "INSERT INTO __actias_queue_messages (payload, next_at, enqueued_at) VALUES (?, ?, ?)",
@@ -134,15 +148,8 @@ async fn deliver(
     let event = format!("queue:{}", context.name);
 
     let due = context.home.with_storage(|storage| {
-        let connection = storage.platform();
-        connection
-            .execute(CREATE_MESSAGES, [])
-            .map_err(|e| e.to_string())?;
-        connection
-            .execute(CREATE_DEAD, [])
-            .map_err(|e| e.to_string())?;
-
-        let mut statement = connection
+        let mut statement = storage
+            .platform()
             .prepare(
                 "SELECT id, payload, attempts FROM __actias_queue_messages \
                  WHERE next_at <= ? ORDER BY id LIMIT ?",
@@ -228,26 +235,30 @@ async fn deliver(
 /// read path that can open the file (a snapshot, a replica, an api
 /// endpoint) without dispatching at all.
 pub fn read_stats(storage: &mut crate::storage::SqliteStorage) -> Result<Stats, String> {
+    // A file that predates the schema (a fresh object, an old snapshot, a
+    // replica) reads as an empty queue rather than an error; this also
+    // keeps the accessor safe on read-only connections, where issuing DDL
+    // would fail.
     let connection = storage.platform();
-    connection
-        .execute(CREATE_MESSAGES, [])
-        .map_err(|e| e.to_string())?;
-    connection
-        .execute(CREATE_DEAD, [])
-        .map_err(|e| e.to_string())?;
+    let missing = |error: &rusqlite::Error| error.to_string().contains("no such table");
 
-    let (depth, oldest_pending) = connection
-        .query_row(
-            "SELECT COUNT(*), MIN(enqueued_at) FROM __actias_queue_messages",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|e| e.to_string())?;
-    let dead_letters = connection
-        .query_row("SELECT COUNT(*) FROM __actias_queue_dead", [], |row| {
+    let (depth, oldest_pending) = match connection.query_row(
+        "SELECT COUNT(*), MIN(enqueued_at) FROM __actias_queue_messages",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ) {
+        Ok(row) => row,
+        Err(error) if missing(&error) => (0, None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let dead_letters =
+        match connection.query_row("SELECT COUNT(*) FROM __actias_queue_dead", [], |row| {
             row.get(0)
-        })
-        .map_err(|e| e.to_string())?;
+        }) {
+            Ok(count) => count,
+            Err(error) if missing(&error) => 0,
+            Err(error) => return Err(error.to_string()),
+        };
 
     Ok(Stats {
         depth,
