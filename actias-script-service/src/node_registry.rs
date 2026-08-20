@@ -12,9 +12,10 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::proto_node_registry::{
-    AcquireLeaseRequest, GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease,
-    ListInstancesRequest, ListInstancesResponse, ListNodesResponse, Node, NodeRegistration,
-    ObjectInstance, RegisterNodeRequest, ReleaseLeaseRequest,
+    AcquireLeaseRequest, AlarmRow, ClearAlarmRequest, DueAlarmsRequest, DueAlarmsResponse,
+    GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListInstancesRequest,
+    ListInstancesResponse, ListNodesResponse, Node, NodeRegistration, ObjectInstance,
+    RegisterNodeRequest, ReleaseLeaseRequest, SetAlarmRequest,
     node_registry_service_server::NodeRegistryService,
 };
 
@@ -361,6 +362,69 @@ impl NodeRegistryService for NodeRegistry {
         Ok(Response::new(()))
     }
 
+    async fn set_alarm(&self, request: Request<SetAlarmRequest>) -> Result<Response<()>, Status> {
+        let request = request.get_ref();
+
+        // One alarm per object, setting replaces: the same shape the
+        // object's own persisted row has.
+        sqlx::query(
+            "INSERT INTO object_alarms (object_id, own_key, due_ms) VALUES ($1, $2, $3)
+             ON CONFLICT (object_id) DO UPDATE SET own_key = $2, due_ms = $3",
+        )
+        .bind(&request.object_id)
+        .bind(&request.own_key)
+        .bind(request.due_ms)
+        .execute(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(()))
+    }
+
+    async fn clear_alarm(
+        &self,
+        request: Request<ClearAlarmRequest>,
+    ) -> Result<Response<()>, Status> {
+        sqlx::query("DELETE FROM object_alarms WHERE object_id = $1")
+            .bind(&request.get_ref().object_id)
+            .execute(&self.database)
+            .await
+            .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(()))
+    }
+
+    async fn due_alarms(
+        &self,
+        request: Request<DueAlarmsRequest>,
+    ) -> Result<Response<DueAlarmsResponse>, Status> {
+        let request = request.get_ref();
+        let limit = i64::from(request.limit.clamp(1, 1024));
+
+        // Deliberately NOT filtered by holder liveness: a due alarm on a
+        // dead node's object is exactly the row this query exists for.
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT object_id, own_key, due_ms FROM object_alarms
+             WHERE due_ms <= $1 ORDER BY due_ms LIMIT $2",
+        )
+        .bind(request.now_ms)
+        .bind(limit)
+        .fetch_all(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(DueAlarmsResponse {
+            alarms: rows
+                .into_iter()
+                .map(|(object_id, own_key, due_ms)| AlarmRow {
+                    object_id,
+                    own_key,
+                    due_ms,
+                })
+                .collect(),
+        }))
+    }
+
     async fn list_instances(
         &self,
         request: Request<ListInstancesRequest>,
@@ -684,6 +748,85 @@ mod tests {
             freed.is_err_and(|status| status.code() == tonic::Code::NotFound),
             "a dead holder must read as unheld"
         );
+    }
+
+    #[tokio::test]
+    async fn a_due_alarm_outlives_its_holder_and_answers_the_sweep() {
+        let (registry, database, _guard) = registry(45).await;
+
+        let holder = register(&registry, "holder:3100").await;
+        let object = "d".repeat(64);
+
+        registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: object.clone(),
+                node_id: holder.clone(),
+                ..Default::default()
+            }))
+            .await
+            .expect("claims");
+
+        // The holder mirrors a due-in-the-past alarm, then replaces it:
+        // one row per object, the latest write wins.
+        let arm = |due_ms: i64| SetAlarmRequest {
+            object_id: object.clone(),
+            own_key: "proj-1/Keeper/watchdog".to_owned(),
+            due_ms,
+        };
+        registry
+            .set_alarm(Request::new(arm(1_000)))
+            .await
+            .expect("arms");
+        registry
+            .set_alarm(Request::new(arm(2_000)))
+            .await
+            .expect("re-arms");
+
+        // The holder dies. Its lease frees through the cascade; the alarm
+        // row must NOT: firing it is now some survivor's job.
+        backdate(&database, &holder, 46).await;
+        let due = registry
+            .due_alarms(Request::new(DueAlarmsRequest {
+                now_ms: 2_000,
+                limit: 10,
+            }))
+            .await
+            .expect("the sweep queries")
+            .into_inner()
+            .alarms;
+        assert_eq!(due.len(), 1, "one row per object, latest write");
+        assert_eq!(due[0].own_key, "proj-1/Keeper/watchdog");
+        assert_eq!(due[0].due_ms, 2_000);
+
+        // A future alarm is not due yet.
+        let early = registry
+            .due_alarms(Request::new(DueAlarmsRequest {
+                now_ms: 1_999,
+                limit: 10,
+            }))
+            .await
+            .expect("queries")
+            .into_inner()
+            .alarms;
+        assert!(early.is_empty(), "not due yet: {early:?}");
+
+        // Fired (or cleared): the row goes, the sweep goes quiet.
+        registry
+            .clear_alarm(Request::new(ClearAlarmRequest {
+                object_id: object.clone(),
+            }))
+            .await
+            .expect("clears");
+        let after = registry
+            .due_alarms(Request::new(DueAlarmsRequest {
+                now_ms: i64::MAX,
+                limit: 10,
+            }))
+            .await
+            .expect("queries")
+            .into_inner()
+            .alarms;
+        assert!(after.is_empty());
     }
 
     #[tokio::test]

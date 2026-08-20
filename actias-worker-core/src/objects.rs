@@ -90,6 +90,14 @@ impl ObjectHandle {
 pub type AfterWrite =
     Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+/// Mirrors this object's armed alarm into an external registry:
+/// `Some(due_ms)` on arm, [`None`] on clear. One closure per object with
+/// the identity baked in, so nothing guest- or identity-shaped leaks in
+/// here. Fire-and-forget by contract: the mirror rides OFF the call's
+/// transaction, a spurious row only ever costs a wasted wake, and the
+/// dangerous direction (a missing row) is healed by the spawn-time sync.
+pub type AlarmSync = Arc<dyn Fn(Option<i64>) + Send + Sync>;
+
 /// Everything the pinned task owns about its object, in one place: the
 /// task is the owner, and the vm holds a clone of the [`Arc`] as app data
 /// so the Lua extension surface (`state.sql`, `state:set_alarm`) reaches
@@ -105,6 +113,9 @@ pub struct ObjectHome {
     migrations_checked: std::sync::atomic::AtomicBool,
     queue_policy: crate::platform::queue::QueuePolicy,
     revision: Option<Arc<crate::runtime::PreparedRevision>>,
+    /// The registry mirror, when the host wired one; invoked wherever the
+    /// alarm cells change.
+    alarm_sync: Option<AlarmSync>,
 }
 
 impl ObjectHome {
@@ -113,6 +124,7 @@ impl ObjectHome {
         pending: Option<crate::extensions::objects::PendingAlarm>,
         queue_policy: crate::platform::queue::QueuePolicy,
         revision: Option<Arc<crate::runtime::PreparedRevision>>,
+        alarm_sync: Option<AlarmSync>,
     ) -> Self {
         Self {
             storage: storage.map(std::sync::Mutex::new),
@@ -121,6 +133,14 @@ impl ObjectHome {
             migrations_checked: std::sync::atomic::AtomicBool::new(false),
             queue_policy,
             revision,
+            alarm_sync,
+        }
+    }
+
+    /// Tells the registry mirror what the alarm cell now holds.
+    fn mirror_alarm(&self, due_ms: Option<i64>) {
+        if let Some(sync) = &self.alarm_sync {
+            sync(due_ms);
         }
     }
 
@@ -159,6 +179,7 @@ impl ObjectHome {
                 storage.save_alarm(alarm.due_ms, &alarm.class, &alarm.name, &alarm.own_key)
             })?;
         }
+        self.mirror_alarm(Some(alarm.due_ms));
         *lock_unpoisoned(&self.alarm) = Some(alarm);
         Ok(())
     }
@@ -172,6 +193,7 @@ impl ObjectHome {
     /// handler that sets a new one is not clobbered afterwards.
     fn clear_alarm(&self) {
         *lock_unpoisoned(&self.alarm) = None;
+        self.mirror_alarm(None);
         if self.has_storage()
             && let Err(error) = self.with_storage(|storage| storage.clear_alarm())
         {
@@ -195,6 +217,9 @@ impl ObjectHome {
                 name,
                 own_key,
             });
+        // The rolled-back truth replaces whatever the failed call
+        // mirrored, arm or clear alike.
+        self.mirror_alarm(persisted.as_ref().map(|alarm| alarm.due_ms));
         *lock_unpoisoned(&self.alarm) = persisted;
     }
 
@@ -265,6 +290,9 @@ pub struct TaskOptions {
     /// The output gate: runs after any call that wrote, before its caller
     /// hears the result. Snapshot shipping lives here.
     pub after_write: Option<AfterWrite>,
+    /// The registry mirror for this object's alarm; [`None`] keeps alarms
+    /// file-local (tests, embedded runs).
+    pub alarm_sync: Option<AlarmSync>,
     /// Delivery limits for `__queue` instances; the default is the
     /// production policy.
     pub queue: crate::platform::queue::QueuePolicy,
@@ -278,6 +306,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         mut storage,
         hibernate_after,
         after_write,
+        alarm_sync,
         queue,
     } = options;
 
@@ -306,7 +335,16 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         runtime
             .app_data_ref::<Arc<crate::runtime::PreparedRevision>>()
             .map(|revision| revision.clone()),
+        alarm_sync,
     ));
+    // The file is the truth at spawn: mirroring it (arm or clear) heals a
+    // registry row lost to a crash or left stale by a fired-and-died
+    // holder, so a wake self-corrects instead of looping forever.
+    home.mirror_alarm(
+        home.pending_alarm()
+            .as_ref()
+            .map(|pending_alarm| pending_alarm.due_ms),
+    );
     runtime.set_app_data(home.clone());
 
     tokio::spawn(async move {
@@ -1157,6 +1195,90 @@ mod tests {
                 .expect("births"),
             serde_json::json!(1),
             "init must not rerun after a restart"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_alarm_mirror_sees_every_cell_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keeper.db");
+
+        let seen: Arc<std::sync::Mutex<Vec<Option<i64>>>> = Arc::default();
+        let recorder: AlarmSync = {
+            let seen = seen.clone();
+            Arc::new(move |due_ms| seen.lock().expect("no poison").push(due_ms))
+        };
+
+        let handle = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                alarm_sync: Some(recorder),
+                ..Default::default()
+            },
+        );
+
+        handle
+            .call(
+                "__dispatch",
+                keeper_call("poke", serde_json::json!(["150ms"])),
+            )
+            .await
+            .expect("poke");
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+
+        let journal = seen.lock().expect("no poison").clone();
+        // Spawn syncs the (empty) file truth, the arm mirrors its due
+        // time, the fire mirrors the clear: heal, arm, clear.
+        assert_eq!(journal.len(), 3, "{journal:?}");
+        assert_eq!(journal[0], None, "spawn syncs the file truth");
+        assert!(journal[1].is_some(), "the arm carries its due time");
+        assert_eq!(journal[2], None, "the fire clears the mirror");
+        drop(handle);
+
+        // A respawn over a file that still holds an alarm re-mirrors it:
+        // the heal that makes lost async writes safe.
+        let second = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                alarm_sync: Some({
+                    let seen = seen.clone();
+                    Arc::new(move |due_ms| seen.lock().expect("no poison").push(due_ms))
+                }),
+                ..Default::default()
+            },
+        );
+        second
+            .call(
+                "__dispatch",
+                keeper_call("poke", serde_json::json!(["10s"])),
+            )
+            .await
+            .expect("poke");
+        drop(second);
+
+        let third = spawn_object_task(
+            runtime_with(LIFECYCLE_SOURCE).await,
+            TaskOptions {
+                storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                alarm_sync: Some({
+                    let seen = seen.clone();
+                    Arc::new(move |due_ms| seen.lock().expect("no poison").push(due_ms))
+                }),
+                ..Default::default()
+            },
+        );
+        // Force the spawn to complete before reading the journal.
+        third
+            .call("__dispatch", keeper_call("alarms", serde_json::json!([])))
+            .await
+            .expect("alarms");
+
+        let journal = seen.lock().expect("no poison").clone();
+        assert!(
+            journal.last().expect("entries").is_some(),
+            "a respawn over an armed file must re-mirror the alarm: {journal:?}"
         );
     }
 

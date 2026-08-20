@@ -41,6 +41,19 @@ service NodeRegistryService {
     // Every object identity ever claimed for the given scripts: the
     // instance directory, which outlives the contracts that declared it.
     rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse);
+
+    // Mirrors one object's armed alarm; setting replaces. Written by the
+    // hosting node asynchronously, OFF the call's transaction, so a
+    // spurious row (a rolled-back arm) only ever costs a wasted wake.
+    rpc SetAlarm(SetAlarmRequest) returns (google.protobuf.Empty);
+
+    // Drops one object's mirrored alarm; written when it fires or clears.
+    rpc ClearAlarm(ClearAlarmRequest) returns (google.protobuf.Empty);
+
+    // Every mirrored alarm due at `now_ms`, oldest first: the sweep, as
+    // one indexed query any live node can serve. Rows deliberately
+    // outlive their holder's death; waking is claiming.
+    rpc DueAlarms(DueAlarmsRequest) returns (DueAlarmsResponse);
 }
 
 message ListInstancesRequest {
@@ -105,6 +118,36 @@ message ReleaseLeaseRequest {
 message GetLeaseRequest {
     // blake3 of the object identity, hex.
     string object_id = 1;
+}
+
+message SetAlarmRequest {
+    // blake3 of the object identity, hex.
+    string object_id = 1;
+    // The object's own key (scope/class/name), what a wake needs.
+    string own_key = 2;
+    // Unix milliseconds the alarm is due at.
+    int64 due_ms = 3;
+}
+
+message ClearAlarmRequest {
+    string object_id = 1;
+}
+
+message DueAlarmsRequest {
+    // Alarms with due_ms at or before this instant are due.
+    int64 now_ms = 1;
+    // Largest batch one sweep asks for; the next sweep drains the rest.
+    uint32 limit = 2;
+}
+
+message AlarmRow {
+    string object_id = 1;
+    string own_key = 2;
+    int64 due_ms = 3;
+}
+
+message DueAlarmsResponse {
+    repeated AlarmRow alarms = 1;
 }
 
 message RegisterNodeRequest {

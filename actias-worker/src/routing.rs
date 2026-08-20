@@ -340,6 +340,8 @@ impl ObjectRouting {
                     })
                 });
 
+                let alarm_sync = alarm_mirror(&routing.state, &object_id, &identity.to_string());
+
                 Ok((
                     runtime,
                     actias_worker_core::objects::TaskOptions {
@@ -347,6 +349,7 @@ impl ObjectRouting {
                         storage: Some(storage),
                         hibernate_after: Some(routing.state.object_idle_after),
                         after_write: Some(after_write),
+                        alarm_sync: Some(alarm_sync),
                         queue: routing.state.queue_policy.clone(),
                     },
                 ))
@@ -510,6 +513,66 @@ impl ObjectRouting {
             .await
             .map_err(|e| e.to_string())
     }
+}
+
+/// The registry mirror for one object's alarm: `Some(due_ms)` upserts the
+/// row, [`None`] deletes it, each write in its own task with a short
+/// retry, OFF every call's transaction, so arming an alarm never pays a
+/// postgres round trip. Exhausted retries are logged and tolerated: the
+/// local file still holds the alarm, and the spawn-time sync re-mirrors
+/// on the next residency. Two rapid writes may land out of order; the
+/// stale row that leaves costs one wasted wake and heals the same way.
+fn alarm_mirror(
+    state: &AppState,
+    object_id: &str,
+    own_key: &str,
+) -> actias_worker_core::objects::AlarmSync {
+    let registry = state.registry.clone();
+    let object_id = object_id.to_owned();
+    let own_key = own_key.to_owned();
+
+    Arc::new(move |due_ms| {
+        let mut registry = registry.clone();
+        let object_id = object_id.clone();
+        let own_key = own_key.clone();
+
+        tokio::spawn(async move {
+            const ATTEMPTS: u32 = 3;
+            for attempt in 0..ATTEMPTS {
+                let written = match due_ms {
+                    Some(due_ms) => registry
+                        .set_alarm(actias_worker_core::proto::node_registry::SetAlarmRequest {
+                            object_id: object_id.clone(),
+                            own_key: own_key.clone(),
+                            due_ms,
+                        })
+                        .await
+                        .map(|_| ()),
+                    None => registry
+                        .clear_alarm(
+                            actias_worker_core::proto::node_registry::ClearAlarmRequest {
+                                object_id: object_id.clone(),
+                            },
+                        )
+                        .await
+                        .map(|_| ()),
+                };
+                match written {
+                    Ok(()) => return,
+                    Err(_) if attempt + 1 < ATTEMPTS => {
+                        tokio::time::sleep(std::time::Duration::from_millis(250 << attempt)).await;
+                    }
+                    Err(status) => {
+                        actias_common::tracing::warn!(
+                            error = %status,
+                            object_id,
+                            "alarm mirror write failed; the boot scan heals it"
+                        );
+                    }
+                }
+            }
+        });
+    })
 }
 
 /// The replica file for one object, restored from the last shipped

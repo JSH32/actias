@@ -68,6 +68,28 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ListInstancesResponse>;
+        // Mirrors one object&#x27;s armed alarm; setting replaces. Written by the
+    // hosting node asynchronously, OFF the call&#x27;s transaction, so a
+    // spurious row (a rolled-back arm) only ever costs a wasted wake.
+        setAlarm(
+            data: SetAlarmRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
+        // Drops one object&#x27;s mirrored alarm; written when it fires or clears.
+        clearAlarm(
+            data: ClearAlarmRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
+        // Every mirrored alarm due at &#x60;now_ms&#x60;, oldest first: the sweep, as
+    // one indexed query any live node can serve. Rows deliberately
+    // outlive their holder&#x27;s death; waking is claiming.
+        dueAlarms(
+            data: DueAlarmsRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<DueAlarmsResponse>;
     }
     export interface ListInstancesRequest {
         projectIds?: string[];
@@ -124,6 +146,31 @@ export namespace node_registry {
     export interface GetLeaseRequest {
         // blake3 of the object identity, hex.
         objectId?: string;
+    }
+    export interface SetAlarmRequest {
+        // blake3 of the object identity, hex.
+        objectId?: string;
+        // The object&#x27;s own key (scope/class/name), what a wake needs.
+        ownKey?: string;
+        // Unix milliseconds the alarm is due at.
+        dueMs?: number;
+    }
+    export interface ClearAlarmRequest {
+        objectId?: string;
+    }
+    export interface DueAlarmsRequest {
+        // Alarms with due_ms at or before this instant are due.
+        nowMs?: number;
+        // Largest batch one sweep asks for; the next sweep drains the rest.
+        limit?: number;
+    }
+    export interface AlarmRow {
+        objectId?: string;
+        ownKey?: string;
+        dueMs?: number;
+    }
+    export interface DueAlarmsResponse {
+        alarms?: node_registry.AlarmRow[];
     }
     export interface RegisterNodeRequest {
         // Where other platform services reach this node&#x27;s WorkerData grpc
