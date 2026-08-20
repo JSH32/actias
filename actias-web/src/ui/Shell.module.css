@@ -162,3 +162,9 @@
 .publicNav a:hover {
   color: var(--ink-1);
 }
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
