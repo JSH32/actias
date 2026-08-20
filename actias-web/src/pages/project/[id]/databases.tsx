@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import api, { showError } from '@/helpers/api';
 import {
   ColumnInfoDto,
+  ObjectInstanceDto,
   ProjectDto,
   ResourceInstanceDto,
   TableInfoDto,
@@ -47,19 +48,37 @@ function Databases({
 }) {
   const router = useRouter();
   const [selectedDb, setSelectedDb] = React.useState<string | null>(null);
+  const [selectedObj, setSelectedObj] = React.useState<{
+    class: string;
+    name: string;
+  } | null>(null);
   const [selectedTable, setSelectedTable] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState<Tab>('browse');
   const [page, setPage] = React.useState(0);
   const [inspected, setInspected] = React.useState<number | null>(null);
 
-  // The shell's SOURCES rail navigates with ?db= and ?table=; follow it.
+  // The shell's SOURCES rail navigates with ?db=, ?obj= and ?table=;
+  // follow it. A database and an object are exclusive sources.
   React.useEffect(() => {
     if (typeof router.query.db === 'string') {
       setSelectedDb(router.query.db);
+      setSelectedObj(null);
       setPage(0);
       setInspected(null);
     }
   }, [router.query.db]);
+  React.useEffect(() => {
+    if (
+      typeof router.query.obj === 'string' &&
+      router.query.obj.includes('/')
+    ) {
+      const [className, ...rest] = router.query.obj.split('/');
+      setSelectedObj({ class: className, name: rest.join('/') });
+      setPage(0);
+      setInspected(null);
+      setTab('browse');
+    }
+  }, [router.query.obj]);
   React.useEffect(() => {
     setSelectedTable(
       typeof router.query.table === 'string' ? router.query.table : null,
@@ -72,16 +91,46 @@ function Databases({
     queryKey: ['databases', project.id],
     queryFn: () => api.resources.listDatabases(project.id),
   });
+  const { data: objects } = useQuery({
+    queryKey: ['object-instances', project.id],
+    queryFn: () => api.resources.listObjects(project.id),
+  });
 
   const active =
-    (databases ?? []).find(
-      (database: ResourceInstanceDto) => database.name === selectedDb,
-    ) ?? (databases ?? [])[0];
+    selectedObj == null
+      ? (databases ?? []).find(
+          (database: ResourceInstanceDto) => database.name === selectedDb,
+        ) ?? (databases ?? [])[0]
+      : undefined;
+  // The object source, enriched with whose code it runs.
+  const objectSource = selectedObj
+    ? {
+        ...selectedObj,
+        declaredBy:
+          (objects ?? []).find(
+            (entry: ObjectInstanceDto) =>
+              entry.class === selectedObj.class &&
+              entry.name === selectedObj.name,
+          )?.declaredBy ?? '',
+      }
+    : null;
+  const sourceKey = objectSource
+    ? `${objectSource.class}/${objectSource.name}`
+    : active?.name;
+  const sourceLabel = objectSource ? objectSource.name : active?.name;
 
   const { data: overview } = useQuery({
-    queryKey: ['db-overview', project.id, active?.name],
-    queryFn: () => api.resources.databaseOverview(project.id, active!.name),
-    enabled: !!active,
+    // The same key the shell's rail uses, so the two share one read.
+    queryKey: ['db-overview', project.id, sourceKey],
+    queryFn: () =>
+      objectSource
+        ? api.resources.objectOverview(
+            project.id,
+            objectSource.class,
+            objectSource.name,
+          )
+        : api.resources.databaseOverview(project.id, active!.name),
+    enabled: !!active || !!objectSource,
     refetchInterval: 5000,
   });
   const tables = overview?.tables ?? [];
@@ -91,14 +140,21 @@ function Databases({
 
   // Browse: one page of rows straight off the read replica path.
   const { data: browsed } = useQuery({
-    queryKey: ['db-browse', project.id, active?.name, table?.name, page],
-    queryFn: () =>
-      api.resources.query(project.id, active!.name, {
-        sql: `SELECT * FROM ${quoted(table!.name)} LIMIT ${PAGE_SIZE} OFFSET ${
-          page * PAGE_SIZE
-        }`,
-      }),
-    enabled: !!active && !!table && tab === 'browse',
+    queryKey: ['db-browse', project.id, sourceKey, table?.name, page],
+    queryFn: () => {
+      const sql = `SELECT * FROM ${quoted(
+        table!.name,
+      )} LIMIT ${PAGE_SIZE} OFFSET ${page * PAGE_SIZE}`;
+      return objectSource
+        ? api.resources.objectQuery(
+            project.id,
+            objectSource.class,
+            objectSource.name,
+            { sql },
+          )
+        : api.resources.query(project.id, active!.name, { sql });
+    },
+    enabled: (!!active || !!objectSource) && !!table && tab === 'browse',
   });
   const browsedRows = (browsed?.rows ?? []) as Record<string, unknown>[];
 
@@ -110,10 +166,18 @@ function Databases({
     const sql = (
       document.getElementById('sql-console') as HTMLTextAreaElement
     )?.value?.trim();
-    if (!sql || !active) return;
+    if (!sql || (!active && !objectSource)) return;
     setRunning(true);
     const started = performance.now();
-    api.resources[mode](project.id, active.name, { sql })
+    const call = objectSource
+      ? api.resources.objectQuery(
+          project.id,
+          objectSource.class,
+          objectSource.name,
+          { sql },
+        )
+      : api.resources[mode](project.id, active!.name, { sql });
+    call
       .then((result) => {
         setConsoleRows(result.rows);
         setConsoleMs(Math.round(performance.now() - started));
@@ -122,7 +186,7 @@ function Databases({
       .finally(() => setRunning(false));
   };
 
-  if (databases && databases.length === 0) {
+  if (databases && databases.length === 0 && !objectSource) {
     return (
       <div className={classes.frameEmpty}>
         <EmptyState
@@ -133,7 +197,7 @@ function Databases({
       </div>
     );
   }
-  if (!active) return null;
+  if (!active && !objectSource) return null;
 
   const columns: ColumnInfoDto[] = table?.columns ?? [];
   const columnNames =
@@ -159,11 +223,23 @@ function Databases({
           <div className={classes.headMain}>
             <div className={classes.pageHead}>
               <h1 className={classes.pageTitle}>
-                {table?.name ?? active.name}
+                {table?.name ?? sourceLabel}
               </h1>
               <StatePill
-                state={active.orphaned ? 'orphaned' : 'project database'}
-                color={active.orphaned ? 'var(--warn)' : 'var(--kind-db)'}
+                state={
+                  objectSource
+                    ? `object · ${objectSource.class}`
+                    : active?.orphaned
+                    ? 'orphaned'
+                    : 'project database'
+                }
+                color={
+                  objectSource
+                    ? 'var(--kind-obj)'
+                    : active?.orphaned
+                    ? 'var(--warn)'
+                    : 'var(--kind-db)'
+                }
               />
               <span className={classes.metaChip}>
                 {formatBytes(overview?.sizeBytes)}
@@ -175,12 +251,20 @@ function Databases({
               )}
             </div>
             <p className={classes.lede}>
-              {active.orphaned ? (
+              {objectSource ? (
+                <>
+                  The private storage of <code>{objectSource.class}</code>{' '}
+                  instance <code>&quot;{objectSource.name}&quot;</code>, running{' '}
+                  <code>{objectSource.declaredBy || 'unknown'}</code>. Read-only
+                  from the nearest copy; writes happen through the object&apos;s
+                  own methods.
+                </>
+              ) : active?.orphaned ? (
                 'No live revision declares this database; its data persists until it is deleted explicitly.'
               ) : (
                 <>
-                  Declared by <code>{active.declaredBy}</code> with database{' '}
-                  <code>&quot;{active.name}&quot;</code>. Distributed SQLite:
+                  Declared by <code>{active?.declaredBy}</code> with database{' '}
+                  <code>&quot;{active?.name}&quot;</code>. Distributed SQLite:
                   reads are served from a replica, writes go to the single
                   writer.
                 </>
@@ -237,8 +321,20 @@ function Databases({
                 </div>
               ) : browsedRows.length === 0 ? (
                 <div className={classes.emptyRows}>
-                  No rows yet. Rows are written by your script:{' '}
-                  <code>db:exec(&quot;INSERT INTO {table.name} …&quot;)</code>
+                  No rows yet.{' '}
+                  {objectSource ? (
+                    <>
+                      Rows appear when the object writes:{' '}
+                      <code>state.sql:exec(...)</code>
+                    </>
+                  ) : (
+                    <>
+                      Rows are written by your script:{' '}
+                      <code>
+                        db:exec(&quot;INSERT INTO {table.name} …&quot;)
+                      </code>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div
@@ -365,7 +461,7 @@ function Databases({
         <div className={classes.queryRegion}>
           <div className={classes.console}>
             <div className={classes.consoleHead}>
-              <span>read-only against {active.name}</span>
+              <span>read-only against {sourceLabel}</span>
               <span>
                 ⌘↵ to run
                 {consoleRows
@@ -392,7 +488,7 @@ function Databases({
             >
               Run
             </button>
-            {write && (
+            {write && !objectSource && (
               <button
                 className={classes.dangerButton}
                 disabled={running}

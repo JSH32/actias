@@ -167,17 +167,41 @@ export function Shell({ children }: React.PropsWithChildren) {
   );
 
   // The databases rail's third group: the tables of whichever source is
-  // selected. Same query key the page uses, so the two share one read.
+  // selected, a project database or one object's private storage. Same
+  // query key the page uses, so the two share one read.
+  const railObj =
+    typeof router.query.obj === 'string' && router.query.obj.includes('/')
+      ? router.query.obj
+      : null;
   const railDb =
-    typeof router.query.db === 'string'
-      ? router.query.db
-      : navDatabases?.[0]?.name ?? null;
+    railObj == null
+      ? typeof router.query.db === 'string'
+        ? router.query.db
+        : navDatabases?.[0]?.name ?? null
+      : null;
   const { data: railOverview } = useQuery({
-    queryKey: ['db-overview', projectId, railDb],
-    queryFn: () => api.resources.databaseOverview(projectId as string, railDb!),
-    enabled: !isPublic && !!projectId && !!railDb && section === 'databases',
+    queryKey: ['db-overview', projectId, railObj ?? railDb],
+    queryFn: () => {
+      if (railObj) {
+        const [className, ...rest] = railObj.split('/');
+        return api.resources.objectOverview(
+          projectId as string,
+          className,
+          rest.join('/'),
+        );
+      }
+      return api.resources.databaseOverview(projectId as string, railDb!);
+    },
+    enabled:
+      !isPublic &&
+      !!projectId &&
+      (!!railDb || !!railObj) &&
+      section === 'databases',
   });
   const railed = section === 'databases';
+  const railSourceParam = railObj
+    ? `obj=${encodeURIComponent(railObj)}`
+    : `db=${encodeURIComponent(railDb ?? '')}`;
 
   // The editor is its own full-viewport page (design 09): no sidebar, no
   // topbar, the page owns the screen. Checked after every hook so client
@@ -427,7 +451,7 @@ export function Shell({ children }: React.PropsWithChildren) {
                   database.name,
                 )}`}
                 className={
-                  database.name === railDb
+                  database.name === railDb && !railObj
                     ? classes.railItemActive
                     : classes.railItem
                 }
@@ -450,27 +474,36 @@ export function Shell({ children }: React.PropsWithChildren) {
                 places you on its node.
               </p>
               {(navObjects ?? []).map((instance: ObjectInstanceDto) => (
-                <div
+                <Link
                   key={`${instance.class}/${instance.name}`}
-                  className={classes.railItem}
-                  style={{ cursor: 'default' }}
+                  href={`/project/${projectId}/databases?obj=${encodeURIComponent(
+                    `${instance.class}/${instance.name}`,
+                  )}`}
+                  className={
+                    railObj === `${instance.class}/${instance.name}`
+                      ? classes.railItemActive
+                      : classes.railItem
+                  }
                   title={`class ${instance.class}, runs ${instance.declaredBy}`}
                 >
                   <span className={classes.railName}>{instance.name}</span>
                   <span className={classes.railMeta}>{instance.class}</span>
-                </div>
+                </Link>
               ))}
             </div>
           )}
           {(railOverview?.tables?.length ?? 0) > 0 && (
             <div className={classes.railSection}>
-              <div className={classes.railSectionHead}>TABLES · {railDb}</div>
+              <div className={classes.railSectionHead}>
+                TABLES ·{' '}
+                {railObj ? railObj.split('/').slice(1).join('/') : railDb}
+              </div>
               {(railOverview?.tables ?? []).map((table: TableInfoDto) => (
                 <Link
                   key={table.name}
-                  href={`/project/${projectId}/databases?db=${encodeURIComponent(
-                    railDb as string,
-                  )}&table=${encodeURIComponent(table.name)}`}
+                  href={`/project/${projectId}/databases?${railSourceParam}&table=${encodeURIComponent(
+                    table.name,
+                  )}`}
                   className={
                     router.query.table === table.name
                       ? classes.railItemActive

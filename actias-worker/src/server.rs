@@ -483,6 +483,9 @@ struct PlatformStatsQuery {
     project: String,
     class: String,
     name: String,
+    /// One read-only statement instead of the class's overview; runs
+    /// under the script authorizer, so reserved tables stay invisible.
+    sql: Option<String>,
 }
 
 /// Typed platform reads for dashboards, straight off the local file, no
@@ -502,8 +505,14 @@ async fn platform_stats_handler(
         return text_response(StatusCode::UNAUTHORIZED, "Internal transport only.");
     }
 
-    let Some(read) = PlatformRead::stats_for_class(&query.class) else {
-        return text_response(StatusCode::BAD_REQUEST, "No stats for that class.");
+    let read = match query.sql.clone() {
+        Some(sql) => PlatformRead::Query { sql },
+        None => match PlatformRead::stats_for_class(&query.class) {
+            Some(read) => read,
+            None => {
+                return text_response(StatusCode::BAD_REQUEST, "No stats for that class.");
+            }
+        },
     };
     let key = ObjectKey::received(&query.project, &query.class, &query.name);
     let local = state.object_data_dir.join(key.db_file_name());
