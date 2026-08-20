@@ -64,3 +64,19 @@ export function Chip({
     </span>
   );
 }
+
+type InputProps = React.InputHTMLAttributes<HTMLInputElement> & {
+  label: string;
+};
+
+/** A labeled input on the token sheet; the label doubles as the name. */
+export const Field = React.forwardRef<HTMLInputElement, InputProps>(
+  function Field({ label, ...rest }, ref) {
+    return (
+      <label>
+        <span className={classes.label}>{label}</span>
+        <input ref={ref} className={classes.input} {...rest} />
+      </label>
+    );
+  },
+);

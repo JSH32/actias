@@ -1,137 +1,83 @@
 import * as React from 'react';
-import {
-  TextInput,
-  PasswordInput,
-  Anchor,
-  Paper,
-  Title,
-  Text,
-  Container,
-  Button,
-} from '@mantine/core';
 import Link from 'next/link';
-import { useForm } from '@mantine/form';
-import api, { errorForm, showError } from '@/helpers/api';
-import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/router';
-import { useUser } from '@/helpers/auth';
-import { RegistrationConfigDto } from '@/client';
+import { notifications } from '@mantine/notifications';
+import api, { showError } from '@/helpers/api';
+import { Button, Card, Field } from '@/ui';
 
 export default function Register() {
   const router = useRouter();
-  const { data: user } = useUser();
+  const [registrationConfig, setRegistrationConfig] = React.useState<{
+    inviteOnly: boolean;
+  } | null>(null);
 
-  const form = useForm({
-    initialValues: {
-      username: '',
-      email: '',
-      password: '',
-      confirmPassword: '',
-      registrationCode: '',
-    },
-
-    validate: {
-      confirmPassword: (value, values) =>
-        value === values.password ? null : "Passwords don't match",
-    },
-  });
-
-  const [registrationConfig, setRegistrationConfig] =
-    React.useState<RegistrationConfigDto | null>(null);
-
-  // Go to user info if logged in
   React.useEffect(() => {
-    if (user) router.push('/projects');
     api.users.registrationConfig().then(setRegistrationConfig).catch(showError);
-  }, [user, router]);
+  }, []);
 
-  const createAccount = React.useCallback(
-    (values: any) => {
-      const body: any = {
-        username: values.username,
-        email: values.email,
-        password: values.password,
+  const register = React.useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const data = new FormData(event.currentTarget);
+      if (data.get('password') !== data.get('confirmPassword')) {
+        notifications.show({
+          title: 'Passwords do not match',
+          message: 'Retype them and try again.',
+          color: 'red',
+        });
+        return;
+      }
+
+      const body: Record<string, string> = {
+        username: String(data.get('username') ?? ''),
+        email: String(data.get('email') ?? ''),
+        password: String(data.get('password') ?? ''),
       };
-
       if (registrationConfig?.inviteOnly) {
-        body.registrationCode = values.registrationCode;
+        body.registrationCode = String(data.get('registrationCode') ?? '');
       }
 
       api.users
-        .createUser(body)
+        .createUser(body as Parameters<typeof api.users.createUser>[0])
         .then(() => {
           notifications.show({
-            title: 'Account created!',
-            message: 'Please login to your account',
+            title: 'Registered!',
+            message: 'You can log in now.',
           });
-
           router.push('/login');
         })
-        .catch((err) => errorForm(err, form));
+        .catch(showError);
     },
-    [form, registrationConfig, router],
+    [router, registrationConfig],
   );
 
   return (
-    <Container size={420} my={40}>
-      <Title ta="center">Create an account!</Title>
-      <Text c="dimmed" size="sm" ta="center" mt={5}>
-        Have an account already?{' '}
-        <Link href="/login" passHref>
-          <Anchor size="sm" component="button">
-            Login
-          </Anchor>
-        </Link>
-      </Text>
-
-      <Paper
-        withBorder
-        shadow="md"
-        p={30}
-        mt={30}
-        radius="md"
-        component="form"
-        onSubmit={form.onSubmit(createAccount)}
-      >
-        <TextInput
-          label="Username"
-          placeholder="Username"
-          required
-          {...form.getInputProps('username')}
-        />
-        <TextInput
-          label="Email"
-          placeholder="you@email.com"
-          required
-          {...form.getInputProps('email')}
-        />
-        <PasswordInput
-          label="Password"
-          placeholder="Your password"
-          required
-          mt="md"
-          {...form.getInputProps('password')}
-        />
-        <PasswordInput
-          label="Confirm Password"
-          placeholder="Your password"
-          required
-          mt="md"
-          {...form.getInputProps('confirmPassword')}
-        />
-        {registrationConfig?.inviteOnly && (
-          <TextInput
-            label="Registration code"
-            placeholder="Your registration code"
-            mt="md"
+    <div style={{ maxWidth: 380, margin: '48px auto' }}>
+      <h1 style={{ fontSize: 18, fontWeight: 700 }}>Register</h1>
+      <p style={{ color: 'var(--ink-2)', margin: '4px 0 12px' }}>
+        Already have an account? <Link href="/login">Log in</Link>
+      </p>
+      <Card style={{ padding: 20 }}>
+        <form onSubmit={register}>
+          <Field label="Username" name="username" required />
+          <Field label="Email" name="email" type="email" required />
+          <Field label="Password" name="password" type="password" required />
+          <Field
+            label="Confirm password"
+            name="confirmPassword"
+            type="password"
             required
-            {...form.getInputProps('registrationCode')}
           />
-        )}
-        <Button fullWidth mt="xl" type="submit">
-          Sign up
-        </Button>
-      </Paper>
-    </Container>
+          {registrationConfig?.inviteOnly && (
+            <Field label="Registration code" name="registrationCode" required />
+          )}
+          <div style={{ marginTop: 18 }}>
+            <Button type="submit" variant="primary">
+              Register
+            </Button>
+          </div>
+        </form>
+      </Card>
+    </div>
   );
 }
