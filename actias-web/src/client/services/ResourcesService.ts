@@ -209,6 +209,61 @@ export class ResourcesService {
     }
 
     /**
+     * Overview of one durable object's private storage; a user class's
+     * file is a SQLite database like any other.
+     * @param project
+     * @param _class
+     * @param name
+     * @returns DatabaseOverviewDto
+     * @throws ApiError
+     */
+    public objectOverview(
+        project: string,
+        _class: string,
+        name: string,
+    ): CancelablePromise<DatabaseOverviewDto> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/project/{project}/resources/objects/{class}/{name}/overview',
+            path: {
+                'project': project,
+                'class': _class,
+                'name': name,
+            },
+        });
+    }
+
+    /**
+     * A read-only query against one object's storage, from the nearest
+     * copy; the script-guard authorizer applies, so reserved tables stay
+     * out of reach. Writes only ever happen through the object's methods.
+     * @param project
+     * @param _class
+     * @param name
+     * @param requestBody
+     * @returns SqlRowsDto
+     * @throws ApiError
+     */
+    public objectQuery(
+        project: string,
+        _class: string,
+        name: string,
+        requestBody: SqlQueryDto,
+    ): CancelablePromise<SqlRowsDto> {
+        return this.httpRequest.request({
+            method: 'POST',
+            url: '/api/project/{project}/resources/objects/{class}/{name}/query',
+            path: {
+                'project': project,
+                'class': _class,
+                'name': name,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+        });
+    }
+
+    /**
      * @param project
      * @param name
      * @returns DatabaseOverviewDto

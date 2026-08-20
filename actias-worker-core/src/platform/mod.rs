@@ -75,18 +75,25 @@ pub enum PlatformRead {
     QueueEvents { since: i64 },
     /// The queue's live and dead message rows with display states.
     QueueMessages,
-    /// A database's file size and user tables with their shapes.
+    /// A database's file size and user tables with their shapes; any
+    /// object's storage answers it, user classes included.
     DatabaseOverview,
+    /// One read-only SQL statement against the file, under the same
+    /// authorizer script SQL runs with; how the console browses an
+    /// object's storage without dispatching into its vm.
+    Query { sql: String },
 }
 
 impl PlatformRead {
     /// The overview read a dashboard asks for by class name; [`None`] for
-    /// classes without one.
+    /// platform classes without one. A user class's storage is a SQLite
+    /// file like any database, so it answers the overview too.
     pub fn stats_for_class(class: &str) -> Option<Self> {
         match class {
             crate::extensions::objects::QUEUE_CLASS => Some(Self::QueueStats),
             crate::extensions::objects::DATABASE_CLASS => Some(Self::DatabaseOverview),
-            _ => None,
+            class if class.starts_with("__") => None,
+            _ => Some(Self::DatabaseOverview),
         }
     }
 
@@ -105,6 +112,9 @@ impl PlatformRead {
             }
             Self::QueueMessages => serde_json::to_value(queue::read_messages(&mut storage)?),
             Self::DatabaseOverview => serde_json::to_value(database::read_overview(&mut storage)?),
+            Self::Query { sql } => {
+                serde_json::to_value(storage.query(sql, &[])?)
+            }
         };
         value.map_err(|e| e.to_string())
     }

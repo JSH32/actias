@@ -243,6 +243,47 @@ export class ResourcesController {
     return Array.isArray(events) ? (events as QueueEventDto[]) : [];
   }
 
+  /** Overview of one durable object's private storage; a user class's
+   * file is a SQLite database like any other. */
+  @Get('objects/:class/:name/overview')
+  @AclByProject(AccessFields.DATABASE_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async objectOverview(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+    @Param('name') name: string,
+  ): Promise<DatabaseOverviewDto> {
+    this.refusePlatformClass(className);
+    return this.overviewOf(project, className, name);
+  }
+
+  /** A read-only query against one object's storage, from the nearest
+   * copy; the script-guard authorizer applies, so reserved tables stay
+   * out of reach. Writes only ever happen through the object's methods. */
+  @Post('objects/:class/:name/query')
+  @AclByProject(AccessFields.DATABASE_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async objectQuery(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+    @Param('name') name: string,
+    @Body() body: SqlQueryDto,
+  ): Promise<SqlRowsDto> {
+    this.refusePlatformClass(className);
+    const rows = await this.workerStats(project, className, name, body.sql);
+    return { rows: Array.isArray(rows) ? rows : [] };
+  }
+
+  /** Platform classes have their own typed endpoints; the generic object
+   * read is for user classes alone. */
+  private refusePlatformClass(className: string) {
+    if (className.startsWith('__')) {
+      throw new BadGatewayException(
+        'Platform classes are read through their own endpoints.',
+      );
+    }
+  }
+
   @Get('databases/:name/overview')
   @AclByProject(AccessFields.DATABASE_READ)
   @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
@@ -250,11 +291,16 @@ export class ResourcesController {
     @EntityParam('project', Projects) project: Projects,
     @Param('name') name: string,
   ): Promise<DatabaseOverviewDto> {
-    const overview = (await this.workerStats(
-      project,
-      CLASSES.databases,
-      name,
-    )) as {
+    return this.overviewOf(project, CLASSES.databases, name);
+  }
+
+  /** One overview read mapped onto the DTO, whatever class owns the file. */
+  private async overviewOf(
+    project: Projects,
+    className: string,
+    name: string,
+  ): Promise<DatabaseOverviewDto> {
+    const overview = (await this.workerStats(project, className, name)) as {
       size_bytes?: number;
       tables?: {
         name: string;
@@ -401,16 +447,21 @@ export class ResourcesController {
     return [...declared.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /** One typed platform read off the worker's local file or replica. */
+  /** One typed platform read off the worker's local file or replica;
+   * with `sql`, one read-only statement instead of the class overview. */
   private async workerStats(
     project: Projects,
     className: string,
     name: string,
+    sql?: string,
   ): Promise<Record<string, unknown> | unknown[] | null> {
     const base = this.config.get<string>('worker.internalUrl');
-    const url = `${base}/_platform/stats?project=${encodeURIComponent(
-      project.id,
-    )}&class=${encodeURIComponent(className)}&name=${encodeURIComponent(name)}`;
+    const url =
+      `${base}/_platform/stats?project=${encodeURIComponent(project.id)}` +
+      `&class=${encodeURIComponent(className)}&name=${encodeURIComponent(
+        name,
+      )}` +
+      (sql ? `&sql=${encodeURIComponent(sql)}` : '');
 
     const response = await fetch(url, {
       headers: {

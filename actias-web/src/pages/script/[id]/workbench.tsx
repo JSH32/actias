@@ -376,12 +376,22 @@ function Workbench() {
     syncSoon();
   };
 
-  const addFile = (initialPath?: string) => {
-    const name = window.prompt(
-      'File path (e.g. utils/router.lua)',
-      initialPath,
-    );
-    if (!name || !name.endsWith('.lua')) return;
+  const addFile = (initialPath?: string): void => {
+    const typed = window
+      .prompt('File path (e.g. utils/router.lua)', initialPath)
+      ?.trim();
+    if (!typed) return;
+    // A folder exists through the files inside it: a bare directory has
+    // nothing to sync, so ask for the file instead of silently ignoring.
+    if (typed.endsWith('/')) {
+      toast({
+        title: 'Folders exist through their files',
+        message: `Name a file inside it, e.g. ${typed}mod.lua`,
+      });
+      addFile(typed);
+      return;
+    }
+    const name = typed.endsWith('.lua') ? typed : `${typed}.lua`;
     setFiles((previous) => ({
       ...(previous ?? {}),
       [name]: `-- ${name}\nreturn {}\n`,
@@ -397,8 +407,10 @@ function Workbench() {
   };
 
   const renameFile = (path: string) => {
-    const next = window.prompt('New path', path);
-    if (!next || next === path || !next.endsWith('.lua')) return;
+    const typed = window.prompt('New path', path)?.trim();
+    if (!typed) return;
+    const next = typed.endsWith('.lua') ? typed : `${typed}.lua`;
+    if (next === path) return;
     setFiles((previous) => {
       const tree = { ...(previous ?? {}) };
       tree[next] = tree[path];
