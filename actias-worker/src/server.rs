@@ -18,10 +18,9 @@ use actias_worker_core::egress::EgressClient;
 use actias_worker_core::extensions;
 use actias_worker_core::extensions::http::Request as LuaRequest;
 use actias_worker_core::extensions::log::LogPublisher;
-use actias_worker_core::extensions::objects::{ObjectRouter, ObjectTarget};
+use actias_worker_core::extensions::objects::ObjectRouter;
 use actias_worker_core::identity::ObjectKey;
 use actias_worker_core::objects::ObjectHost;
-use actias_worker_core::platform::PlatformRead;
 use actias_worker_core::proto::bundle::File;
 use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
 use actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient;
@@ -37,9 +36,7 @@ use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
 use crate::blob_cache::BlobCache;
 use crate::metrics::Metrics;
 use crate::object_store::ObjectStore;
-use crate::routing::{
-    ObjectRouting, ResolveError, cached_revision, fresh_replica_file, owner_prepared,
-};
+use crate::routing::{ObjectRouting, ResolveError, cached_revision};
 
 /// The service clients every request handler needs.
 #[derive(Clone)]
@@ -97,12 +94,7 @@ impl WorkerCaches {
 /// deadline.
 pub fn router(state: AppState, max_body_bytes: usize) -> Router {
     Router::new()
-        .route("/_object", axum::routing::post(object_handler))
         .route("/_metrics", axum::routing::get(metrics_handler))
-        .route(
-            "/_platform/stats",
-            axum::routing::get(platform_stats_handler),
-        )
         .fallback(handle)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
@@ -135,8 +127,10 @@ pub struct AppState {
     pub object_store: Arc<ObjectStore>,
     /// How long a snapshot replica serves reads before refreshing.
     pub replica_ttl: Duration,
-    /// Node-to-node calls ride this client with this token.
-    pub internal_http: reqwest::Client,
+    /// Channels to peer workers' data planes, by address; lazy, so a dead
+    /// peer costs its caller the failure, never a held-up cache.
+    pub peers: moka::future::Cache<String, Channel>,
+    /// The cluster-internal secret every data-plane call carries.
     pub internal_token: String,
     /// Revisions whose cron events were already armed by this process;
     /// arming is idempotent, this only spares the calls.
@@ -441,171 +435,6 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
     }
 
     Ok(response)
-}
-
-/// What one forwarded object call carries: the object identity and the
-/// call, never code coordinates. Whichever node dispatches resolves the
-/// owner's current revision itself, so every route into an object runs
-/// the same code.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ForwardedCall {
-    /// The identity scope: the project id (cron objects never travel this
-    /// transport; their scope is their script).
-    scope_id: String,
-    /// True when the caller is not a worker (the api's dashboard reads):
-    /// a first hop may forward once to the holder; worker-to-worker calls
-    /// arrive with the hop already spent.
-    #[serde(default)]
-    first_hop: bool,
-    class: String,
-    name: String,
-    method: String,
-    #[serde(default)]
-    arguments: Vec<serde_json::Value>,
-    #[serde(default)]
-    chain: Vec<String>,
-    /// The producing script's identity, carried across the hop; absent
-    /// for dashboard dispatches, which have no script behind them.
-    #[serde(default)]
-    caller: Option<WireCaller>,
-}
-
-/// The caller identity as it travels the internal transport.
-#[derive(serde::Deserialize)]
-struct WireCaller {
-    script: String,
-    revision: String,
-}
-
-#[derive(serde::Deserialize)]
-struct PlatformStatsQuery {
-    project: String,
-    class: String,
-    name: String,
-    /// One read-only statement instead of the class's overview; runs
-    /// under the script authorizer, so reserved tables stay invisible.
-    sql: Option<String>,
-}
-
-/// Typed platform reads for dashboards, straight off the local file, no
-/// vm. This handler only maps transport parameters onto a
-/// [`PlatformRead`] and picks the file; everything from file to value is
-/// worker-core's.
-async fn platform_stats_handler(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    axum::extract::Query(query): axum::extract::Query<PlatformStatsQuery>,
-) -> Response {
-    let authorized = headers
-        .get("x-actias-internal")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|token| token == state.internal_token);
-    if !authorized {
-        return text_response(StatusCode::UNAUTHORIZED, "Internal transport only.");
-    }
-
-    let read = match query.sql.clone() {
-        Some(sql) => PlatformRead::Query { sql },
-        None => match PlatformRead::stats_for_class(&query.class) {
-            Some(read) => read,
-            None => {
-                return text_response(StatusCode::BAD_REQUEST, "No stats for that class.");
-            }
-        },
-    };
-    let key = ObjectKey::received(&query.project, &query.class, &query.name);
-    let local = state.object_data_dir.join(key.db_file_name());
-
-    // The holder's live file answers; any other node serves the shipped
-    // snapshot replica, so the read never depends on where the object
-    // happens to be homed.
-    let file = if local.exists() {
-        Some(local)
-    } else {
-        match fresh_replica_file(&state, &key.object_id()).await {
-            Ok(replica) => replica,
-            Err(error) => {
-                return axum::response::IntoResponse::into_response((
-                    StatusCode::BAD_REQUEST,
-                    error,
-                ));
-            }
-        }
-    };
-    let Some(file) = file else {
-        // Nothing local and nothing ever shipped: the object has no
-        // observable state yet, which reads as empty, not as an error.
-        return axum::response::IntoResponse::into_response(axum::Json(serde_json::Value::Null));
-    };
-
-    let result = tokio::task::spawn_blocking(move || read.run(&file))
-        .await
-        .map_err(|e| e.to_string())
-        .and_then(|inner| inner);
-
-    match result {
-        Ok(value) => axum::response::IntoResponse::into_response(axum::Json(value)),
-        Err(error) => axum::response::IntoResponse::into_response((StatusCode::BAD_REQUEST, error)),
-    }
-}
-
-/// The internal transport: another node's object call lands here, runs
-/// locally, and never forwards again.
-async fn object_handler(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    axum::Json(call): axum::Json<ForwardedCall>,
-) -> Response {
-    let authorized = headers
-        .get("x-actias-internal")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|token| token == state.internal_token);
-    if !authorized {
-        return text_response(StatusCode::UNAUTHORIZED, "Internal transport only.");
-    }
-
-    let answer = async {
-        // The call names an identity, not code: the owner's current
-        // revision is resolved here, exactly as a local touch would.
-        let key = ObjectKey::received(&call.scope_id, &call.class, &call.name);
-        let owner = owner_prepared(&state, &key).await?;
-
-        ObjectRouting::new(&state, owner)
-            .route_inner(
-                ObjectTarget {
-                    class: call.class,
-                    name: call.name,
-                    method: call.method,
-                    arguments: call.arguments,
-                    // The sender already extended the chain through the
-                    // target; dispatch reads it as-is.
-                    chain: call.chain.clone(),
-                    // The wire's caller is the truth; the owner resolved
-                    // here is who RUNS the code, not who called.
-                    caller: call.caller.map(|caller| {
-                        actias_worker_core::extensions::objects::CallerIdentity {
-                            script: caller.script,
-                            revision: caller.revision,
-                        }
-                    }),
-                },
-                call.first_hop,
-            )
-            .await
-    }
-    .await;
-
-    let body = match answer {
-        Ok(result) => serde_json::json!({ "result": result }),
-        Err(error) => serde_json::json!({ "error": error }),
-    };
-    let mut response = Response::new(Body::from(body.to_string()));
-    response.headers_mut().insert(
-        axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/json"),
-    );
-    response
 }
 
 /// The prometheus exposition; gauges are measured at scrape time.
@@ -1005,11 +834,11 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     lua_response_into_response(lua_response)
 }
 
+/// State builders every worker test suite shares: clients that never
+/// connect, so a test passes only when its path never needs a backend.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_state {
     use super::*;
-    use axum::body::to_bytes;
-    use tower::ServiceExt;
 
     /// Clients that never connect; reachable code paths must fail before
     /// using them or the test is wrong.
@@ -1022,7 +851,7 @@ mod tests {
     }
 
     /// Empty caches sized like production, so every lookup is a miss.
-    fn empty_caches() -> WorkerCaches {
+    pub(crate) fn empty_caches() -> WorkerCaches {
         WorkerCaches::new(Duration::from_secs(5), 64 * 1024 * 1024)
     }
 
@@ -1033,7 +862,7 @@ mod tests {
 
     /// State over `caches` whose every client is unreachable, so a test
     /// passes only when its path never needs a backend.
-    fn state_with(caches: WorkerCaches) -> AppState {
+    pub(crate) fn state_with(caches: WorkerCaches) -> AppState {
         AppState {
             clients: lazy_clients(),
             caches,
@@ -1046,7 +875,7 @@ mod tests {
             objects: Arc::default(),
             metrics: Arc::default(),
             replica_ttl: Duration::from_secs(30),
-            internal_http: reqwest::Client::new(),
+            peers: moka::future::Cache::new(100),
             internal_token: "test-internal".to_owned(),
             object_store: Arc::new(ObjectStore::new(
                 crate::blob_cache::s3_client("http://127.0.0.1:1", "unused", "unused"),
@@ -1075,6 +904,14 @@ mod tests {
             cache_bytes: 1024 * 1024,
         })
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_state::{empty_caches, state_with};
+    use super::*;
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
 
     #[test]
     fn route_reads_the_first_path_segment_as_the_published_script() {
@@ -1464,24 +1301,6 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("actias_objects_resident 0"), "{text}");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn the_internal_transport_refuses_strangers() {
-        let app = router(state_with(empty_caches()), 4096);
-
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri("/_object")
-            .header("content-type", "application/json")
-            .header("x-actias-internal", "wrong-token")
-            .body(Body::from(
-                r#"{"scopeId":"p","class":"C","name":"n","method":"m"}"#,
-            ))
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test(flavor = "multi_thread")]

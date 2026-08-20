@@ -133,11 +133,14 @@ services:
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
       - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
-      - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
+      # The WorkerData grpc service: object dispatch and typed reads;
+      # the address the node registers is this listener's.
+      - WORKER_GRPC_PORT=3100
     volumes:
       - objects_data:/data/objects
     ports:
       - 3002:3000
+      - 3102:3100
 
   # A second node: same image, its own object volume. Two nodes is what
   # makes leases, forwarding and failover observable locally.
@@ -172,11 +175,14 @@ services:
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
       - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
-      - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
+      # The WorkerData grpc service: object dispatch and typed reads;
+      # the address the node registers is this listener's.
+      - WORKER_GRPC_PORT=3100
     volumes:
       - objects_data_2:/data/objects
     ports:
       - 3003:3000
+      - 3103:3100
 
   # The service image is its own migrator, so the schema can never drift from
   # the binary that applies it.
@@ -249,8 +255,9 @@ services:
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:3000}
       # Development-only key, must match the worker's; a deployment sets its own.
       - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
-      # Dashboard reads reach a worker directly, cluster-internal only.
-      - WORKER_INTERNAL_URL=http://worker_service:3000
+      # Dashboard dispatches and reads reach a worker's data plane
+      # directly, cluster-internal only.
+      - WORKER_GRPC_URL=worker_service:3100
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
 
   actias_web:

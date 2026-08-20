@@ -53,6 +53,14 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;
+        // Who holds one object right now, without claiming: dead holders read
+    // as unheld. NOT_FOUND when nobody does; how a read finds the node
+    // with the freshest copy.
+        getLease(
+            data: GetLeaseRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Lease>;
         // Every object identity ever claimed for the given scripts: the
     // instance directory, which outlives the contracts that declared it.
         listInstances(
@@ -113,8 +121,13 @@ export namespace node_registry {
         objectId?: string;
         nodeId?: string;
     }
+    export interface GetLeaseRequest {
+        // blake3 of the object identity, hex.
+        objectId?: string;
+    }
     export interface RegisterNodeRequest {
-        // Where other platform services reach this node, host:port.
+        // Where other platform services reach this node&#x27;s WorkerData grpc
+    // service, host:port.
         address?: string;
         // Roles the node serves, e.g. &quot;http&quot;; object hosting arrives later.
         capabilities?: string[];

@@ -12,5 +12,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
+    // The worker both serves the data plane and calls its peers over it,
+    // so this one proto builds both halves.
+    tonic_build::configure()
+        .compile_protos(&["../protobufs/worker_data.proto"], &["../protobufs"])
+        .unwrap();
+
     Ok(())
 }

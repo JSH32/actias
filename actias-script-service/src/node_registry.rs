@@ -12,9 +12,10 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::proto_node_registry::{
-    AcquireLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListInstancesRequest,
-    ListInstancesResponse, ListNodesResponse, Node, NodeRegistration, ObjectInstance,
-    RegisterNodeRequest, ReleaseLeaseRequest, node_registry_service_server::NodeRegistryService,
+    AcquireLeaseRequest, GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease,
+    ListInstancesRequest, ListInstancesResponse, ListNodesResponse, Node, NodeRegistration,
+    ObjectInstance, RegisterNodeRequest, ReleaseLeaseRequest,
+    node_registry_service_server::NodeRegistryService,
 };
 
 /// One registry row.
@@ -61,6 +62,8 @@ enum RegistryError {
     NodeUnknown,
     #[error("no live node with that id")]
     NoSuchNode,
+    #[error("nobody holds the object")]
+    Unheld,
     #[error("claim raced a cascade")]
     ClaimRaced,
 }
@@ -82,6 +85,7 @@ impl From<RegistryError> for Status {
                 Status::not_found("Node is not registered or has aged out; register again.")
             }
             RegistryError::NoSuchNode => Status::not_found("No live node with that id."),
+            RegistryError::Unheld => Status::not_found("Nobody holds that object."),
             // The caller simply claims again.
             RegistryError::ClaimRaced => {
                 Status::aborted("The lease was freed mid-claim; try again.")
@@ -300,6 +304,41 @@ impl NodeRegistryService for NodeRegistry {
         request: Request<AcquireLeaseRequest>,
     ) -> Result<Response<Lease>, Status> {
         Ok(Response::new(self.claim(request.get_ref()).await?))
+    }
+
+    async fn get_lease(
+        &self,
+        request: Request<GetLeaseRequest>,
+    ) -> Result<Response<Lease>, Status> {
+        let object_id = request.get_ref().object_id.clone();
+
+        // A dead holder must read as unheld, exactly as a claim would
+        // treat it; leases free through the same deletion cascade.
+        self.reap().await?;
+
+        let holder: Option<Uuid> =
+            sqlx::query_scalar("SELECT node_id FROM leases WHERE object_id = $1")
+                .bind(&object_id)
+                .fetch_optional(&self.database)
+                .await
+                .map_err(RegistryError::Store)?;
+        let holder = holder.ok_or(RegistryError::Unheld)?;
+
+        let epoch: i64 = sqlx::query_scalar("SELECT epoch FROM object_epochs WHERE object_id = $1")
+            .bind(&object_id)
+            .fetch_optional(&self.database)
+            .await
+            .map_err(RegistryError::Store)?
+            .unwrap_or(1);
+
+        Ok(Response::new(Lease {
+            object_id,
+            node_id: holder.to_string(),
+            // A lookup never claims; the flag answers "did I get it", and
+            // the asker did not ask.
+            acquired: false,
+            epoch: epoch.max(1) as u64,
+        }))
     }
 
     async fn release_lease(
@@ -595,6 +634,56 @@ mod tests {
 
         // Re-claiming keeps the epoch; the fence only moves on takeover.
         assert_eq!(acquire(claimant).await.epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn a_lease_lookup_names_the_holder_without_claiming() {
+        let (registry, database, _guard) = registry(45).await;
+
+        let holder = register(&registry, "holder:3100").await;
+        let object = "c".repeat(64);
+
+        // Nobody holds it yet: the lookup says so instead of inventing a
+        // holder, and crucially has not claimed it for anyone.
+        let unheld = registry
+            .get_lease(Request::new(GetLeaseRequest {
+                object_id: object.clone(),
+            }))
+            .await;
+        let Err(status) = unheld else {
+            panic!("an unheld object must read as NOT_FOUND");
+        };
+        assert_eq!(status.code(), tonic::Code::NotFound);
+
+        registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: object.clone(),
+                node_id: holder.clone(),
+                ..Default::default()
+            }))
+            .await
+            .expect("claims");
+
+        let lease = registry
+            .get_lease(Request::new(GetLeaseRequest {
+                object_id: object.clone(),
+            }))
+            .await
+            .expect("the holder is readable")
+            .into_inner();
+        assert_eq!(lease.node_id, holder);
+        assert!(!lease.acquired, "a lookup never grants anything");
+
+        // The holder ages out: the lookup must read unheld again, not
+        // route reads at a corpse.
+        backdate(&database, &holder, 46).await;
+        let freed = registry
+            .get_lease(Request::new(GetLeaseRequest { object_id: object }))
+            .await;
+        assert!(
+            freed.is_err_and(|status| status.code() == tonic::Code::NotFound),
+            "a dead holder must read as unheld"
+        );
     }
 
     #[tokio::test]

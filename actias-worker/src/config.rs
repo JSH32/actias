@@ -2,6 +2,9 @@ use actias_common::config::{dotenv, get_env, get_env_or};
 
 pub struct Config {
     pub port: u16,
+    /// Where the WorkerData grpc service listens: the data plane peers
+    /// and the api dispatch object calls and reads over.
+    pub grpc_port: u16,
     pub script_service_uri: String,
     pub kv_service_uri: String,
     /// Redis carrying script log lines to their subscribers.
@@ -25,8 +28,9 @@ pub struct Config {
     pub s3_bucket: String,
     /// Byte budget for the hash-keyed blob cache.
     pub blob_cache_bytes: u64,
-    /// Address other platform services reach this node on, host:port;
-    /// reported to the placement store at registration.
+    /// Address other platform services reach this node's WorkerData grpc
+    /// service on, host:port; reported to the placement store at
+    /// registration.
     pub node_address: String,
     /// Directory holding one SQLite file per durable object; a volume in
     /// any real deployment, since it is the objects' persistence.
@@ -61,9 +65,11 @@ impl Config {
         dotenv().ok();
 
         let port: u16 = get_env_or("PORT", 3000);
+        let grpc_port: u16 = get_env_or("WORKER_GRPC_PORT", 3100);
 
         Config {
             port,
+            grpc_port,
             script_service_uri: get_env("SCRIPT_SERVICE_URI"),
             kv_service_uri: get_env("KV_SERVICE_URI"),
             redis_url: get_env("REDIS_URL"),
@@ -82,7 +88,7 @@ impl Config {
             node_address: get_env_or(
                 "NODE_ADDRESS",
                 format!(
-                    "{}:{port}",
+                    "{}:{grpc_port}",
                     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_owned())
                 ),
             ),

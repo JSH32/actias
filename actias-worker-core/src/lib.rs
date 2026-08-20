@@ -29,4 +29,8 @@ pub mod proto {
     pub mod node_registry {
         tonic::include_proto!("node_registry");
     }
+
+    pub mod worker_data {
+        tonic::include_proto!("worker_data");
+    }
 }

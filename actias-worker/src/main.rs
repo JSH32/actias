@@ -1,5 +1,6 @@
 mod blob_cache;
 mod config;
+mod data_plane;
 mod heartbeat;
 mod metrics;
 mod object_store;
@@ -120,7 +121,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             cache_bytes: config.blob_cache_bytes,
         }),
         replica_ttl: std::time::Duration::from_secs(config.replica_ttl_secs),
-        internal_http: reqwest::Client::new(),
+        peers: moka::future::Cache::new(100),
         internal_token: config.internal_token,
         object_store: std::sync::Arc::new(object_store::ObjectStore::new(
             blob_cache::s3_client(
@@ -157,14 +158,30 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::time::Duration::from_secs(config.object_sweep_secs),
     ));
 
+    // The data plane: object dispatch and typed reads, cluster-internal.
+    // The registry address other nodes and the api dial is THIS listener.
+    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
+    let data_plane = tonic::transport::Server::builder()
+        .add_service(
+            actias_worker_core::proto::worker_data::worker_data_server::WorkerDataServer::with_interceptor(
+                data_plane::WorkerDataService::new(state.clone()),
+                data_plane::require_internal_token(state.internal_token.clone()),
+            ),
+        )
+        .serve_with_shutdown(grpc_addr, shutdown_signal());
+
     let app = server::router(state, config.max_body_bytes);
 
-    info!("Serving on {}", addr);
+    info!("Serving http on {addr}, data plane on {grpc_addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let http = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+
+    // Either listener failing takes the process down: a worker whose data
+    // plane is dark would strand every object homed on it.
+    tokio::try_join!(async { http.await.map_err(anyhow::Error::from) }, async {
+        data_plane.await.map_err(anyhow::Error::from)
+    },)?;
 
     Ok(())
 }

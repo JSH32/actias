@@ -33,6 +33,11 @@ service NodeRegistryService {
     // required for correctness.
     rpc ReleaseLease(ReleaseLeaseRequest) returns (google.protobuf.Empty);
 
+    // Who holds one object right now, without claiming: dead holders read
+    // as unheld. NOT_FOUND when nobody does; how a read finds the node
+    // with the freshest copy.
+    rpc GetLease(GetLeaseRequest) returns (Lease);
+
     // Every object identity ever claimed for the given scripts: the
     // instance directory, which outlives the contracts that declared it.
     rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse);
@@ -97,8 +102,14 @@ message ReleaseLeaseRequest {
     string node_id = 2;
 }
 
+message GetLeaseRequest {
+    // blake3 of the object identity, hex.
+    string object_id = 1;
+}
+
 message RegisterNodeRequest {
-    // Where other platform services reach this node, host:port.
+    // Where other platform services reach this node's WorkerData grpc
+    // service, host:port.
     string address = 1;
     // Roles the node serves, e.g. "http"; object hosting arrives later.
     repeated string capabilities = 2;

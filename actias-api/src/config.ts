@@ -9,11 +9,11 @@ export default () => ({
   // Base64 AES-256 key encrypting project secrets; unset disables secrets.
   secretEncryptionKey: process.env.SECRET_ENCRYPTION_KEY,
   webOrigin: process.env.WEB_ORIGIN,
-  // Cluster-internal worker access for dashboard reads: typed platform
-  // stats and the database query console. Same secret the workers use
-  // between themselves; development default matches theirs.
+  // Cluster-internal worker access for dashboard work: object dispatch
+  // and typed reads over the WorkerData grpc service. Same secret the
+  // workers use between themselves; development default matches theirs.
   worker: {
-    internalUrl: process.env.WORKER_INTERNAL_URL || 'http://localhost:3002',
+    grpcUrl: process.env.WORKER_GRPC_URL || 'localhost:3100',
     internalToken: process.env.INTERNAL_TOKEN || 'dev-internal-token',
   },
   inviteOnly: process.env.INVITE_ONLY === 'true',
