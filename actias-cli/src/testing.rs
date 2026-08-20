@@ -267,6 +267,7 @@ fn prepare(config: &ScriptConfig) -> Result<Arc<PreparedRevision>, String> {
                 objects: declared.objects,
                 databases: declared.databases,
                 queues: declared.queues,
+                workflows: declared.workflows,
             }),
         }),
         ..Default::default()

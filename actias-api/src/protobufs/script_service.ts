@@ -46,6 +46,8 @@ export namespace script_service {
         databases?: string[];
         // Queues declared with &#x60;queue &quot;name&quot;&#x60;.
         queues?: string[];
+        // Workflow definitions declared with &#x60;workflow &quot;name&quot;&#x60;.
+        workflows?: string[];
     }
     export interface ScriptConfig {
         id?: string;
