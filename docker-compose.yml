@@ -94,6 +94,37 @@ services:
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
 
+  secret_service:
+    image: ghcr.io/jsh32/actias_secret_service:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      secret_service_migration:
+        condition: service_completed_successfully
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-secret-service
+    environment:
+      - PORT=3000
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_secret_service
+      # The active master key; it only ever wraps per-version data keys.
+      - SECRET_MASTER_KEY=${SECRET_MASTER_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      - SECRET_MASTER_KEY_ID=${SECRET_MASTER_KEY_ID:-kek-1}
+
+  secret_service_migration:
+    image: ghcr.io/jsh32/actias_secret_service_migration:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    build:
+      context: ./actias-secret-service
+      dockerfile: ./Dockerfile.migration
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_secret_service
+
   worker_service:
     image: ghcr.io/jsh32/actias_worker_service:latest
     restart: unless-stopped
