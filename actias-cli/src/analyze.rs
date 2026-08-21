@@ -53,10 +53,17 @@ type WorkflowDefinition = {
     start: (self: WorkflowDefinition, input: any, opts: { id: string }) -> WorkflowRun,
     get: (self: WorkflowDefinition, id: string) -> WorkflowRun,
 }
+type WfJob = {
+    name: string,
+    signal: string,
+}
 type Wf = {
     step: (self: Wf, name: string, body: (() -> any) | { any }, body2: (() -> any)?) -> any,
     sleep: (self: Wf, duration: string | number) -> (),
     await: (self: Wf, name: string, opts: { timeout: (string | number)? }?) -> any,
+    spawn: (self: Wf, definition: string, input: any) -> WfJob,
+    all: (self: Wf, jobs: { WfJob | string }, opts: { timeout: (string | number)? }?) -> { any },
+    race: (self: Wf, jobs: { WfJob | string }, opts: { timeout: (string | number)? }?) -> (any, string?),
 }
 local kv: (string) -> KvNamespace = nil :: any
 local secret: (string) -> string = nil :: any

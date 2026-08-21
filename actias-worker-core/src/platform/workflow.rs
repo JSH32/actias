@@ -413,6 +413,18 @@ mod tests {
                 wf:await("never-comes")
                 return {}
             end)
+
+            workflow "gatherer" (function(wf, input)
+                local a = wf:spawn("child", { n = 3 })
+                local b = wf:spawn("child", { n = 5 })
+                local results = wf:all { a, b }
+                return { a = results[1].value.doubled, b = results[2].value.doubled }
+            end)
+
+            workflow "racer" (function(wf, input)
+                local payload, winner = wf:race { "left", "right" }
+                return { winner = winner, got = payload }
+            end)
         "#;
 
         /// A tiny in-test placement: one workflow vm per identity, all
@@ -515,6 +527,100 @@ mod tests {
             assert_eq!(done["status"], "completed", "parent never joined: {done}");
             assert_eq!(done["value"]["a"], 2, "{done}");
             assert_eq!(done["value"]["b"], 4);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn all_returns_results_in_argument_order() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let router = family_router(dir.path().to_path_buf());
+
+            router(crate::extensions::objects::ObjectTarget {
+                class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                name: "gatherer/g1".to_owned(),
+                method: "start".to_owned(),
+                arguments: vec![serde_json::json!({})],
+                chain: Vec::new(),
+                caller: None,
+            })
+            .await
+            .expect("gatherer starts");
+
+            let mut done = serde_json::Value::Null;
+            for _ in 0..60 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let joined = router(crate::extensions::objects::ObjectTarget {
+                    class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                    name: "gatherer/g1".to_owned(),
+                    method: "start".to_owned(),
+                    arguments: vec![serde_json::json!({})],
+                    chain: Vec::new(),
+                    caller: None,
+                })
+                .await
+                .expect("join answers");
+                if joined["status"] == "completed" {
+                    done = joined;
+                    break;
+                }
+            }
+            assert_eq!(done["status"], "completed", "gatherer never joined: {done}");
+            assert_eq!(done["value"]["a"], 6, "{done}");
+            assert_eq!(done["value"]["b"], 10);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn race_returns_the_first_signal_and_its_name() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let router = family_router(dir.path().to_path_buf());
+
+            let parked = router(crate::extensions::objects::ObjectTarget {
+                class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                name: "racer/r1".to_owned(),
+                method: "start".to_owned(),
+                arguments: vec![serde_json::json!({})],
+                chain: Vec::new(),
+                caller: None,
+            })
+            .await
+            .expect("racer starts");
+            assert_eq!(parked["status"], "parked", "{parked}");
+
+            // The SECOND listed name arrives first and wins.
+            router(crate::extensions::objects::ObjectTarget {
+                class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                name: "racer/r1".to_owned(),
+                method: "signal".to_owned(),
+                arguments: vec![
+                    serde_json::json!("right"),
+                    serde_json::json!({ "speed": "fast" }),
+                ],
+                chain: Vec::new(),
+                caller: None,
+            })
+            .await
+            .expect("signal lands");
+
+            let mut done = serde_json::Value::Null;
+            for _ in 0..60 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let joined = router(crate::extensions::objects::ObjectTarget {
+                    class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
+                    name: "racer/r1".to_owned(),
+                    method: "start".to_owned(),
+                    arguments: vec![serde_json::json!({})],
+                    chain: Vec::new(),
+                    caller: None,
+                })
+                .await
+                .expect("join answers");
+                if joined["status"] == "completed" {
+                    done = joined;
+                    break;
+                }
+            }
+            assert_eq!(done["status"], "completed", "racer never finished: {done}");
+            assert_eq!(done["value"]["winner"], "right", "{done}");
+            assert_eq!(done["value"]["got"]["speed"], "fast");
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -1208,6 +1314,14 @@ pub fn at_step(entries: &[Entry]) -> serde_json::Value {
             let gate = &last.data["for"];
             if gate.is_null() {
                 serde_json::json!("sleep")
+            } else if let Some(set) = gate.as_array() {
+                serde_json::json!(format!(
+                    "await {}",
+                    set.iter()
+                        .filter_map(|name| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                ))
             } else {
                 serde_json::json!(format!("await {}", gate.as_str().unwrap_or("?")))
             }
@@ -1399,6 +1513,158 @@ impl crate::extensions::determinism::Determinism for WfShared {
     fn random(&self) -> f64 {
         let mut guard = self.attempt.lock().expect("no poisoned lock");
         guard.as_mut().map(Attempt::draw).unwrap_or(0.0)
+    }
+}
+
+/// The timeout option the waiting verbs accept: a duration string or
+/// whole seconds; absent waits forever.
+fn parse_timeout(opts: Option<mlua::Table>) -> mlua::Result<Option<i64>> {
+    opts.and_then(|table| table.get::<mlua::Value>("timeout").ok())
+        .map(|value| match value {
+            mlua::Value::String(raw) => {
+                crate::extensions::objects::parse_duration_ms(&raw.to_str()?)
+                    .map_err(mlua::Error::RuntimeError)
+            }
+            mlua::Value::Integer(seconds) => Ok(seconds * 1000),
+            mlua::Value::Nil => Ok(i64::MAX),
+            _ => Err(mlua::Error::RuntimeError(
+                "the timeout is a duration.".to_owned(),
+            )),
+        })
+        .transpose()
+}
+
+/// The signal each entry of `wf:all`/`wf:race` waits on: a spawned
+/// job's table (its `signal` field) or a bare signal name.
+fn signal_names(jobs: &mlua::Table) -> mlua::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in jobs.clone().sequence_values::<mlua::Value>() {
+        match entry? {
+            mlua::Value::String(name) => names.push(name.to_str()?.to_owned()),
+            mlua::Value::Table(job) => names.push(job.get::<String>("signal").map_err(|_| {
+                mlua::Error::RuntimeError(
+                    "each entry is a spawned job or a signal name.".to_owned(),
+                )
+            })?),
+            _ => {
+                return Err(mlua::Error::RuntimeError(
+                    "each entry is a spawned job or a signal name.".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// One gate over a set of signals: `await` is the one-name form, `race`
+/// the many. The gate row keeps the bare-string shape for a single name
+/// (the shape every existing journal holds) and an array for several.
+/// The answer is the FIRST matching signal after the gate in journal
+/// order, which is completion order, which is deterministic; the
+/// returned name says which one it was. A timeout returns (nil, None).
+fn await_signals(
+    lua: &mlua::Lua,
+    names: &[String],
+    timeout_ms: Option<i64>,
+) -> mlua::Result<(mlua::Value, Option<String>)> {
+    use mlua::LuaSerdeExt;
+
+    let gate_json = if names.len() == 1 {
+        serde_json::json!(names[0])
+    } else {
+        serde_json::json!(names)
+    };
+    let wanted = |entry: &Entry| {
+        entry.kind == EntryKind::Signal
+            && names.iter().any(|name| entry.data["name"] == name.as_str())
+    };
+    let describe = names.join("', '");
+
+    let shared = lua
+        .app_data_ref::<std::sync::Arc<WfShared>>()
+        .map(|shared| shared.clone())
+        .ok_or_else(|| mlua::Error::RuntimeError("Not a workflow vm.".to_owned()))?;
+    let mut guard = shared.attempt.lock().expect("no poisoned lock");
+    let attempt = guard
+        .as_mut()
+        .ok_or_else(|| mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned()))?;
+    let now = crate::extensions::objects::unix_now_ms();
+
+    // The gate row: live appends it; replay finds it first. A gate that
+    // never journaled (the run parked at an earlier verb) may instead
+    // meet its signal directly: consume it and never park at all.
+    // Deterministic, since the journal is.
+    match attempt.pending.front() {
+        Some(entry) if entry.kind == EntryKind::Timer && entry.data["for"] == gate_json => {}
+        Some(_) if attempt.pending.iter().any(wanted) => {
+            let offset = attempt
+                .pending
+                .iter()
+                .position(wanted)
+                .expect("checked above");
+            let signal = attempt
+                .pending
+                .remove(offset)
+                .expect("position came from this deque");
+            let winner = signal.data["name"].as_str().map(str::to_owned);
+            return Ok((lua.to_value(&signal.data["payload"])?, winner));
+        }
+        Some(entry) => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "journal divergence: expected {:?}, code reached await '{describe}'",
+                entry.kind
+            )));
+        }
+        None => {
+            let due = timeout_ms.map(|ms| now.saturating_add(ms.max(0)));
+            attempt
+                .home
+                .with_storage(|storage| {
+                    append(
+                        storage,
+                        EntryKind::Timer,
+                        &serde_json::json!({ "due_ms": due, "for": gate_json }),
+                    )?;
+                    storage.commit()?;
+                    storage.begin()
+                })
+                .map_err(mlua::Error::RuntimeError)?;
+            if let Some(ms) = timeout_ms.filter(|ms| *ms < i64::MAX) {
+                arm(attempt, ms.max(0)).map_err(mlua::Error::RuntimeError)?;
+            }
+            drop(guard);
+            return Err(shared.park(format!("awaiting '{describe}'")));
+        }
+    }
+
+    // The gate is journaled; signals arrive in completion order, not
+    // await order (children finish when they finish), so the scan is
+    // forward from the gate.
+    let due = attempt.pending.front().expect("checked").data["due_ms"].as_i64();
+    let matched = attempt.pending.iter().skip(1).position(wanted);
+    if let Some(offset) = matched {
+        attempt.pending.pop_front();
+        let signal = attempt
+            .pending
+            .remove(offset)
+            .expect("position came from this deque");
+        let winner = signal.data["name"].as_str().map(str::to_owned);
+        return Ok((lua.to_value(&signal.data["payload"])?, winner));
+    }
+    match due {
+        Some(due) if due <= now => {
+            attempt.pending.pop_front();
+            Ok((mlua::Value::Nil, None))
+        }
+        Some(due) => {
+            arm(attempt, due - now).map_err(mlua::Error::RuntimeError)?;
+            drop(guard);
+            Err(shared.park(format!("awaiting '{describe}'")))
+        }
+        None => {
+            drop(guard);
+            Err(shared.park(format!("awaiting '{describe}'")))
+        }
     }
 }
 
@@ -1751,119 +2017,47 @@ impl mlua::UserData for WfHandle {
         methods.add_method(
             "await",
             |lua, _this, (name, opts): (String, Option<mlua::Table>)| {
-                let timeout_ms = opts
-                    .and_then(|table| table.get::<mlua::Value>("timeout").ok())
-                    .map(|value| match value {
-                        mlua::Value::String(raw) => {
-                            crate::extensions::objects::parse_duration_ms(&raw.to_str()?)
-                                .map_err(mlua::Error::RuntimeError)
-                        }
-                        mlua::Value::Integer(seconds) => Ok(seconds * 1000),
-                        mlua::Value::Nil => Ok(i64::MAX),
-                        _ => Err(mlua::Error::RuntimeError(
-                            "await's timeout is a duration.".to_owned(),
-                        )),
-                    })
-                    .transpose()?;
+                let timeout_ms = parse_timeout(opts)?;
+                let (payload, _winner) =
+                    await_signals(lua, std::slice::from_ref(&name), timeout_ms)?;
+                Ok(payload)
+            },
+        );
 
-                let shared = lua
-                    .app_data_ref::<std::sync::Arc<WfShared>>()
-                    .map(|shared| shared.clone())
-                    .ok_or_else(|| mlua::Error::RuntimeError("Not a workflow vm.".to_owned()))?;
-                let mut guard = shared.attempt.lock().expect("no poisoned lock");
-                let attempt = guard.as_mut().ok_or_else(|| {
-                    mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned())
-                })?;
-                let now = crate::extensions::objects::unix_now_ms();
+        // all { a, b, ... }: joins every entry (a spawned job or a bare
+        // signal name), returning payloads in ARGUMENT order however the
+        // completions arrive. A timeout applies per join; an entry that
+        // times out reads as nil in the results.
+        methods.add_method(
+            "all",
+            |lua, _this, (jobs, opts): (mlua::Table, Option<mlua::Table>)| {
+                let timeout_ms = parse_timeout(opts)?;
+                let names = signal_names(&jobs)?;
+                let results = lua.create_table()?;
+                for (index, name) in names.iter().enumerate() {
+                    let (payload, _winner) =
+                        await_signals(lua, std::slice::from_ref(name), timeout_ms)?;
+                    results.set(index + 1, payload)?;
+                }
+                Ok(results)
+            },
+        );
 
-                // The gate row: live appends it; replay finds it first.
-                // An await whose gate never journaled (the run parked at
-                // an earlier verb) may instead meet its signal directly:
-                // consume it and never park at all. Deterministic, since
-                // the journal is.
-                match attempt.pending.front() {
-                    Some(entry)
-                        if entry.kind == EntryKind::Timer && entry.data["for"] == name.as_str() => {
-                    }
-                    Some(_)
-                        if attempt.pending.iter().any(|entry| {
-                            entry.kind == EntryKind::Signal && entry.data["name"] == name.as_str()
-                        }) =>
-                    {
-                        let offset = attempt
-                            .pending
-                            .iter()
-                            .position(|entry| {
-                                entry.kind == EntryKind::Signal
-                                    && entry.data["name"] == name.as_str()
-                            })
-                            .expect("checked above");
-                        let signal = attempt
-                            .pending
-                            .remove(offset)
-                            .expect("position came from this deque");
-                        return lua.to_value(&signal.data["payload"]);
-                    }
-                    Some(entry) => {
-                        return Err(mlua::Error::RuntimeError(format!(
-                            "journal divergence: expected {:?}, code reached await '{name}'",
-                            entry.kind
-                        )));
-                    }
-                    None => {
-                        let due = timeout_ms.map(|ms| now.saturating_add(ms.max(0)));
-                        attempt
-                            .home
-                            .with_storage(|storage| {
-                                append(
-                                    storage,
-                                    EntryKind::Timer,
-                                    &serde_json::json!({ "due_ms": due, "for": name }),
-                                )?;
-                                storage.commit()?;
-                                storage.begin()
-                            })
-                            .map_err(mlua::Error::RuntimeError)?;
-                        if let Some(ms) = timeout_ms.filter(|ms| *ms < i64::MAX) {
-                            arm(attempt, ms.max(0)).map_err(mlua::Error::RuntimeError)?;
-                        }
-                        drop(guard);
-                        return Err(shared.park(format!("awaiting '{name}'")));
-                    }
+        // race { a, b, ... }: the first completion or signal among the
+        // set wins; returns (payload, winner name), or (nil, nil) on
+        // timeout. Losers keep running; their signals stay consumable.
+        methods.add_method(
+            "race",
+            |lua, _this, (jobs, opts): (mlua::Table, Option<mlua::Table>)| {
+                let timeout_ms = parse_timeout(opts)?;
+                let names = signal_names(&jobs)?;
+                if names.is_empty() {
+                    return Err(mlua::Error::RuntimeError(
+                        "race takes at least one job or signal name.".to_owned(),
+                    ));
                 }
-
-                // The gate is journaled; the answer is the FIRST
-                // matching signal anywhere after it. Signals arrive in
-                // completion order, not await order (children finish
-                // when they finish), so the scan is forward, and the
-                // rule is deterministic because the journal is.
-                let due = attempt.pending.front().expect("checked").data["due_ms"].as_i64();
-                let matched = attempt.pending.iter().skip(1).position(|entry| {
-                    entry.kind == EntryKind::Signal && entry.data["name"] == name.as_str()
-                });
-                if let Some(offset) = matched {
-                    attempt.pending.pop_front();
-                    let signal = attempt
-                        .pending
-                        .remove(offset)
-                        .expect("position came from this deque");
-                    return lua.to_value(&signal.data["payload"]);
-                }
-                match due {
-                    Some(due) if due <= now => {
-                        attempt.pending.pop_front();
-                        Ok(mlua::Value::Nil)
-                    }
-                    Some(due) => {
-                        arm(attempt, due - now).map_err(mlua::Error::RuntimeError)?;
-                        drop(guard);
-                        Err(shared.park(format!("awaiting '{name}'")))
-                    }
-                    None => {
-                        drop(guard);
-                        Err(shared.park(format!("awaiting '{name}'")))
-                    }
-                }
+                let (payload, winner) = await_signals(lua, &names, timeout_ms)?;
+                Ok((payload, winner))
             },
         );
 

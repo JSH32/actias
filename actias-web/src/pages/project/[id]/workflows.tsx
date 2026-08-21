@@ -188,7 +188,9 @@ function foldHistory(
               }
             : {
                 key: `t${entry.seq}`,
-                name: String(data.for),
+                name: Array.isArray(data.for)
+                  ? (data.for as unknown[]).join(' | ')
+                  : String(data.for),
                 kind: 'await',
                 state: 'done',
                 note:
