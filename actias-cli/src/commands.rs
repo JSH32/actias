@@ -54,6 +54,13 @@ pub enum Commands {
         #[clap(subcommand)]
         sub: SecretOperations,
     },
+    /// 🎫 Manage a project's service tokens
+    Tokens {
+        /// Project the tokens belong to.
+        project: String,
+        #[clap(subcommand)]
+        sub: TokenOperations,
+    },
     /// 📁 List projects
     Projects { page: Option<i64> },
     /// 📜 Manage a project
@@ -109,6 +116,23 @@ pub enum AliasOperations {
     Set { name: String, revision_id: String },
     /// 📑 List aliases and the revisions they serve.
     List,
+}
+
+#[derive(Parser, Debug)]
+pub enum TokenOperations {
+    /// 🎫 Create a token; the secret prints exactly once.
+    Create {
+        /// Label for the token list, e.g. "github-actions".
+        name: String,
+        /// Access bits, repeatable (e.g. --access SCRIPT_WRITE); omitted
+        /// grants the automation default, deploy and kv.
+        #[clap(long = "access")]
+        access: Vec<String>,
+    },
+    /// 📑 List tokens. Secrets are never shown, only prefixes.
+    List,
+    /// 🚮 Revoke a token by its id (shown in the list).
+    Revoke { id: String },
 }
 
 #[derive(Parser, Debug)]

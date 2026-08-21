@@ -10,3 +10,4 @@ pub mod secrets;
 pub mod sql;
 pub mod tail;
 pub mod test;
+pub mod tokens;
