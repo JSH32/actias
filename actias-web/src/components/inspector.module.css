@@ -1173,6 +1173,38 @@
   grid-template-columns: minmax(0, 1.2fr) 130px 90px 30px;
 }
 
+/* Design 07's tokens table; wide cells (access chips, last used) fold
+ * below the breakpoint. */
+.tokenRow {
+  composes: row;
+  height: 40px;
+  grid-template-columns: 180px 132px minmax(0, 1fr) 92px 92px 70px;
+}
+.tokenHead {
+  composes: tableHead;
+  grid-template-columns: 180px 132px minmax(0, 1fr) 92px 92px 70px;
+}
+.tokenUnused {
+  opacity: 0.55;
+}
+
+/* The quiet red text button a row-level revoke deserves; smaller than
+ * a dangerButton because the row is the context. */
+.smallDanger {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(240, 138, 138, 0.35);
+  border-radius: var(--r1);
+  background: transparent;
+  color: var(--err);
+  font: 500 10px var(--mono);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.smallDanger:hover {
+  background: var(--err-tint);
+}
+
 /* Below this, a roster keeps identity and one fact per row; the
  * fingerprint and the worded reach live on in the panels. */
 @media (max-width: 620px) {
@@ -1189,6 +1221,13 @@
   .secretRow,
   .secretHead {
     grid-template-columns: minmax(0, 1fr) 90px 30px;
+  }
+  .tokenWide {
+    display: none;
+  }
+  .tokenRow,
+  .tokenHead {
+    grid-template-columns: minmax(0, 1fr) 110px 70px;
   }
   .presetGrid {
     grid-template-columns: 1fr;

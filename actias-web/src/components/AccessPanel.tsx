@@ -13,6 +13,7 @@ import { AclListDto, ProjectDto, UserDto } from '@/client';
 import dialogClasses from '../pages/projects.module.css';
 import classes from './inspector.module.css';
 import { toast } from '@/ui/toast';
+import { realBit } from '@/helpers/access';
 
 /** What each bit permits, in words; unknown future bits fall back to
  * their raw name. */
@@ -30,12 +31,6 @@ const BIT_WORDS: Record<string, string> = {
   SECRETS_READ: 'See secret names and metadata. Values are never readable.',
   SECRETS_WRITE: 'Set, rotate and delete secrets without ever reading one.',
 };
-
-/** The grantable bits: composite masks (SCRIPT_RESOURCE, FULL) are
- * derived conveniences in the api enum, not switches anyone flips. */
-function realBit(bit: string): boolean {
-  return !bit.endsWith('_RESOURCE') && bit !== 'FULL';
-}
 
 /** Permission strings group as RESOURCE_BIT; fingerprint and panel both
  * render in group order. */

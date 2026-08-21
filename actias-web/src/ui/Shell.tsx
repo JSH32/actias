@@ -51,6 +51,7 @@ const projectNav: { label: string; slug: string; icon: IconName }[] = [
   { label: 'Workflows', slug: 'workflows', icon: 'workflows' },
   { label: 'Secrets', slug: 'secrets', icon: 'secrets' },
   { label: 'Members', slug: 'members', icon: 'members' },
+  { label: 'Tokens', slug: 'tokens', icon: 'tokens' },
 ];
 
 /** Minimal chrome for public pages: wordmark, log in, nothing else. */
