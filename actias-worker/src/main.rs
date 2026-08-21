@@ -183,7 +183,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // crash still ages out, and the epoch fence covers the drain window.
     let registry_for_goodbye = state.registry.clone();
     let identity_for_goodbye = state.node_identity.clone();
-    tokio::spawn(async move {
+    let goodbye_task = tokio::spawn(async move {
         shutdown_signal().await;
         let node_id = identity_for_goodbye
             .read()
@@ -212,6 +212,12 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::try_join!(async { http.await.map_err(anyhow::Error::from) }, async {
         data_plane.await.map_err(anyhow::Error::from)
     },)?;
+
+    // A fast drain must not outrun the goodbye: when nothing holds the
+    // listeners open, main gets here in milliseconds and exiting now
+    // would kill the spawned deregistration mid-flight, silently. Its
+    // own 5s rpc timeout bounds this wait; the extra second is slack.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(6), goodbye_task).await;
 
     Ok(())
 }
