@@ -326,9 +326,14 @@ impl PreparedRevision {
 pub enum VmProfile {
     Standard,
     /// The enforced-determinism surface; carries the instance's
-    /// determinism source because the entry point runs during
-    /// construction and every read from the first line on must journal.
-    Workflow(std::sync::Arc<dyn crate::extensions::determinism::Determinism>),
+    /// determinism source (the entry point runs during construction and
+    /// every read from the first line on must journal) and its secret
+    /// pins, so `secret` declarations resolve the versions the run
+    /// started with. [`None`] pins resolve heads: tests without storage.
+    Workflow {
+        source: std::sync::Arc<dyn crate::extensions::determinism::Determinism>,
+        secret_pins: Option<std::sync::Arc<crate::platform::workflow::SecretPins>>,
+    },
 }
 
 impl ActiasRuntime {
@@ -731,6 +736,7 @@ impl ActiasRuntime {
                     secret_client,
                     project_id: prepared.script.project_id.clone(),
                     script_id: prepared.script.id.clone(),
+                    pins: None,
                 },
                 &crate::extensions::log::LogExtension { publisher: logs },
                 &JwtExtension,
@@ -741,7 +747,10 @@ impl ActiasRuntime {
             // refused by name at the boundary, and uuid journals. The
             // step verb (W3) builds effect contexts with the standard
             // profile instead of re-admitting these here.
-            VmProfile::Workflow(source) => {
+            VmProfile::Workflow {
+                source,
+                secret_pins,
+            } => {
                 use crate::extensions::determinism::{ForbiddenExtension, JournaledUuidExtension};
                 lua.set_app_data(crate::extensions::determinism::DeterminismSource(source));
                 // Declaration surfaces (kv, queue, database, object)
@@ -759,6 +768,7 @@ impl ActiasRuntime {
                         secret_client,
                         project_id: prepared.script.project_id.clone(),
                         script_id: prepared.script.id.clone(),
+                        pins: secret_pins,
                     },
                     &crate::extensions::log::LogExtension { publisher: logs },
                     &crate::extensions::objects::ObjectExtension,
@@ -1172,7 +1182,10 @@ mod tests {
             None,
             None,
             None,
-            VmProfile::Workflow(determinism),
+            VmProfile::Workflow {
+                source: determinism,
+                secret_pins: None,
+            },
         )
         .await
     }

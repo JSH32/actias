@@ -416,6 +416,15 @@ fn install_workflow_testing(
                         }
                     }
 
+                    // The run's file exists before its vm, exactly as
+                    // production orders it: `secret` declarations pin
+                    // through it during construction.
+                    let ordinal = host.runs.lock().await.len();
+                    let name = format!("{definition}/test-{ordinal}");
+                    let file = host.dir.path().join(format!("wf-{ordinal}.db"));
+                    let pins = actias_worker_core::platform::workflow::SecretPins::load(&file)
+                        .map_err(mlua::Error::RuntimeError)?;
+
                     let shared = Arc::new(WfShared::default());
                     shared.set_fakes(fakes);
                     let vm = ActiasRuntime::with_profile(
@@ -428,14 +437,13 @@ fn install_workflow_testing(
                         None,
                         Some(secret_client.clone()),
                         None,
-                        actias_worker_core::runtime::VmProfile::Workflow(shared.clone()),
+                        actias_worker_core::runtime::VmProfile::Workflow {
+                            source: shared.clone(),
+                            secret_pins: Some(Arc::new(pins)),
+                        },
                     )
                     .await?;
                     vm.set_app_data(shared);
-
-                    let ordinal = host.runs.lock().await.len();
-                    let name = format!("{definition}/test-{ordinal}");
-                    let file = host.dir.path().join(format!("wf-{ordinal}.db"));
                     let handle = actias_worker_core::objects::spawn_object_task(
                         vm,
                         actias_worker_core::objects::TaskOptions {
@@ -775,6 +783,40 @@ mod tests {
         let summary = run_tests(&config).await.expect("suite runs");
         assert_eq!(summary.passed, 2, "both virtual-clock cases pass");
         assert_eq!(summary.failed, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workflow_secrets_resolve_through_their_pins() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = project(
+            dir.path(),
+            r#"
+            local token = secret "api-token"
+            workflow "uses-secret" (function(wf)
+                local echoed = wf:step("echo", function()
+                    return { held = token }
+                end)
+                return echoed.held
+            end)
+            on "fetch" (function() return { body = "ok" } end)
+            "#,
+            r#"
+            local t = require("actias.test")
+
+            t.test("a workflow sees the secret it pinned", function()
+                local wf = t.start_workflow("uses-secret", { id = "s1" })
+                assert(wf:result() == "hunter2", "got " .. tostring(wf:result()))
+            end)
+            "#,
+        );
+        std::fs::write(
+            dir.path().join("tests/secrets.json"),
+            r#"{ "api-token": "hunter2" }"#,
+        )
+        .expect("secrets file");
+
+        let summary = run_tests(&config).await.expect("suite runs");
+        assert_eq!((summary.passed, summary.failed), (1, 0));
     }
 
     #[tokio::test(flavor = "multi_thread")]
