@@ -41,6 +41,9 @@ impl Router {
             Commands::Secret { project, sub } => {
                 handlers::secrets::handle(&self.client, &project, &sub).await
             }
+            Commands::Tokens { project, sub } => {
+                handlers::tokens::handle(&self.client, &project, &sub).await
+            }
             Commands::Scripts { project, page } => self.handle_list_scripts(project, page).await,
             Commands::Projects { page } => self.handle_list_projects(page).await,
             Commands::Project { id, sub } => self.handle_project(id, sub).await,

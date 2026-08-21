@@ -214,6 +214,18 @@ function Tokens({ project, write }: { project: ProjectDto; write: boolean }) {
                   </span>
                 </div>
               ))}
+              <div className={classes.cardFoot}>
+                <span>Same operation from the terminal:</span>
+                <button
+                  className={`${classes.copy} ${classes.cardFootEnd}`}
+                  style={{ font: 'inherit' }}
+                  onClick={() =>
+                    copyText(`actias tokens ${project.name} create <name>`)
+                  }
+                >
+                  actias tokens {project.name} create &lt;name&gt;
+                </button>
+              </div>
             </div>
           )}
         </div>
