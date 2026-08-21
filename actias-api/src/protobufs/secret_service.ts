@@ -39,6 +39,31 @@ export namespace secret_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ResolvedSecret>;
+        // One name&#x27;s version metadata, newest first, tombstones included: the
+    // console&#x27;s rotation history. Values never ride along.
+        listSecretVersions(
+            data: ListSecretVersionsRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ListSecretVersionsResponse>;
+    }
+    export interface ListSecretVersionsRequest {
+        projectId?: string;
+        name?: string;
+    }
+    export interface SecretVersion {
+        version?: number;
+        // Unix milliseconds this version was written.
+        createdMs?: number;
+        // User id that wrote it; audit metadata, never identity.
+        createdBy?: string;
+        // Unix milliseconds this version was tombstoned; 0 while live.
+        deletedMs?: number;
+    }
+    export interface ListSecretVersionsResponse {
+        // Every version ever written under the name, newest first; empty for
+    // names never set.
+        versions?: secret_service.SecretVersion[];
     }
     export interface SetSecretRequest {
         projectId?: string;

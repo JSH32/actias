@@ -17,8 +17,16 @@ export type SecretDto = {
      */
     createdBy: string;
     /**
+     * Username behind createdBy, when the account still exists; empty otherwise.
+     */
+    createdByName: string;
+    /**
      * Public identifier of the live script declaring this name; null is the orphan state, set but reachable by no live revision.
      */
     declaredBy: string | null;
+    /**
+     * Revision id the declaration lives in, when declared.
+     */
+    declaredByRevision: string | null;
 };
 

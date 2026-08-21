@@ -3,6 +3,7 @@
 /* eslint-disable */
 import type { MessageResponseDto } from '../models/MessageResponseDto';
 import type { SecretDto } from '../models/SecretDto';
+import type { SecretVersionDto } from '../models/SecretVersionDto';
 import type { SetSecretDto } from '../models/SetSecretDto';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -72,6 +73,29 @@ export class SecretsService {
         return this.httpRequest.request({
             method: 'DELETE',
             url: '/api/project/{project}/secrets/{name}',
+            path: {
+                'project': project,
+                'name': name,
+            },
+        });
+    }
+
+    /**
+     * A name's rotation history, newest first: timestamps and authors
+     * only. Old values are retained encrypted solely for workflow runs
+     * that pinned them; nothing reads them back out here.
+     * @param project
+     * @param name
+     * @returns SecretVersionDto
+     * @throws ApiError
+     */
+    public listSecretVersions(
+        project: string,
+        name: string,
+    ): CancelablePromise<Array<SecretVersionDto>> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/project/{project}/secrets/{name}/versions',
             path: {
                 'project': project,
                 'name': name,

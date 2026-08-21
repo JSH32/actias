@@ -14,8 +14,9 @@ use crate::entity;
 use crate::envelope::{CryptoError, Envelope};
 use crate::proto_secret_service::secret_service_server::SecretService as SecretServiceTrait;
 use crate::proto_secret_service::{
-    DeleteSecretRequest, ListSecretsRequest, ListSecretsResponse, ResolveSecretRequest,
-    ResolvedSecret, SecretMeta, SetSecretRequest,
+    DeleteSecretRequest, ListSecretVersionsRequest, ListSecretVersionsResponse, ListSecretsRequest,
+    ListSecretsResponse, ResolveSecretRequest, ResolvedSecret, SecretMeta, SecretVersion,
+    SetSecretRequest,
 };
 
 pub struct SecretService {
@@ -214,6 +215,33 @@ impl SecretServiceTrait for SecretService {
             .collect();
 
         Ok(Response::new(ListSecretsResponse { secrets }))
+    }
+
+    async fn list_secret_versions(
+        &self,
+        request: Request<ListSecretVersionsRequest>,
+    ) -> Result<Response<ListSecretVersionsResponse>, Status> {
+        let request = request.into_inner();
+        require("project_id", &request.project_id)?;
+        require("name", &request.name)?;
+
+        let rows = by_name(&request.project_id, &request.name)
+            .order_by_desc(entity::Column::Version)
+            .all(&self.database)
+            .await
+            .map_err(|err| storage_error("secret history read failed", err))?;
+
+        let versions = rows
+            .into_iter()
+            .map(|row| SecretVersion {
+                version: row.version as u64,
+                created_ms: row.created_ms,
+                created_by: row.created_by.unwrap_or_default(),
+                deleted_ms: row.deleted_ms.unwrap_or(0),
+            })
+            .collect();
+
+        Ok(Response::new(ListSecretVersionsResponse { versions }))
     }
 
     async fn resolve_secret(
@@ -473,6 +501,40 @@ mod tests {
         assert_eq!(secrets[0].version, 2);
         assert_eq!(secrets[0].created_by, "user-1");
         assert!(secrets[0].created_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn history_lists_every_version_newest_first_with_tombstones() {
+        let (service, _database, _guard) = service().await;
+
+        set(&service, "stripe-live", "v1").await;
+        set(&service, "stripe-live", "v2").await;
+        delete(&service, "stripe-live").await.expect("deletes");
+        set(&service, "stripe-live", "v3").await;
+
+        let versions = service
+            .list_secret_versions(Request::new(ListSecretVersionsRequest {
+                project_id: "proj-1".to_owned(),
+                name: "stripe-live".to_owned(),
+            }))
+            .await
+            .expect("history lists")
+            .into_inner()
+            .versions;
+
+        assert_eq!(
+            versions.iter().map(|v| v.version).collect::<Vec<_>>(),
+            vec![3, 2, 1],
+        );
+        // Only the deleted head carries a tombstone; the revival is live.
+        assert_eq!(
+            versions
+                .iter()
+                .map(|v| v.deleted_ms > 0)
+                .collect::<Vec<_>>(),
+            vec![false, true, false],
+        );
+        assert!(versions.iter().all(|v| v.created_by == "user-1"));
     }
 
     #[tokio::test]

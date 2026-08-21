@@ -225,6 +225,13 @@ impl secret_proto::secret_service_server::SecretService for FakeSecrets {
     ) -> Result<tonic::Response<secret_proto::ListSecretsResponse>, tonic::Status> {
         Err(tonic::Status::unimplemented("tests only resolve"))
     }
+
+    async fn list_secret_versions(
+        &self,
+        _: tonic::Request<secret_proto::ListSecretVersionsRequest>,
+    ) -> Result<tonic::Response<secret_proto::ListSecretVersionsResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("tests only resolve"))
+    }
 }
 
 /// Serves one fake secret store on a loopback port; same lifetime story

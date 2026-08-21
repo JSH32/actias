@@ -1732,6 +1732,54 @@
         ]
       }
     },
+    "/api/project/{project}/secrets/{name}/versions": {
+      "get": {
+        "operationId": "listSecretVersions",
+        "summary": "",
+        "description": "A name's rotation history, newest first: timestamps and authors\nonly. Old values are retained encrypted solely for workflow runs\nthat pinned them; nothing reads them back out here.",
+        "parameters": [
+          {
+            "name": "project",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SecretVersionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "secrets"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/admin/registration": {
       "post": {
         "operationId": "newRegistrationCode",
@@ -3727,10 +3775,19 @@
             "type": "string",
             "description": "User id that wrote the head version."
           },
+          "createdByName": {
+            "type": "string",
+            "description": "Username behind createdBy, when the account still exists; empty otherwise."
+          },
           "declaredBy": {
             "type": "string",
             "nullable": true,
             "description": "Public identifier of the live script declaring this name; null is the orphan state, set but reachable by no live revision."
+          },
+          "declaredByRevision": {
+            "type": "string",
+            "nullable": true,
+            "description": "Revision id the declaration lives in, when declared."
           }
         },
         "required": [
@@ -3738,7 +3795,9 @@
           "version",
           "createdMs",
           "createdBy",
-          "declaredBy"
+          "createdByName",
+          "declaredBy",
+          "declaredByRevision"
         ]
       },
       "SetSecretDto": {
@@ -3751,6 +3810,37 @@
         },
         "required": [
           "value"
+        ]
+      },
+      "SecretVersionDto": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "number"
+          },
+          "createdMs": {
+            "type": "number",
+            "description": "Unix milliseconds this version was written."
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "User id that wrote it."
+          },
+          "createdByName": {
+            "type": "string",
+            "description": "Username behind createdBy, when the account still exists."
+          },
+          "deletedMs": {
+            "type": "number",
+            "description": "Unix milliseconds this version was tombstoned by a delete; 0 while live."
+          }
+        },
+        "required": [
+          "version",
+          "createdMs",
+          "createdBy",
+          "createdByName",
+          "deletedMs"
         ]
       },
       "RegistrationCodeDto": {
