@@ -51,6 +51,7 @@ export type { RunStartDto } from './models/RunStartDto';
 export type { ScriptConfigDto } from './models/ScriptConfigDto';
 export type { ScriptDto } from './models/ScriptDto';
 export type { SecretDto } from './models/SecretDto';
+export type { SecretVersionDto } from './models/SecretVersionDto';
 export type { ServiceTokenDto } from './models/ServiceTokenDto';
 export type { SetAliasDto } from './models/SetAliasDto';
 export type { SetKeyDto } from './models/SetKeyDto';

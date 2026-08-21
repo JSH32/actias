@@ -1,24 +1,24 @@
 /**
- * The secrets screen, master-detail like members: a quiet roster of
- * names on the left, and a panel that owns everything about the
- * selected one, rotation included. Values never appear anywhere; the
- * panel's warning is the whole storage story. Orphanhood (set, but no
- * live revision declares it) is a fact here, not an alarm: an amber
- * dot and words in the panel.
+ * The secrets screen per the revised design 07: not about values, which
+ * never come back out, but about REACH (which revisions can resolve each
+ * name), rotation history, and what breaks on delete. Roster left; the
+ * panel owns the value-withheld story, the declarers, the history and
+ * every action.
  */
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
-import { ProjectDto, SecretDto } from '@/client';
+import { ProjectDto, SecretDto, SecretVersionDto } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
 import { EmptyState } from '@/ui';
-import { Fact, copyText } from '@/components/inspector';
+import { Icon } from '@/ui/icons';
+import { copyText } from '@/components/inspector';
 import { toast } from '@/ui/toast';
 import dialogClasses from '../../projects.module.css';
 import classes from '../../../components/inspector.module.css';
 
-const COLUMNS = 'minmax(0,1.1fr) minmax(0,1fr) 84px';
+const COLUMNS = 'minmax(0,1.2fr) 130px 90px 30px';
 
 function agoShort(ms?: number | null) {
   if (!ms) return '—';
@@ -29,19 +29,44 @@ function agoShort(ms?: number | null) {
   return `${Math.round(delta / 86_400_000)}d ago`;
 }
 
-/** The health dot: luna when a live script declares the name, warn when
- * nothing does. */
-function SecretDot({ secret }: { secret: SecretDto }) {
+/** Reach: can a live revision resolve this name right now? */
+function reached(secret: SecretDto) {
+  return !!secret.declaredBy;
+}
+
+/** The reach dot: filled luna when a live revision declares the name,
+ * hollow when nothing does. */
+function ReachDot({ on }: { on: boolean }) {
   return (
     <span
       style={{
         width: 7,
         height: 7,
-        borderRadius: 2,
-        background: secret.declaredBy ? 'var(--luna)' : 'var(--warn)',
+        borderRadius: 999,
+        background: on ? 'var(--luna)' : 'transparent',
+        border: `1px solid ${on ? 'var(--luna)' : 'var(--ink-3)'}`,
         flexShrink: 0,
       }}
     />
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M5 11m0 2a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v6a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2z" />
+      <path d="M11 16a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" />
+      <path d="M8 11v-4a4 4 0 1 1 8 0v4" />
+    </svg>
   );
 }
 
@@ -57,8 +82,7 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
     queryFn: () => api.secrets.listSecrets(project.id),
   });
 
-  const reload = () =>
-    queryClient.invalidateQueries({ queryKey: ['secrets', project.id] });
+  const reload = () => queryClient.invalidateQueries({ queryKey: ['secrets'] });
 
   const roster = secrets ?? [];
   const selected =
@@ -98,7 +122,7 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
       <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
         <div
           style={{
-            maxWidth: 1200,
+            maxWidth: 1280,
             padding: '22px 20px',
             display: 'flex',
             flexDirection: 'column',
@@ -118,10 +142,9 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
                 Secrets
               </h1>
               <p className={classes.lede} style={{ maxWidth: '82ch' }}>
-                A script reaches a secret by declaring{' '}
-                <code>secret &quot;name&quot;</code>; the handle is the value.
-                Stored encrypted and never returned, so the only way to change
-                one is to set it again.
+                A secret goes in and never comes back out. So this page is not
+                about values: it is about which revisions can reach each one,
+                when it was last rotated, and what breaks if you delete it.
               </p>
             </div>
             {write && (
@@ -145,66 +168,84 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
               cli={`actias secret ${project.name} put <name>`}
             />
           ) : (
-            <div className={classes.memberSplit}>
+            <div
+              className={classes.memberSplit}
+              style={{
+                gridTemplateColumns: 'minmax(0,1fr) minmax(380px,1.05fr)',
+              }}
+            >
               <div className={classes.card}>
                 <div
                   className={classes.tableHead}
                   style={{ gridTemplateColumns: COLUMNS, padding: '0 16px' }}
                 >
                   <span>name</span>
-                  <span>declared by</span>
-                  <span className={classes.cellRight}>created</span>
+                  <span>reach</span>
+                  <span className={classes.cellRight}>rotated</span>
+                  <span />
                 </div>
-                {roster.map((secret: SecretDto) => (
-                  <button
-                    key={secret.name}
-                    className={
-                      selected?.name === secret.name
-                        ? classes.rowSelected
-                        : classes.row
-                    }
-                    style={{ gridTemplateColumns: COLUMNS, height: 38 }}
-                    onClick={() => setSelectedName(secret.name)}
-                  >
-                    <span
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        minWidth: 0,
-                      }}
+                {roster.map((secret: SecretDto) => {
+                  const live = reached(secret);
+                  return (
+                    <button
+                      key={secret.name}
+                      className={
+                        selected?.name === secret.name
+                          ? classes.rowSelected
+                          : classes.row
+                      }
+                      style={{ gridTemplateColumns: COLUMNS, height: 40 }}
+                      onClick={() => setSelectedName(secret.name)}
                     >
-                      <SecretDot secret={secret} />
-                      <span className={classes.cellMono}>{secret.name}</span>
-                    </span>
-                    <span className={classes.cellDim}>
-                      {secret.declaredBy ?? 'no live revision'}
-                    </span>
-                    <span
-                      className={`${classes.cellDim} ${classes.cellRight}`}
-                      style={{ fontVariantNumeric: 'tabular-nums' }}
-                    >
-                      {agoShort(secret.createdMs)}
-                    </span>
-                  </button>
-                ))}
+                      <span
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          minWidth: 0,
+                        }}
+                      >
+                        <ReachDot on={live} />
+                        <span className={classes.cellMono}>{secret.name}</span>
+                      </span>
+                      <span
+                        className={classes.cellDim}
+                        style={live ? { color: 'var(--luna)' } : undefined}
+                      >
+                        {live ? 'live revision' : 'unreferenced'}
+                      </span>
+                      <span
+                        className={`${classes.cellDim} ${classes.cellRight}`}
+                        style={{ fontVariantNumeric: 'tabular-nums' }}
+                      >
+                        {agoShort(secret.createdMs)}
+                      </span>
+                      <span
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'center',
+                          color: 'var(--ink-3)',
+                        }}
+                        title="Encrypted at rest; the value never leaves the secret service."
+                      >
+                        <LockIcon />
+                      </span>
+                    </button>
+                  );
+                })}
                 <div className={classes.cardFoot}>
-                  <span>Same operation from the terminal:</span>
-                  <button
-                    className={`${classes.copy} ${classes.cardFootEnd}`}
-                    style={{ font: 'inherit' }}
-                    onClick={() =>
-                      copyText(`actias secret ${project.name} put <name>`)
-                    }
-                  >
-                    actias secret {project.name} put &lt;name&gt;
-                  </button>
+                  <span style={{ letterSpacing: '0.04em' }}>REACH</span>
+                  <ReachDot on />
+                  <span>a live revision</span>
+                  <ReachDot on={false} />
+                  <span>nothing</span>
                 </div>
               </div>
 
               {selected && (
                 <SecretDetail
                   key={selected.name}
+                  project={project}
                   secret={selected}
                   write={write}
                   onRotate={(secretValue) =>
@@ -319,20 +360,33 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
   );
 }
 
-/** Everything about one secret, rotation included; keyed by name so
- * selection change resets the rotate field. */
+/** Everything about one secret: the value-withheld story, who declares
+ * it, its rotation history, and the actions. Keyed by name so selection
+ * change resets the rotate field. */
 function SecretDetail({
+  project,
   secret,
   write,
   onRotate,
   onRemove,
 }: {
+  project: ProjectDto;
   secret: SecretDto;
   write: boolean;
   onRotate: (value: string) => void;
   onRemove: () => void;
 }) {
+  const [rotating, setRotating] = React.useState(false);
   const [value, setValue] = React.useState('');
+  const live = reached(secret);
+
+  const { data: versions } = useQuery({
+    queryKey: ['secret-versions', project.id, secret.name, secret.version],
+    queryFn: () => api.secrets.listSecretVersions(project.id, secret.name),
+  });
+
+  const author = secret.createdByName || 'unknown';
+  const rotations = secret.version - 1;
 
   return (
     <div className={classes.card}>
@@ -344,71 +398,223 @@ function SecretDetail({
           gap: 16,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-          <SecretDot secret={secret} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
           <span
-            className={classes.cellMono}
-            style={{ fontSize: 13, flex: 1, minWidth: 0 }}
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 'var(--r2)',
+              background: 'var(--err-tint)',
+              border: '1px solid rgba(240,138,138,0.35)',
+              color: 'var(--err)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}
           >
-            {secret.name}
+            <Icon name="secrets" size={16} />
           </span>
-          <span className={classes.wordChip}>v{secret.version}</span>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              minWidth: 0,
+              flex: 1,
+            }}
+          >
+            <span className={classes.cellMono} style={{ fontSize: 13 }}>
+              {secret.name}
+            </span>
+            <span
+              style={{ font: '400 11px var(--mono)', color: 'var(--ink-3)' }}
+            >
+              set by {author}
+              {rotations > 0 &&
+                ` · ${rotations} rotation${rotations === 1 ? '' : 's'}`}
+            </span>
+          </div>
+          <span
+            className={classes.pillOutline}
+            style={
+              live
+                ? { color: 'var(--luna)', borderColor: 'var(--luna-edge)' }
+                : undefined
+            }
+          >
+            {live ? 'live revision' : 'unreferenced'}
+          </span>
+        </div>
+
+        <div
+          style={{
+            padding: '11px 13px',
+            border: '1px solid var(--line)',
+            borderRadius: 'var(--r2)',
+            background: 'var(--night-2)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 5,
+          }}
+        >
+          <span
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 7,
+              font: '500 12px var(--mono)',
+              color: 'var(--ink-1)',
+            }}
+          >
+            <span style={{ color: 'var(--ink-3)' }}>
+              <LockIcon />
+            </span>
+            value withheld
+          </span>
+          <span
+            style={{ fontSize: 11, lineHeight: 1.55, color: 'var(--ink-2)' }}
+          >
+            Encrypted at rest and never returned by the api: not to you, not to
+            the dashboard, not to the CLI. Rotating replaces it; there is no
+            read.
+          </span>
         </div>
 
         <div className={classes.drawerSection}>
-          <Fact label="Version" value={`v${secret.version}`} />
-          <Fact
-            label={secret.version > 1 ? 'Rotated' : 'Created'}
-            value={agoShort(secret.createdMs)}
-          />
-          <Fact
-            label="Declared by"
-            value={secret.declaredBy ?? 'no live revision'}
-          />
-        </div>
-
-        {!secret.declaredBy && (
-          <p className={classes.drawerNote} style={{ paddingTop: 0 }}>
-            Set, but no live revision declares{' '}
-            <code>secret &quot;{secret.name}&quot;</code>, so scripts cannot
-            reach it. It resolves again the moment a published script declares
-            the name.
-          </p>
-        )}
-
-        {write && (
-          <div className={classes.drawerSection}>
-            <span className={classes.sectionLabel}>rotate</span>
-            <input
-              type="password"
-              className={classes.searchInput}
+          <span className={classes.sectionLabel}>declared by</span>
+          {live ? (
+            <div
               style={{
-                height: 32,
-                padding: '0 10px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '8px 11px',
                 border: '1px solid var(--line)',
                 borderRadius: 'var(--r2)',
               }}
-              placeholder="New value"
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-            />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span
+            >
+              <div
                 style={{
-                  fontSize: 11,
-                  lineHeight: 1.5,
-                  color: 'var(--ink-3)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 2,
+                  minWidth: 0,
                   flex: 1,
                 }}
               >
-                Stored encrypted; the old value stays readable only to workflow
-                runs that pinned it.
+                <span className={classes.cellMono}>{secret.declaredBy}</span>
+                <span
+                  style={{
+                    font: '400 10px var(--mono)',
+                    color: 'var(--ink-3)',
+                  }}
+                >
+                  {secret.declaredByRevision?.slice(0, 8)} · current revision
+                </span>
+              </div>
+              <span
+                className={classes.pillOutline}
+                style={{
+                  color: 'var(--luna)',
+                  borderColor: 'var(--luna-edge)',
+                }}
+              >
+                live
               </span>
+            </div>
+          ) : (
+            <p
+              className={classes.drawerNote}
+              style={{ paddingTop: 0, borderTop: 0 }}
+            >
+              Nothing: no live revision declares{' '}
+              <code>secret &quot;{secret.name}&quot;</code>, so scripts cannot
+              reach it. It resolves again the moment a published script declares
+              the name.
+            </p>
+          )}
+        </div>
+
+        <div className={classes.drawerSection}>
+          <span className={classes.sectionLabel}>history</span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+            {(versions ?? []).map((row: SecretVersionDto, index: number) => (
+              <div
+                key={row.version}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}
+              >
+                <span style={{ paddingTop: 3 }}>
+                  <ReachDot on={index === 0} />
+                </span>
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 1,
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      font: '500 12px var(--mono)',
+                      color: index === 0 ? 'var(--ink-1)' : 'var(--ink-2)',
+                    }}
+                  >
+                    {row.version === 1 ? 'created' : 'rotated'}
+                    {row.deletedMs > 0 && (
+                      <span style={{ color: 'var(--ink-3)' }}> · deleted</span>
+                    )}
+                  </span>
+                  <span
+                    style={{
+                      font: '400 10px var(--mono)',
+                      color: 'var(--ink-3)',
+                    }}
+                  >
+                    {row.createdByName || 'unknown'}
+                  </span>
+                </div>
+                <span
+                  className={classes.cellDim}
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
+                >
+                  {agoShort(row.createdMs)}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className={classes.drawerNote} style={{ paddingTop: 8 }}>
+            Timestamps and authors only. Old values stay readable solely to
+            workflow runs that pinned them; a rotation cannot be undone.
+          </p>
+        </div>
+
+        {rotating && write && (
+          <div className={classes.drawerSection}>
+            <span className={classes.sectionLabel}>rotate</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                type="password"
+                className={classes.searchInput}
+                style={{
+                  height: 32,
+                  padding: '0 10px',
+                  border: '1px solid var(--line)',
+                  borderRadius: 'var(--r2)',
+                  flex: 1,
+                }}
+                placeholder="New value"
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                autoFocus
+              />
               <button
                 className={classes.accentButton}
                 disabled={!value}
                 onClick={() => {
                   onRotate(value);
+                  setRotating(false);
                   setValue('');
                 }}
               >
@@ -419,18 +625,45 @@ function SecretDetail({
         )}
 
         {write && (
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'flex-end',
-              paddingTop: 12,
-              borderTop: '1px solid var(--line-soft)',
-            }}
-          >
-            <button className={classes.dangerButton} onClick={onRemove}>
-              Delete secret
-            </button>
-          </div>
+          <>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                paddingTop: 12,
+                borderTop: '1px solid var(--line-soft)',
+              }}
+            >
+              <button
+                className={classes.accentButton}
+                onClick={() => setRotating((open) => !open)}
+              >
+                Rotate
+              </button>
+              <button
+                className={classes.copy}
+                style={{ font: '400 11px var(--mono)' }}
+                onClick={() =>
+                  copyText(`actias secret ${project.name} put ${secret.name}`)
+                }
+              >
+                copy CLI
+              </button>
+              <span style={{ flex: 1 }} />
+              <button className={classes.dangerButton} onClick={onRemove}>
+                Delete
+              </button>
+            </div>
+            {live && (
+              <span
+                style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--err)' }}
+              >
+                Deleting it makes {secret.declaredBy} fail on its next request:
+                the declaration cannot resolve.
+              </span>
+            )}
+          </>
         )}
       </div>
     </div>

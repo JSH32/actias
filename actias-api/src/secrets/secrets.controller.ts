@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
+import { EntityManager } from '@mikro-orm/postgresql';
 import { ApiBearerAuth, ApiParam, ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
 
@@ -23,7 +24,7 @@ import { script_service } from 'src/protobufs/script_service';
 import { secret_service } from 'src/protobufs/secret_service';
 import { MessageResponseDto } from 'src/shared/dto/message';
 import { EntityParam } from 'src/util/entitydecorator';
-import { SecretDto, SetSecretDto } from './dto/secrets.dto';
+import { SecretDto, SecretVersionDto, SetSecretDto } from './dto/secrets.dto';
 
 /**
  * Project secrets, forwarded to the secret service: versioned and
@@ -41,6 +42,7 @@ export class SecretsController {
   constructor(
     @Inject('SECRET_SERVICE') private readonly client: ClientGrpc,
     @Inject('SCRIPT_SERVICE') private readonly scriptClient: ClientGrpc,
+    private readonly em: EntityManager,
   ) {}
 
   onModuleInit() {
@@ -52,16 +54,26 @@ export class SecretsController {
       );
   }
 
+  /** Usernames for a set of author ids; deleted accounts read empty. */
+  private async usernames(ids: string[]): Promise<Map<string, string>> {
+    const distinct = [...new Set(ids.filter(Boolean))];
+    if (distinct.length === 0) return new Map();
+    const users = await this.em.find(Users, { id: { $in: distinct } });
+    return new Map(users.map((user) => [user.id, user.username]));
+  }
+
   /** Which live script declares each secret name, from the same contract
    * capabilities the script detail renders. */
-  private async declarers(projectId: string): Promise<Map<string, string>> {
+  private async declarers(
+    projectId: string,
+  ): Promise<Map<string, { script: string; revision: string }>> {
     const page = await lastValueFrom(
       this.scriptService
         .listScripts({ projectId, pageSize: 500, page: 1 })
         .pipe(toHttpException()),
     );
 
-    const declarers = new Map<string, string>();
+    const declarers = new Map<string, { script: string; revision: string }>();
     for (const script of page.scripts || []) {
       if (!script.currentRevisionId) continue;
       const revision = await lastValueFrom(
@@ -74,7 +86,10 @@ export class SecretsController {
           .pipe(toHttpException()),
       );
       for (const name of revision.scriptConfig?.capabilities?.secrets ?? []) {
-        declarers.set(name, script.publicIdentifier);
+        declarers.set(name, {
+          script: script.publicIdentifier,
+          revision: script.currentRevisionId,
+        });
       }
     }
     return declarers;
@@ -98,8 +113,16 @@ export class SecretsController {
       this.declarers(project.id),
     ]);
 
-    return (response.secrets || []).map(
-      (meta) => new SecretDto(meta, declarers.get(meta.name) ?? null),
+    const metas = response.secrets || [];
+    const names = await this.usernames(metas.map((meta) => meta.createdBy));
+
+    return metas.map(
+      (meta) =>
+        new SecretDto(
+          meta,
+          names.get(meta.createdBy) ?? '',
+          declarers.get(meta.name) ?? null,
+        ),
     );
   }
 
@@ -127,8 +150,40 @@ export class SecretsController {
         .pipe(toHttpException()),
     );
 
-    const declarers = await this.declarers(project.id);
-    return new SecretDto(meta, declarers.get(name) ?? null);
+    const [declarers, names] = await Promise.all([
+      this.declarers(project.id),
+      this.usernames([meta.createdBy]),
+    ]);
+    return new SecretDto(
+      meta,
+      names.get(meta.createdBy) ?? '',
+      declarers.get(name) ?? null,
+    );
+  }
+
+  /**
+   * A name's rotation history, newest first: timestamps and authors
+   * only. Old values are retained encrypted solely for workflow runs
+   * that pinned them; nothing reads them back out here.
+   */
+  @Get(':name/versions')
+  @AclByProject(AccessFields.SECRETS_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async listSecretVersions(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('name') name: string,
+  ): Promise<SecretVersionDto[]> {
+    const response = await lastValueFrom(
+      this.secretService
+        .listSecretVersions({ projectId: project.id, name })
+        .pipe(toHttpException()),
+    );
+
+    const rows = response.versions || [];
+    const names = await this.usernames(rows.map((row) => row.createdBy));
+    return rows.map(
+      (row) => new SecretVersionDto(row, names.get(row.createdBy) ?? ''),
+    );
   }
 
   /**
