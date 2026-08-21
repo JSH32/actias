@@ -3,6 +3,7 @@ import { ClientsModule } from '@nestjs/microservices';
 import { AuthModule } from 'src/auth/auth.module';
 import { AclModule } from 'src/project/acl/acl.module';
 import { ProjectModule } from 'src/project/project.module';
+import { ScriptModule } from 'src/scripts/scripts.module';
 import { grpcClient, protoBasePath } from 'src/util/grpc';
 import { SecretsController } from './secrets.controller';
 
@@ -11,6 +12,7 @@ import { SecretsController } from './secrets.controller';
     AuthModule,
     AclModule,
     forwardRef(() => ProjectModule),
+    ScriptModule,
     ClientsModule.registerAsync(
       grpcClient(
         'SECRET_SERVICE',

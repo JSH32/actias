@@ -3726,13 +3726,19 @@
           "createdBy": {
             "type": "string",
             "description": "User id that wrote the head version."
+          },
+          "declaredBy": {
+            "type": "string",
+            "nullable": true,
+            "description": "Public identifier of the live script declaring this name; null is the orphan state, set but reachable by no live revision."
           }
         },
         "required": [
           "name",
           "version",
           "createdMs",
-          "createdBy"
+          "createdBy",
+          "declaredBy"
         ]
       },
       "SetSecretDto": {
