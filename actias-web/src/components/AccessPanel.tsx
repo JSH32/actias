@@ -31,6 +31,12 @@ const BIT_WORDS: Record<string, string> = {
   SECRETS_WRITE: 'Set, rotate and delete secrets without ever reading one.',
 };
 
+/** The grantable bits: composite masks (SCRIPT_RESOURCE, FULL) are
+ * derived conveniences in the api enum, not switches anyone flips. */
+function realBit(bit: string): boolean {
+  return !bit.endsWith('_RESOURCE') && bit !== 'FULL';
+}
+
 /** Permission strings group as RESOURCE_BIT; fingerprint and panel both
  * render in group order. */
 function groupPermissions(all: string[]): [string, string[]][] {
@@ -67,7 +73,7 @@ function presets(
 
 function granted(entry: AclListDto): string[] {
   return Object.keys(entry.permissions).filter(
-    (key) => entry.permissions[key] === true,
+    (key) => realBit(key) && entry.permissions[key] === true,
   );
 }
 
@@ -158,7 +164,7 @@ export default function AccessPanel({
     [project.id, reload],
   );
 
-  const all = (allPermissions ?? []) as string[];
+  const all = ((allPermissions ?? []) as string[]).filter(realBit);
   const groups = groupPermissions(all);
   const shapes = presets(all);
 
@@ -303,16 +309,10 @@ export default function AccessPanel({
 
           <div className={classes.memberSplit}>
             <div className={classes.card}>
-              <div
-                className={classes.tableHead}
-                style={{
-                  gridTemplateColumns: 'minmax(0, 1fr) 104px 128px 30px',
-                  padding: '0 16px',
-                }}
-              >
+              <div className={classes.memberHead}>
                 <span>member</span>
                 <span>role</span>
-                <span>access</span>
+                <span className={classes.fpCol}>access</span>
                 <span />
               </div>
               {roster.map((entry: AclListDto) => {
@@ -355,7 +355,7 @@ export default function AccessPanel({
                       </div>
                     </div>
                     <span className={rolePillClass(role)}>{role}</span>
-                    <span className={classes.fingerprint}>
+                    <span className={`${classes.fingerprint} ${classes.fpCol}`}>
                       {groups.map(([resource, permissions]) => (
                         <span key={resource} className={classes.fpPair}>
                           {permissions.map((permission) => (

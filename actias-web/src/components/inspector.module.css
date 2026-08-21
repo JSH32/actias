@@ -1141,22 +1141,56 @@
   gap: 16px;
   align-items: start;
 }
-@media (max-width: 1020px) {
-  /* A quiet one-line strip closing a card: a legend, a terminal hint. */
-.cardFoot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  border-top: 1px solid var(--line);
-  font: 400 11px var(--mono);
-  color: var(--ink-3);
+.memberSplit > * {
+  min-width: 0;
 }
-.cardFootEnd {
-  margin-left: auto;
+/* The secrets split: the panel carries more than the roster, so it
+ * gets the wider half. */
+.secretSplit {
+  composes: memberSplit;
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 1.05fr);
 }
 
-.memberSplit {
+@media (max-width: 1020px) {
+  .memberSplit,
+  .secretSplit {
+    grid-template-columns: 1fr;
+  }
+}
+
+.memberHead {
+  composes: tableHead;
+  grid-template-columns: minmax(0, 1fr) 104px 128px 30px;
+}
+
+.secretRow {
+  composes: row;
+  height: 40px;
+  grid-template-columns: minmax(0, 1.2fr) 130px 90px 30px;
+}
+.secretHead {
+  composes: tableHead;
+  grid-template-columns: minmax(0, 1.2fr) 130px 90px 30px;
+}
+
+/* Below this, a roster keeps identity and one fact per row; the
+ * fingerprint and the worded reach live on in the panels. */
+@media (max-width: 620px) {
+  .fpCol {
+    display: none;
+  }
+  .memberRow,
+  .memberHead {
+    grid-template-columns: minmax(0, 1fr) 104px 30px;
+  }
+  .reachCol {
+    display: none;
+  }
+  .secretRow,
+  .secretHead {
+    grid-template-columns: minmax(0, 1fr) 90px 30px;
+  }
+  .presetGrid {
     grid-template-columns: 1fr;
   }
 }

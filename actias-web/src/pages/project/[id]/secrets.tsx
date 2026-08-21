@@ -18,8 +18,6 @@ import { toast } from '@/ui/toast';
 import dialogClasses from '../../projects.module.css';
 import classes from '../../../components/inspector.module.css';
 
-const COLUMNS = 'minmax(0,1.2fr) 130px 90px 30px';
-
 function agoShort(ms?: number | null) {
   if (!ms) return '—';
   const delta = Date.now() - ms;
@@ -168,19 +166,11 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
               cli={`actias secret ${project.name} put <name>`}
             />
           ) : (
-            <div
-              className={classes.memberSplit}
-              style={{
-                gridTemplateColumns: 'minmax(0,1fr) minmax(380px,1.05fr)',
-              }}
-            >
+            <div className={classes.secretSplit}>
               <div className={classes.card}>
-                <div
-                  className={classes.tableHead}
-                  style={{ gridTemplateColumns: COLUMNS, padding: '0 16px' }}
-                >
+                <div className={classes.secretHead}>
                   <span>name</span>
-                  <span>reach</span>
+                  <span className={classes.reachCol}>reach</span>
                   <span className={classes.cellRight}>rotated</span>
                   <span />
                 </div>
@@ -191,10 +181,9 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
                       key={secret.name}
                       className={
                         selected?.name === secret.name
-                          ? classes.rowSelected
-                          : classes.row
+                          ? `${classes.secretRow} ${classes.rowSelected}`
+                          : classes.secretRow
                       }
-                      style={{ gridTemplateColumns: COLUMNS, height: 40 }}
                       onClick={() => setSelectedName(secret.name)}
                     >
                       <span
@@ -209,7 +198,7 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
                         <span className={classes.cellMono}>{secret.name}</span>
                       </span>
                       <span
-                        className={classes.cellDim}
+                        className={`${classes.cellDim} ${classes.reachCol}`}
                         style={live ? { color: 'var(--luna)' } : undefined}
                       >
                         {live ? 'live revision' : 'unreferenced'}
