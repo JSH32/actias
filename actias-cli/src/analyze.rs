@@ -83,9 +83,22 @@ local require: (string) -> any = nil :: any
 local http: any = nil :: any
 local crypto: any = nil :: any
 local Jwt: any = nil :: any
+-- Reserved platform namespace for connection programs (the streams
+-- proposal, docs/SURFACE_REV.md); typed now so the surface arrives
+-- with autocomplete instead of after it.
+type SocketEvent = { topic: string, from: { class: string, name: string }, data: any }
+type SocketItem = { kind: string, event: SocketEvent?, data: any }
+type Socket = {
+    each: (self: Socket) -> () -> SocketItem?,
+    send: (self: Socket, data: any) -> (),
+    follow: (self: Socket, target: any, topic: string, filter: any?) -> (),
+    unfollow: (self: Socket, target: any, topic: string, filter: any?) -> (),
+    close: (self: Socket, code: number?, reason: string?) -> (),
+}
+local sockets: { follows: (Socket) -> () } = nil :: any
 local jwt: any = nil :: any
 local script: any = nil :: any
-local _ = kv and secret and on and object and objects and database and queue and workflow and workflows and json and log and uuid and getfile and dofile and require and http and crypto and jwt and Jwt and script
+local _ = kv and secret and on and object and objects and database and queue and workflow and workflows and json and log and uuid and getfile and dofile and require and http and crypto and jwt and Jwt and sockets and script
 "#;
 
 /// Runs the strict type check over the project's bundle.
