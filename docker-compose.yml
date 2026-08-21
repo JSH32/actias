@@ -135,6 +135,8 @@ services:
         condition: service_started
       kv_service:
         condition: service_started
+      secret_service:
+        condition: service_started
       redis:
         condition: service_started
     build:
@@ -153,8 +155,8 @@ services:
       - S3_ENDPOINT=http://minio:9000
       - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
-      # Development-only key; a deployment must set its own.
-      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      # Workers hold no key material; secrets resolve through the service.
+      - SECRET_SERVICE_URI=http://secret_service:3000
       # Subdomain routing for anything resolving under this base; the
       # path-prefix forms keep working for direct access.
       - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
@@ -184,6 +186,8 @@ services:
         condition: service_started
       kv_service:
         condition: service_started
+      secret_service:
+        condition: service_started
       redis:
         condition: service_started
     build:
@@ -199,7 +203,7 @@ services:
       - S3_ENDPOINT=http://minio:9000
       - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
-      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      - SECRET_SERVICE_URI=http://secret_service:3000
       - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
       - OBJECT_DATA_DIR=/data/objects
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
@@ -273,6 +277,8 @@ services:
         condition: service_completed_successfully
       kv_service:
         condition: service_started
+      secret_service:
+        condition: service_started
       script_service:
         condition: service_started
     environment:
@@ -284,7 +290,7 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
       - WEB_ORIGIN=${WEB_ORIGIN:-http://localhost:3000}
       # Development-only key, must match the worker's; a deployment sets its own.
-      - SECRET_ENCRYPTION_KEY=${SECRET_ENCRYPTION_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      - SECRET_SERVICE_URL=secret_service:3000
       # Dashboard dispatches and reads reach a worker's data plane
       # directly, cluster-internal only.
       - WORKER_GRPC_URL=worker_service:3100

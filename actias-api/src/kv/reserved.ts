@@ -7,9 +7,6 @@ import { BadRequestException } from '@nestjs/common';
  */
 export const RESERVED_NAMESPACE_PREFIX = '__';
 
-/** The reserved namespace holding a project's encrypted secrets. */
-export const SECRETS_NAMESPACE = '__secrets';
-
 /**
  * Rejects requests addressing a reserved namespace, so platform data (the
  * encrypted secrets among it) is unreachable through the kv api.

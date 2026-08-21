@@ -30,6 +30,10 @@ pub mod proto {
         tonic::include_proto!("node_registry");
     }
 
+    pub mod secret_service {
+        tonic::include_proto!("secret_service");
+    }
+
     pub mod worker_data {
         tonic::include_proto!("worker_data");
     }

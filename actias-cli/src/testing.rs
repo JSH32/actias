@@ -1,7 +1,7 @@
 //! `actias test`: runs a project's `tests/*.lua` on the same runtime the
-//! platform uses, with the kv service faked in memory behind the identical
-//! grpc surface and secrets encrypted into it exactly as production stores
-//! them. What passes here runs the same way on a worker.
+//! platform uses, with the kv and secret services faked in memory behind
+//! the identical grpc surfaces. What passes here runs the same way on a
+//! worker.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -10,9 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use actias_worker_core::proto::kv_service::kv_service_client::KvServiceClient;
 use actias_worker_core::proto::script_service::{Revision, Script};
+use actias_worker_core::proto::secret_service::secret_service_client::SecretServiceClient;
 use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
-use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit};
 use base64::Engine;
 use colored::*;
 
@@ -23,6 +22,10 @@ const TEST_PROJECT: &str = "test-project";
 
 mod proto {
     tonic::include_proto!("kv_service");
+}
+
+mod secret_proto {
+    tonic::include_proto!("secret_service");
 }
 
 /// Outcome of one `actias test` run.
@@ -178,27 +181,75 @@ impl proto::kv_service_server::KvService for FakeKv {
     }
 }
 
-/// 32 random bytes without pulling a rng dependency: uuids are os-random.
-fn random_bytes<const N: usize>() -> [u8; N] {
-    let mut bytes = Vec::new();
-    while bytes.len() < N {
-        bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
-    }
-    bytes[..N].try_into().expect("sliced to size")
+/// The secret service over a hash map: resolution only, values plaintext,
+/// because the real service owns the crypto and a test owns its values.
+#[derive(Default, Clone)]
+struct FakeSecrets {
+    values: Arc<Mutex<HashMap<String, String>>>,
 }
 
-/// Encrypts one secret value the way the api stores it, so the runtime's
-/// real decryption path runs in tests too.
-fn encrypt_secret(key: &[u8; 32], value: &str) -> Result<String, String> {
-    let nonce: [u8; 12] = random_bytes();
-    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| e.to_string())?;
-    let ciphertext = cipher
-        .encrypt(&nonce.into(), value.as_bytes())
-        .map_err(|e| e.to_string())?;
+#[tonic::async_trait]
+impl secret_proto::secret_service_server::SecretService for FakeSecrets {
+    async fn resolve_secret(
+        &self,
+        request: tonic::Request<secret_proto::ResolveSecretRequest>,
+    ) -> Result<tonic::Response<secret_proto::ResolvedSecret>, tonic::Status> {
+        let name = request.into_inner().name;
+        match self.values.lock().expect("no other holder").get(&name) {
+            Some(value) => Ok(tonic::Response::new(secret_proto::ResolvedSecret {
+                value: value.clone(),
+                version: 1,
+            })),
+            None => Err(tonic::Status::not_found("no secret by that name")),
+        }
+    }
 
-    let mut data = nonce.to_vec();
-    data.extend_from_slice(&ciphertext);
-    Ok(base64::engine::general_purpose::STANDARD.encode(data))
+    // The management plane belongs to the real service; tests only resolve.
+    async fn set_secret(
+        &self,
+        _: tonic::Request<secret_proto::SetSecretRequest>,
+    ) -> Result<tonic::Response<secret_proto::SecretMeta>, tonic::Status> {
+        Err(tonic::Status::unimplemented("tests only resolve"))
+    }
+
+    async fn delete_secret(
+        &self,
+        _: tonic::Request<secret_proto::DeleteSecretRequest>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        Err(tonic::Status::unimplemented("tests only resolve"))
+    }
+
+    async fn list_secrets(
+        &self,
+        _: tonic::Request<secret_proto::ListSecretsRequest>,
+    ) -> Result<tonic::Response<secret_proto::ListSecretsResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("tests only resolve"))
+    }
+}
+
+/// Serves one fake secret store on a loopback port; same lifetime story
+/// as [`serve_fake_kv`].
+async fn serve_fake_secrets(
+    values: HashMap<String, String>,
+) -> Result<SecretServiceClient<tonic::transport::Channel>, String> {
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .map_err(|e| e.to_string())?;
+    let address = listener.local_addr().map_err(|e| e.to_string())?;
+
+    tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(
+                secret_proto::secret_service_server::SecretServiceServer::new(FakeSecrets {
+                    values: Arc::new(Mutex::new(values)),
+                }),
+            )
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+    );
+
+    SecretServiceClient::connect(format!("http://{address}"))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Serves one fake store on a loopback port and hands back a connected
@@ -328,7 +379,7 @@ fn install_workflow_testing(
     runtime: &ActiasRuntime,
     prepared: Arc<PreparedRevision>,
     client: KvServiceClient<tonic::transport::Channel>,
-    key: [u8; 32],
+    secret_client: SecretServiceClient<tonic::transport::Channel>,
 ) -> Result<(), String> {
     use actias_worker_core::platform::workflow::WfShared;
     use mlua::LuaSerdeExt;
@@ -345,6 +396,7 @@ fn install_workflow_testing(
                 let host = start_host.clone();
                 let prepared = prepared.clone();
                 let client = client.clone();
+                let secret_client = secret_client.clone();
                 async move {
                     let input: serde_json::Value = lua.from_value(input)?;
                     let mut fakes = std::collections::HashMap::new();
@@ -367,7 +419,7 @@ fn install_workflow_testing(
                         )
                         .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?,
                         None,
-                        Some(Arc::new(key)),
+                        Some(secret_client.clone()),
                         None,
                         actias_worker_core::runtime::VmProfile::Workflow(shared.clone()),
                     )
@@ -534,7 +586,6 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
 
     let prepared = prepare(config)?;
     let secrets = test_secrets(config)?;
-    let key: [u8; 32] = random_bytes();
 
     let mut summary = TestSummary {
         passed: 0,
@@ -552,19 +603,9 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
         // Each file gets its own store and vm, so no state leaks between
         // files; cases within one file share both on purpose.
         let store = FakeKv::default();
-        for (secret_name, value) in &secrets {
-            store.insert(proto::Pair {
-                project_id: TEST_PROJECT.to_owned(),
-                namespace: actias_common::naming::SECRETS_NAMESPACE.to_owned(),
-                r#type: proto::ValueType::String as i32,
-                ttl: None,
-                key: secret_name.clone(),
-                value: encrypt_secret(&key, value)?,
-            });
-        }
-
         let client = serve_fake_kv(store).await?;
         let client_for_workflows = client.clone();
+        let secret_client = serve_fake_secrets(secrets.clone()).await?;
         let egress = actias_worker_core::egress::EgressClient::new(
             actias_worker_core::egress::EgressPolicy::new([], false),
         )
@@ -575,7 +616,7 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
             client,
             egress,
             None,
-            Some(Arc::new(key)),
+            Some(secret_client.clone()),
             None,
         )
         .await
@@ -596,7 +637,12 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
             .exec()
             .map_err(|e| e.to_string())?;
 
-        install_workflow_testing(&runtime, prepared.clone(), client_for_workflows, key)?;
+        install_workflow_testing(
+            &runtime,
+            prepared.clone(),
+            client_for_workflows,
+            secret_client,
+        )?;
 
         // The handler under test, dispatched exactly as a request would be.
         if let Ok(listener) = runtime.listener(ActiasRuntime::FETCH_EVENT) {

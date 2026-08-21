@@ -89,16 +89,13 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )
     .await?;
 
-    use base64::Engine;
-    let secrets_key = config.secret_encryption_key.map(|encoded| {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .expect("SECRET_ENCRYPTION_KEY is not valid base64");
-        let key: [u8; actias_worker_core::extensions::secrets::KEY_LEN] = bytes
-            .try_into()
-            .expect("SECRET_ENCRYPTION_KEY must decode to exactly 32 bytes");
-        std::sync::Arc::new(key)
-    });
+    let secret_client = match config.secret_service_uri {
+        Some(uri) => Some(
+            actias_worker_core::proto::secret_service::secret_service_client::SecretServiceClient::connect(uri)
+                .await?,
+        ),
+        None => None,
+    };
 
     // Object storage must exist before the first object call needs it.
     std::fs::create_dir_all(&config.object_data_dir)?;
@@ -133,7 +130,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )),
         egress,
         redis: Some(redis),
-        secrets_key,
+        secret_client,
         request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
         in_flight,
         objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),

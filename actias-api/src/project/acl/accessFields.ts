@@ -31,12 +31,20 @@ export enum AccessFields {
   DATABASE_WRITE = 1 << 8,
   DATABASE_RESOURCE = DATABASE_READ | DATABASE_WRITE,
   /**
+   * Ability to see a project's secret names (read) or set, rotate and
+   * delete them (write). Values are never readable by anyone.
+   */
+  SECRETS_READ = 1 << 9,
+  SECRETS_WRITE = 1 << 10,
+  SECRETS_RESOURCE = SECRETS_READ | SECRETS_WRITE,
+  /**
    * All permissions for all resource types.
    */
   FULL = SCRIPT_RESOURCE |
     PERMISSIONS_RESOURCE |
     KV_RESOURCE |
-    DATABASE_RESOURCE,
+    DATABASE_RESOURCE |
+    SECRETS_RESOURCE,
 }
 
 export const ACCESS_KEYS = Object.keys(AccessFields).filter(

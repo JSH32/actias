@@ -1,5 +1,6 @@
 //! Manage a project's secrets. Values go up once and never come back; the
-//! api stores them encrypted and only the worker decrypts them.
+//! secret service stores them encrypted, versioned per rotation, and only
+//! worker resolution ever sees plaintext.
 
 use colored::Colorize;
 use inquire::Password;
@@ -34,7 +35,7 @@ pub async fn handle(client: &Client, project: &str, operation: &SecretOperations
             println!("🔐 Secret {} set.", name.purple());
         }
         SecretOperations::List => {
-            let names = client
+            let secrets = client
                 .list_secrets()
                 .project(project)
                 .send()
@@ -42,11 +43,15 @@ pub async fn handle(client: &Client, project: &str, operation: &SecretOperations
                 .map_err(progenitor_error)?
                 .into_inner();
 
-            if names.is_empty() {
+            if secrets.is_empty() {
                 println!("No secrets set.");
             }
-            for name in names {
-                println!("🔐 {}", name.purple());
+            for secret in secrets {
+                println!(
+                    "🔐 {} {}",
+                    secret.name.purple(),
+                    format!("v{}", secret.version as i64).dimmed()
+                );
             }
         }
         SecretOperations::Delete { name } => {

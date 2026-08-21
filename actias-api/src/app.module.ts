@@ -10,6 +10,7 @@ import { AspectLogger } from './util/aspectlogger';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ResourcesModule } from './resources/resources.module';
 import { KvModule } from './kv/kv.module';
+import { SecretsModule } from './secrets/secrets.module';
 import { AdminModule } from './admin/admin.module';
 
 @Module({
@@ -24,6 +25,7 @@ import { AdminModule } from './admin/admin.module';
     AuthModule,
     ProjectModule,
     KvModule,
+    SecretsModule,
     AdminModule,
     ResourcesModule,
   ],

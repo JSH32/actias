@@ -3,11 +3,10 @@ export default () => ({
   externalServices: {
     scriptServiceUri: process.env.SCRIPT_SERVICE_URL,
     kvServiceUri: process.env.KV_SERVICE_URL,
+    secretServiceUri: process.env.SECRET_SERVICE_URL,
   },
   databaseUrl: process.env.DATABASE_URL,
   jwtKey: process.env.JWT_KEY,
-  // Base64 AES-256 key encrypting project secrets; unset disables secrets.
-  secretEncryptionKey: process.env.SECRET_ENCRYPTION_KEY,
   webOrigin: process.env.WEB_ORIGIN,
   // Cluster-internal worker access for dashboard work: object dispatch
   // and typed reads over the WorkerData grpc service. Same secret the

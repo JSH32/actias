@@ -72,6 +72,8 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         objects: declared.objects,
         databases: declared.databases,
         queues: declared.queues,
+        workflows: declared.workflows,
+        workflow_steps: declared.workflow_steps,
     });
 
     let mut bundle = script_config.to_bundle().map_err(Error::Script)?;

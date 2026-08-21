@@ -111,7 +111,11 @@ pub struct AppState {
     /// Carries script log lines out; without it they stay in worker tracing.
     pub redis: Option<redis::aio::ConnectionManager>,
     /// Decrypts stored secrets; without it `secret` declarations error.
-    pub secrets_key: Option<Arc<[u8; actias_worker_core::extensions::secrets::KEY_LEN]>>,
+    pub secret_client: Option<
+        actias_worker_core::proto::secret_service::secret_service_client::SecretServiceClient<
+            tonic::transport::Channel,
+        >,
+    >,
     pub request_timeout: Duration,
     /// Requests currently executing; the heartbeat reports it as load.
     pub in_flight: Arc<AtomicU32>,
@@ -831,7 +835,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         kv_client,
         state.egress.clone(),
         logs,
-        state.secrets_key.clone(),
+        state.secret_client.clone(),
         Some(10),
     )
     .await?;
@@ -882,7 +886,7 @@ pub(crate) mod test_state {
             blobs: unreachable_blobs(),
             egress: test_egress(),
             redis: None,
-            secrets_key: None,
+            secret_client: None,
             request_timeout: Duration::from_secs(5),
             in_flight: Arc::default(),
             objects: Arc::default(),
