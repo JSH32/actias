@@ -82,9 +82,10 @@ local dofile: (string) -> any = nil :: any
 local require: (string) -> any = nil :: any
 local http: any = nil :: any
 local crypto: any = nil :: any
+local Jwt: any = nil :: any
 local jwt: any = nil :: any
 local script: any = nil :: any
-local _ = kv and secret and on and object and objects and database and queue and workflow and workflows and json and log and uuid and getfile and dofile and require and http and crypto and jwt and script
+local _ = kv and secret and on and object and objects and database and queue and workflow and workflows and json and log and uuid and getfile and dofile and require and http and crypto and jwt and Jwt and script
 "#;
 
 /// Runs the strict type check over the project's bundle.
