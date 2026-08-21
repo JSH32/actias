@@ -834,6 +834,17 @@ function Workbench() {
                   language={language}
                   original={diffFiles[activePath] ?? ''}
                   modified={files[activePath] ?? ''}
+                  // Stable model uris + keep-alive: the library otherwise
+                  // disposes both TextModels on unmount while the
+                  // DiffEditorWidget still holds them, which monaco 0.55
+                  // rejects ("TextModel got disposed before
+                  // DiffEditorWidget model got reset"). Kept models are
+                  // reused by uri on the next mount, so the set stays
+                  // bounded by the file list.
+                  originalModelPath={`diff-original:///${activePath}`}
+                  modifiedModelPath={`diff-modified:///${activePath}`}
+                  keepCurrentOriginalModel
+                  keepCurrentModifiedModel
                   theme="actias-night"
                   beforeMount={defineTheme}
                   options={{ readOnly: true, renderSideBySide: true }}
