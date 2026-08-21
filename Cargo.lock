@@ -105,6 +105,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "actias-secret-service"
+version = "0.1.0"
+dependencies = [
+ "actias-common",
+ "aes-gcm",
+ "base64 0.23.1",
+ "getrandom 0.3.2",
+ "prost 0.13.5",
+ "prost-build",
+ "sqlx",
+ "testcontainers-modules",
+ "tokio",
+ "tonic 0.13.0",
+ "tonic-build",
+ "zeroize",
+]
+
+[[package]]
 name = "actias-worker"
 version = "0.1.0"
 dependencies = [
