@@ -22,6 +22,11 @@ pub struct SecretsExtension {
     pub project_id: String,
     /// Script whose vms declare; audit metadata on every resolution.
     pub script_id: String,
+    /// A workflow run's pins: the first resolution of a name records the
+    /// version it saw, every later vm build resolves exactly that
+    /// version, and a rotation mid-run cannot diverge replay. [`None`]
+    /// in every other vm resolves heads.
+    pub pins: Option<std::sync::Arc<crate::platform::workflow::SecretPins>>,
 }
 
 impl LuaExtension for SecretsExtension {
@@ -37,6 +42,7 @@ impl LuaExtension for SecretsExtension {
         let secret_client = self.secret_client.clone();
         let project_id = self.project_id.clone();
         let script_id = self.script_id.clone();
+        let pins = self.pins.clone();
 
         // `local token = secret "name"`: the handle is the string value
         // itself, resolved at declaration.
@@ -44,6 +50,7 @@ impl LuaExtension for SecretsExtension {
             let secret_client = secret_client.clone();
             let project_id = project_id.clone();
             let script_id = script_id.clone();
+            let pins = pins.clone();
 
             async move {
                 crate::runtime::ActiasRuntime::assert_declaration_phase(&lua, "secret")?;
@@ -60,17 +67,31 @@ impl LuaExtension for SecretsExtension {
                     ));
                 };
 
+                let pinned = pins.as_ref().and_then(|pins| pins.version_for(&name));
                 let resolved = secret_client
                     .resolve_secret(ResolveSecretRequest {
                         project_id,
                         name: name.clone(),
-                        version: 0,
+                        // 0 is the head; a pinned run asks for exactly the
+                        // version its first resolution saw.
+                        version: pinned.unwrap_or(0),
                         script_id,
                     })
                     .await;
 
                 match resolved {
-                    Ok(resolved) => Ok(resolved.into_inner().value),
+                    Ok(resolved) => {
+                        let resolved = resolved.into_inner();
+                        if let Some(pins) = pins
+                            && pinned.is_none()
+                        {
+                            // Durable before use: an unpersisted pin could
+                            // replay as a different value.
+                            pins.record(&name, resolved.version)
+                                .map_err(mlua::Error::RuntimeError)?;
+                        }
+                        Ok(resolved.value)
+                    }
                     Err(status) if status.code() == Code::NotFound => {
                         Err(mlua::Error::RuntimeError(format!(
                             "Secret '{name}' is not set for this project."

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 /// The journal schema's version cell value; moves like the queue's did
 /// (v1 to v2 rebuild proved the mechanism).
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// The current entry format; stamped per row, not per file, so a tail
 /// written by newer code coexists with an older head.
@@ -27,6 +27,16 @@ const CREATE_JOURNAL: &str = "CREATE TABLE IF NOT EXISTS __actias_wf_journal (
         kind TEXT NOT NULL,
         data TEXT NOT NULL,
         format INTEGER NOT NULL
+    )";
+
+/// A run keeps the credentials it started with: `secret "name"` pins the
+/// version its first resolution returned, and every later vm build
+/// resolves exactly that version. Versions only; values never touch the
+/// journal file, and the secret service keeps pinned versions resolvable
+/// through rotation and delete.
+const CREATE_SECRET_PINS: &str = "CREATE TABLE IF NOT EXISTS __actias_wf_secrets (
+        name TEXT PRIMARY KEY,
+        version INTEGER NOT NULL
     )";
 
 /// Everything a journal row can record. Replay must understand every
@@ -107,6 +117,12 @@ pub fn ensure_schema(storage: &mut crate::storage::SqliteStorage) -> Result<(), 
         storage
             .platform()
             .execute(CREATE_JOURNAL, [])
+            .map_err(|e| e.to_string())?;
+    }
+    if version <= 1 {
+        storage
+            .platform()
+            .execute(CREATE_SECRET_PINS, [])
             .map_err(|e| e.to_string())?;
     }
     storage.set_schema_version(SCHEMA_VERSION)
@@ -306,7 +322,10 @@ mod tests {
                 None,
                 None,
                 None,
-                VmProfile::Workflow(shared.clone()),
+                VmProfile::Workflow {
+                    source: shared.clone(),
+                    secret_pins: None,
+                },
             )
             .await
             .expect("workflow vm builds");
@@ -984,6 +1003,53 @@ mod tests {
     }
 
     #[test]
+    fn secret_pins_round_trip_and_survive_reload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("wf.db");
+
+        let pins = SecretPins::load(&file).expect("loads fresh");
+        assert_eq!(pins.version_for("stripe-live"), None);
+        pins.record("stripe-live", 3).expect("records");
+        assert_eq!(pins.version_for("stripe-live"), Some(3));
+
+        // A later vm build loads the same pins from the file; a second
+        // record of the same name never moves the pin.
+        let pins = SecretPins::load(&file).expect("reloads");
+        assert_eq!(pins.version_for("stripe-live"), Some(3));
+        pins.record("stripe-live", 9).expect("ignored");
+        let pins = SecretPins::load(&file).expect("reloads again");
+        assert_eq!(pins.version_for("stripe-live"), Some(3));
+    }
+
+    #[test]
+    fn a_version_one_file_gains_the_pin_table_through_the_ladder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("wf.db");
+
+        // A file the previous format wrote: journal table, version 1.
+        {
+            let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
+            storage
+                .platform()
+                .execute(CREATE_JOURNAL, [])
+                .expect("creates journal");
+            storage.set_schema_version(1).expect("stamps v1");
+        }
+
+        let pins = SecretPins::load(&file).expect("ladder upgrades");
+        pins.record("api-token", 1).expect("records");
+
+        let mut storage = crate::storage::SqliteStorage::open(&file).expect("reopens");
+        assert_eq!(storage.schema_version().expect("reads"), SCHEMA_VERSION);
+        assert!(
+            storage
+                .table_exists("__actias_wf_journal")
+                .expect("journal check"),
+            "the journal survives the upgrade"
+        );
+    }
+
+    #[test]
     fn ensure_schema_is_idempotent_and_versioned() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut storage = open(&dir);
@@ -1008,6 +1074,78 @@ pub fn pinned_revision(file: &std::path::Path) -> Option<String> {
         return None;
     }
     first.data["revision"].as_str().map(str::to_owned)
+}
+
+/// The run's secret pins, loaded from its journal file before the vm
+/// builds (which is why the file opens before the task does): the map
+/// answers declarations synchronously, and a first resolution persists
+/// its pin before the value is ever used.
+pub struct SecretPins {
+    file: std::path::PathBuf,
+    known: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+}
+
+impl SecretPins {
+    /// Opens the instance file (creating a fresh one when the run has
+    /// never lived here) and loads every pin it holds.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn load(file: &std::path::Path) -> Result<Self, String> {
+        let mut storage = crate::storage::SqliteStorage::open(file)?;
+        ensure_schema(&mut storage)?;
+
+        let mut known = std::collections::HashMap::new();
+        let connection = storage.platform();
+        let mut statement = connection
+            .prepare("SELECT name, version FROM __actias_wf_secrets")
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (name, version) = row.map_err(|e| e.to_string())?;
+            known.insert(name, version as u64);
+        }
+
+        Ok(SecretPins {
+            file: file.to_owned(),
+            known: std::sync::Mutex::new(known),
+        })
+    }
+
+    /// The pinned version, when the run has resolved this name before.
+    pub fn version_for(&self, name: &str) -> Option<u64> {
+        self.known
+            .lock()
+            .expect("no poisoned lock")
+            .get(name)
+            .copied()
+    }
+
+    /// Persists a first resolution's pin before its value is used; a pin
+    /// that cannot persist fails the declaration, because a replay that
+    /// resolved differently would diverge.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
+    pub fn record(&self, name: &str, version: u64) -> Result<(), String> {
+        let mut storage = crate::storage::SqliteStorage::open(&self.file)?;
+        storage
+            .platform()
+            .execute(
+                "INSERT OR IGNORE INTO __actias_wf_secrets (name, version) VALUES (?, ?)",
+                rusqlite::params![name, version as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        self.known
+            .lock()
+            .expect("no poisoned lock")
+            .insert(name.to_owned(), version);
+        Ok(())
+    }
 }
 
 /// Refuses effects outside step bodies in workflow vms; a no-op in

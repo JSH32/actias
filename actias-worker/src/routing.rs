@@ -316,7 +316,13 @@ impl ObjectRouting {
 
                 let runtime = if workflow {
                     // The enforced-determinism profile: the shared cell is
-                    // both the replay cursor and the shim source.
+                    // both the replay cursor and the shim source. The
+                    // instance file opens BEFORE the vm builds, because
+                    // `secret` declarations run during construction and
+                    // must see the run's pins; the task reopens the same
+                    // file afterwards.
+                    let pins = actias_worker_core::platform::workflow::SecretPins::load(&file)
+                        .map_err(mlua::Error::RuntimeError)?;
                     let shared =
                         Arc::new(actias_worker_core::platform::workflow::WfShared::default());
                     let runtime = ActiasRuntime::with_profile(
@@ -326,7 +332,10 @@ impl ObjectRouting {
                         logs,
                         routing.state.secret_client.clone(),
                         None,
-                        actias_worker_core::runtime::VmProfile::Workflow(shared.clone()),
+                        actias_worker_core::runtime::VmProfile::Workflow {
+                            source: shared.clone(),
+                            secret_pins: Some(Arc::new(pins)),
+                        },
                     )
                     .await?;
                     runtime.set_app_data(shared);
