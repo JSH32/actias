@@ -324,7 +324,7 @@ impl ObjectRouting {
                         routing.state.clients.kv.clone(),
                         routing.state.egress.clone(),
                         logs,
-                        routing.state.secrets_key.clone(),
+                        routing.state.secret_client.clone(),
                         None,
                         actias_worker_core::runtime::VmProfile::Workflow(shared.clone()),
                     )
@@ -337,7 +337,7 @@ impl ObjectRouting {
                         routing.state.clients.kv.clone(),
                         routing.state.egress.clone(),
                         logs,
-                        routing.state.secrets_key.clone(),
+                        routing.state.secret_client.clone(),
                         None,
                     )
                     .await?

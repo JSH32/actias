@@ -19,6 +19,7 @@ COPY ./protobufs ./protobufs
 COPY ./actias-common ./actias-common
 COPY ./actias-declarations ./actias-declarations
 COPY ./actias-script-service ./actias-script-service
+COPY ./actias-secret-service ./actias-secret-service
 COPY ./actias-worker ./actias-worker
 COPY ./actias-worker-core ./actias-worker-core
 COPY ./actias-kv ./actias-kv

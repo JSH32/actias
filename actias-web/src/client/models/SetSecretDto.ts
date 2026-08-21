@@ -4,7 +4,7 @@
 
 export type SetSecretDto = {
     /**
-     * The plaintext value; it is encrypted before storage and never returned.
+     * The plaintext value; encrypted at rest by the secret service and never returned.
      */
     value: string;
 };

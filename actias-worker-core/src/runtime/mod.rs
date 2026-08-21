@@ -6,6 +6,7 @@ use crate::{
         bundle::{Bundle, File, FileKind},
         kv_service::kv_service_client::KvServiceClient,
         script_service::{Revision, Script},
+        secret_service::secret_service_client::SecretServiceClient,
     },
     runtime::extension::standard_extensions::{JsonExtension, UuidExtension},
 };
@@ -635,14 +636,14 @@ impl ActiasRuntime {
     /// - `kv_client` - Key value service client, allows the script to access/store persistent data.
     /// - `egress` - Guarded http client for the script's outbound requests.
     /// - `logs` - Where the script's log output goes; [`None`] keeps it in worker tracing only.
-    /// - `secrets_key` - Key decrypting stored secrets; [`None`] makes `secret` declarations error.
+    /// - `secret_client` - Secret service resolving `secret` declarations; [`None`] makes them error.
     /// - `time_limit` - Total Time limit in seconds, this is based on seconds and will start when [`start_timer`] is called
     pub async fn new(
         prepared: Arc<PreparedRevision>,
         kv_client: KvServiceClient<tonic::transport::Channel>,
         egress: crate::egress::EgressClient,
         logs: Option<crate::extensions::log::LogPublisher>,
-        secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
+        secret_client: Option<SecretServiceClient<tonic::transport::Channel>>,
         time_limit: Option<u64>,
     ) -> mlua::Result<Self> {
         Self::with_profile(
@@ -650,7 +651,7 @@ impl ActiasRuntime {
             kv_client,
             egress,
             logs,
-            secrets_key,
+            secret_client,
             time_limit,
             VmProfile::Standard,
         )
@@ -668,7 +669,7 @@ impl ActiasRuntime {
         kv_client: KvServiceClient<tonic::transport::Channel>,
         egress: crate::egress::EgressClient,
         logs: Option<crate::extensions::log::LogPublisher>,
-        secrets_key: Option<Arc<[u8; crate::extensions::secrets::KEY_LEN]>>,
+        secret_client: Option<SecretServiceClient<tonic::transport::Channel>>,
         time_limit: Option<u64>,
         profile: VmProfile,
     ) -> mlua::Result<Self> {
@@ -727,9 +728,9 @@ impl ActiasRuntime {
                     project_id: prepared.script.project_id.clone(),
                 },
                 &crate::extensions::secrets::SecretsExtension {
-                    kv_client,
+                    secret_client,
                     project_id: prepared.script.project_id.clone(),
-                    key: secrets_key,
+                    script_id: prepared.script.id.clone(),
                 },
                 &crate::extensions::log::LogExtension { publisher: logs },
                 &JwtExtension,
@@ -755,9 +756,9 @@ impl ActiasRuntime {
                         project_id: prepared.script.project_id.clone(),
                     },
                     &crate::extensions::secrets::SecretsExtension {
-                        kv_client,
+                        secret_client,
                         project_id: prepared.script.project_id.clone(),
-                        key: secrets_key,
+                        script_id: prepared.script.id.clone(),
                     },
                     &crate::extensions::log::LogExtension { publisher: logs },
                     &crate::extensions::objects::ObjectExtension,

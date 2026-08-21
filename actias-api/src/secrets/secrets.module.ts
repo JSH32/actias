@@ -1,10 +1,10 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { KvController } from './kv.controller';
 import { ClientsModule } from '@nestjs/microservices';
-import { grpcClient, protoBasePath } from 'src/util/grpc';
 import { AuthModule } from 'src/auth/auth.module';
 import { AclModule } from 'src/project/acl/acl.module';
 import { ProjectModule } from 'src/project/project.module';
+import { grpcClient, protoBasePath } from 'src/util/grpc';
+import { SecretsController } from './secrets.controller';
 
 @Module({
   imports: [
@@ -13,14 +13,16 @@ import { ProjectModule } from 'src/project/project.module';
     forwardRef(() => ProjectModule),
     ClientsModule.registerAsync(
       grpcClient(
-        'KV_SERVICE',
-        'kv_service',
-        ['google/protobuf/empty.proto', `${protoBasePath}/kv_service.proto`],
-        'externalServices.kvServiceUri',
+        'SECRET_SERVICE',
+        'secret_service',
+        [
+          'google/protobuf/empty.proto',
+          `${protoBasePath}/secret_service.proto`,
+        ],
+        'externalServices.secretServiceUri',
       ),
     ),
   ],
-  exports: [ClientsModule],
-  controllers: [KvController],
+  controllers: [SecretsController],
 })
-export class KvModule {}
+export class SecretsModule {}

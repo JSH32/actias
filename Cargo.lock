@@ -9,7 +9,6 @@ dependencies = [
  "actias-common",
  "actias-declarations",
  "actias-worker-core",
- "aes-gcm",
  "base64 0.22.1",
  "blake3",
  "bytes",
@@ -152,10 +151,8 @@ name = "actias-worker-core"
 version = "0.1.0"
 dependencies = [
  "actias-common",
- "aes-gcm",
  "argon2",
  "axum",
- "base64 0.23.1",
  "blake3",
  "chrono",
  "cron",
