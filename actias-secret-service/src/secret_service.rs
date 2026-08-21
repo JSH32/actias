@@ -3,9 +3,14 @@
 //! immutable rows; every mutation is an insert or a tombstone.
 
 use actias_common::tracing::{error, info};
-use sqlx::{Pool, Postgres, Row};
+use sea_orm::sea_query::Expr;
+use sea_orm::{
+    ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
+    QuerySelect, SqlErr,
+};
 use tonic::{Request, Response, Status};
 
+use crate::entity;
 use crate::envelope::{CryptoError, Envelope};
 use crate::proto_secret_service::secret_service_server::SecretService as SecretServiceTrait;
 use crate::proto_secret_service::{
@@ -14,7 +19,7 @@ use crate::proto_secret_service::{
 };
 
 pub struct SecretService {
-    database: Pool<Postgres>,
+    database: DatabaseConnection,
     envelope: Envelope,
 }
 
@@ -40,14 +45,33 @@ fn require(field: &'static str, value: &str) -> Result<(), Status> {
 
 /// One storage failure surface: the caller hears "storage failed", the log
 /// hears why.
-fn storage_error(context: &'static str, err: sqlx::Error) -> Status {
+fn storage_error(context: &'static str, err: sea_orm::DbErr) -> Status {
     error!("{context}: {err}");
     Status::internal("storage failed")
 }
 
+/// Rows of one name in one project, newest first when ordered.
+fn by_name(project_id: &str, name: &str) -> sea_orm::Select<entity::Entity> {
+    entity::Entity::find()
+        .filter(entity::Column::ProjectId.eq(project_id))
+        .filter(entity::Column::Name.eq(name))
+}
+
 impl SecretService {
-    pub fn new(database: Pool<Postgres>, envelope: Envelope) -> Self {
+    pub fn new(database: DatabaseConnection, envelope: Envelope) -> Self {
         SecretService { database, envelope }
+    }
+
+    /// The newest version row of a name, tombstoned or not.
+    async fn head(
+        &self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<Option<entity::Model>, sea_orm::DbErr> {
+        by_name(project_id, name)
+            .order_by_desc(entity::Column::Version)
+            .one(&self.database)
+            .await
     }
 }
 
@@ -61,43 +85,45 @@ impl SecretServiceTrait for SecretService {
         require("project_id", &request.project_id)?;
         require("name", &request.name)?;
 
-        let sealed = self
-            .envelope
-            .seal(request.value.as_bytes())
-            .map_err(|err| {
-                error!("sealing failed: {err}");
-                Status::internal("encryption failed")
-            })?;
         let created_ms = unix_now_ms();
-        let created_by = (!request.created_by.is_empty()).then_some(&request.created_by);
+        let created_by = (!request.created_by.is_empty()).then(|| request.created_by.clone());
 
         // The next version is read-then-insert; a concurrent rotation of the
         // same name trips the primary key and simply retries.
         for _ in 0..3 {
-            let inserted = sqlx::query(
-                "INSERT INTO secret_versions \
-                     (project_id, name, version, kek_id, dek_wrapped, nonce, ciphertext, \
-                      created_ms, created_by) \
-                 VALUES ($1, $2, \
-                     (SELECT COALESCE(MAX(version), 0) + 1 FROM secret_versions \
-                      WHERE project_id = $1 AND name = $2), \
-                     $3, $4, $5, $6, $7, $8) \
-                 RETURNING version",
-            )
-            .bind(&request.project_id)
-            .bind(&request.name)
-            .bind(&sealed.kek_id)
-            .bind(&sealed.dek_wrapped)
-            .bind(&sealed.nonce)
-            .bind(&sealed.ciphertext)
-            .bind(created_ms)
-            .bind(created_by)
-            .fetch_one(&self.database)
+            let head = self
+                .head(&request.project_id, &request.name)
+                .await
+                .map_err(|err| storage_error("secret head read failed", err))?;
+            let version = head.map_or(0, |row| row.version) + 1;
+
+            // A fresh seal per attempt keeps data keys single-use even
+            // across retries.
+            let sealed = self
+                .envelope
+                .seal(request.value.as_bytes())
+                .map_err(|err| {
+                    error!("sealing failed: {err}");
+                    Status::internal("encryption failed")
+                })?;
+
+            let inserted = entity::Entity::insert(entity::ActiveModel {
+                project_id: Set(request.project_id.clone()),
+                name: Set(request.name.clone()),
+                version: Set(version),
+                kek_id: Set(sealed.kek_id),
+                dek_wrapped: Set(sealed.dek_wrapped),
+                nonce: Set(sealed.nonce),
+                ciphertext: Set(sealed.ciphertext),
+                created_ms: Set(created_ms),
+                created_by: Set(created_by.clone()),
+                deleted_ms: Set(None),
+            })
+            .exec(&self.database)
             .await;
 
             match inserted {
-                Ok(row) => {
-                    let version: i64 = row.get("version");
+                Ok(_) => {
                     info!(
                         "secret set: project {} name {} version {version}",
                         request.project_id, request.name
@@ -109,8 +135,10 @@ impl SecretServiceTrait for SecretService {
                         created_by: request.created_by,
                     }));
                 }
-                Err(sqlx::Error::Database(db)) if db.is_unique_violation() => continue,
-                Err(err) => return Err(storage_error("secret insert failed", err)),
+                Err(err) => match err.sql_err() {
+                    Some(SqlErr::UniqueConstraintViolation(_)) => continue,
+                    _ => return Err(storage_error("secret insert failed", err)),
+                },
             }
         }
 
@@ -125,20 +153,27 @@ impl SecretServiceTrait for SecretService {
         require("project_id", &request.project_id)?;
         require("name", &request.name)?;
 
-        let tombstoned = sqlx::query(
-            "UPDATE secret_versions SET deleted_ms = $3 \
-             WHERE project_id = $1 AND name = $2 AND deleted_ms IS NULL \
-               AND version = (SELECT MAX(version) FROM secret_versions \
-                              WHERE project_id = $1 AND name = $2)",
-        )
-        .bind(&request.project_id)
-        .bind(&request.name)
-        .bind(unix_now_ms())
-        .execute(&self.database)
-        .await
-        .map_err(|err| storage_error("secret tombstone failed", err))?;
+        let head = self
+            .head(&request.project_id, &request.name)
+            .await
+            .map_err(|err| storage_error("secret head read failed", err))?;
+        let Some(head) = head.filter(|row| row.deleted_ms.is_none()) else {
+            return Err(Status::not_found("no secret by that name"));
+        };
 
-        if tombstoned.rows_affected() == 0 {
+        // Tombstone exactly the head we read; a rotation racing past it
+        // leaves the newer head live, which is the rotation winning.
+        let tombstoned = entity::Entity::update_many()
+            .col_expr(entity::Column::DeletedMs, Expr::value(unix_now_ms()))
+            .filter(entity::Column::ProjectId.eq(&request.project_id))
+            .filter(entity::Column::Name.eq(&request.name))
+            .filter(entity::Column::Version.eq(head.version))
+            .filter(entity::Column::DeletedMs.is_null())
+            .exec(&self.database)
+            .await
+            .map_err(|err| storage_error("secret tombstone failed", err))?;
+
+        if tombstoned.rows_affected == 0 {
             return Err(Status::not_found("no secret by that name"));
         }
 
@@ -158,27 +193,23 @@ impl SecretServiceTrait for SecretService {
 
         // Head row per name, then live heads only: a tombstoned head hides
         // the name even though its older versions remain resolvable by pin.
-        let rows = sqlx::query(
-            "SELECT name, version, created_ms, created_by FROM ( \
-                 SELECT DISTINCT ON (name) name, version, created_ms, created_by, deleted_ms \
-                 FROM secret_versions WHERE project_id = $1 \
-                 ORDER BY name, version DESC \
-             ) heads WHERE deleted_ms IS NULL ORDER BY name",
-        )
-        .bind(&request.project_id)
-        .fetch_all(&self.database)
-        .await
-        .map_err(|err| storage_error("secret listing failed", err))?;
+        let heads = entity::Entity::find()
+            .filter(entity::Column::ProjectId.eq(&request.project_id))
+            .distinct_on([entity::Column::Name])
+            .order_by_asc(entity::Column::Name)
+            .order_by_desc(entity::Column::Version)
+            .all(&self.database)
+            .await
+            .map_err(|err| storage_error("secret listing failed", err))?;
 
-        let secrets = rows
+        let secrets = heads
             .into_iter()
+            .filter(|row| row.deleted_ms.is_none())
             .map(|row| SecretMeta {
-                name: row.get("name"),
-                version: row.get::<i64, _>("version") as u64,
-                created_ms: row.get("created_ms"),
-                created_by: row
-                    .get::<Option<String>, _>("created_by")
-                    .unwrap_or_default(),
+                name: row.name,
+                version: row.version as u64,
+                created_ms: row.created_ms,
+                created_by: row.created_by.unwrap_or_default(),
             })
             .collect();
 
@@ -196,29 +227,19 @@ impl SecretServiceTrait for SecretService {
         let row = if request.version == 0 {
             // The head: refused when tombstoned, so a deleted name stops
             // resolving even though its rows remain.
-            sqlx::query(
-                "SELECT version, kek_id, dek_wrapped, nonce, ciphertext, deleted_ms \
-                 FROM secret_versions WHERE project_id = $1 AND name = $2 \
-                 ORDER BY version DESC LIMIT 1",
-            )
-            .bind(&request.project_id)
-            .bind(&request.name)
-            .fetch_optional(&self.database)
-            .await
-            .map_err(|err| storage_error("secret head read failed", err))?
-            .filter(|row| row.get::<Option<i64>, _>("deleted_ms").is_none())
+            self.head(&request.project_id, &request.name)
+                .await
+                .map_err(|err| storage_error("secret head read failed", err))?
+                .filter(|row| row.deleted_ms.is_none())
         } else {
             // An exact pin: resolvable regardless of tombstones, because a
             // workflow run finishes with the credentials it started with.
-            sqlx::query(
-                "SELECT version, kek_id, dek_wrapped, nonce, ciphertext, deleted_ms \
-                 FROM secret_versions \
-                 WHERE project_id = $1 AND name = $2 AND version = $3",
-            )
-            .bind(&request.project_id)
-            .bind(&request.name)
-            .bind(request.version as i64)
-            .fetch_optional(&self.database)
+            entity::Entity::find_by_id((
+                request.project_id.clone(),
+                request.name.clone(),
+                request.version as i64,
+            ))
+            .one(&self.database)
             .await
             .map_err(|err| storage_error("secret version read failed", err))?
         };
@@ -227,15 +248,9 @@ impl SecretServiceTrait for SecretService {
             return Err(Status::not_found("no secret by that name"));
         };
 
-        let kek_id: String = row.get("kek_id");
         let plaintext = self
             .envelope
-            .open(
-                &kek_id,
-                &row.get::<Vec<u8>, _>("dek_wrapped"),
-                &row.get::<Vec<u8>, _>("nonce"),
-                &row.get::<Vec<u8>, _>("ciphertext"),
-            )
+            .open(&row.kek_id, &row.dek_wrapped, &row.nonce, &row.ciphertext)
             .map_err(|err| {
                 match err {
                     CryptoError::UnknownKek(id) => error!(
@@ -258,11 +273,11 @@ impl SecretServiceTrait for SecretService {
             Status::internal("decryption failed")
         })?;
 
-        let version: i64 = row.get("version");
         info!(
-            "secret resolved: project {} name {} version {version} script {}",
+            "secret resolved: project {} name {} version {} script {}",
             request.project_id,
             request.name,
+            row.version,
             if request.script_id.is_empty() {
                 "-"
             } else {
@@ -272,7 +287,7 @@ impl SecretServiceTrait for SecretService {
 
         Ok(Response::new(ResolvedSecret {
             value,
-            version: version as u64,
+            version: row.version as u64,
         }))
     }
 }
@@ -281,17 +296,17 @@ impl SecretServiceTrait for SecretService {
 mod tests {
     use super::*;
     use crate::envelope::KEY_LEN;
-    use sqlx::postgres::PgPoolOptions;
+    use sea_orm::{ConnectionTrait, Database};
     use testcontainers_modules::{
         postgres::Postgres as PostgresImage,
         testcontainers::{ImageExt, runners::AsyncRunner},
     };
     use zeroize::Zeroizing;
 
-    /// A service over a real postgres with the migrations applied.
+    /// A service over a real postgres with the migration applied.
     async fn service() -> (
         SecretService,
-        Pool<Postgres>,
+        DatabaseConnection,
         testcontainers_modules::testcontainers::ContainerAsync<PostgresImage>,
     ) {
         let postgres = PostgresImage::default()
@@ -304,17 +319,19 @@ mod tests {
             .await
             .expect("postgres port is published");
 
-        let database = PgPoolOptions::new()
-            .connect(&format!(
-                "postgresql://postgres:postgres@127.0.0.1:{port}/postgres"
+        let database = Database::connect(format!(
+            "postgresql://postgres:postgres@127.0.0.1:{port}/postgres"
+        ))
+        .await
+        .expect("postgres accepts connections");
+
+        // The same file the migration container applies.
+        database
+            .execute_unprepared(include_str!(
+                "../migrations/20260821003926_secret_versions.up.sql"
             ))
             .await
-            .expect("postgres accepts connections");
-
-        sqlx::migrate!("./migrations")
-            .run(&database)
-            .await
-            .expect("migrations apply");
+            .expect("migration applies");
 
         let envelope = Envelope::new("kek-1".to_owned(), Zeroizing::new([7u8; KEY_LEN]), None);
         (
@@ -507,28 +524,24 @@ mod tests {
             Zeroizing::new([9u8; KEY_LEN]),
             Some(("kek-1".to_owned(), Zeroizing::new([7u8; KEY_LEN]))),
         );
-        let row = sqlx::query(
-            "SELECT kek_id, dek_wrapped FROM secret_versions \
-             WHERE project_id = 'proj-1' AND name = 'stripe-live' AND version = 1",
-        )
-        .fetch_one(&database)
-        .await
-        .expect("row reads");
+        let row =
+            entity::Entity::find_by_id(("proj-1".to_owned(), "stripe-live".to_owned(), 1_i64))
+                .one(&database)
+                .await
+                .expect("row reads")
+                .expect("row exists");
         let (kek_id, rewrapped) = rotated
-            .rewrap(
-                &row.get::<String, _>("kek_id"),
-                &row.get::<Vec<u8>, _>("dek_wrapped"),
-            )
+            .rewrap(&row.kek_id, &row.dek_wrapped)
             .expect("rewraps");
-        sqlx::query(
-            "UPDATE secret_versions SET kek_id = $1, dek_wrapped = $2 \
-             WHERE project_id = 'proj-1' AND name = 'stripe-live' AND version = 1",
-        )
-        .bind(&kek_id)
-        .bind(&rewrapped)
-        .execute(&database)
-        .await
-        .expect("rewrap lands");
+        entity::Entity::update_many()
+            .col_expr(entity::Column::KekId, Expr::value(kek_id))
+            .col_expr(entity::Column::DekWrapped, Expr::value(rewrapped))
+            .filter(entity::Column::ProjectId.eq("proj-1"))
+            .filter(entity::Column::Name.eq("stripe-live"))
+            .filter(entity::Column::Version.eq(1))
+            .exec(&database)
+            .await
+            .expect("rewrap lands");
 
         let after = SecretService::new(
             database.clone(),

@@ -1,6 +1,6 @@
 use actias_common::setup_tracing;
 use actias_common::tracing::info;
-use sqlx::postgres::PgPoolOptions;
+use sea_orm::Database;
 use tonic::transport::Server;
 
 use crate::config::Config;
@@ -9,6 +9,7 @@ use crate::proto_secret_service::secret_service_server::SecretServiceServer;
 use crate::secret_service::SecretService;
 
 mod config;
+mod entity;
 mod envelope;
 mod secret_service;
 
@@ -25,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Secret Service listening on {}", addr);
 
-    let pool = PgPoolOptions::new().connect(&config.database_url).await?;
+    let database = Database::connect(&config.database_url).await?;
     let envelope = Envelope::new(
         config.master_key_id,
         config.master_key,
@@ -33,7 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     Server::builder()
-        .add_service(SecretServiceServer::new(SecretService::new(pool, envelope)))
+        .add_service(SecretServiceServer::new(SecretService::new(
+            database, envelope,
+        )))
         .serve(addr)
         .await?;
 
