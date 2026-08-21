@@ -25,6 +25,10 @@ const BIT_WORDS: Record<string, string> = {
   PERMISSIONS_READ: 'See who else is on the project and what they hold.',
   PERMISSIONS_WRITE:
     'Invite, remove and re-grant. Includes granting themselves more.',
+  DATABASE_READ: 'Browse tables and run read-only queries from the console.',
+  DATABASE_WRITE: 'Execute statements against production databases.',
+  SECRETS_READ: 'See secret names and metadata. Values are never readable.',
+  SECRETS_WRITE: 'Set, rotate and delete secrets without ever reading one.',
 };
 
 /** Permission strings group as RESOURCE_BIT; fingerprint and panel both

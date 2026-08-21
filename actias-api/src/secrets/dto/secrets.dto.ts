@@ -18,12 +18,21 @@ export class SecretDto {
   @ApiProperty({ description: 'User id that wrote the head version.' })
   createdBy: string;
 
-  constructor(meta: secret_service.SecretMeta) {
+  @ApiProperty({
+    description:
+      'Public identifier of the live script declaring this name; null is the orphan state, set but reachable by no live revision.',
+    nullable: true,
+    type: String,
+  })
+  declaredBy: string | null;
+
+  constructor(meta: secret_service.SecretMeta, declaredBy: string | null) {
     this.name = meta.name;
     // int64 fields arrive as proto-loader Longs; Number() reads them.
     this.version = Number(meta.version ?? 0);
     this.createdMs = Number(meta.createdMs ?? 0);
     this.createdBy = meta.createdBy || '';
+    this.declaredBy = declaredBy;
   }
 }
 

@@ -19,6 +19,7 @@ import { Users } from 'src/entities/Users';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { AccessFields } from 'src/project/acl/accessFields';
 import { AclByProject, AclGuard } from 'src/project/acl/acl.guard';
+import { script_service } from 'src/protobufs/script_service';
 import { secret_service } from 'src/protobufs/secret_service';
 import { MessageResponseDto } from 'src/shared/dto/message';
 import { EntityParam } from 'src/util/entitydecorator';
@@ -35,14 +36,48 @@ import { SecretDto, SetSecretDto } from './dto/secrets.dto';
 @Controller('project/:project/secrets')
 export class SecretsController {
   private secretService: secret_service.SecretService;
+  private scriptService: script_service.ScriptService;
 
   constructor(
     @Inject('SECRET_SERVICE') private readonly client: ClientGrpc,
+    @Inject('SCRIPT_SERVICE') private readonly scriptClient: ClientGrpc,
   ) {}
 
   onModuleInit() {
     this.secretService =
       this.client.getService<secret_service.SecretService>('SecretService');
+    this.scriptService =
+      this.scriptClient.getService<script_service.ScriptService>(
+        'ScriptService',
+      );
+  }
+
+  /** Which live script declares each secret name, from the same contract
+   * capabilities the script detail renders. */
+  private async declarers(projectId: string): Promise<Map<string, string>> {
+    const page = await lastValueFrom(
+      this.scriptService
+        .listScripts({ projectId, pageSize: 500, page: 1 })
+        .pipe(toHttpException()),
+    );
+
+    const declarers = new Map<string, string>();
+    for (const script of page.scripts || []) {
+      if (!script.currentRevisionId) continue;
+      const revision = await lastValueFrom(
+        this.scriptService
+          .getRevision({
+            id: script.currentRevisionId,
+            withBundle: false,
+            manifestOnly: false,
+          })
+          .pipe(toHttpException()),
+      );
+      for (const name of revision.scriptConfig?.capabilities?.secrets ?? []) {
+        declarers.set(name, script.publicIdentifier);
+      }
+    }
+    return declarers;
   }
 
   /**
@@ -54,13 +89,18 @@ export class SecretsController {
   async listSecrets(
     @EntityParam('project', Projects) project: Projects,
   ): Promise<SecretDto[]> {
-    const response = await lastValueFrom(
-      this.secretService
-        .listSecrets({ projectId: project.id })
-        .pipe(toHttpException()),
-    );
+    const [response, declarers] = await Promise.all([
+      lastValueFrom(
+        this.secretService
+          .listSecrets({ projectId: project.id })
+          .pipe(toHttpException()),
+      ),
+      this.declarers(project.id),
+    ]);
 
-    return (response.secrets || []).map((meta) => new SecretDto(meta));
+    return (response.secrets || []).map(
+      (meta) => new SecretDto(meta, declarers.get(meta.name) ?? null),
+    );
   }
 
   /**
@@ -87,7 +127,8 @@ export class SecretsController {
         .pipe(toHttpException()),
     );
 
-    return new SecretDto(meta);
+    const declarers = await this.declarers(project.id);
+    return new SecretDto(meta, declarers.get(name) ?? null);
   }
 
   /**
