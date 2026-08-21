@@ -1,7 +1,10 @@
 /**
- * Design 07's secrets view: names, never values. Each row says which live
- * script declares it (or that nothing does, the orphan state), rotation
- * is setting again, and the modal's warning is the whole storage story.
+ * The secrets screen, master-detail like members: a quiet roster of
+ * names on the left, and a panel that owns everything about the
+ * selected one, rotation included. Values never appear anywhere; the
+ * panel's warning is the whole storage story. Orphanhood (set, but no
+ * live revision declares it) is a fact here, not an alarm: an amber
+ * dot and words in the panel.
  */
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -10,12 +13,12 @@ import api, { showError } from '@/helpers/api';
 import { ProjectDto, SecretDto } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
 import { EmptyState } from '@/ui';
-import { copyText } from '@/components/inspector';
+import { Fact, copyText } from '@/components/inspector';
 import { toast } from '@/ui/toast';
 import dialogClasses from '../../projects.module.css';
 import classes from '../../../components/inspector.module.css';
 
-const COLUMNS = '240px minmax(0,1fr) 64px 108px 40px';
+const COLUMNS = 'minmax(0,1.1fr) minmax(0,1fr) 84px';
 
 function agoShort(ms?: number | null) {
   if (!ms) return '—';
@@ -26,32 +29,26 @@ function agoShort(ms?: number | null) {
   return `${Math.round(delta / 86_400_000)}d ago`;
 }
 
-function TrashIcon() {
+/** The health dot: luna when a live script declares the name, warn when
+ * nothing does. */
+function SecretDot({ secret }: { secret: SecretDto }) {
   return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 7l16 0" />
-      <path d="M10 11l0 6" />
-      <path d="M14 11l0 6" />
-      <path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12" />
-      <path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3" />
-    </svg>
+    <span
+      style={{
+        width: 7,
+        height: 7,
+        borderRadius: 2,
+        background: secret.declaredBy ? 'var(--luna)' : 'var(--warn)',
+        flexShrink: 0,
+      }}
+    />
   );
 }
 
 function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
   const queryClient = useQueryClient();
+  const [selectedName, setSelectedName] = React.useState<string | null>(null);
   const [modalOpen, setModalOpen] = React.useState(false);
-  // Set when a row opens the modal: rotation keeps the name fixed.
-  const [rotating, setRotating] = React.useState<string | null>(null);
   const [name, setName] = React.useState('');
   const [value, setValue] = React.useState('');
 
@@ -63,35 +60,24 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
   const reload = () =>
     queryClient.invalidateQueries({ queryKey: ['secrets', project.id] });
 
-  const openNew = () => {
-    setRotating(null);
-    setName('');
-    setValue('');
-    setModalOpen(true);
-  };
-  const openRotate = (secret: SecretDto) => {
-    if (!write) return;
-    setRotating(secret.name);
-    setName(secret.name);
-    setValue('');
-    setModalOpen(true);
-  };
+  const roster = secrets ?? [];
+  const selected =
+    roster.find((secret: SecretDto) => secret.name === selectedName) ??
+    roster[0];
 
-  const store = () => {
-    const secretName = (rotating ?? name).trim();
-    if (!secretName || !value) return;
+  const store = (secretName: string, secretValue: string, rotating: boolean) =>
     api.secrets
-      .putSecret(project.id, secretName, { value })
+      .putSecret(project.id, secretName, { value: secretValue })
       .then((stored) => {
         toast({
           title: rotating ? 'Secret rotated' : 'Secret stored',
           message: `'${stored.name}' is at version ${stored.version}.`,
         });
         setModalOpen(false);
+        setSelectedName(stored.name);
         reload();
       })
       .catch(showError);
-  };
 
   const remove = (secret: SecretDto) => {
     api.secrets
@@ -101,12 +87,11 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
           title: 'Secret deleted',
           message: `'${secret.name}' no longer resolves.`,
         });
+        setSelectedName(null);
         reload();
       })
       .catch(showError);
   };
-
-  const empty = (secrets ?? []).length === 0;
 
   return (
     <div className={classes.frame}>
@@ -140,20 +125,27 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
               </p>
             </div>
             {write && (
-              <button className={classes.accentButton} onClick={openNew}>
+              <button
+                className={classes.accentButton}
+                onClick={() => {
+                  setName('');
+                  setValue('');
+                  setModalOpen(true);
+                }}
+              >
                 New secret
               </button>
             )}
           </div>
 
-          {empty ? (
+          {roster.length === 0 ? (
             <EmptyState
               title="No secrets yet"
               body='Store one here, then reach it from a script with secret "name"; the declaration is the value.'
               cli={`actias secret ${project.name} put <name>`}
             />
           ) : (
-            <>
+            <div className={classes.memberSplit}>
               <div className={classes.card}>
                 <div
                   className={classes.tableHead}
@@ -161,26 +153,18 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
                 >
                   <span>name</span>
                   <span>declared by</span>
-                  <span className={classes.cellRight}>version</span>
                   <span className={classes.cellRight}>created</span>
-                  <span />
                 </div>
-                {(secrets ?? []).map((secret: SecretDto) => (
-                  <div
+                {roster.map((secret: SecretDto) => (
+                  <button
                     key={secret.name}
-                    role={write ? 'button' : undefined}
-                    tabIndex={write ? 0 : undefined}
-                    className={classes.row}
-                    style={{
-                      gridTemplateColumns: COLUMNS,
-                      height: 38,
-                      cursor: write ? 'pointer' : 'default',
-                    }}
-                    title={write ? 'Rotate: set a new value' : undefined}
-                    onClick={() => openRotate(secret)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') openRotate(secret);
-                    }}
+                    className={
+                      selected?.name === secret.name
+                        ? classes.rowSelected
+                        : classes.row
+                    }
+                    style={{ gridTemplateColumns: COLUMNS, height: 38 }}
+                    onClick={() => setSelectedName(secret.name)}
                   >
                     <span
                       style={{
@@ -190,35 +174,11 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
                         minWidth: 0,
                       }}
                     >
-                      <span
-                        style={{
-                          width: 7,
-                          height: 7,
-                          borderRadius: 2,
-                          background: 'var(--err)',
-                          flexShrink: 0,
-                        }}
-                      />
+                      <SecretDot secret={secret} />
                       <span className={classes.cellMono}>{secret.name}</span>
                     </span>
-                    {secret.declaredBy ? (
-                      <span className={classes.cellDim}>
-                        {secret.declaredBy}
-                      </span>
-                    ) : (
-                      <span
-                        className={classes.cellDim}
-                        style={{ color: 'var(--warn)' }}
-                        title="Set, but no live revision declares it; scripts cannot reach it."
-                      >
-                        not declared by any live revision
-                      </span>
-                    )}
-                    <span
-                      className={`${classes.cellDim} ${classes.cellRight}`}
-                      style={{ fontVariantNumeric: 'tabular-nums' }}
-                    >
-                      v{secret.version}
+                    <span className={classes.cellDim}>
+                      {secret.declaredBy ?? 'no live revision'}
                     </span>
                     <span
                       className={`${classes.cellDim} ${classes.cellRight}`}
@@ -226,50 +186,34 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
                     >
                       {agoShort(secret.createdMs)}
                     </span>
-                    <span
-                      style={{ display: 'flex', justifyContent: 'flex-end' }}
-                    >
-                      {write && (
-                        <button
-                          className={classes.copy}
-                          title="Delete: the name stops resolving"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            remove(secret);
-                          }}
-                        >
-                          <TrashIcon />
-                        </button>
-                      )}
-                    </span>
-                  </div>
+                  </button>
                 ))}
+                <div className={classes.cardFoot}>
+                  <span>Same operation from the terminal:</span>
+                  <button
+                    className={`${classes.copy} ${classes.cardFootEnd}`}
+                    style={{ font: 'inherit' }}
+                    onClick={() =>
+                      copyText(`actias secret ${project.name} put <name>`)
+                    }
+                  >
+                    actias secret {project.name} put &lt;name&gt;
+                  </button>
+                </div>
               </div>
 
-              <div
-                className={classes.card}
-                style={{
-                  padding: '14px 16px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 20,
-                }}
-              >
-                <span style={{ fontSize: 12, color: 'var(--ink-2)' }}>
-                  Same operation from the terminal:
-                </span>
-                <button
-                  className={classes.copy}
-                  style={{ font: '400 12px var(--mono)' }}
-                  onClick={() =>
-                    copyText(`actias secret ${project.name} put <name>`)
+              {selected && (
+                <SecretDetail
+                  key={selected.name}
+                  secret={selected}
+                  write={write}
+                  onRotate={(secretValue) =>
+                    store(selected.name, secretValue, true)
                   }
-                >
-                  actias secret {project.name} put &lt;name&gt;
-                </button>
-              </div>
-            </>
+                  onRemove={() => remove(selected)}
+                />
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -277,44 +221,46 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
       <Dialog.Root open={modalOpen} onOpenChange={setModalOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className={dialogClasses.overlay} />
-          <Dialog.Content className={dialogClasses.dialog}>
-            <Dialog.Title className={dialogClasses.dialogTitle}>
-              {rotating ? `Rotate '${rotating}'` : 'New secret'}
-            </Dialog.Title>
+          <Dialog.Content
+            className={dialogClasses.dialog}
+            style={{ width: 440, maxWidth: '90vw', padding: 0 }}
+          >
             <div
               style={{
+                padding: 16,
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 13,
-                marginTop: 10,
               }}
             >
-              {!rotating && (
-                <div
-                  style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
-                >
-                  <label style={{ fontSize: 12, color: 'var(--ink-2)' }}>
-                    Name
-                  </label>
-                  <input
-                    className={classes.searchInput}
-                    style={{
-                      height: 32,
-                      padding: '0 10px',
-                      border: '1px solid var(--line)',
-                      borderRadius: 'var(--r2)',
-                    }}
-                    placeholder="stripe-live"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    autoFocus
-                  />
-                  <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-                    This is the string your script passes to{' '}
-                    <code>secret &quot;…&quot;</code>.
-                  </span>
-                </div>
-              )}
+              <Dialog.Title
+                className={dialogClasses.dialogTitle}
+                style={{ margin: 0 }}
+              >
+                New secret
+              </Dialog.Title>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 12, color: 'var(--ink-2)' }}>
+                  Name
+                </label>
+                <input
+                  className={classes.searchInput}
+                  style={{
+                    height: 32,
+                    padding: '0 10px',
+                    border: '1px solid var(--line)',
+                    borderRadius: 'var(--r2)',
+                  }}
+                  placeholder="stripe-live"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  autoFocus
+                />
+                <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                  This is the string your script passes to{' '}
+                  <code>secret &quot;…&quot;</code>.
+                </span>
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, color: 'var(--ink-2)' }}>
                   Value
@@ -330,44 +276,163 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
                   }}
                   value={value}
                   onChange={(event) => setValue(event.target.value)}
-                  autoFocus={!!rotating}
                 />
-                <span
-                  style={{
-                    fontSize: 11,
-                    lineHeight: 1.5,
-                    color: 'var(--warn)',
-                  }}
-                >
-                  Stored encrypted. Not retrievable; rotate by setting again.
-                </span>
               </div>
-              <div
+            </div>
+            <div
+              style={{
+                padding: '12px 16px',
+                borderTop: '1px solid var(--line)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+              }}
+            >
+              <span
                 style={{
-                  display: 'flex',
-                  justifyContent: 'flex-end',
-                  gap: 8,
-                  paddingTop: 4,
+                  fontSize: 11,
+                  lineHeight: 1.5,
+                  color: 'var(--warn)',
+                  flex: 1,
                 }}
               >
-                <button
-                  className={classes.ghostButton}
-                  onClick={() => setModalOpen(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className={classes.accentButton}
-                  disabled={!(rotating ?? name).trim() || !value}
-                  onClick={store}
-                >
-                  Store secret
-                </button>
-              </div>
+                Stored encrypted. Not retrievable; rotate by setting again.
+              </span>
+              <button
+                className={classes.ghostButton}
+                onClick={() => setModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className={classes.accentButton}
+                disabled={!name.trim() || !value}
+                onClick={() => store(name.trim(), value, false)}
+              >
+                Store secret
+              </button>
             </div>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+    </div>
+  );
+}
+
+/** Everything about one secret, rotation included; keyed by name so
+ * selection change resets the rotate field. */
+function SecretDetail({
+  secret,
+  write,
+  onRotate,
+  onRemove,
+}: {
+  secret: SecretDto;
+  write: boolean;
+  onRotate: (value: string) => void;
+  onRemove: () => void;
+}) {
+  const [value, setValue] = React.useState('');
+
+  return (
+    <div className={classes.card}>
+      <div
+        style={{
+          padding: '14px 16px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <SecretDot secret={secret} />
+          <span
+            className={classes.cellMono}
+            style={{ fontSize: 13, flex: 1, minWidth: 0 }}
+          >
+            {secret.name}
+          </span>
+          <span className={classes.wordChip}>v{secret.version}</span>
+        </div>
+
+        <div className={classes.drawerSection}>
+          <Fact label="Version" value={`v${secret.version}`} />
+          <Fact
+            label={secret.version > 1 ? 'Rotated' : 'Created'}
+            value={agoShort(secret.createdMs)}
+          />
+          <Fact
+            label="Declared by"
+            value={secret.declaredBy ?? 'no live revision'}
+          />
+        </div>
+
+        {!secret.declaredBy && (
+          <p className={classes.drawerNote} style={{ paddingTop: 0 }}>
+            Set, but no live revision declares{' '}
+            <code>secret &quot;{secret.name}&quot;</code>, so scripts cannot
+            reach it. It resolves again the moment a published script declares
+            the name.
+          </p>
+        )}
+
+        {write && (
+          <div className={classes.drawerSection}>
+            <span className={classes.sectionLabel}>rotate</span>
+            <input
+              type="password"
+              className={classes.searchInput}
+              style={{
+                height: 32,
+                padding: '0 10px',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--r2)',
+              }}
+              placeholder="New value"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span
+                style={{
+                  fontSize: 11,
+                  lineHeight: 1.5,
+                  color: 'var(--ink-3)',
+                  flex: 1,
+                }}
+              >
+                Stored encrypted; the old value stays readable only to workflow
+                runs that pinned it.
+              </span>
+              <button
+                className={classes.accentButton}
+                disabled={!value}
+                onClick={() => {
+                  onRotate(value);
+                  setValue('');
+                }}
+              >
+                Store as v{secret.version + 1}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {write && (
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              paddingTop: 12,
+              borderTop: '1px solid var(--line-soft)',
+            }}
+          >
+            <button className={classes.dangerButton} onClick={onRemove}>
+              Delete secret
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

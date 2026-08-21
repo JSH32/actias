@@ -1121,6 +1121,20 @@
   letter-spacing: 0;
 }
 
+/* A quiet one-line strip closing a card: a legend, a terminal hint. */
+.cardFoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
+.cardFootEnd {
+  margin-left: auto;
+}
+
 .memberSplit {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(340px, 440px);
@@ -1128,7 +1142,21 @@
   align-items: start;
 }
 @media (max-width: 1020px) {
-  .memberSplit {
+  /* A quiet one-line strip closing a card: a legend, a terminal hint. */
+.cardFoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
+.cardFootEnd {
+  margin-left: auto;
+}
+
+.memberSplit {
     grid-template-columns: 1fr;
   }
 }
