@@ -970,6 +970,7 @@ mod tests {
                     queues: vec![],
                     workflows: vec![],
                     workflow_steps: vec![],
+                    publishes: vec![],
                 }),
             }),
             ..Default::default()

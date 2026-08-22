@@ -667,6 +667,91 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_contract_without_the_topic_refuses_publish() {
+        use crate::proto::script_service::{Capabilities, ScriptConfig};
+
+        // The bundle's class table declares publishes, but the STORED
+        // contract does not: the tamper case, refused loudly.
+        let revision = Revision {
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files: vec![File {
+                    file_path: "main.lua".to_owned(),
+                    content: SOURCE.as_bytes().to_vec(),
+                    ..Default::default()
+                }],
+            }),
+            script_config: Some(ScriptConfig {
+                id: "test".to_owned(),
+                entry_point: "main.lua".to_owned(),
+                includes: vec![],
+                ignore: vec![],
+                capabilities: Some(Capabilities {
+                    kv: vec![],
+                    events: vec!["fetch".to_owned()],
+                    secrets: vec![],
+                    objects: vec!["Hub".to_owned(), "Reader".to_owned()],
+                    databases: vec![],
+                    queues: vec![],
+                    workflows: vec![],
+                    workflow_steps: vec![],
+                    publishes: vec![],
+                }),
+            }),
+            ..Default::default()
+        };
+        let prepared =
+            Arc::new(PreparedRevision::prepare(Script::default(), revision).expect("prepares"));
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+        let runtime = ActiasRuntime::new(
+            prepared,
+            KvServiceClient::new(channel),
+            crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
+                .expect("egress builds"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("runtime builds");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("hub.db")).expect("opens"),
+                ),
+                ..Default::default()
+            },
+        );
+
+        handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "Hub", "name": "town", "method": "admit",
+                    "args": ["ada"], "chain": [],
+                }),
+            )
+            .await
+            .expect("plain methods still run");
+        let refused = handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "Hub", "name": "town", "method": "post",
+                    "args": ["sport", "goal"], "chain": [],
+                }),
+            )
+            .await;
+        assert!(
+            refused.is_err(),
+            "a contract that never recorded the topic refuses publish"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn follows_gate_and_deliveries_flow_with_filters() {
         let dir = tempfile::tempdir().expect("tempdir");
         let router = town_router(dir.path().to_path_buf(), false);

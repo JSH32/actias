@@ -51,6 +51,10 @@ export namespace script_service {
         // Step literals found in the sources: the console&#x27;s
     // declared-possible skeleton, a superset of what may run.
         workflowSteps?: string[];
+        // Topics each class publishes, as &quot;Class:topic&quot; (gate-hooked) or
+    // &quot;Class:topic&#x3D;policy&quot; for a built-in policy (&quot;self&quot;). Read from
+    // the class table&#x27;s &#x60;publishes&#x60; key at publish.
+        publishes?: string[];
     }
     export interface ScriptConfig {
         id?: string;

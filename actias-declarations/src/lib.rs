@@ -56,6 +56,11 @@ pub struct Declarations {
     /// appear as they execute.
     #[serde(default)]
     pub workflow_steps: Vec<String>,
+    /// Topics each class publishes, read from the class table's
+    /// `publishes` key: "Class:topic" for gate-hooked entries,
+    /// "Class:topic=policy" for built-in policies ("self").
+    #[serde(default)]
+    pub publishes: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -188,8 +193,40 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 .lock()
                 .expect("no other holder")
                 .objects
-                .push(class);
-            lua.create_function(|lua, _: mlua::Table| stub(lua))
+                .push(class.clone());
+            let table_recorded = object_recorded.clone();
+            lua.create_function(move |lua, body: mlua::Table| {
+                // The class table is data at declaration time: its
+                // `publishes` key is the topic contract, array entries
+                // gate-hooked, keyed entries carrying a built-in policy.
+                if let Ok(publishes) = body.get::<mlua::Table>("publishes") {
+                    let mut recorded = table_recorded.lock().expect("no other holder");
+                    let mut index = 1;
+                    while let Ok(entry) = publishes.get::<mlua::Value>(index) {
+                        if entry.is_nil() {
+                            break;
+                        }
+                        if let Some(topic) = entry.as_string().and_then(|s| s.to_str().ok()) {
+                            recorded.publishes.push(format!("{class}:{}", &*topic));
+                        }
+                        index += 1;
+                    }
+                    for pair in publishes.pairs::<mlua::Value, mlua::Value>() {
+                        let Ok((key, value)) = pair else { continue };
+                        let (Some(topic), Some(policy)) = (
+                            key.as_string()
+                                .and_then(|s| s.to_str().ok().map(|s| s.to_string())),
+                            value
+                                .as_string()
+                                .and_then(|s| s.to_str().ok().map(|s| s.to_string())),
+                        ) else {
+                            continue;
+                        };
+                        recorded.publishes.push(format!("{class}:{topic}={policy}"));
+                    }
+                }
+                stub(lua)
+            })
         })?,
     )?;
 
@@ -379,6 +416,43 @@ mod tests {
             .iter()
             .map(|(path, source)| (path.to_string(), source.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn publishes_entries_ride_the_object_declaration() {
+        let declarations = extract(
+            files(&[(
+                "main.lua",
+                r#"
+                local Chan = object "Chan" {
+                    publishes = { "message", "activity", events = "self" },
+                    hooks = {
+                        follow = function(state, topic, follower)
+                            error("gates must never run during extraction")
+                        end,
+                    },
+                }
+                local Plain = object "Plain" {
+                    poke = function(state) end,
+                }
+                on "fetch" (function() end)
+                "#,
+            )]),
+            "main.lua",
+        )
+        .expect("extracts");
+
+        let mut publishes = declarations.publishes.clone();
+        publishes.sort();
+        assert_eq!(
+            publishes,
+            vec![
+                "Chan:activity".to_owned(),
+                "Chan:events=self".to_owned(),
+                "Chan:message".to_owned(),
+            ],
+        );
+        assert_eq!(declarations.objects, vec!["Chan", "Plain"]);
     }
 
     #[test]

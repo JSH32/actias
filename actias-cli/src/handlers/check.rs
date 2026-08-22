@@ -28,6 +28,33 @@ pub fn handle(directory: &str) -> Result<()> {
             declared.secrets.join(", ").purple()
         );
     }
+    if !declared.objects.is_empty() {
+        println!(
+            "🧩 Declares objects: {}",
+            declared.objects.join(", ").purple()
+        );
+    }
+    if !declared.databases.is_empty() {
+        println!(
+            "🗄️ Declares databases: {}",
+            declared.databases.join(", ").purple()
+        );
+    }
+    if !declared.queues.is_empty() {
+        println!(
+            "📬 Declares queues: {}",
+            declared.queues.join(", ").purple()
+        );
+    }
+    if !declared.workflows.is_empty() {
+        println!(
+            "🧭 Declares workflows: {}",
+            declared.workflows.join(", ").purple()
+        );
+    }
+    if !declared.publishes.is_empty() {
+        println!("📡 Publishes: {}", declared.publishes.join(", ").purple());
+    }
 
     // Strict types over the whole bundle, with the platform surface shadowed
     // in; diagnostics point at the user's own lines.

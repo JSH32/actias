@@ -35,5 +35,10 @@ export type CapabilitiesDto = {
      * Step literals found at publish: the declared-possible superset.
      */
     workflowSteps: Array<string>;
+    /**
+     * Topics each class publishes: "Class:topic", with "=policy" suffixed
+     * for built-in policies ("self").
+     */
+    publishes: Array<string>;
 };
 

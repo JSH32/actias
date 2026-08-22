@@ -50,6 +50,12 @@ const contractGroups: {
     ],
   },
   {
+    title: 'STREAMS',
+    entries: [
+      { key: 'publishes', label: 'publishes', token: 'var(--kind-event)' },
+    ],
+  },
+  {
     title: 'SECRETS',
     entries: [{ key: 'secrets', label: 'secret', token: 'var(--kind-secret)' }],
   },

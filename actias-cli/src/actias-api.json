@@ -3007,6 +3007,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "publishes": {
+            "description": "Topics each class publishes: \"Class:topic\", with \"=policy\" suffixed\nfor built-in policies (\"self\").",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -3017,7 +3024,8 @@
           "databases",
           "queues",
           "workflows",
-          "workflowSteps"
+          "workflowSteps",
+          "publishes"
         ]
       },
       "ScriptConfigDto": {

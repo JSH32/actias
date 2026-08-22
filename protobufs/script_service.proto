@@ -54,6 +54,10 @@ message Capabilities {
     // Step literals found in the sources: the console's
     // declared-possible skeleton, a superset of what may run.
     repeated string workflow_steps = 8;
+    // Topics each class publishes, as "Class:topic" (gate-hooked) or
+    // "Class:topic=policy" for a built-in policy ("self"). Read from
+    // the class table's `publishes` key at publish.
+    repeated string publishes = 9;
 }
 
 message ScriptConfig {

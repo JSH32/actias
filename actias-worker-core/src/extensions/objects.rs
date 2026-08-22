@@ -254,6 +254,39 @@ impl LuaExtension for ObjectExtension {
             ActiasRuntime::record_object_declaration(lua, &class);
 
             lua.create_function(move |lua, methods: Table| {
+                // The publishes key is contract data; record it exactly
+                // as the publish-time extraction spells it.
+                if let Ok(publishes) = methods.get::<Table>("publishes") {
+                    let mut index = 1;
+                    while let Ok(entry) = publishes.get::<mlua::Value>(index) {
+                        if entry.is_nil() {
+                            break;
+                        }
+                        if let Some(topic) = entry.as_string().and_then(|s| s.to_str().ok()) {
+                            ActiasRuntime::record_publishes_declaration(
+                                lua,
+                                format!("{class}:{}", &*topic),
+                            );
+                        }
+                        index += 1;
+                    }
+                    for pair in publishes.pairs::<mlua::Value, mlua::Value>() {
+                        let Ok((key, value)) = pair else { continue };
+                        let (Some(topic), Some(policy)) = (
+                            key.as_string()
+                                .and_then(|s| s.to_str().ok().map(|s| s.to_string())),
+                            value
+                                .as_string()
+                                .and_then(|s| s.to_str().ok().map(|s| s.to_string())),
+                        ) else {
+                            continue;
+                        };
+                        ActiasRuntime::record_publishes_declaration(
+                            lua,
+                            format!("{class}:{topic}={policy}"),
+                        );
+                    }
+                }
                 let classes: Table = lua.named_registry_value(CLASSES_KEY)?;
                 classes.set(class.as_str(), methods)?;
                 class_handle(lua, class.clone())
@@ -668,6 +701,16 @@ fn object_state(lua: &Lua) -> mlua::Result<(Table, bool)> {
             if matches!(topic_policy(&class, &topic), TopicPolicy::Absent) {
                 return Err(mlua::Error::RuntimeError(format!(
                     "Topic '{topic}' is not in this class's publishes."
+                )));
+            }
+            // The stored contract is the tamper check: a bundle whose
+            // code grew a topic the publish never recorded fails loudly.
+            if let Some(prepared) = lua.app_data_ref::<Arc<crate::runtime::PreparedRevision>>()
+                && !prepared.contract_allows_publish(&current.0, &topic)
+            {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "The contract does not record '{}' publishing '{topic}'.",
+                    current.0
                 )));
             }
             let data: serde_json::Value = lua.from_value(event)?;

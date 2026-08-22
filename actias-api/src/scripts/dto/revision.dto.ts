@@ -44,6 +44,12 @@ export class CapabilitiesDto {
    * Step literals found at publish: the declared-possible superset.
    */
   workflowSteps: string[];
+
+  /**
+   * Topics each class publishes: "Class:topic", with "=policy" suffixed
+   * for built-in policies ("self").
+   */
+  publishes: string[];
 }
 
 export class ScriptConfigDto {
@@ -102,6 +108,7 @@ export class RevisionFullDto {
         queues: config.capabilities.queues ?? [],
         workflows: config.capabilities.workflows ?? [],
         workflowSteps: config.capabilities.workflowSteps ?? [],
+        publishes: config.capabilities.publishes ?? [],
       },
     };
     this.bundle =

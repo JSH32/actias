@@ -101,6 +101,9 @@ pub struct Declarations {
     pub queues: Vec<String>,
     /// Names handed to `workflow "name"`.
     pub workflows: Vec<String>,
+    /// Topics from class tables' `publishes` keys, as "Class:topic" or
+    /// "Class:topic=policy".
+    pub publishes: Vec<String>,
 }
 
 /// The capability contract a revision was published with.
@@ -115,6 +118,9 @@ pub struct Contract {
     objects: HashSet<String>,
     databases: HashSet<String>,
     queues: HashSet<String>,
+    /// "Class:topic" entries (policy suffix stripped): what
+    /// `state:publish` may emit under this contract.
+    publishes: HashSet<String>,
     /// Kept as declared (ordered, duplicates meaningless but harmless);
     /// cron arming reads these.
     events: Vec<String>,
@@ -191,6 +197,16 @@ impl PreparedRevision {
                 objects: capabilities.objects.into_iter().collect(),
                 databases: capabilities.databases.into_iter().collect(),
                 queues: capabilities.queues.into_iter().collect(),
+                publishes: capabilities
+                    .publishes
+                    .iter()
+                    .map(|entry| {
+                        entry
+                            .split_once('=')
+                            .map(|(head, _)| head.to_owned())
+                            .unwrap_or_else(|| entry.clone())
+                    })
+                    .collect(),
                 events: capabilities.events,
             });
 
@@ -201,6 +217,15 @@ impl PreparedRevision {
             bytecode,
             contract,
         })
+    }
+
+    /// Whether the stored contract admits `class` publishing `topic`;
+    /// contract-less revisions (live sessions) stay unenforced.
+    pub(crate) fn contract_allows_publish(&self, class: &str, topic: &str) -> bool {
+        match &self.contract {
+            None => true,
+            Some(contract) => contract.publishes.contains(&format!("{class}:{topic}")),
+        }
     }
 
     /// Bytes this revision occupies, for weighing cache entries.
@@ -427,6 +452,14 @@ impl ActiasRuntime {
     pub fn record_object_declaration(lua: &Lua, class: &str) {
         if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
             declarations.objects.push(class.to_owned());
+        }
+    }
+
+    /// Notes one class's `publishes` entry ("Class:topic" or
+    /// "Class:topic=policy") for [`Self::declarations`].
+    pub fn record_publishes_declaration(lua: &Lua, entry: String) {
+        if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+            declarations.publishes.push(entry);
         }
     }
 
@@ -1438,6 +1471,7 @@ mod tests {
                     queues: vec![],
                     workflows: vec![],
                     workflow_steps: vec![],
+                    publishes: vec![],
                 }),
                 ..Default::default()
             }),
