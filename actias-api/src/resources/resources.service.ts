@@ -141,6 +141,11 @@ export class ResourcesService {
     method: string,
     args: unknown[],
   ): Promise<unknown> {
+    // Internal platform verbs (stream delivery, hook invocation) are
+    // worker-originated only; nothing the api serves may mint them.
+    if (method.startsWith('__')) {
+      throw new Error(`'${method}' is a platform verb.`);
+    }
     const result = await lastValueFrom(
       this.workers
         .dispatch(

@@ -264,7 +264,52 @@ impl LuaExtension for ObjectExtension {
     }
 }
 
-/// The class handle: `Class:get(name)` mints an instance handle.
+/// Names only the platform may invoke on an object: the hooks (called
+/// as `__`-prefixed internal methods) and their public spellings, which
+/// handles refuse outright so a `__`-method arriving at `__dispatch` is
+/// provably platform-originated.
+pub const RESERVED_METHODS: [&str; 5] = ["init", "alarm", "receive", "follow", "hooks"];
+
+/// Whether a method name may travel through a handle.
+fn callable_method(method: &str) -> bool {
+    !method.starts_with('_') && !RESERVED_METHODS.contains(&method)
+}
+
+/// Resolves a platform hook on a class: the `hooks` table is the home;
+/// flat `init`/`alarm` remain the deprecated long form.
+fn resolve_hook(class: &Table, name: &str) -> Option<mlua::Function> {
+    if let Ok(hooks) = class.get::<Table>("hooks")
+        && let Ok(function) = hooks.get::<mlua::Function>(name)
+    {
+        return Some(function);
+    }
+    if matches!(name, "init" | "alarm") {
+        return class.get::<mlua::Function>(name).ok();
+    }
+    None
+}
+
+/// The identity value gates and `receive` see: name, transport, a
+/// canonical id, and `:is(Class)` against a class VALUE, never a string.
+fn make_identity(lua: &Lua, class: &str, name: &str, transport: &str) -> mlua::Result<Table> {
+    let identity = lua.create_table()?;
+    identity.set("__of", class)?;
+    identity.set("name", name)?;
+    identity.set("transport", transport)?;
+    identity.set("id", format!("{class}/{name}"))?;
+    identity.set(
+        "is",
+        lua.create_function(|_, (this, class_handle): (Table, Table)| {
+            let mine: String = this.get("__of")?;
+            let theirs: String = class_handle.get("__class")?;
+            Ok(mine == theirs)
+        })?,
+    )?;
+    Ok(identity)
+}
+
+/// The class handle: `Class(name)` (or the long `Class:get(name)`) mints
+/// an instance handle.
 fn class_handle(lua: &Lua, class: String) -> mlua::Result<Table> {
     let handle = lua.create_table()?;
     handle.set("__class", class)?;
@@ -276,6 +321,17 @@ fn class_handle(lua: &Lua, class: String) -> mlua::Result<Table> {
             instance_handle(lua, class, name)
         })?,
     )?;
+
+    // Callable: `Channel(id)` is the blessed spelling of `:get(id)`.
+    let meta = lua.create_table()?;
+    meta.set(
+        "__call",
+        lua.create_function(|lua, (this, name): (Table, String)| {
+            let class: String = this.get("__class")?;
+            instance_handle(lua, class, name)
+        })?,
+    )?;
+    handle.set_metatable(Some(meta))?;
 
     Ok(handle)
 }
@@ -361,6 +417,11 @@ fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::Result<Table
         lua.create_function(|lua, (this, method): (Table, String)| {
             let class: String = this.get("__class")?;
             let name: String = this.get("__name")?;
+            if !callable_method(&method) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "'{method}' is a platform hook; only the platform calls it."
+                )));
+            }
 
             lua.create_async_function(move |lua, args: mlua::MultiValue| {
                 let class = class.clone();
@@ -537,6 +598,410 @@ fn sql_surface(lua: &Lua) -> mlua::Result<Table> {
     Ok(sql)
 }
 
+/// How a topic may be followed, read from the class's `publishes` key:
+/// array entries gate through `hooks.follow`, keyed entries carry a
+/// built-in policy, anything else is not published at all.
+enum TopicPolicy {
+    Absent,
+    Hooked,
+    SelfOnly,
+}
+
+fn topic_policy(class: &Table, topic: &str) -> TopicPolicy {
+    let Ok(publishes) = class.get::<Table>("publishes") else {
+        return TopicPolicy::Absent;
+    };
+    if let Ok(policy) = publishes.get::<String>(topic) {
+        if policy == "self" {
+            return TopicPolicy::SelfOnly;
+        }
+        return TopicPolicy::Absent;
+    }
+    let mut index = 1;
+    while let Ok(entry) = publishes.get::<mlua::Value>(index) {
+        if entry.is_nil() {
+            break;
+        }
+        if entry
+            .as_string()
+            .and_then(|s| s.to_str().ok())
+            .map(|s| *s == *topic)
+            .unwrap_or(false)
+        {
+            return TopicPolicy::Hooked;
+        }
+        index += 1;
+    }
+    TopicPolicy::Absent
+}
+
+/// Builds (or reuses) the object's state table: plain keys are in-memory
+/// and live as long as the pinned vm; `state.sql` is the durable half;
+/// the stream verbs ride here beside `set_alarm`.
+fn object_state(lua: &Lua) -> mlua::Result<(Table, bool)> {
+    if let Ok(state) = lua.named_registry_value::<Table>(STATE_KEY) {
+        return Ok((state, false));
+    }
+    let state = lua.create_table()?;
+    let stored = lua
+        .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+        .is_some_and(|home| home.has_storage());
+    if stored {
+        state.set("sql", sql_surface(lua)?)?;
+    }
+    state.set("now", lua.create_function(|_, ()| Ok(unix_now_ms()))?)?;
+    state.set("set_alarm", lua.create_function(set_alarm)?)?;
+
+    // state:publish(topic, event): append to the event log in this
+    // call's transaction; delivery pumps after commit.
+    state.set(
+        "publish",
+        lua.create_function(|lua, (_this, topic, event): (Table, String, mlua::Value)| {
+            let current = lua
+                .app_data_ref::<CurrentDispatch>()
+                .map(|current| (current.class.clone(), current.name.clone()))
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError("publish runs inside object methods.".to_owned())
+                })?;
+            let classes: Table = lua.named_registry_value(CLASSES_KEY)?;
+            let class: Table = classes.get(current.0.as_str())?;
+            if matches!(topic_policy(&class, &topic), TopicPolicy::Absent) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Topic '{topic}' is not in this class's publishes."
+                )));
+            }
+            let data: serde_json::Value = lua.from_value(event)?;
+            let home = lua
+                .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+                .map(|home| home.clone())
+                .filter(|home| home.has_storage())
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError("publish needs object storage.".to_owned())
+                })?;
+            home.with_storage(|storage| {
+                crate::streams::append_event(storage, (&current.0, &current.1), &topic, &data)
+            })
+            .map_err(mlua::Error::RuntimeError)?;
+            home.note_publisher(current.0, current.1);
+            Ok(())
+        })?,
+    )?;
+
+    // state:follow(handle, topic, filter?): I follow the target's topic;
+    // the target's gate decides, and the edge lives in the target.
+    state.set(
+        "follow",
+        lua.create_async_function(
+            |lua, (_this, target, topic, filter): (Table, Table, String, Option<mlua::Value>)| async move {
+                stream_edge_call(&lua, target, "__follow", topic, filter).await
+            },
+        )?,
+    )?;
+    state.set(
+        "unfollow",
+        lua.create_async_function(
+            |lua, (_this, target, topic): (Table, Table, String)| async move {
+                stream_edge_call(&lua, target, "__unfollow", topic, None).await
+            },
+        )?,
+    )?;
+
+    // state:followers(topic?): who follows me, as identity values.
+    state.set(
+        "followers",
+        lua.create_function(|lua, (_this, topic): (Table, Option<String>)| {
+            let home = lua
+                .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+                .map(|home| home.clone())
+                .filter(|home| home.has_storage())
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError("followers needs object storage.".to_owned())
+                })?;
+            let edges = home
+                .with_storage(|storage| crate::streams::list_edges(storage, topic.as_deref()))
+                .map_err(mlua::Error::RuntimeError)?;
+            let list = lua.create_table()?;
+            for (index, edge) in edges.iter().enumerate() {
+                let transport = if edge.kind == "connection" {
+                    "connection"
+                } else {
+                    "object"
+                };
+                let identity = make_identity(lua, &edge.class, &edge.name, transport)?;
+                identity.set("topic", edge.topic.as_str())?;
+                list.set(index + 1, identity)?;
+            }
+            Ok(list)
+        })?,
+    )?;
+
+    // state:drop_followers(identity): every edge that identity holds
+    // here dies; the usual argument is a handle, `Account(user)`.
+    state.set(
+        "drop_followers",
+        lua.create_function(|lua, (_this, target): (Table, Table)| {
+            let class: String = target
+                .get("__class")
+                .or_else(|_| target.get("class"))
+                .map_err(|_| {
+                    mlua::Error::RuntimeError(
+                        "drop_followers takes a handle or { class, name }.".to_owned(),
+                    )
+                })?;
+            let name: String = target
+                .get("__name")
+                .or_else(|_| target.get("name"))
+                .map_err(|_| {
+                    mlua::Error::RuntimeError(
+                        "drop_followers takes a handle or { class, name }.".to_owned(),
+                    )
+                })?;
+            let home = lua
+                .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+                .map(|home| home.clone())
+                .filter(|home| home.has_storage())
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError("drop_followers needs object storage.".to_owned())
+                })?;
+            home.with_storage(|storage| crate::streams::drop_identity(storage, &class, &name))
+                .map_err(mlua::Error::RuntimeError)?;
+            Ok(())
+        })?,
+    )?;
+
+    lua.set_named_registry_value(STATE_KEY, state.clone())?;
+    Ok((state, true))
+}
+
+/// Routes a follow or unfollow to the target object as an internal
+/// platform verb; the follower is this dispatch's own identity.
+async fn stream_edge_call(
+    lua: &Lua,
+    target: Table,
+    verb: &str,
+    topic: String,
+    filter: Option<mlua::Value>,
+) -> mlua::Result<()> {
+    let target_class: String = target
+        .get("__class")
+        .map_err(|_| mlua::Error::RuntimeError("follow takes an object handle.".to_owned()))?;
+    let target_name: String = target.get("__name").map_err(|_| {
+        mlua::Error::RuntimeError("follow takes an INSTANCE handle, e.g. Channel(id).".to_owned())
+    })?;
+    let current = lua
+        .app_data_ref::<CurrentDispatch>()
+        .map(|current| (current.class.clone(), current.name.clone()))
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError("follow runs inside object methods.".to_owned())
+        })?;
+    let filter_json: serde_json::Value = match filter {
+        Some(value) => lua.from_value(value)?,
+        None => serde_json::Value::Null,
+    };
+
+    let (router, chain) = {
+        let Some(router) = lua.app_data_ref::<ObjectRouter>() else {
+            return Err(mlua::Error::RuntimeError(
+                "Objects are not available in this runtime.".to_owned(),
+            ));
+        };
+        let chain = lua
+            .app_data_ref::<CallChain>()
+            .map(|chain| chain.0.clone())
+            .unwrap_or_default();
+        (router.clone(), chain)
+    };
+
+    router(ObjectTarget {
+        class: target_class,
+        name: target_name,
+        method: verb.to_owned(),
+        arguments: vec![
+            serde_json::json!(topic),
+            filter_json,
+            serde_json::json!({
+                "class": current.0,
+                "name": current.1,
+                "transport": "object",
+            }),
+        ],
+        chain,
+        caller: None,
+    })
+    .await
+    .map_err(mlua::Error::RuntimeError)?;
+    Ok(())
+}
+
+/// Runs `init` exactly once per object before any other work touches
+/// state; the file is the record for stored objects.
+async fn run_init_if_fresh(
+    lua: &Lua,
+    class: &Table,
+    state: &Table,
+    state_is_new: bool,
+    method: &str,
+) -> mlua::Result<()> {
+    if method == "init" || method == "__init" {
+        return Ok(());
+    }
+    let home = lua
+        .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+        .map(|home| home.clone())
+        .filter(|home| home.has_storage());
+    // Stored objects consult the file every call: a failed first call
+    // rolls init back WITH the mark (user_version is transactional), so
+    // the next call retries it; vm memory must not veto that. Without
+    // storage, once per vm life is the record.
+    let fresh = match &home {
+        Some(home) => home
+            .with_storage(|storage| storage.is_fresh())
+            .map_err(mlua::Error::RuntimeError)?,
+        None => state_is_new,
+    };
+    if fresh && let Some(init) = resolve_hook(class, "init") {
+        init.call_async::<()>(state.clone()).await?;
+        if let Some(home) = &home {
+            home.with_storage(|storage| storage.mark_initialized())
+                .map_err(mlua::Error::RuntimeError)?;
+        }
+    }
+    Ok(())
+}
+
+/// The internal platform verbs, `__`-prefixed and therefore
+/// platform-originated (handles refuse the spelling): the alarm hook,
+/// the follow gate, unfollow, and receive delivery.
+async fn dispatch_internal(
+    lua: &Lua,
+    class: &Table,
+    call: &DispatchCall,
+    verb: &str,
+) -> mlua::Result<mlua::Value> {
+    let (state, state_is_new) = object_state(lua)?;
+    state.set("name", call.name.as_str())?;
+    run_init_if_fresh(lua, class, &state, state_is_new, &call.method).await?;
+
+    match verb {
+        "alarm" => {
+            let Some(alarm) = resolve_hook(class, "alarm") else {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Object class '{}' has no alarm hook.",
+                    call.class
+                )));
+            };
+            alarm.call_async::<mlua::Value>(state).await
+        }
+        "follow" | "unfollow" => {
+            let topic = call
+                .args
+                .first()
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| mlua::Error::RuntimeError("follow carries a topic.".to_owned()))?
+                .to_owned();
+            let filter = call.args.get(1).cloned().unwrap_or(serde_json::Value::Null);
+            let follower = call.args.get(2).cloned().unwrap_or(serde_json::Value::Null);
+            let follower_class = follower["class"].as_str().unwrap_or_default().to_owned();
+            let follower_name = follower["name"].as_str().unwrap_or_default().to_owned();
+            let transport = follower["transport"]
+                .as_str()
+                .unwrap_or("object")
+                .to_owned();
+            let home = lua
+                .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+                .map(|home| home.clone())
+                .filter(|home| home.has_storage())
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError("streams need object storage.".to_owned())
+                })?;
+
+            if verb == "unfollow" {
+                home.with_storage(|storage| {
+                    crate::streams::delete_edge(storage, &follower_class, &follower_name, &topic)
+                })
+                .map_err(mlua::Error::RuntimeError)?;
+                return Ok(mlua::Value::Boolean(true));
+            }
+
+            let accepted = match topic_policy(class, &topic) {
+                TopicPolicy::Absent => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "'{}' does not publish '{topic}'.",
+                        call.class
+                    )));
+                }
+                TopicPolicy::SelfOnly => follower_class == call.class && follower_name == call.name,
+                TopicPolicy::Hooked => {
+                    let Some(gate) = resolve_hook(class, "follow") else {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "'{}' has no follow gate; nobody may follow '{topic}'.",
+                            call.class
+                        )));
+                    };
+                    let identity = make_identity(lua, &follower_class, &follower_name, &transport)?;
+                    gate.call_async::<mlua::Value>((state, topic.clone(), identity))
+                        .await?
+                        .as_boolean()
+                        .unwrap_or(false)
+                }
+            };
+            if !accepted {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "follow refused: '{topic}' on {}/{}.",
+                    call.class, call.name
+                )));
+            }
+            let kind = if transport == "connection" {
+                "connection"
+            } else {
+                "object"
+            };
+            let filter_option = if filter.is_null() {
+                None
+            } else {
+                Some(&filter)
+            };
+            home.with_storage(|storage| {
+                crate::streams::upsert_edge(
+                    storage,
+                    kind,
+                    &follower_class,
+                    &follower_name,
+                    &topic,
+                    filter_option,
+                )
+            })
+            .map_err(mlua::Error::RuntimeError)?;
+            Ok(mlua::Value::Boolean(true))
+        }
+        "receive" => {
+            let Some(receive) = resolve_hook(class, "receive") else {
+                // No receive hook: delivered and discarded, by design.
+                return Ok(mlua::Value::Nil);
+            };
+            let event_json = call
+                .args
+                .first()
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let event = lua.create_table()?;
+            event.set("topic", event_json["topic"].as_str().unwrap_or_default())?;
+            event.set("data", lua.to_value(&event_json["data"])?)?;
+            let from = make_identity(
+                lua,
+                event_json["from"]["class"].as_str().unwrap_or_default(),
+                event_json["from"]["name"].as_str().unwrap_or_default(),
+                "object",
+            )?;
+            event.set("from", from)?;
+            receive.call_async::<mlua::Value>((state, event)).await
+        }
+        other => Err(mlua::Error::RuntimeError(format!(
+            "No platform verb '__{other}'."
+        ))),
+    }
+}
+
 /// Installs the receiving side: resolve the class method in this vm and
 /// run it with the object's state table first.
 fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
@@ -569,6 +1034,20 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
             let class: Table = classes.get(call.class.as_str()).map_err(|_| {
                 mlua::Error::RuntimeError(format!("No object class '{}'.", call.class))
             })?;
+
+            // Internal platform verbs arrive `__`-prefixed; handles refuse
+            // that spelling, so these are platform-originated.
+            if let Some(verb) = call.method.strip_prefix("__") {
+                let result = dispatch_internal(&lua, &class, &call, verb).await?;
+                return Ok(result);
+            }
+            if !callable_method(&call.method) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "'{}' is a platform hook; only the platform calls it.",
+                    call.method
+                )));
+            }
+
             let method: mlua::Function = class.get(call.method.as_str()).map_err(|_| {
                 mlua::Error::RuntimeError(format!(
                     "Object class '{}' has no method '{}'.",
@@ -576,55 +1055,13 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
                 ))
             })?;
 
-            // The state table is the object's identity surface: plain keys
-            // are in-memory and live as long as the pinned vm; `state.sql`
-            // is the durable half, present when the host opened storage.
-            let (state, state_is_new) = match lua.named_registry_value::<Table>(STATE_KEY) {
-                Ok(state) => (state, false),
-                Err(_) => {
-                    let state = lua.create_table()?;
-                    let stored = lua
-                        .app_data_ref::<Arc<crate::objects::ObjectHome>>()
-                        .is_some_and(|home| home.has_storage());
-                    if stored {
-                        state.set("sql", sql_surface(&lua)?)?;
-                    }
-                    state.set("now", lua.create_function(|_, ()| Ok(unix_now_ms()))?)?;
-                    state.set("set_alarm", lua.create_function(set_alarm)?)?;
-                    lua.set_named_registry_value(STATE_KEY, state.clone())?;
-                    (state, true)
-                }
-            };
+            let (state, state_is_new) = object_state(&lua)?;
 
             // The object knows its own name; the queue class keys its
             // event off it, and user code gets it for free.
             state.set("name", call.name.as_str())?;
 
-            // `init` runs exactly once per object: for stored objects the
-            // file is the record (a failed init retries next call); without
-            // storage, once per vm life, which is when state is fresh too.
-            if state_is_new && call.method != "init" {
-                // Cloned out rather than borrowed: the app-data guard must
-                // not live across the init await below.
-                let home = lua
-                    .app_data_ref::<Arc<crate::objects::ObjectHome>>()
-                    .map(|home| home.clone())
-                    .filter(|home| home.has_storage());
-                let fresh = match &home {
-                    Some(home) => home
-                        .with_storage(|storage| storage.is_fresh())
-                        .map_err(mlua::Error::RuntimeError)?,
-                    None => true,
-                };
-
-                if fresh && let Ok(init) = class.get::<mlua::Function>("init") {
-                    init.call_async::<()>(state.clone()).await?;
-                    if let Some(home) = &home {
-                        home.with_storage(|storage| storage.mark_initialized())
-                            .map_err(mlua::Error::RuntimeError)?;
-                    }
-                }
-            }
+            run_init_if_fresh(&lua, &class, &state, state_is_new, &call.method).await?;
 
             let mut multi = mlua::MultiValue::new();
             multi.push_back(mlua::Value::Table(state));

@@ -116,6 +116,13 @@ pub struct ObjectHome {
     /// The registry mirror, when the host wired one; invoked wherever the
     /// alarm cells change.
     alarm_sync: Option<AlarmSync>,
+    /// The stream delivery timer: earliest moment any edge has work.
+    /// Local to residency (edges are durable; this is not), it blocks
+    /// hibernation like a pending alarm does.
+    delivery_due: std::sync::Mutex<Option<i64>>,
+    /// This object's identity, learned at first publish; what delivered
+    /// events carry as `from`.
+    publisher: std::sync::Mutex<Option<(String, String)>>,
 }
 
 impl ObjectHome {
@@ -134,7 +141,39 @@ impl ObjectHome {
             queue_policy,
             revision,
             alarm_sync,
+            delivery_due: std::sync::Mutex::new(None),
+            publisher: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Marks this object as having published: records its identity for
+    /// `from` stamps and wakes the delivery pump now.
+    pub fn note_publisher(&self, class: String, name: String) {
+        *self.publisher.lock().expect("no poisoned lock") = Some((class, name));
+        self.set_delivery_due(Some(crate::extensions::objects::unix_now_ms()));
+    }
+
+    /// The publishing identity, when one has published this residency.
+    pub fn publisher_identity(&self) -> Option<(String, String)> {
+        self.publisher.lock().expect("no poisoned lock").clone()
+    }
+
+    pub fn set_delivery_due(&self, due: Option<i64>) {
+        let mut slot = self.delivery_due.lock().expect("no poisoned lock");
+        *slot = match (*slot, due) {
+            (Some(held), Some(new)) => Some(held.min(new)),
+            (held, new) => new.or(held),
+        };
+    }
+
+    /// Clears and returns the delivery timer; the pump re-arms what
+    /// remains.
+    pub fn take_delivery_due(&self) -> Option<i64> {
+        self.delivery_due.lock().expect("no poisoned lock").take()
+    }
+
+    pub fn delivery_due(&self) -> Option<i64> {
+        *self.delivery_due.lock().expect("no poisoned lock")
     }
 
     /// Tells the registry mirror what the alarm cell now holds.
@@ -345,6 +384,14 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
             .as_ref()
             .map(|pending_alarm| pending_alarm.due_ms),
     );
+    // Undelivered stream events from a previous residency re-arm the
+    // pump immediately; edges and cursors are rows, so the file is the
+    // truth here too.
+    if home.has_storage()
+        && let Ok(due) = home.with_storage(crate::streams::next_delivery_due)
+    {
+        home.set_delivery_due(due);
+    }
     runtime.set_app_data(home.clone());
 
     tokio::spawn(async move {
@@ -354,19 +401,33 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         // calls exactly like they serialize with each other.
         loop {
             let pending = home.pending_alarm();
+            let delivery = home.delivery_due();
 
-            let call = if let Some(alarm) = pending {
-                // A pending alarm keeps the vm warm: hibernating past it
-                // would silently drop work the object asked itself for.
-                let wait = (alarm.due_ms - crate::extensions::objects::unix_now_ms()).max(0);
+            // The earliest of the app's alarm and the stream delivery
+            // timer wakes the task; either keeps the vm warm, because
+            // hibernating past due work would silently drop it.
+            let alarm_due = pending.as_ref().map(|alarm| alarm.due_ms);
+            let wake_due = match (alarm_due, delivery) {
+                (Some(alarm), Some(delivery)) => Some(alarm.min(delivery)),
+                (a, d) => a.or(d),
+            };
+
+            let call = if let Some(due) = wake_due {
+                let wait = (due - crate::extensions::objects::unix_now_ms()).max(0);
                 tokio::select! {
                     call = receiver.recv() => match call {
                         Some(call) => call,
                         None => break,
                     },
                     _ = tokio::time::sleep(std::time::Duration::from_millis(wait as u64)) => {
-                        fire_alarm(&runtime, &home, alarm, call_budget, after_write.as_ref())
-                            .await;
+                        let deliver_first = delivery.is_some_and(|d| alarm_due.is_none_or(|a| d <= a));
+                        if deliver_first {
+                            home.take_delivery_due();
+                            crate::streams::pump(&runtime, &home).await;
+                        } else if let Some(alarm) = pending {
+                            fire_alarm(&runtime, &home, alarm, call_budget, after_write.as_ref())
+                                .await;
+                        }
                         continue;
                     }
                 }
@@ -418,13 +479,21 @@ async fn fire_alarm(
 ) {
     home.clear_alarm();
 
+    // Platform classes dispatch in rust and keep the plain spelling;
+    // Lua classes take the internal `__alarm`, which resolves the hook
+    // (handles refuse that spelling, so it is platform-originated).
+    let method = if alarm.class.starts_with("__") {
+        "alarm"
+    } else {
+        "__alarm"
+    };
     let result = guarded_dispatch(
         runtime,
         home,
         "__dispatch",
         serde_json::json!({
             "class": alarm.class,
-            "method": "alarm",
+            "method": method,
             "name": alarm.name,
             "args": [],
             "chain": [alarm.own_key],
