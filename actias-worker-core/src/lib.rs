@@ -12,6 +12,7 @@ pub mod objects;
 pub mod platform;
 pub mod runtime;
 pub mod storage;
+pub mod connections;
 pub mod streams;
 
 pub mod proto {
