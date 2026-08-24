@@ -73,6 +73,17 @@ pub enum InboxItem {
     Closed,
 }
 
+/// What a connection program sends toward the wire; the worker's
+/// bridge encodes these as websocket frames. Channel-level data on
+/// purpose: no ws types cross into worker-core.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutboundFrame {
+    /// One json frame down the wire.
+    Json(serde_json::Value),
+    /// Close the wire politely.
+    Close,
+}
+
 /// Why a delivery did not land; both mean "prune the edge" to a pump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryRefused {
@@ -183,7 +194,10 @@ mod tests {
 
         registry.deliver("conn#1", event("first")).expect("lands");
         registry
-            .deliver("conn#1", InboxItem::Frame(serde_json::json!({ "event": "join" })))
+            .deliver(
+                "conn#1",
+                InboxItem::Frame(serde_json::json!({ "event": "join" })),
+            )
             .expect("frames merge into the same inbox");
 
         let first = rx.next().await.expect("item");
@@ -239,10 +253,7 @@ mod tests {
         tx.push(InboxItem::Closed).expect("lands");
         drop(tx);
 
-        assert!(matches!(
-            rx.next().await,
-            Some(InboxItem::Event { .. })
-        ));
+        assert!(matches!(rx.next().await, Some(InboxItem::Event { .. })));
         assert_eq!(rx.next().await, Some(InboxItem::Closed));
         assert_eq!(rx.next().await, None);
     }

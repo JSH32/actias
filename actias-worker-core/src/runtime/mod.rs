@@ -757,25 +757,28 @@ impl ActiasRuntime {
         Self::set_module_loaders(&lua)?;
 
         match profile {
-            VmProfile::Standard => lua.register_extensions(&[
-                &JsonExtension,
-                &UuidExtension,
-                &crate::extensions::http::HttpExtension { egress },
-                &KvExtension {
-                    kv_client: kv_client.clone(),
-                    project_id: prepared.script.project_id.clone(),
-                },
-                &crate::extensions::secrets::SecretsExtension {
-                    secret_client,
-                    project_id: prepared.script.project_id.clone(),
-                    script_id: prepared.script.id.clone(),
-                    pins: None,
-                },
-                &crate::extensions::log::LogExtension { publisher: logs },
-                &JwtExtension,
-                &CryptoExtension,
-                &crate::extensions::objects::ObjectExtension,
-            ])?,
+            VmProfile::Standard => {
+                lua.register_extensions(&[
+                    &JsonExtension,
+                    &UuidExtension,
+                    &crate::extensions::http::HttpExtension { egress },
+                    &KvExtension {
+                        kv_client: kv_client.clone(),
+                        project_id: prepared.script.project_id.clone(),
+                    },
+                    &crate::extensions::secrets::SecretsExtension {
+                        secret_client,
+                        project_id: prepared.script.project_id.clone(),
+                        script_id: prepared.script.id.clone(),
+                        pins: None,
+                    },
+                    &crate::extensions::log::LogExtension { publisher: logs },
+                    &JwtExtension,
+                    &CryptoExtension,
+                    &crate::extensions::objects::ObjectExtension,
+                ])?;
+                crate::extensions::sockets::install_prelude(&lua.lua).await?;
+            }
             // Workflow code keeps json and log; every effect surface is
             // refused by name at the boundary, and uuid journals. The
             // step verb (W3) builds effect contexts with the standard

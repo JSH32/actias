@@ -311,8 +311,7 @@ impl LuaExtension for ObjectExtension {
 /// as `__`-prefixed internal methods) and their public spellings, which
 /// handles refuse outright so a `__`-method arriving at `__dispatch` is
 /// provably platform-originated.
-pub const RESERVED_METHODS: [&str; 6] =
-    ["init", "alarm", "receive", "receives", "follow", "hooks"];
+pub const RESERVED_METHODS: [&str; 6] = ["init", "alarm", "receive", "receives", "follow", "hooks"];
 
 /// Whether a method name may travel through a handle.
 fn callable_method(method: &str) -> bool {
@@ -970,8 +969,15 @@ async fn dispatch_internal(
                 })?;
 
             if verb == "unfollow" {
+                let connection_id = follower["connection"].as_str().map(str::to_owned);
                 home.with_storage(|storage| {
-                    crate::streams::delete_edge(storage, &follower_class, &follower_name, &topic)
+                    crate::streams::delete_edge(
+                        storage,
+                        &follower_class,
+                        &follower_name,
+                        connection_id.as_deref(),
+                        &topic,
+                    )
                 })
                 .map_err(mlua::Error::RuntimeError)?;
                 return Ok(mlua::Value::Boolean(true));
@@ -1048,14 +1054,11 @@ async fn dispatch_internal(
             // discarded (the checker refuses the follow that would
             // make such an edge; erroring here would only make the
             // pump retry something that can never succeed).
-            let handler = class
-                .get::<Table>("receives")
-                .ok()
-                .and_then(|table| {
-                    table
-                        .get::<mlua::Function>(format!("{from_class}:{topic}"))
-                        .ok()
-                });
+            let handler = class.get::<Table>("receives").ok().and_then(|table| {
+                table
+                    .get::<mlua::Function>(format!("{from_class}:{topic}"))
+                    .ok()
+            });
             let Some(handler) = handler else {
                 return Ok(mlua::Value::Nil);
             };
@@ -1141,7 +1144,18 @@ fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
             let mut multi = mlua::MultiValue::new();
             multi.push_back(mlua::Value::Table(state));
             for argument in call.args {
-                multi.push_back(lua.to_value(&argument)?);
+                // A json null in an argument is Lua NIL, never mlua's
+                // null sentinel: the sentinel is truthy, so `limit or
+                // 50` style defaulting would silently keep a userdata
+                // (found live: math.min exploding on a nil parameter).
+                multi.push_back(
+                    lua.to_value_with(
+                        &argument,
+                        mlua::SerializeOptions::new()
+                            .serialize_none_to_null(false)
+                            .serialize_unit_to_null(false),
+                    )?,
+                );
             }
 
             method.call_async::<mlua::Value>(multi).await

@@ -161,19 +161,24 @@ pub fn prune_edge(storage: &mut SqliteStorage, edge_id: i64) -> Result<(), Strin
     Ok(())
 }
 
-/// Removes one identity's edge on one topic; unilateral, no gate.
+/// Removes one identity's edge on one topic at ONE endpoint; unilateral,
+/// no gate. The durable edge (NULL connection) and each device row are
+/// separate endpoints, so an account unfollowing never severs its
+/// devices, and a device unfollowing never severs the account.
 pub fn delete_edge(
     storage: &mut SqliteStorage,
     class: &str,
     name: &str,
+    connection_id: Option<&str>,
     topic: &str,
 ) -> Result<(), String> {
     ensure_tables(storage)?;
     storage
         .platform()
         .execute(
-            "DELETE FROM __actias_followers WHERE class = ? AND name = ? AND topic = ?",
-            rusqlite::params![class, name, topic],
+            "DELETE FROM __actias_followers \
+             WHERE class = ? AND name = ? AND topic = ? AND connection IS ?",
+            rusqlite::params![class, name, topic, connection_id],
         )
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -193,6 +198,69 @@ pub fn drop_identity(
             rusqlite::params![class, name],
         )
         .map_err(|e| e.to_string())
+}
+
+/// The console's followers read: edge rows plus the event-log head,
+/// from a file opened READ-ONLY, so nothing here may create tables;
+/// an object that never touched streams reads as empty, not an error.
+/// Object-kind edges carry their lag (head minus cursor); connection
+/// edges have no cursor promise and report none.
+pub fn read_followers(storage: &mut SqliteStorage) -> Result<serde_json::Value, String> {
+    let connection = storage.platform();
+    let present: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE name IN ('__actias_followers', '__actias_stream_events')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if present < 2 {
+        return Ok(serde_json::json!({ "head": 0, "edges": [] }));
+    }
+    let head: i64 = connection
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM __actias_stream_events",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut statement = connection
+        .prepare(
+            "SELECT kind, class, name, connection, topic, filter, cursor, attempts, next_at \
+             FROM __actias_followers ORDER BY topic, id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            let kind: String = row.get(0)?;
+            let class: String = row.get(1)?;
+            let name: String = row.get(2)?;
+            let connection_id: Option<String> = row.get(3)?;
+            let topic: String = row.get(4)?;
+            let filter: Option<String> = row.get(5)?;
+            let cursor: i64 = row.get(6)?;
+            let attempts: i64 = row.get(7)?;
+            let next_at: i64 = row.get(8)?;
+            Ok(serde_json::json!({
+                "kind": kind,
+                "follower": format!("{class}/{name}"),
+                "connection": connection_id,
+                "topic": topic,
+                "filter": filter
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()),
+                "cursor": cursor,
+                "lag": if kind == "object" { Some((head - cursor).max(0)) } else { None },
+                "attempts": attempts,
+                "next_at": next_at,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut edges = Vec::new();
+    for row in rows {
+        edges.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(serde_json::json!({ "head": head, "edges": edges }))
 }
 
 /// Every edge, optionally narrowed to one topic; the `followers` verb.
@@ -390,9 +458,7 @@ fn deliver_connection_edge(
         }
     };
     let Some(last) = events.last().map(|event| event.seq) else {
-        let head = home
-            .with_storage(head_seq)
-            .unwrap_or(edge.cursor);
+        let head = home.with_storage(head_seq).unwrap_or(edge.cursor);
         let _ = home.with_storage(|storage| advance_cursor(storage, edge.id, head));
         return;
     };
@@ -410,11 +476,7 @@ fn deliver_connection_edge(
                 data: event.data.clone(),
             };
             if let Err(refused) = registry.deliver(connection_id, item) {
-                actias_common::tracing::debug!(
-                    ?refused,
-                    connection_id,
-                    "connection edge pruned"
-                );
+                actias_common::tracing::debug!(?refused, connection_id, "connection edge pruned");
                 pruned = true;
                 break;
             }
@@ -465,8 +527,9 @@ pub async fn pump(
         }
     };
 
-    let registry = runtime.app_data_ref::<std::sync::Arc<crate::connections::ConnectionRegistry>>(
-    ).map(|registry| registry.clone());
+    let registry = runtime
+        .app_data_ref::<std::sync::Arc<crate::connections::ConnectionRegistry>>()
+        .map(|registry| registry.clone());
 
     for edge in edges {
         if edge.cursor >= head {
@@ -599,6 +662,18 @@ mod tests {
             audience = function(state)
                 return #state:followers("news")
             end,
+            -- Pure-Luau probe, no async anywhere: can a NATIVE yield
+            -- cross a generic-for iterator call?
+            forin_pure_yield = function(state)
+                local co = coroutine.create(function()
+                    for v in function() return coroutine.yield("ask") end do
+                        return v
+                    end
+                end)
+                local ok1, ask = coroutine.resume(co)
+                local ok2, got = coroutine.resume(co, "answer")
+                return { ok1 = ok1, ask = tostring(ask), ok2 = ok2, got = tostring(got) }
+            end,
         }
 
         local function record(state, event)
@@ -642,7 +717,31 @@ mod tests {
             end,
         }
 
-        on "fetch" (function() return { body = "ok" } end)
+        on "fetch" (function(request)
+            -- The upgrade shape production uses: the program is a
+            -- boot-compiled closure handed to request:upgrade, and the
+            -- identity is minted from an instance handle.
+            if request.upgrade and request.wants_forward then
+                -- The stdlib one-liner: follow one stream, push it down.
+                return request:upgrade(
+                    sockets.forward(Hub("town"), "news"), Reader("ada"))
+            end
+            if request.upgrade then
+                return request:upgrade(function(sock)
+                    sock:follow(Hub("town"), "news")
+                    sock:each(function(item)
+                        if item.kind == "event" then
+                            sock:send({ kind = "event", topic = item.event.topic,
+                                        from = item.event.from.id })
+                        elseif item.kind == "frame" then
+                            sock:send({ kind = "frame", echo = item.data.hello })
+                            return true
+                        end
+                    end)
+                end, Reader("ada"))
+            end
+            return { body = "ok" }
+        end)
     "#;
 
     async fn vm(source: &str, flaky: bool) -> ActiasRuntime {
@@ -876,14 +975,331 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_connection_program_follows_pulls_and_sends() {
+        use crate::connections::OutboundFrame;
+        use crate::extensions::sockets::{PendingUpgrade, SockShared, run_connection};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
+        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone());
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "admit",
+            vec![serde_json::json!("ada")],
+        )
+        .await
+        .expect("admits");
+
+        // The bridge's transport half, hand-built: registered inbox in,
+        // outbound frames out; no websocket anywhere in worker-core.
+        let (inbox_tx, inbox_rx) = crate::connections::inbox();
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<OutboundFrame>(16);
+        connections.register("conn#s1", inbox_tx.clone());
+
+        // A fresh vm from the same bundle plays the surviving request
+        // vm, and the upgrade rides the script's own fetch handler:
+        // arm the request, run the listener, take the parked pending.
+        let runtime = vm(SOURCE, false).await;
+        runtime.set_app_data::<ObjectRouter>(router.clone());
+        let request = runtime.create_table().expect("request table");
+        crate::extensions::sockets::arm_request(&runtime, &request).expect("arms");
+        let listener = runtime.listener("fetch").expect("registered");
+        let marker: mlua::Value = listener
+            .call_async(mlua::Value::Table(request))
+            .await
+            .expect("the handler upgrades");
+        let is_marker = marker
+            .as_table()
+            .and_then(|table| table.get::<bool>("__actias_upgrade").ok())
+            .unwrap_or(false);
+        assert!(is_marker, "the handler returned the upgrade marker");
+        let pending = runtime
+            .remove_app_data::<PendingUpgrade>()
+            .expect("the upgrade was parked");
+        assert_eq!(
+            (pending.class.as_str(), pending.name.as_str()),
+            ("Reader", "ada"),
+            "the identity travels from the handle"
+        );
+        let shared = SockShared::new(
+            "conn#s1".to_owned(),
+            "Reader".to_owned(),
+            "ada".to_owned(),
+            inbox_rx,
+            out_tx,
+            router.clone(),
+        );
+
+        let drive = tokio::spawn(async move { run_connection(&runtime, pending, shared).await });
+
+        // The program's follow lands as an edge, then a publish flows
+        // wire-ward through the pump, the inbox and the program.
+        let mut audience = -1;
+        for _ in 0..80 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            audience = call(&router, "Hub", "town", "audience", vec![])
+                .await
+                .expect("audience answers")
+                .as_i64()
+                .unwrap_or(-1);
+            if audience == 1 {
+                break;
+            }
+        }
+        if audience != 1 {
+            let early = tokio::time::timeout(std::time::Duration::from_secs(1), drive).await;
+            panic!("no edge was made; the program said: {early:?}");
+        }
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "post",
+            vec![serde_json::json!("sport"), serde_json::json!("goal")],
+        )
+        .await
+        .expect("posts");
+        let forwarded = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the event reaches the wire side")
+            .expect("outbound open");
+        assert_eq!(
+            forwarded,
+            OutboundFrame::Json(serde_json::json!({
+                "kind": "event", "topic": "news", "from": "Hub/town",
+            }))
+        );
+
+        // A client frame merges into the same inbox and comes back.
+        inbox_tx
+            .push(crate::connections::InboxItem::Frame(
+                serde_json::json!({ "hello": "world" }),
+            ))
+            .expect("frame lands");
+        let echoed = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the echo reaches the wire side")
+            .expect("outbound open");
+        assert_eq!(
+            echoed,
+            OutboundFrame::Json(serde_json::json!({ "kind": "frame", "echo": "world" }))
+        );
+
+        // The program returned: polite unfollow severs the edge and the
+        // bridge is told to close the wire.
+        drive
+            .await
+            .expect("drive joins")
+            .expect("the program ran cleanly");
+        let closing = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the close reaches the wire side")
+            .expect("outbound open");
+        assert_eq!(closing, OutboundFrame::Close);
+        let after = call(&router, "Hub", "town", "audience", vec![])
+            .await
+            .expect("audience answers")
+            .as_i64()
+            .unwrap_or(-1);
+        assert_eq!(after, 0, "run_connection unfollowed on the way out");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_followers_read_answers_read_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("hub.db");
+        {
+            let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
+            // Follow FIRST: a fresh edge starts at head (no backfill),
+            // so lag only accrues for events published after it.
+            crate::streams::upsert_edge(
+                &mut storage,
+                "object",
+                "Reader",
+                "ada",
+                None,
+                "news",
+                None,
+            )
+            .expect("edges");
+            crate::streams::upsert_edge(
+                &mut storage,
+                "connection",
+                "Reader",
+                "ada",
+                Some("conn#7"),
+                "news",
+                Some(&serde_json::json!({ "kind": "sport" })),
+            )
+            .expect("edges");
+            crate::streams::append_event(
+                &mut storage,
+                ("Hub", "town"),
+                "news",
+                &serde_json::json!({ "kind": "sport" }),
+            )
+            .expect("appends");
+            storage.checkpoint().ok();
+        }
+
+        let mut read_only =
+            crate::storage::SqliteStorage::open_read_only(&file).expect("opens read-only");
+        let value = crate::streams::read_followers(&mut read_only).expect("reads");
+        assert_eq!(value["head"], 1);
+        let edges = value["edges"].as_array().expect("edges");
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0]["follower"], "Reader/ada");
+        assert_eq!(edges[0]["kind"], "object");
+        assert_eq!(edges[0]["lag"], 1, "cursor 0 against head 1");
+        assert_eq!(edges[1]["kind"], "connection");
+        assert_eq!(edges[1]["connection"], "conn#7");
+        assert_eq!(edges[1]["lag"], serde_json::Value::Null);
+        assert_eq!(edges[1]["filter"]["kind"], "sport");
+
+        // A file that never touched streams answers empty, not error.
+        let plain = dir.path().join("plain.db");
+        crate::storage::SqliteStorage::open(&plain).expect("opens");
+        let mut plain_read =
+            crate::storage::SqliteStorage::open_read_only(&plain).expect("opens read-only");
+        let empty = crate::streams::read_followers(&mut plain_read).expect("reads");
+        assert_eq!(empty["edges"].as_array().map(Vec::len), Some(0));
+    }
+
+    /// Pins the Luau restriction the seventeenth revision rests on: a
+    /// NATIVE coroutine.yield cannot cross a generic-for iterator call
+    /// (no mlua machinery involved at all). If a Luau upgrade ever
+    /// makes this pass differently, `for item in sock:each()` becomes
+    /// possible and the surface deserves revisiting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_native_yield_cannot_cross_generic_for() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let router = town_router(dir.path().to_path_buf(), false);
+        let verdict = call(&router, "Hub", "town", "forin_pure_yield", vec![])
+            .await
+            .expect("probe answers");
+        assert_eq!(verdict["ok1"], false, "the yield was refused: {verdict}");
+        assert!(
+            verdict["ask"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("yield across"),
+            "refused for the pinned reason: {verdict}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_forward_program_pushes_one_stream_down() {
+        use crate::connections::OutboundFrame;
+        use crate::extensions::sockets::{PendingUpgrade, SockShared, run_connection};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
+        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone());
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "admit",
+            vec![serde_json::json!("ada")],
+        )
+        .await
+        .expect("admits");
+
+        let (inbox_tx, inbox_rx) = crate::connections::inbox();
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<OutboundFrame>(16);
+        connections.register("conn#f1", inbox_tx.clone());
+
+        let runtime = vm(SOURCE, false).await;
+        runtime.set_app_data::<ObjectRouter>(router.clone());
+        let request = runtime.create_table().expect("request table");
+        request.set("wants_forward", true).expect("flag");
+        crate::extensions::sockets::arm_request(&runtime, &request).expect("arms");
+        let listener = runtime.listener("fetch").expect("registered");
+        let _: mlua::Value = listener
+            .call_async(mlua::Value::Table(request))
+            .await
+            .expect("the handler upgrades");
+        let pending = runtime
+            .remove_app_data::<PendingUpgrade>()
+            .expect("the upgrade was parked");
+        let shared = SockShared::new(
+            "conn#f1".to_owned(),
+            pending.class.clone(),
+            pending.name.clone(),
+            inbox_rx,
+            out_tx,
+            router.clone(),
+        );
+        let drive = tokio::spawn(async move { run_connection(&runtime, pending, shared).await });
+
+        let mut audience = -1;
+        for _ in 0..80 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            audience = call(&router, "Hub", "town", "audience", vec![])
+                .await
+                .expect("audience answers")
+                .as_i64()
+                .unwrap_or(-1);
+            if audience == 1 {
+                break;
+            }
+        }
+        if audience != 1 {
+            let early = tokio::time::timeout(std::time::Duration::from_secs(1), drive).await;
+            panic!("forward made no edge; the program said: {early:?}");
+        }
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "post",
+            vec![serde_json::json!("sport"), serde_json::json!("goal")],
+        )
+        .await
+        .expect("posts");
+        let forwarded = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the event reaches the wire side")
+            .expect("outbound open");
+        let OutboundFrame::Json(frame) = forwarded else {
+            panic!("expected a frame, got {forwarded:?}");
+        };
+        assert_eq!(frame["topic"], "news");
+        assert_eq!(frame["from"]["id"], "Hub/town");
+        assert_eq!(frame["data"]["kind"], "sport");
+
+        // Closing the wire ends the loop: Closed drains, forward
+        // returns, edges sever.
+        inbox_tx
+            .push(crate::connections::InboxItem::Closed)
+            .expect("close lands");
+        drive
+            .await
+            .expect("drive joins")
+            .expect("forward ran cleanly");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn connection_edges_deliver_at_most_once_and_prune() {
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
         let router = town_router_with(dir.path().to_path_buf(), false, connections.clone());
 
-        call(&router, "Hub", "town", "admit", vec![serde_json::json!("ada")])
-            .await
-            .expect("admits");
+        call(
+            &router,
+            "Hub",
+            "town",
+            "admit",
+            vec![serde_json::json!("ada")],
+        )
+        .await
+        .expect("admits");
 
         let (tx, mut rx) = crate::connections::inbox();
         connections.register("conn#1", tx);
@@ -1010,9 +1426,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let router = town_router(dir.path().to_path_buf(), false);
 
-        call(&router, "Hub", "town", "admit", vec![serde_json::json!("ada")])
-            .await
-            .expect("admits");
+        call(
+            &router,
+            "Hub",
+            "town",
+            "admit",
+            vec![serde_json::json!("ada")],
+        )
+        .await
+        .expect("admits");
         call(
             &router,
             "Reader",
@@ -1048,7 +1470,11 @@ mod tests {
         // The declared stream arrives; the undeclared one was consumed
         // by delivery (Ok, cursor advanced) and simply never lands.
         let rows = wait_for(&router, "ada", |rows| !rows.is_empty()).await;
-        assert_eq!(rows.len(), 1, "only Hub:news has a receives entry: {rows:?}");
+        assert_eq!(
+            rows.len(),
+            1,
+            "only Hub:news has a receives entry: {rows:?}"
+        );
         assert_eq!(rows[0]["topic"], "news");
     }
 

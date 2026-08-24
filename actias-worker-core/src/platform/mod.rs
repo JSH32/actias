@@ -88,6 +88,9 @@ pub enum PlatformRead {
     /// The workflow journal after `since`, oldest first: what the CI
     /// view folds.
     WorkflowJournal { since: i64 },
+    /// The publisher's edge table plus its event-log head: the
+    /// console's followers panel, for any object.
+    Followers,
 }
 
 impl PlatformRead {
@@ -140,6 +143,7 @@ impl PlatformRead {
             Self::WorkflowJournal { since } => {
                 serde_json::to_value(workflow::read_journal_readonly_from(&mut storage, *since)?)
             }
+            Self::Followers => return crate::streams::read_followers(&mut storage),
         };
         value.map_err(|e| e.to_string())
     }

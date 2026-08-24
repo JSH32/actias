@@ -955,6 +955,94 @@ mod tests {
             assert_eq!(resumed["value"]["by"], "jsh32");
         }
 
+        /// The double-clicked button: a signal sent twice journals
+        /// twice, one row goes unconsumed, and replay must set it
+        /// aside instead of wedging the run at the next verb (found
+        /// live: "journal divergence: expected Signal, code reached
+        /// step 'settle'").
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_duplicate_signal_never_wedges_replay() {
+            const SOURCE: &str = r#"
+                workflow "handover" (function(wf, input)
+                    local a = wf:await("shipped")
+                    local b = wf:await("received")
+                    local sealed = wf:step("settle", function()
+                        return { done = true }
+                    end)
+                    return { a = a.n, b = b.n, done = sealed.done }
+                end)
+                on "fetch" (function() return { body = "ok" } end)
+            "#;
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            let parked = handle
+                .call(
+                    "__dispatch",
+                    call("handover/sale-1", "start", serde_json::json!([{}])),
+                )
+                .await
+                .expect("parks at shipped");
+            assert_eq!(parked["status"], "parked", "{parked}");
+
+            let first = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "handover/sale-1",
+                        "signal",
+                        serde_json::json!(["shipped", { "n": 1 }]),
+                    ),
+                )
+                .await
+                .expect("first shipped consumed");
+            assert_eq!(first["status"], "parked", "now at received: {first}");
+
+            // The double click: a second `shipped` nobody will consume.
+            let duplicate = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "handover/sale-1",
+                        "signal",
+                        serde_json::json!(["shipped", { "n": 2 }]),
+                    ),
+                )
+                .await
+                .expect("a duplicate signal must not error the run");
+            assert_eq!(
+                duplicate["status"], "parked",
+                "still parked at received, not wedged: {duplicate}"
+            );
+
+            let done = handle
+                .call(
+                    "__dispatch",
+                    call(
+                        "handover/sale-1",
+                        "signal",
+                        serde_json::json!(["received", { "n": 3 }]),
+                    ),
+                )
+                .await
+                .expect("received completes the run");
+            assert_eq!(done["status"], "completed", "{done}");
+            assert_eq!(done["value"]["a"], 1, "the FIRST shipped won: {done}");
+            assert_eq!(done["value"]["b"], 3);
+            assert_eq!(done["value"]["done"], true);
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn cancel_wins_over_further_progress() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1457,6 +1545,27 @@ impl WfShared {
     }
 }
 
+/// Rotates signals nobody has consumed yet from the replay tail's
+/// front to its back. Signals journal on ARRIVAL (a double-clicked
+/// button, an early child completion), awaits consume them BY NAME
+/// from anywhere in the tail, and every other verb replays effects in
+/// strict order; without this, one unconsumed duplicate wedges the run
+/// at the next verb ("journal divergence: expected Signal"), which a
+/// double-clicked ship button produced live. Rotation is deterministic
+/// per replay, so the journal's guarantees hold.
+fn set_aside_leading_signals(pending: &mut std::collections::VecDeque<Entry>) {
+    let mut budget = pending.len();
+    while budget > 0
+        && pending
+            .front()
+            .is_some_and(|entry| entry.kind == EntryKind::Signal)
+    {
+        let entry = pending.pop_front().expect("front checked");
+        pending.push_back(entry);
+        budget -= 1;
+    }
+}
+
 impl WfShared {
     /// One journaled ambient read: replayed from the cursor when the
     /// tail still holds one, appended live otherwise.
@@ -1470,7 +1579,12 @@ impl WfShared {
             .as_mut()
             .ok_or_else(|| "No workflow attempt is executing.".to_owned())?;
 
-        if let Some(entry) = attempt.pending.front() {
+        set_aside_leading_signals(&mut attempt.pending);
+        if let Some(entry) = attempt
+            .pending
+            .front()
+            .filter(|entry| entry.kind != EntryKind::Signal)
+        {
             if entry.kind != EntryKind::Ambient || entry.data["tag"] != tag {
                 return Err(format!(
                     "journal divergence: expected {:?} '{}', code asked for ambient '{tag}'",
@@ -1593,10 +1707,16 @@ fn await_signals(
     // The gate row: live appends it; replay finds it first. A gate that
     // never journaled (the run parked at an earlier verb) may instead
     // meet its signal directly: consume it and never park at all.
-    // Deterministic, since the journal is.
-    match attempt.pending.front() {
-        Some(entry) if entry.kind == EntryKind::Timer && entry.data["for"] == gate_json => {}
-        Some(_) if attempt.pending.iter().any(wanted) => {
+    // Deterministic, since the journal is. Unconsumed foreign signals
+    // (a double-sent button, an unawaited name) rotate aside first and
+    // never block the gate.
+    set_aside_leading_signals(&mut attempt.pending);
+    let front_is_gate = attempt
+        .pending
+        .front()
+        .is_some_and(|entry| entry.kind == EntryKind::Timer && entry.data["for"] == gate_json);
+    if !front_is_gate {
+        if attempt.pending.iter().any(wanted) {
             let offset = attempt
                 .pending
                 .iter()
@@ -1609,32 +1729,36 @@ fn await_signals(
             let winner = signal.data["name"].as_str().map(str::to_owned);
             return Ok((lua.to_value(&signal.data["payload"])?, winner));
         }
-        Some(entry) => {
+        if let Some(entry) = attempt
+            .pending
+            .front()
+            .filter(|entry| entry.kind != EntryKind::Signal)
+        {
             return Err(mlua::Error::RuntimeError(format!(
                 "journal divergence: expected {:?}, code reached await '{describe}'",
                 entry.kind
             )));
         }
-        None => {
-            let due = timeout_ms.map(|ms| now.saturating_add(ms.max(0)));
-            attempt
-                .home
-                .with_storage(|storage| {
-                    append(
-                        storage,
-                        EntryKind::Timer,
-                        &serde_json::json!({ "due_ms": due, "for": gate_json }),
-                    )?;
-                    storage.commit()?;
-                    storage.begin()
-                })
-                .map_err(mlua::Error::RuntimeError)?;
-            if let Some(ms) = timeout_ms.filter(|ms| *ms < i64::MAX) {
-                arm(attempt, ms.max(0)).map_err(mlua::Error::RuntimeError)?;
-            }
-            drop(guard);
-            return Err(shared.park(format!("awaiting '{describe}'")));
+        // Tail exhausted (foreign signals alone do not count): journal
+        // the gate and park.
+        let due = timeout_ms.map(|ms| now.saturating_add(ms.max(0)));
+        attempt
+            .home
+            .with_storage(|storage| {
+                append(
+                    storage,
+                    EntryKind::Timer,
+                    &serde_json::json!({ "due_ms": due, "for": gate_json }),
+                )?;
+                storage.commit()?;
+                storage.begin()
+            })
+            .map_err(mlua::Error::RuntimeError)?;
+        if let Some(ms) = timeout_ms.filter(|ms| *ms < i64::MAX) {
+            arm(attempt, ms.max(0)).map_err(mlua::Error::RuntimeError)?;
         }
+        drop(guard);
+        return Err(shared.park(format!("awaiting '{describe}'")));
     }
 
     // The gate is journaled; signals arrive in completion order, not
@@ -1758,6 +1882,7 @@ impl mlua::UserData for WfHandle {
                     let mut attempts_seen: i64 = 0;
                     let mut plan = None;
                     while plan.is_none() {
+                        set_aside_leading_signals(&mut attempt.pending);
                         match attempt.pending.front() {
                             Some(entry)
                                 if entry.kind == EntryKind::Intent
@@ -1797,7 +1922,9 @@ impl mlua::UserData for WfHandle {
                                 attempt.pending.pop_front();
                                 plan = Some(Plan::Replay(value));
                             }
-                            Some(entry) if attempts_seen == 0 => {
+                            Some(entry)
+                                if attempts_seen == 0 && entry.kind != EntryKind::Signal =>
+                            {
                                 return Err(mlua::Error::RuntimeError(format!(
                                     "journal divergence: expected {:?}, code reached step '{name}'",
                                     entry.kind
@@ -1976,7 +2103,12 @@ impl mlua::UserData for WfHandle {
             })?;
             let now = crate::extensions::objects::unix_now_ms();
 
-            match attempt.pending.front() {
+            set_aside_leading_signals(&mut attempt.pending);
+            match attempt
+                .pending
+                .front()
+                .filter(|entry| entry.kind != EntryKind::Signal)
+            {
                 Some(entry) if entry.kind == EntryKind::Timer && entry.data["for"].is_null() => {
                     let due = entry.data["due_ms"].as_i64().unwrap_or(0);
                     if due <= now {
@@ -2085,7 +2217,12 @@ impl mlua::UserData for WfHandle {
                     let attempt = guard.as_mut().ok_or_else(|| {
                         mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned())
                     })?;
-                    match attempt.pending.front() {
+                    set_aside_leading_signals(&mut attempt.pending);
+                    match attempt
+                        .pending
+                        .front()
+                        .filter(|entry| entry.kind != EntryKind::Signal)
+                    {
                         Some(entry)
                             if entry.kind == EntryKind::Child
                                 && entry.data["definition"] == definition.as_str() =>

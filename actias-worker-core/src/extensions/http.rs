@@ -74,6 +74,15 @@ pub struct Request {
     uri: UriType,
     /// Only used from server, client making request doesn't need this.
     context_uri: Option<UriType>,
+    /// Server requests only: the path relative to the script (route
+    /// segments the platform consumed are stripped), what handlers
+    /// route on without parsing uris themselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    /// Server requests only: decoded query parameters, last value per
+    /// key; always a table when the request came off the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    query: Option<HashMap<String, String>>,
     method: Option<String>,
     #[serde(default)]
     headers: HashMap<String, String>,
@@ -137,9 +146,28 @@ impl Request {
         version: String,
         body: Vec<u8>,
     ) -> Self {
+        let context = context_uri.unwrap_or_else(|| uri.clone());
+        let (path, query) = match http::Uri::from_str(&context) {
+            Ok(parsed) => (
+                Some(parsed.path().to_string()),
+                Some(
+                    parsed
+                        .query()
+                        .map(|raw| {
+                            url::form_urlencoded::parse(raw.as_bytes())
+                                .into_owned()
+                                .collect::<HashMap<String, String>>()
+                        })
+                        .unwrap_or_default(),
+                ),
+            ),
+            Err(_) => (None, None),
+        };
         Self {
-            context_uri: Some(UriType::String(context_uri.unwrap_or_else(|| uri.clone()))),
+            context_uri: Some(UriType::String(context)),
             uri: UriType::String(uri),
+            path,
+            query,
             method: Some(method),
             headers,
             version: Some(version),
