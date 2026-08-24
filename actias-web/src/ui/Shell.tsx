@@ -83,9 +83,10 @@ function PublicChrome({ children }: React.PropsWithChildren) {
 const INLINE_INSTANCE_LIMIT = 10;
 
 /**
- * One object class in the SOURCES rail. Small classes list their
- * instances outright; a large one shows its count and a type-ahead that
- * asks the directory for prefix matches as you type.
+ * One object class in the SOURCES rail. Instances always BROWSE: the
+ * first page lists immediately whatever the class size, and on large
+ * classes the filter input narrows the page rather than gating it, so
+ * finding an instance never starts from a blank box.
  */
 function RailObjectClass({
   projectId,
@@ -101,16 +102,9 @@ function RailObjectClass({
   const [term, setTerm] = React.useState('');
   const small = count <= INLINE_INSTANCE_LIMIT;
   const { data } = useQuery({
-    queryKey: ['object-instances', projectId, klass, small ? '' : term],
+    queryKey: ['object-instances', projectId, klass, term],
     queryFn: () =>
-      api.objects.listObjects(
-        projectId,
-        klass,
-        small ? '' : term,
-        0,
-        INLINE_INSTANCE_LIMIT,
-      ),
-    enabled: small || term.length > 0,
+      api.objects.listObjects(projectId, klass, term, 0, INLINE_INSTANCE_LIMIT),
   });
   const matches = data?.items ?? [];
   const beyond = (data?.total ?? 0) - matches.length;
@@ -124,7 +118,7 @@ function RailObjectClass({
       {!small && (
         <input
           className={classes.railFind}
-          placeholder={`Find by name in ${count}`}
+          placeholder={`Narrow ${count} by name`}
           value={term}
           onChange={(event) => setTerm(event.target.value)}
         />
@@ -145,8 +139,10 @@ function RailObjectClass({
           <span className={classes.railName}>{instance.name}</span>
         </Link>
       ))}
-      {!small && term && beyond > 0 && (
-        <p className={classes.railNote}>{beyond} more match; keep typing.</p>
+      {!small && beyond > 0 && (
+        <p className={classes.railNote}>
+          {beyond} more{term ? ' match; keep typing.' : '; type to narrow.'}
+        </p>
       )}
     </div>
   );
