@@ -6,7 +6,6 @@ use std::{
 
 use base64::Engine;
 use colored::Colorize;
-use include_dir::{Dir, include_dir};
 use serde::Deserialize;
 
 use crate::{client::types::RevisionFullDto, script::ScriptConfig};
@@ -83,19 +82,33 @@ pub fn get_dir(
     Ok(dir)
 }
 
+/// Writes the project's editor tooling: the Luau declarations, a
+/// luau-lsp settings file (only when none exists, so user settings
+/// survive), and a .luaurc.
 pub fn copy_definitions(proj_path: &Path) -> Result<(), String> {
-    static DEFINITION_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template/definitions");
+    let def_path = proj_path.join("definitions");
+    let _ = std::fs::remove_dir_all(&def_path);
+    std::fs::create_dir_all(&def_path).map_err(|e| e.to_string())?;
+    for (name, content) in crate::analyze::DEFINITION_FILES {
+        std::fs::write(def_path.join(name), content).map_err(|e| e.to_string())?;
+    }
 
-    let mut def_path = proj_path.to_path_buf();
-    def_path.push("definitions");
-
-    // Recreate definitions
-    let _ = std::fs::remove_dir(def_path.clone());
-    std::fs::create_dir_all(def_path.clone()).unwrap();
-
-    DEFINITION_DIR
-        .extract(&def_path)
+    let vscode = proj_path.join(".vscode");
+    let settings = vscode.join("settings.json");
+    if !settings.exists() {
+        std::fs::create_dir_all(&vscode).map_err(|e| e.to_string())?;
+        std::fs::write(
+            &settings,
+            "{\n  \"luau-lsp.types.definitionFiles\": [\"definitions/core.d.luau\", \"definitions/objects.d.luau\", \"definitions/work.d.luau\", \"definitions/http.d.luau\"],\n  \"luau-lsp.require.mode\": \"relativeToWorkspaceRoot\"\n}\n",
+        )
         .map_err(|e| e.to_string())?;
+    }
+
+    let luaurc = proj_path.join(".luaurc");
+    if !luaurc.exists() {
+        std::fs::write(&luaurc, "{\n  \"languageMode\": \"nonstrict\"\n}\n")
+            .map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
