@@ -81,10 +81,11 @@ pub fn handle(directory: &str) -> Result<()> {
         }
     }
     for site in &declared.follow_sites {
-        let handled = declared
-            .receives
-            .iter()
-            .any(|entry| entry.split_once("<-").is_some_and(|(_, stream)| stream == site));
+        let handled = declared.receives.iter().any(|entry| {
+            entry
+                .split_once("<-")
+                .is_some_and(|(_, stream)| stream == site)
+        });
         if !handled {
             flow_errors.push(format!(
                 "state:follow targets '{site}', but no class declares receives[\"{site}\"]: \

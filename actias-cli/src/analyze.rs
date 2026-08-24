@@ -84,18 +84,20 @@ local http: any = nil :: any
 local crypto: any = nil :: any
 local Jwt: any = nil :: any
 -- Reserved platform namespace for connection programs (the streams
--- proposal, docs/SURFACE_REV.md); typed now so the surface arrives
--- with autocomplete instead of after it.
-type SocketEvent = { topic: string, from: { class: string, name: string }, data: any }
+-- surface, docs/SURFACE_REV.md). `each` takes a handler because Luau
+-- cannot resume a yield inside a generic-for iterator (the pinned
+-- seventeenth revision); `recv` is the manual-while primitive.
+type SocketEvent = { topic: string, from: { id: string, class: string, name: string }, data: any }
 type SocketItem = { kind: string, event: SocketEvent?, data: any }
 type Socket = {
-    each: (self: Socket) -> () -> SocketItem?,
-    send: (self: Socket, data: any) -> (),
-    follow: (self: Socket, target: any, topic: string, filter: any?) -> (),
-    unfollow: (self: Socket, target: any, topic: string, filter: any?) -> (),
-    close: (self: Socket, code: number?, reason: string?) -> (),
+    each: (self: Socket, handler: (SocketItem) -> boolean?) -> (),
+    recv: (self: Socket) -> SocketItem?,
+    send: (self: Socket, data: any) -> boolean,
+    follow: (self: Socket, target: any, topic: string, filter: any?) -> boolean,
+    unfollow: (self: Socket, target: any, topic: string) -> boolean,
+    close: (self: Socket) -> boolean,
 }
-local sockets: { follows: (Socket) -> () } = nil :: any
+local sockets: { forward: (target: any, topic: string, filter: any?) -> (Socket) -> () } = nil :: any
 local jwt: any = nil :: any
 local script: any = nil :: any
 local _ = kv and secret and on and object and objects and database and queue and workflow and workflows and json and log and uuid and getfile and dofile and require and http and crypto and jwt and Jwt and sockets and script
