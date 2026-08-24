@@ -61,6 +61,16 @@ pub struct Declarations {
     /// "Class:topic=policy" for built-in policies ("self").
     #[serde(default)]
     pub publishes: Vec<String>,
+    /// Streams each class consumes, read from the class table's
+    /// `receives` key: "Class<-Source:topic", one entry per handler.
+    #[serde(default)]
+    pub receives: Vec<String>,
+    /// Follow targets found as source literals
+    /// (`state:follow(Class(...), "topic")`), spelled "Class:topic".
+    /// Like workflow_steps, a checker-visible SUPERSET heuristic:
+    /// dynamically chosen topics are invisible here.
+    #[serde(default)]
+    pub follow_sites: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -113,6 +123,58 @@ fn scan_step_literals(files: &HashMap<String, String>) -> Vec<String> {
     names
 }
 
+/// Follow targets written as literals: `state:follow(Class(...), "topic")`
+/// yields "Class:topic". Only `state:follow` counts; `sock:follow` edges
+/// deliver to a connection inbox, never to a `receives` handler.
+fn scan_follow_literals(files: &HashMap<String, String>) -> Vec<String> {
+    let mut sites = Vec::new();
+    for (path, source) in files {
+        if !path.ends_with(".lua") {
+            continue;
+        }
+        for window in source.split("state:follow(") {
+            let trimmed = window.trim_start();
+            let class: String = trimmed
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if class.is_empty() || !trimmed[class.len()..].trim_start().starts_with('(') {
+                continue;
+            }
+            // The topic is the first string literal after the handle's
+            // closing paren: skip past one balanced (...) then read it.
+            let Some(after_open) = trimmed[class.len()..].trim_start().strip_prefix('(') else {
+                continue;
+            };
+            let mut depth = 1usize;
+            let mut rest = "";
+            for (at, c) in after_open.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            rest = &after_open[at + 1..];
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let rest = rest.trim_start().trim_start_matches(',').trim_start();
+            if let Some(quoted) = rest.strip_prefix('"')
+                && let Some(end) = quoted.find('"')
+            {
+                let site = format!("{class}:{}", &quoted[..end]);
+                if !quoted[..end].is_empty() && !sites.contains(&site) {
+                    sites.push(site);
+                }
+            }
+        }
+    }
+    sites
+}
+
 pub fn extract(files: HashMap<String, String>, entry_point: &str) -> Result<Declarations, String> {
     let entry_source = files
         .iter()
@@ -140,6 +202,7 @@ pub fn extract(files: HashMap<String, String>, entry_point: &str) -> Result<Decl
     install_declarations(&lua, &recorded).map_err(|e| e.to_string())?;
     install_stubs(&lua).map_err(|e| e.to_string())?;
     let step_names = scan_step_literals(&files);
+    let follow_sites = scan_follow_literals(&files);
     install_loaders(&lua, files).map_err(|e| e.to_string())?;
 
     lua.load(entry_source)
@@ -149,6 +212,7 @@ pub fn extract(files: HashMap<String, String>, entry_point: &str) -> Result<Decl
 
     let mut declarations = recorded.lock().expect("no other holder").clone();
     declarations.workflow_steps = step_names;
+    declarations.follow_sites = follow_sites;
     Ok(declarations)
 }
 
@@ -223,6 +287,44 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                             continue;
                         };
                         recorded.publishes.push(format!("{class}:{topic}={policy}"));
+                    }
+                }
+                // The receive funnel died in the sixteenth revision;
+                // refusing the old spelling here makes it a check
+                // error, not a silently dead hook.
+                if let Ok(hooks) = body.get::<mlua::Table>("hooks")
+                    && hooks.contains_key("receive").unwrap_or(false)
+                {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "'{class}' declares hooks.receive, which no longer exists: \
+                         declare receives = {{ [\"Source:topic\"] = handler }} instead."
+                    )));
+                }
+                // `receives` keys name the streams this class consumes,
+                // "Source:topic", one typed handler per stream.
+                if let Ok(receives) = body.get::<mlua::Table>("receives") {
+                    let mut recorded = table_recorded.lock().expect("no other holder");
+                    for pair in receives.pairs::<mlua::Value, mlua::Value>() {
+                        let Ok((key, value)) = pair else { continue };
+                        let Some(stream) = key
+                            .as_string()
+                            .and_then(|s| s.to_str().ok().map(|s| s.to_string()))
+                        else {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "'{class}': receives keys are \"Source:topic\" strings."
+                            )));
+                        };
+                        if stream.split(':').filter(|part| !part.is_empty()).count() != 2 {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "'{class}': receives key '{stream}' is not \"Source:topic\"."
+                            )));
+                        }
+                        if !value.is_function() {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "'{class}': receives['{stream}'] must be a handler function."
+                            )));
+                        }
+                        recorded.receives.push(format!("{class}<-{stream}"));
                     }
                 }
                 stub(lua)
@@ -453,6 +555,77 @@ mod tests {
             ],
         );
         assert_eq!(declarations.objects, vec!["Chan", "Plain"]);
+    }
+
+    #[test]
+    fn receives_entries_and_follow_sites_ride_the_extraction() {
+        let declarations = extract(
+            files(&[(
+                "main.lua",
+                r#"
+                local Feed = object "Feed" {
+                    publishes = { "post" },
+                    hooks = {
+                        follow = function(state, topic, follower) return true end,
+                    },
+                }
+                local Wall = object "Wall" {
+                    receives = {
+                        ["Feed:post"] = function(state, event) end,
+                    },
+                    pin = function(state, id)
+                        state:follow(Feed(id), "post")
+                    end,
+                }
+                on "fetch" (function() end)
+                "#,
+            )]),
+            "main.lua",
+        )
+        .expect("extracts");
+
+        assert_eq!(declarations.receives, vec!["Wall<-Feed:post"]);
+        assert_eq!(declarations.follow_sites, vec!["Feed:post"]);
+    }
+
+    #[test]
+    fn the_receive_funnel_is_refused() {
+        let error = extract(
+            files(&[(
+                "main.lua",
+                r#"
+                local Relic = object "Relic" {
+                    hooks = {
+                        receive = function(state, event) end,
+                    },
+                }
+                on "fetch" (function() end)
+                "#,
+            )]),
+            "main.lua",
+        )
+        .expect_err("the funnel spelling must refuse");
+        assert!(error.contains("hooks.receive"), "names the spelling: {error}");
+    }
+
+    #[test]
+    fn malformed_receives_keys_are_refused() {
+        let error = extract(
+            files(&[(
+                "main.lua",
+                r#"
+                local Wall = object "Wall" {
+                    receives = {
+                        ["justatopic"] = function(state, event) end,
+                    },
+                }
+                on "fetch" (function() end)
+                "#,
+            )]),
+            "main.lua",
+        )
+        .expect_err("keys must be Source:topic");
+        assert!(error.contains("justatopic"), "names the key: {error}");
     }
 
     #[test]

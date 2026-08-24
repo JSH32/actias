@@ -474,7 +474,7 @@ mod tests {
         local Reader
 
         Hub = object "Hub" {
-            publishes = { "news", private = "self" },
+            publishes = { "news", "noise", private = "self" },
             hooks = {
                 init = function(state)
                     state.sql:exec("CREATE TABLE members (user TEXT PRIMARY KEY)")
@@ -490,6 +490,9 @@ mod tests {
             post = function(state, kind, text)
                 state:publish("news", { kind = kind, text = text })
             end,
+            blast = function(state)
+                state:publish("noise", { kind = "static", text = "..." })
+            end,
             leak = function(state)
                 state:publish("secrets", { oops = true })
             end,
@@ -502,19 +505,24 @@ mod tests {
             end,
         }
 
+        local function record(state, event)
+            if flaky_mode and state.name == "flaky" and not state.tripped then
+                state.tripped = true
+                error("transient outage")
+            end
+            state.sql:exec("INSERT INTO seen VALUES (?, ?, ?, ?)",
+                { event.topic, event.data.kind, event.from.id, event.data.text })
+        end
+
         Reader = object "Reader" {
+            receives = {
+                ["Hub:news"] = record,
+                ["Hub:private"] = record,
+            },
             hooks = {
                 init = function(state)
                     state.sql:exec(
                         "CREATE TABLE seen (topic TEXT, kind TEXT, from_id TEXT, text TEXT)")
-                end,
-                receive = function(state, event)
-                    if flaky_mode and state.name == "flaky" and not state.tripped then
-                        state.tripped = true
-                        error("transient outage")
-                    end
-                    state.sql:exec("INSERT INTO seen VALUES (?, ?, ?, ?)",
-                        { event.topic, event.data.kind, event.from.id, event.data.text })
                 end,
             },
             join = function(state, hub, kind)
@@ -524,6 +532,11 @@ mod tests {
             end,
             spy = function(state, hub)
                 state:follow(Hub(hub), "private")
+            end,
+            eavesdrop = function(state, hub)
+                -- Follows a stream this class declares NO receives entry
+                -- for; the checker refuses this, the runtime discards.
+                state:follow(Hub(hub), "noise")
             end,
             leave = function(state, hub)
                 state:unfollow(Hub(hub), "news")
@@ -749,6 +762,94 @@ mod tests {
             refused.is_err(),
             "a contract that never recorded the topic refuses publish"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hooks_receive_is_refused_at_declaration() {
+        let source = r#"
+            object "Relic" {
+                hooks = {
+                    receive = function(state, event) end,
+                },
+            }
+            on "fetch" (function() return { body = "ok" } end)
+        "#;
+        let revision = Revision {
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files: vec![File {
+                    file_path: "main.lua".to_owned(),
+                    content: source.as_bytes().to_vec(),
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        };
+        let prepared =
+            Arc::new(PreparedRevision::prepare(Script::default(), revision).expect("prepares"));
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+        let refused = ActiasRuntime::new(
+            prepared,
+            KvServiceClient::new(channel),
+            crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
+                .expect("egress builds"),
+            None,
+            None,
+            None,
+        )
+        .await;
+        let error = refused.err().expect("the funnel spelling must refuse");
+        assert!(
+            error.to_string().contains("hooks.receive"),
+            "the refusal names the dead spelling: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_undeclared_stream_discards_instead_of_retrying() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let router = town_router(dir.path().to_path_buf(), false);
+
+        call(&router, "Hub", "town", "admit", vec![serde_json::json!("ada")])
+            .await
+            .expect("admits");
+        call(
+            &router,
+            "Reader",
+            "ada",
+            "eavesdrop",
+            vec![serde_json::json!("town")],
+        )
+        .await
+        .expect("the gate admits members; the runtime does not pre-check receives");
+        call(
+            &router,
+            "Reader",
+            "ada",
+            "join",
+            vec![serde_json::json!("town")],
+        )
+        .await
+        .expect("joins");
+
+        call(&router, "Hub", "town", "blast", vec![])
+            .await
+            .expect("blasts");
+        call(
+            &router,
+            "Hub",
+            "town",
+            "post",
+            vec![serde_json::json!("sport"), serde_json::json!("goal")],
+        )
+        .await
+        .expect("posts");
+
+        // The declared stream arrives; the undeclared one was consumed
+        // by delivery (Ok, cursor advanced) and simply never lands.
+        let rows = wait_for(&router, "ada", |rows| !rows.is_empty()).await;
+        assert_eq!(rows.len(), 1, "only Hub:news has a receives entry: {rows:?}");
+        assert_eq!(rows[0]["topic"], "news");
     }
 
     #[tokio::test(flavor = "multi_thread")]

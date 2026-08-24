@@ -254,6 +254,16 @@ impl LuaExtension for ObjectExtension {
             ActiasRuntime::record_object_declaration(lua, &class);
 
             lua.create_function(move |lua, methods: Table| {
+                // The receive funnel died in the sixteenth revision;
+                // the runtime refuses it in parity with extraction.
+                if let Ok(hooks) = methods.get::<Table>("hooks")
+                    && hooks.contains_key("receive").unwrap_or(false)
+                {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "'{class}' declares hooks.receive, which no longer exists: \
+                         declare receives = {{ [\"Source:topic\"] = handler }} instead."
+                    )));
+                }
                 // The publishes key is contract data; record it exactly
                 // as the publish-time extraction spells it.
                 if let Ok(publishes) = methods.get::<Table>("publishes") {
@@ -301,7 +311,8 @@ impl LuaExtension for ObjectExtension {
 /// as `__`-prefixed internal methods) and their public spellings, which
 /// handles refuse outright so a `__`-method arriving at `__dispatch` is
 /// provably platform-originated.
-pub const RESERVED_METHODS: [&str; 5] = ["init", "alarm", "receive", "follow", "hooks"];
+pub const RESERVED_METHODS: [&str; 6] =
+    ["init", "alarm", "receive", "receives", "follow", "hooks"];
 
 /// Whether a method name may travel through a handle.
 fn callable_method(method: &str) -> bool {
@@ -322,7 +333,7 @@ fn resolve_hook(class: &Table, name: &str) -> Option<mlua::Function> {
     None
 }
 
-/// The identity value gates and `receive` see: name, transport, a
+/// The identity value gates and `receives` handlers see: name, transport, a
 /// canonical id, and `:is(Class)` against a class VALUE, never a string.
 fn make_identity(lua: &Lua, class: &str, name: &str, transport: &str) -> mlua::Result<Table> {
     let identity = lua.create_table()?;
@@ -1018,26 +1029,40 @@ async fn dispatch_internal(
             Ok(mlua::Value::Boolean(true))
         }
         "receive" => {
-            let Some(receive) = resolve_hook(class, "receive") else {
-                // No receive hook: delivered and discarded, by design.
-                return Ok(mlua::Value::Nil);
-            };
             let event_json = call
                 .args
                 .first()
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            let from_class = event_json["from"]["class"].as_str().unwrap_or_default();
+            let topic = event_json["topic"].as_str().unwrap_or_default();
+            // Routing is the key: one declared handler per consumed
+            // stream, "Source:topic". No entry means delivered and
+            // discarded (the checker refuses the follow that would
+            // make such an edge; erroring here would only make the
+            // pump retry something that can never succeed).
+            let handler = class
+                .get::<Table>("receives")
+                .ok()
+                .and_then(|table| {
+                    table
+                        .get::<mlua::Function>(format!("{from_class}:{topic}"))
+                        .ok()
+                });
+            let Some(handler) = handler else {
+                return Ok(mlua::Value::Nil);
+            };
             let event = lua.create_table()?;
-            event.set("topic", event_json["topic"].as_str().unwrap_or_default())?;
+            event.set("topic", topic)?;
             event.set("data", lua.to_value(&event_json["data"])?)?;
             let from = make_identity(
                 lua,
-                event_json["from"]["class"].as_str().unwrap_or_default(),
+                from_class,
                 event_json["from"]["name"].as_str().unwrap_or_default(),
                 "object",
             )?;
             event.set("from", from)?;
-            receive.call_async::<mlua::Value>((state, event)).await
+            handler.call_async::<mlua::Value>((state, event)).await
         }
         other => Err(mlua::Error::RuntimeError(format!(
             "No platform verb '__{other}'."
