@@ -714,10 +714,17 @@ impl ActiasRuntime {
         trace!("Initializing lua runtime");
 
         let lua = Self {
-            lua: Lua::new_with(
-                mlua::StdLib::ALL_SAFE,
-                mlua::LuaOptions::new().catch_rust_panics(false),
-            )?,
+            // catch_rust_panics stays at its DEFAULT (true), which keeps
+            // Luau's native pcall/xpcall: the false setting swaps in
+            // mlua's plain-C wrappers, and a plain C frame cannot host a
+            // yield, so every user pcall around a cross-object or
+            // platform call died with "attempt to yield across
+            // metamethod/C-call boundary". Native pcall is yieldable.
+            // The trade: a script pcall could observe a Rust panic as a
+            // catchable error instead of it resuming immediately; panics
+            // still resume once control returns to Rust, and panics in
+            // request paths are bugs by house rule anyway.
+            lua: Lua::new_with(mlua::StdLib::ALL_SAFE, mlua::LuaOptions::new())?,
             timer: Arc::new(RwLock::new(Timer {
                 start_time: None,
                 time_limit,

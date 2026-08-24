@@ -634,7 +634,7 @@ mod tests {
         local Reader
 
         Hub = object "Hub" {
-            publishes = { "news", "noise", private = "self" },
+            publishes = { "news", "noise", private = "self", plaza = "public" },
             hooks = {
                 init = function(state)
                     state.sql:exec("CREATE TABLE members (user TEXT PRIMARY KEY)")
@@ -716,9 +716,31 @@ mod tests {
             seen = function(state)
                 return state.sql:query("SELECT topic, kind, from_id, text FROM seen ORDER BY rowid")
             end,
+            -- pcall around cross-object calls, the natural guard style:
+            -- works only because pcall is Luau's NATIVE (yieldable) one.
+            guarded = function(state)
+                local ok, value = pcall(function()
+                    return Hub("town"):audience()
+                end)
+                local bad, why = pcall(function()
+                    return Hub("town"):leak()
+                end)
+                return { ok = ok, value = value, bad = bad, why = tostring(why) }
+            end,
         }
 
         on "fetch" (function(request)
+            -- The live landmine's exact shape: a fetch handler
+            -- pcall-guarding cross-object calls; both arms must work.
+            if request.guard_probe then
+                local ok, value = pcall(function()
+                    return Hub("town"):audience()
+                end)
+                local bad, why = pcall(function()
+                    return Hub("town"):leak()
+                end)
+                return { ok = ok, value = value, bad = bad, why = tostring(why) }
+            end
             -- The upgrade shape production uses: the program is a
             -- boot-compiled closure handed to request:upgrade, and the
             -- identity is minted from an instance handle.
@@ -1177,6 +1199,96 @@ mod tests {
             crate::storage::SqliteStorage::open_read_only(&plain).expect("opens read-only");
         let empty = crate::streams::read_followers(&mut plain_read).expect("reads");
         assert_eq!(empty["edges"].as_array().map(Vec::len), Some(0));
+    }
+
+    /// `"public"` is a built-in policy like `"self"`: a broadcast topic
+    /// admits any identity with no gate code at all, because after the
+    /// fifteenth revision every follow is server-authored and a
+    /// yes-to-everyone gate is boilerplate guarding against yourself.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_public_topic_needs_no_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let router = town_router(dir.path().to_path_buf(), false);
+
+        let stranger = serde_json::json!({
+            "class": "Stranger", "name": "nobody", "transport": "object",
+        });
+
+        // The gate refuses a class it never heard of on a hooked topic.
+        let refused = call(
+            &router,
+            "Hub",
+            "town",
+            "__follow",
+            vec![
+                serde_json::json!("news"),
+                serde_json::json!(null),
+                stranger.clone(),
+            ],
+        )
+        .await;
+        assert!(refused.is_err(), "hooked topics still gate");
+
+        // The public topic admits the same identity, no gate consulted.
+        call(
+            &router,
+            "Hub",
+            "town",
+            "__follow",
+            vec![serde_json::json!("plaza"), serde_json::json!(null), stranger],
+        )
+        .await
+        .expect("public topics admit anyone");
+    }
+
+    /// The pcall landmine, closed: guarding a cross-object call with
+    /// pcall is the natural style, and it works only while pcall is
+    /// Luau's NATIVE (yieldable) implementation. mlua's
+    /// catch_rust_panics(false) silently swaps in a plain-C wrapper
+    /// that no yield can cross, which 500'd real handlers live; this
+    /// pins both arms (success and a caught refusal) in a dispatched
+    /// method AND in the fetch vm, the exact site that broke.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pcall_hosts_cross_object_calls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let router = town_router(dir.path().to_path_buf(), false);
+
+        // Inside object dispatch.
+        let guarded = call(&router, "Reader", "ada", "guarded", vec![])
+            .await
+            .expect("the guard method answers");
+        assert_eq!(guarded["ok"], true, "{guarded}");
+        assert!(guarded["value"].is_number(), "{guarded}");
+        assert_eq!(guarded["bad"], false, "{guarded}");
+        assert!(
+            guarded["why"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in this class's publishes"),
+            "the refusal is CAUGHT, not a wedge: {guarded}"
+        );
+
+        // Inside a fetch vm, the exact live-failure site.
+        let runtime = vm(SOURCE, false).await;
+        runtime.set_app_data::<ObjectRouter>(router.clone());
+        let request = runtime.create_table().expect("request table");
+        request.set("guard_probe", true).expect("flag");
+        let listener = runtime.listener("fetch").expect("registered");
+        let answer: mlua::Value = listener
+            .call_async(mlua::Value::Table(request))
+            .await
+            .expect("the handler answers instead of 500ing");
+        use mlua::LuaSerdeExt;
+        let answer: serde_json::Value = runtime.from_value(answer).expect("converts");
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["bad"], false, "{answer}");
+        assert!(
+            answer["why"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in this class's publishes"),
+            "{answer}"
+        );
     }
 
     /// Pins the Luau restriction the seventeenth revision rests on: a

@@ -643,11 +643,16 @@ fn sql_surface(lua: &Lua) -> mlua::Result<Table> {
 
 /// How a topic may be followed, read from the class's `publishes` key:
 /// array entries gate through `hooks.follow`, keyed entries carry a
-/// built-in policy, anything else is not published at all.
+/// built-in policy, anything else is not published at all. Policies:
+/// `"self"` admits only the instance's own identity (personal
+/// streams); `"public"` admits any identity (broadcast streams), which
+/// exists so a public topic never needs a boilerplate yes-to-everyone
+/// gate.
 enum TopicPolicy {
     Absent,
     Hooked,
     SelfOnly,
+    Public,
 }
 
 fn topic_policy(class: &Table, topic: &str) -> TopicPolicy {
@@ -657,6 +662,9 @@ fn topic_policy(class: &Table, topic: &str) -> TopicPolicy {
     if let Ok(policy) = publishes.get::<String>(topic) {
         if policy == "self" {
             return TopicPolicy::SelfOnly;
+        }
+        if policy == "public" {
+            return TopicPolicy::Public;
         }
         return TopicPolicy::Absent;
     }
@@ -991,6 +999,7 @@ async fn dispatch_internal(
                     )));
                 }
                 TopicPolicy::SelfOnly => follower_class == call.class && follower_name == call.name,
+                TopicPolicy::Public => true,
                 TopicPolicy::Hooked => {
                     let Some(gate) = resolve_hook(class, "follow") else {
                         return Err(mlua::Error::RuntimeError(format!(
