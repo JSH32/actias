@@ -356,6 +356,11 @@ impl ObjectRouting {
                 // routing context matches the code it runs.
                 let vm_routing = ObjectRouting::new(&routing.state, prepared);
                 runtime.set_app_data::<ObjectRouter>(vm_routing.as_router());
+                // The pump reads this to deliver connection edges; a
+                // node without the socket serving the id prunes them.
+                runtime.set_app_data::<Arc<actias_worker_core::connections::ConnectionRegistry>>(
+                    routing.state.connections.clone(),
+                );
 
                 let mut storage = actias_worker_core::storage::SqliteStorage::open(&file)
                     .map_err(mlua::Error::RuntimeError)?;

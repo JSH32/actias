@@ -87,7 +87,7 @@ export class ResourcesService {
     project: Projects,
     className: string,
     name: string,
-    options: { sql?: string; messages?: boolean } = {},
+    options: { sql?: string; messages?: boolean; followers?: boolean } = {},
   ): Promise<Record<string, unknown> | unknown[] | null> {
     const value = await lastValueFrom(
       this.workers
@@ -98,6 +98,7 @@ export class ResourcesService {
             name,
             sql: options.sql,
             messages: options.messages ?? false,
+            followers: options.followers ?? false,
             firstHop: true,
           },
           this.internalMetadata(),

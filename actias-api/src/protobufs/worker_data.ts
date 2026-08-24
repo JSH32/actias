@@ -100,6 +100,9 @@ export namespace worker_data {
     // to the lease holder for the freshest copy. A forwarded read
     // answers from what its node has and never forwards again.
         firstHop?: boolean;
+        // The publisher&#x27;s edge table plus its event-log head instead of the
+    // class&#x27;s overview (ReadStats only): the console&#x27;s followers panel.
+        followers?: boolean;
     }
     // One read&#x27;s answer.
     export interface ReadValue {

@@ -137,6 +137,62 @@ export class RetriedDto {
   requeued: number;
 }
 
+/** One edge in a publisher's follower table. */
+export class FollowerEdgeDto {
+  @ApiProperty({ description: "'object' (durable) or 'connection'." })
+  kind: string;
+
+  @ApiProperty({ description: "The follower's identity, 'Class/name'." })
+  follower: string;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Connection edges only: the endpoint connection id.',
+  })
+  connection: string | null;
+
+  @ApiProperty({ description: 'The topic this edge listens on.' })
+  topic: string;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    type: 'object',
+    additionalProperties: true,
+    description: 'Equality filter on event data fields, when set.',
+  })
+  filter: Record<string, unknown> | null;
+
+  @ApiProperty({ description: 'Last event sequence this edge passed.' })
+  cursor: number;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description:
+      'Undelivered events behind the log head; durable edges only.',
+  })
+  lag: number | null;
+
+  @ApiProperty({ description: 'Consecutive failed deliveries so far.' })
+  attempts: number;
+
+  @ApiProperty({
+    description: 'When delivery retries next (unix ms); 0 when not due.',
+  })
+  nextAt: number;
+}
+
+/** The publisher's edge table plus its event-log head. */
+export class FollowersDto {
+  @ApiProperty({ description: "Newest event sequence in the publisher's log." })
+  head: number;
+
+  @ApiProperty({ type: [FollowerEdgeDto] })
+  edges: FollowerEdgeDto[];
+}
+
 export class SqlQueryDto {
   @ApiProperty()
   @IsString()

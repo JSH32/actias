@@ -3,6 +3,7 @@
 /* eslint-disable */
 import type { ClassCountDto } from '../models/ClassCountDto';
 import type { DatabaseOverviewDto } from '../models/DatabaseOverviewDto';
+import type { FollowersDto } from '../models/FollowersDto';
 import type { ObjectPageDto } from '../models/ObjectPageDto';
 import type { SqlQueryDto } from '../models/SqlQueryDto';
 import type { SqlRowsDto } from '../models/SqlRowsDto';
@@ -84,6 +85,32 @@ export class ObjectsService {
         return this.httpRequest.request({
             method: 'GET',
             url: '/api/project/{project}/objects/{class}/{name}/overview',
+            path: {
+                'project': project,
+                'class': _class,
+                'name': name,
+            },
+        });
+    }
+
+    /**
+     * The edges other things hold on this object: who follows it, on
+     * which topic, with what filter, and how far behind the publisher's
+     * event log each durable edge sits. Runtime state, never contract.
+     * @param project
+     * @param _class
+     * @param name
+     * @returns FollowersDto
+     * @throws ApiError
+     */
+    public objectFollowers(
+        project: string,
+        _class: string,
+        name: string,
+    ): CancelablePromise<FollowersDto> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/project/{project}/objects/{class}/{name}/followers',
             path: {
                 'project': project,
                 'class': _class,

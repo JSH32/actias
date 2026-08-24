@@ -90,6 +90,9 @@ message ReadRequest {
     // to the lease holder for the freshest copy. A forwarded read
     // answers from what its node has and never forwards again.
     bool first_hop = 7;
+    // The publisher's edge table plus its event-log head instead of the
+    // class's overview (ReadStats only): the console's followers panel.
+    bool followers = 8;
 }
 
 // One read's answer.

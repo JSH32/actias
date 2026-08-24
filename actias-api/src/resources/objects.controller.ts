@@ -18,6 +18,8 @@ import { ResourcesService, clampPageSize } from './resources.service';
 import {
   ClassCountDto,
   DatabaseOverviewDto,
+  FollowerEdgeDto,
+  FollowersDto,
   ObjectPageDto,
   SqlQueryDto,
   SqlRowsDto,
@@ -117,6 +119,42 @@ export class ObjectsController {
   ): Promise<DatabaseOverviewDto> {
     this.refusePlatformClass(className);
     return this.resources.overviewOf(project, className, name);
+  }
+
+  /** The edges other things hold on this object: who follows it, on
+   * which topic, with what filter, and how far behind the publisher's
+   * event log each durable edge sits. Runtime state, never contract. */
+  @Get(':class/:name/followers')
+  @AclByProject(AccessFields.SCRIPT_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async objectFollowers(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+    @Param('name') name: string,
+  ): Promise<FollowersDto> {
+    this.refusePlatformClass(className);
+    const value = (await this.resources.workerRead(project, className, name, {
+      followers: true,
+    })) as {
+      head?: number;
+      edges?: Record<string, unknown>[];
+    } | null;
+    return {
+      head: Number(value?.head ?? 0),
+      edges: (value?.edges ?? []).map(
+        (edge): FollowerEdgeDto => ({
+          kind: String(edge.kind ?? ''),
+          follower: String(edge.follower ?? ''),
+          connection: edge.connection == null ? null : String(edge.connection),
+          topic: String(edge.topic ?? ''),
+          filter: (edge.filter as Record<string, unknown> | null) ?? null,
+          cursor: Number(edge.cursor ?? 0),
+          lag: edge.lag == null ? null : Number(edge.lag),
+          attempts: Number(edge.attempts ?? 0),
+          nextAt: Number(edge.next_at ?? 0),
+        }),
+      ),
+    };
   }
 
   /** A read-only query against one object's storage, from the nearest

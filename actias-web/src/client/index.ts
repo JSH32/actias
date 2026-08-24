@@ -24,6 +24,8 @@ export type { CreateServiceTokenDto } from './models/CreateServiceTokenDto';
 export type { CreateUserDto } from './models/CreateUserDto';
 export type { DatabaseOverviewDto } from './models/DatabaseOverviewDto';
 export { FileDto } from './models/FileDto';
+export type { FollowerEdgeDto } from './models/FollowerEdgeDto';
+export type { FollowersDto } from './models/FollowersDto';
 export type { ListNamespaceDto } from './models/ListNamespaceDto';
 export type { LoginDto } from './models/LoginDto';
 export type { MessageResponseDto } from './models/MessageResponseDto';

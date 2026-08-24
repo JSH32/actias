@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import api, { showError } from '@/helpers/api';
 import {
   ColumnInfoDto,
+  FollowerEdgeDto,
   ObjectInstanceDto,
   ProjectDto,
   ResourceInstanceDto,
@@ -27,7 +28,10 @@ const PAGE_SIZE = 50;
 /** The schema tab's column template. */
 const SCHEMA_COLUMNS = 'minmax(0,1fr) 140px 90px 90px';
 
-type Tab = 'browse' | 'query' | 'schema';
+type Tab = 'browse' | 'query' | 'schema' | 'edges';
+
+/** The edges tab's column template. */
+const EDGE_COLUMNS = '110px minmax(0,1fr) 130px minmax(0,1fr) 80px 120px';
 
 /** Quotes a table identifier the way the platform's own reads do. */
 function quoted(name: string) {
@@ -172,6 +176,20 @@ function Databases({
     enabled: (!!active || !!objectSource) && !!table && tab === 'browse',
   });
   const browsedRows = (browsed?.rows ?? []) as Record<string, unknown>[];
+
+  // Edges: who follows this object, from the publisher's own rows.
+  // Runtime state, never contract, so it polls like the overview.
+  const { data: followers } = useQuery({
+    queryKey: ['object-followers', project.id, sourceKey],
+    queryFn: () =>
+      api.objects.objectFollowers(
+        project.id,
+        objectSource!.class,
+        objectSource!.name,
+      ),
+    enabled: !!objectSource && tab === 'edges',
+    refetchInterval: 5000,
+  });
 
   // The console (query tab).
   const [consoleRows, setConsoleRows] = React.useState<unknown[] | null>(null);
@@ -318,6 +336,10 @@ function Databases({
               { value: 'browse', label: 'Browse' },
               { value: 'query', label: 'Query' },
               { value: 'schema', label: 'Schema' },
+              // Only objects publish; a plain database has no edges.
+              ...(objectSource
+                ? [{ value: 'edges' as Tab, label: 'Edges' }]
+                : []),
             ]}
           />
         </div>
@@ -518,6 +540,85 @@ function Databases({
               {JSON.stringify(consoleRows, null, 2)}
             </pre>
           )}
+        </div>
+      )}
+
+      {tab === 'edges' && (
+        <div className={classes.splitSolo}>
+          <div className={classes.tableScroll}>
+            <div
+              className={classes.tableMin}
+              style={{ '--table-min': '680px' } as React.CSSProperties}
+            >
+              <div
+                className={classes.tableHead}
+                style={{ gridTemplateColumns: EDGE_COLUMNS }}
+              >
+                <span>kind</span>
+                <span>follower</span>
+                <span>topic</span>
+                <span>filter</span>
+                <span>lag</span>
+                <span>state</span>
+              </div>
+              {(followers?.edges ?? []).length === 0 ? (
+                <div className={classes.emptyRows}>
+                  Nobody follows this object yet; edges appear when a gate
+                  admits a follower.
+                </div>
+              ) : (
+                (followers?.edges ?? []).map(
+                  (edge: FollowerEdgeDto, at: number) => (
+                    <div
+                      key={`${edge.follower}-${edge.topic}-${at}`}
+                      className={classes.row}
+                      style={{
+                        gridTemplateColumns: EDGE_COLUMNS,
+                        cursor: 'default',
+                      }}
+                    >
+                      <span>
+                        <StatePill
+                          state={edge.kind === 'object' ? 'durable' : 'wire'}
+                          color={
+                            edge.kind === 'object'
+                              ? 'var(--kind-kv)'
+                              : 'var(--ink-2)'
+                          }
+                          outline
+                        />
+                      </span>
+                      <span className={classes.cellMono}>
+                        {edge.follower}
+                        {edge.connection ? (
+                          <span className={classes.cellDim}>
+                            {' '}
+                            via {edge.connection.slice(0, 13)}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className={classes.cellMono}>{edge.topic}</span>
+                      <span className={classes.cellDim}>
+                        {edge.filter ? JSON.stringify(edge.filter) : ''}
+                      </span>
+                      <span className={classes.cellDim}>
+                        {edge.lag == null ? '' : String(edge.lag)}
+                      </span>
+                      <span className={classes.cellDim}>
+                        {edge.kind !== 'object'
+                          ? 'at-most-once'
+                          : edge.attempts > 0
+                          ? `backing off (${edge.attempts})`
+                          : edge.lag && edge.lag > 0
+                          ? 'delivering'
+                          : 'current'}
+                      </span>
+                    </div>
+                  ),
+                )
+              )}
+            </div>
+          </div>
         </div>
       )}
 

@@ -146,6 +146,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         node_identity,
         registry: registry_client,
         base_domain: config.base_domain,
+        connections: std::sync::Arc::default(),
     };
 
     // Due alarms in cold files fire without anyone asking; the sweep is

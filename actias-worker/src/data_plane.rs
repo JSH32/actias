@@ -82,6 +82,7 @@ fn stats_read(request: &ReadRequest) -> Result<PlatformRead, Status> {
     match request.sql.clone() {
         Some(sql) => Ok(PlatformRead::Query { sql }),
         None if request.messages => Ok(PlatformRead::QueueMessages),
+        None if request.followers => Ok(PlatformRead::Followers),
         None => PlatformRead::stats_for_class(&request.class)
             .ok_or_else(|| Status::invalid_argument("No stats for that class.")),
     }
@@ -330,6 +331,7 @@ mod tests {
             messages,
             since: 0,
             first_hop: false,
+            followers: false,
         };
 
         assert!(matches!(

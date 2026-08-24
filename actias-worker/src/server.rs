@@ -151,6 +151,10 @@ pub struct AppState {
     /// Domain subdomain routing hangs off; [`None`] leaves only the path
     /// forms.
     pub base_domain: Option<String>,
+    /// Live websocket connections on THIS node, by connection id; the
+    /// stream pump delivers connection edges through it, and a missing
+    /// id is the prune signal.
+    pub connections: Arc<actias_worker_core::connections::ConnectionRegistry>,
 }
 
 /// Holds the in-flight gauge up for exactly one request's lifetime;
@@ -542,7 +546,17 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     use axum::RequestExt;
     let request = request.with_limited_body();
 
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
+
+    // A websocket handshake IS web traffic: taken off the request here,
+    // and the fetch request table gains `request.upgrade` only when this
+    // is Some, so the Lua-side truthy check and this extraction agree.
+    let websocket = {
+        use axum::extract::FromRequestParts;
+        axum::extract::ws::WebSocketUpgrade::from_request_parts(&mut parts, &())
+            .await
+            .ok()
+    };
 
     // Subdomain routing wins when a base domain is configured and the Host
     // header sits under it; anything else falls back to the path forms, so
@@ -839,16 +853,123 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         Some(10),
     )
     .await?;
+    let connection_router = router.clone();
     lua.set_app_data::<ObjectRouter>(router);
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
+    let request_value = lua.to_value(&lua_request)?;
+    if websocket.is_some()
+        && let mlua::Value::Table(request_table) = &request_value
+    {
+        actias_worker_core::extensions::sockets::arm_request(&lua, request_table)?;
+    }
+
     lua.start_timer();
 
-    let value: mlua::Value = listener.call_async(lua.to_value(&lua_request)?).await?;
+    let value: mlua::Value = listener.call_async(request_value).await?;
+
+    // The handler upgraded: the response is the handshake, and the vm
+    // DOES NOT DIE; it moves into the connection task as the program's
+    // vm, alive for the connection's life.
+    if let Some(pending) =
+        lua.remove_app_data::<actias_worker_core::extensions::sockets::PendingUpgrade>()
+    {
+        let websocket = websocket.ok_or_else(|| {
+            // arm_request only runs when the handshake exists, so this
+            // is a platform bug, not a script mistake.
+            anyhow::anyhow!("an upgrade was parked without a websocket handshake")
+        })?;
+        let registry = state.connections.clone();
+        return Ok(websocket.on_upgrade(move |socket| {
+            drive_socket(socket, lua, pending, registry, connection_router)
+        }));
+    }
+
     let lua_response: extensions::http::Response = lua.from_value(value)?;
 
     lua_response_into_response(lua_response)
+}
+
+/// The bridge between one live websocket and its connection program:
+/// client frames feed the same inbox edge deliveries use, program sends
+/// feed the wire, and the program runs to completion in the request vm
+/// it inherited. When either side ends, edges sever (politely by
+/// run_connection, or by the pump's deliver-or-prune for whatever that
+/// missed) and the registry forgets the id.
+async fn drive_socket(
+    mut socket: axum::extract::ws::WebSocket,
+    lua: ActiasRuntime,
+    pending: actias_worker_core::extensions::sockets::PendingUpgrade,
+    registry: Arc<actias_worker_core::connections::ConnectionRegistry>,
+    router: ObjectRouter,
+) {
+    use actias_worker_core::connections::{InboxItem, OutboundFrame, inbox};
+    use actias_worker_core::extensions::sockets::{SockShared, run_connection};
+    use axum::extract::ws::Message;
+
+    let connection_id = format!("conn#{}", uuid::Uuid::new_v4().simple());
+    let (inbox_tx, inbox_rx) = inbox();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<OutboundFrame>(64);
+    registry.register(&connection_id, inbox_tx.clone());
+
+    let shared = SockShared::new(
+        connection_id.clone(),
+        pending.class.clone(),
+        pending.name.clone(),
+        inbox_rx,
+        out_tx,
+        router,
+    );
+
+    // One task owns the socket, both directions: uplink text frames
+    // decode into the inbox (the wire speaks json; anything else is
+    // dropped), downlink frames encode out, and Close from either side
+    // ends the wire.
+    let wire = async move {
+        loop {
+            tokio::select! {
+                incoming = socket.recv() => match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text)
+                            && inbox_tx.push(InboxItem::Frame(data)).is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                        let _ = inbox_tx.push(InboxItem::Closed);
+                        break;
+                    }
+                    Some(Ok(_)) => {}
+                },
+                outgoing = out_rx.recv() => match outgoing {
+                    Some(OutboundFrame::Json(value)) => {
+                        if socket
+                            .send(Message::Text(value.to_string().into()))
+                            .await
+                            .is_err()
+                        {
+                            let _ = inbox_tx.push(InboxItem::Closed);
+                            break;
+                        }
+                    }
+                    Some(OutboundFrame::Close) | None => {
+                        let _ = socket.send(Message::Close(None)).await;
+                        let _ = inbox_tx.push(InboxItem::Closed);
+                        break;
+                    }
+                },
+            }
+        }
+    };
+
+    let program = run_connection(&lua, pending, shared);
+    let (_, outcome) = tokio::join!(wire, program);
+    if let Err(error) = outcome {
+        actias_common::tracing::debug!(%error, connection_id, "connection program ended with an error");
+    }
+    registry.unregister(&connection_id);
 }
 
 /// State builders every worker test suite shares: clients that never
@@ -908,6 +1029,7 @@ pub(crate) mod test_state {
                 Channel::from_static("http://127.0.0.1:1").connect_lazy(),
             ),
             base_domain: None,
+            connections: Arc::default(),
         }
     }
 
@@ -1076,6 +1198,167 @@ mod tests {
             .await;
 
         caches
+    }
+
+    /// Caches holding `cached-ws`, a script whose fetch handler
+    /// upgrades websocket requests and serves plain ones normally.
+    async fn caches_with_upgrading_script() -> WorkerCaches {
+        use actias_worker_core::proto::bundle::{Bundle, File};
+
+        let caches = empty_caches();
+        let script = Script {
+            id: "script-ws".to_owned(),
+            project_id: "project-1".to_owned(),
+            public_identifier: "cached-ws".to_owned(),
+            current_revision_id: Some("revision-ws".to_owned()),
+            ..Default::default()
+        };
+        let source = br#"
+            local U = object "U" {}
+            on "fetch" (function(request)
+                if request.upgrade then
+                    return request:upgrade(function(sock)
+                        sock:each(function(item)
+                            if item.kind == "frame" then
+                                sock:send({ echo = item.data.hello })
+                                return true
+                            end
+                        end)
+                    end, U("solo"))
+                end
+                return { body = "no ws" }
+            end)
+        "#;
+        let revision = Revision {
+            bundle: Some(Bundle {
+                entry_point: "main.lua".to_owned(),
+                files: vec![File {
+                    file_path: "main.lua".to_owned(),
+                    content: source.to_vec(),
+                    ..Default::default()
+                }],
+            }),
+            ..Default::default()
+        };
+        caches
+            .pointers
+            .insert("cached-ws".to_owned(), script.clone())
+            .await;
+        caches
+            .revisions
+            .insert(
+                "revision-ws".to_owned(),
+                Arc::new(PreparedRevision::prepare(script, revision).unwrap()),
+            )
+            .await;
+        caches
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_plain_request_to_an_upgrading_script_stays_http() {
+        let app = router(
+            state_with(caches_with_upgrading_script().await),
+            1024 * 1024,
+        );
+        let request = axum::http::Request::builder()
+            .uri("/cached-ws/")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"no ws");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_websocket_handshake_reaches_101_through_the_fetch_handler() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // A REAL connection on purpose: the upgrade needs hyper's
+        // OnUpgrade extension, which tower::oneshot never carries.
+        let app = router(
+            state_with(caches_with_upgrading_script().await),
+            1024 * 1024,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(
+                b"GET /cached-ws/ws HTTP/1.1\r\n\
+                  Host: localhost\r\n\
+                  Connection: Upgrade\r\n\
+                  Upgrade: websocket\r\n\
+                  Sec-WebSocket-Version: 13\r\n\
+                  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                  \r\n",
+            )
+            .await
+            .unwrap();
+
+        let mut head = Vec::new();
+        let mut buffer = [0u8; 1024];
+        loop {
+            let n =
+                tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buffer))
+                    .await
+                    .expect("the handshake answers")
+                    .unwrap();
+            assert!(n > 0, "the server closed before answering");
+            head.extend_from_slice(&buffer[..n]);
+            if head.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&head);
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "the handler's upgrade becomes the handshake: {head}"
+        );
+        assert!(
+            head.to_lowercase().contains("sec-websocket-accept"),
+            "the accept key rides the 101: {head}"
+        );
+
+        // Full circle over the real wire: one masked client text frame
+        // in, the program's echo frame out. Hand-rolled framing so no
+        // client library enters the tree.
+        let payload = br#"{"hello":"actias"}"#;
+        let mask = [0x11u8, 0x22, 0x33, 0x44];
+        let mut frame = vec![0x81u8, 0x80 | payload.len() as u8];
+        frame.extend_from_slice(&mask);
+        frame.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(at, byte)| byte ^ mask[at % 4]),
+        );
+        stream.write_all(&frame).await.unwrap();
+
+        let mut reply = Vec::new();
+        loop {
+            let n =
+                tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buffer))
+                    .await
+                    .expect("the echo answers")
+                    .unwrap();
+            assert!(n > 0, "the server closed before echoing");
+            reply.extend_from_slice(&buffer[..n]);
+            if reply.len() >= 2 && reply.len() >= 2 + (reply[1] & 0x7f) as usize {
+                break;
+            }
+        }
+        assert_eq!(reply[0], 0x81, "one unmasked text frame comes back");
+        let length = (reply[1] & 0x7f) as usize;
+        let echoed: serde_json::Value =
+            serde_json::from_slice(&reply[2..2 + length]).expect("the frame is json");
+        assert_eq!(echoed["echo"], "actias", "the program echoed the field");
+
+        server.abort();
     }
 
     #[tokio::test(flavor = "multi_thread")]
