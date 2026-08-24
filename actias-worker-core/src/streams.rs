@@ -91,6 +91,9 @@ pub struct Edge {
     pub kind: String,
     pub class: String,
     pub name: String,
+    /// Connection edges only: the node-local connection this edge
+    /// delivers to; the identity above is who that connection speaks AS.
+    pub connection: Option<String>,
     pub topic: String,
     pub filter: Option<serde_json::Value>,
     pub cursor: i64,
@@ -106,17 +109,21 @@ pub fn upsert_edge(
     kind: &str,
     class: &str,
     name: &str,
+    connection_id: Option<&str>,
     topic: &str,
     filter: Option<&serde_json::Value>,
 ) -> Result<(), String> {
     ensure_tables(storage)?;
     let filter_text = filter.map(|value| value.to_string());
     let connection = storage.platform();
+    // One identity may hold the same topic once per endpoint: the
+    // durable edge and each connected device are separate rows (the
+    // doc's two-devices table), so connection is part of the match.
     let updated = connection
         .execute(
             "UPDATE __actias_followers SET filter = ?, attempts = 0, next_at = 0 \
-             WHERE kind = ? AND class = ? AND name = ? AND topic = ?",
-            rusqlite::params![filter_text, kind, class, name, topic],
+             WHERE kind = ? AND class = ? AND name = ? AND topic = ? AND connection IS ?",
+            rusqlite::params![filter_text, kind, class, name, topic, connection_id],
         )
         .map_err(|e| e.to_string())?;
     if updated == 0 {
@@ -133,11 +140,24 @@ pub fn upsert_edge(
             .execute(
                 "INSERT INTO __actias_followers \
                      (kind, class, name, connection, topic, filter, cursor) \
-                 VALUES (?, ?, ?, NULL, ?, ?, ?)",
-                rusqlite::params![kind, class, name, topic, filter_text, head],
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![kind, class, name, connection_id, topic, filter_text, head],
             )
             .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// Deletes one edge by id: the pump's deliver-or-prune half for
+/// connection edges, and dead-edge cleanup generally.
+pub fn prune_edge(storage: &mut SqliteStorage, edge_id: i64) -> Result<(), String> {
+    storage
+        .platform()
+        .execute(
+            "DELETE FROM __actias_followers WHERE id = ?",
+            rusqlite::params![edge_id],
+        )
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -181,7 +201,7 @@ pub fn list_edges(storage: &mut SqliteStorage, topic: Option<&str>) -> Result<Ve
     let connection = storage.platform();
     let mut statement = connection
         .prepare(
-            "SELECT id, kind, class, name, topic, filter, cursor, attempts, next_at \
+            "SELECT id, kind, class, name, connection, topic, filter, cursor, attempts, next_at \
              FROM __actias_followers WHERE (?1 IS NULL OR topic = ?1) ORDER BY id",
         )
         .map_err(|e| e.to_string())?;
@@ -192,13 +212,14 @@ pub fn list_edges(storage: &mut SqliteStorage, topic: Option<&str>) -> Result<Ve
                 kind: row.get(1)?,
                 class: row.get(2)?,
                 name: row.get(3)?,
-                topic: row.get(4)?,
+                connection: row.get(4)?,
+                topic: row.get(5)?,
                 filter: row
-                    .get::<_, Option<String>>(5)?
+                    .get::<_, Option<String>>(6)?
                     .and_then(|text| serde_json::from_str(&text).ok()),
-                cursor: row.get(6)?,
-                attempts: row.get(7)?,
-                next_at: row.get(8)?,
+                cursor: row.get(7)?,
+                attempts: row.get(8)?,
+                next_at: row.get(9)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -335,13 +356,78 @@ pub fn next_delivery_due(storage: &mut SqliteStorage) -> Result<Option<i64>, Str
     let now = crate::extensions::objects::unix_now_ms();
     let mut due: Option<i64> = None;
     for edge in list_edges(storage, None)? {
-        if edge.kind != "object" || edge.cursor >= head {
+        if edge.cursor >= head {
             continue;
         }
-        let at = edge.next_at.max(now);
+        // Connection edges never back off: pending means due now.
+        let at = if edge.kind == "object" {
+            edge.next_at.max(now)
+        } else {
+            now
+        };
         due = Some(due.map_or(at, |current| current.min(at)));
     }
     Ok(due)
+}
+
+/// At-most-once delivery to one connection edge: matching events go to
+/// the node-local inbox, the watermark advances REGARDLESS of outcome
+/// (a connection edge never retries, it misses what it misses), and a
+/// refusal prunes the edge (Gone or Overflow both mean the connection
+/// is not coming back for these events). No registry on this runtime
+/// means nothing to deliver to, which is the same prune.
+fn deliver_connection_edge(
+    home: &std::sync::Arc<crate::objects::ObjectHome>,
+    edge: &Edge,
+    registry: Option<&crate::connections::ConnectionRegistry>,
+) {
+    let events = match home.with_storage(|storage| events_after(storage, &edge.topic, edge.cursor))
+    {
+        Ok(events) => events,
+        Err(error) => {
+            actias_common::tracing::warn!(%error, "stream pump could not read events");
+            return;
+        }
+    };
+    let Some(last) = events.last().map(|event| event.seq) else {
+        let head = home
+            .with_storage(head_seq)
+            .unwrap_or(edge.cursor);
+        let _ = home.with_storage(|storage| advance_cursor(storage, edge.id, head));
+        return;
+    };
+
+    let mut pruned = false;
+    if let (Some(registry), Some(connection_id)) = (registry, edge.connection.as_deref()) {
+        for event in &events {
+            if !filter_matches(edge.filter.as_ref(), &event.data) {
+                continue;
+            }
+            let item = crate::connections::InboxItem::Event {
+                topic: event.topic.clone(),
+                from_class: event.from_class.clone(),
+                from_name: event.from_name.clone(),
+                data: event.data.clone(),
+            };
+            if let Err(refused) = registry.deliver(connection_id, item) {
+                actias_common::tracing::debug!(
+                    ?refused,
+                    connection_id,
+                    "connection edge pruned"
+                );
+                pruned = true;
+                break;
+            }
+        }
+    } else {
+        pruned = true;
+    }
+
+    if pruned {
+        let _ = home.with_storage(|storage| prune_edge(storage, edge.id));
+    } else {
+        let _ = home.with_storage(|storage| advance_cursor(storage, edge.id, last));
+    }
 }
 
 /// One delivery pass over every due object edge: matching events copied
@@ -379,8 +465,18 @@ pub async fn pump(
         }
     };
 
+    let registry = runtime.app_data_ref::<std::sync::Arc<crate::connections::ConnectionRegistry>>(
+    ).map(|registry| registry.clone());
+
     for edge in edges {
-        if edge.kind != "object" || edge.cursor >= head || edge.next_at > now {
+        if edge.cursor >= head {
+            continue;
+        }
+        if edge.kind == "connection" {
+            deliver_connection_edge(home, &edge, registry.as_deref());
+            continue;
+        }
+        if edge.next_at > now {
             continue;
         }
         let events =
@@ -585,15 +681,27 @@ mod tests {
     /// The in-test placement: one vm per identity, all sharing one
     /// router, so follows and deliveries route for real.
     fn town_router(dir: std::path::PathBuf, flaky: bool) -> ObjectRouter {
+        town_router_with(dir, flaky, Arc::default())
+    }
+
+    /// Same placement with a shared connection registry, so connection
+    /// edges deliver into test-held inboxes.
+    fn town_router_with(
+        dir: std::path::PathBuf,
+        flaky: bool,
+        registry: Arc<crate::connections::ConnectionRegistry>,
+    ) -> ObjectRouter {
         type Registry = Arc<tokio::sync::Mutex<std::collections::HashMap<String, ObjectHandle>>>;
-        let registry: Registry = Arc::default();
+        let registry_map: Registry = Arc::default();
         let cell: Arc<std::sync::OnceLock<ObjectRouter>> = Arc::new(std::sync::OnceLock::new());
 
         let router_cell = cell.clone();
+        let connections = registry;
         let router: ObjectRouter = Arc::new(move |target: ObjectTarget| {
-            let registry = registry.clone();
+            let registry = registry_map.clone();
             let cell = router_cell.clone();
             let dir = dir.clone();
+            let connections = connections.clone();
             Box::pin(async move {
                 let key = format!("{}/{}", target.class, target.name);
                 let handle = {
@@ -604,6 +712,9 @@ mod tests {
                         let runtime = vm(SOURCE, flaky).await;
                         let router = cell.get().expect("router installed").clone();
                         runtime.set_app_data::<ObjectRouter>(router);
+                        runtime.set_app_data::<Arc<crate::connections::ConnectionRegistry>>(
+                            connections.clone(),
+                        );
                         let file = dir.join(format!("{}.db", key.replace(['/', ':'], "_")));
                         let handle = spawn_object_task(
                             runtime,
@@ -762,6 +873,95 @@ mod tests {
             refused.is_err(),
             "a contract that never recorded the topic refuses publish"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connection_edges_deliver_at_most_once_and_prune() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
+        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone());
+
+        call(&router, "Hub", "town", "admit", vec![serde_json::json!("ada")])
+            .await
+            .expect("admits");
+
+        let (tx, mut rx) = crate::connections::inbox();
+        connections.register("conn#1", tx);
+
+        // The device follows AS Reader/ada via conn#1: exactly the
+        // __follow a sock:follow will send once the upgrade seam
+        // exists. The gate sees the same one identity shape.
+        call(
+            &router,
+            "Hub",
+            "town",
+            "__follow",
+            vec![
+                serde_json::json!("news"),
+                serde_json::json!(null),
+                serde_json::json!({
+                    "class": "Reader", "name": "ada",
+                    "transport": "connection", "connection": "conn#1",
+                }),
+            ],
+        )
+        .await
+        .expect("the gate admits the member's device");
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "post",
+            vec![serde_json::json!("sport"), serde_json::json!("goal")],
+        )
+        .await
+        .expect("posts");
+
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(4), rx.next())
+            .await
+            .expect("delivery reaches the inbox before the timeout")
+            .expect("inbox open");
+        match delivered {
+            crate::connections::InboxItem::Event {
+                topic,
+                from_class,
+                from_name,
+                data,
+            } => {
+                assert_eq!(topic, "news");
+                assert_eq!((from_class.as_str(), from_name.as_str()), ("Hub", "town"));
+                assert_eq!(data["kind"], "sport");
+            }
+            other => panic!("expected an event, got {other:?}"),
+        }
+
+        // The wire goes away; the NEXT delivery prunes the edge
+        // (deliver-or-prune, no retry, no backlog for dead tabs).
+        connections.unregister("conn#1");
+        call(
+            &router,
+            "Hub",
+            "town",
+            "post",
+            vec![serde_json::json!("sport"), serde_json::json!("again")],
+        )
+        .await
+        .expect("posts");
+
+        let mut audience = -1;
+        for _ in 0..80 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            audience = call(&router, "Hub", "town", "audience", vec![])
+                .await
+                .expect("audience answers")
+                .as_i64()
+                .unwrap_or(-1);
+            if audience == 0 {
+                break;
+            }
+        }
+        assert_eq!(audience, 0, "the dead connection's edge is pruned");
     }
 
     #[tokio::test(flavor = "multi_thread")]

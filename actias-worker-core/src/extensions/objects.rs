@@ -1010,6 +1010,12 @@ async fn dispatch_internal(
             } else {
                 "object"
             };
+            let connection_id = follower["connection"].as_str().map(str::to_owned);
+            if kind == "connection" && connection_id.is_none() {
+                return Err(mlua::Error::RuntimeError(
+                    "a connection follower names its connection.".to_owned(),
+                ));
+            }
             let filter_option = if filter.is_null() {
                 None
             } else {
@@ -1021,6 +1027,7 @@ async fn dispatch_internal(
                     kind,
                     &follower_class,
                     &follower_name,
+                    connection_id.as_deref(),
                     &topic,
                     filter_option,
                 )
