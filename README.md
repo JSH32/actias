@@ -33,9 +33,29 @@ on "fetch" (function(request)
 end)
 ```
 
-It exists to make deploying server-side code approachable: education
-is the wedge, production scale is the ceiling, and neither audience is
-sacrificed for the other.
+Actias is for both people learning to ship server-side code and
+developers running real infrastructure. The same platform serves both,
+so nothing here is a toy version of something else.
+
+## What works today
+
+- HTTP handlers with a typed request (path, query, headers, body) and
+  static assets served straight from the bundle
+- Key-value storage
+- SQL databases with CLI-generated migrations, applied at first touch
+- Durable objects: one instance, one writer, its own SQLite file,
+  alarms it arms itself
+- Queues with retries, dead letters, and console-driven requeue
+- Workflows: journaled and replayable, steps with retries, signals,
+  race/all, runs that park for days and survive restarts
+- Streams: publisher-gated pub/sub between objects, delivered to
+  browsers over websockets with server-controlled connection programs
+- Versioned secrets with rotation
+- Cron schedules
+- A typed Luau surface: `actias check` and shipped luau-lsp
+  definitions read the same declarations
+- A web console that inspects all of it live: object storage, queue
+  journals, workflow runs, stream edges
 
 ## Running it
 
