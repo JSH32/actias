@@ -1,52 +1,30 @@
-//! The sockets leaf (S3): connections as followers. This module opens
-//! the arc with the two primitives everything else consumes, the inbox
-//! and the registry, and carries the build plan for the rest.
+//! Connections as followers: the transport-neutral primitives every
+//! socket rides, the inbox and the registry.
 //!
-//! # The model (docs/SURFACE_REV.md, revisions 3, 15)
+//! # The model
 //!
 //! A websocket upgrade happens INSIDE fetch: the handler authenticates
 //! like any request, then returns `request:upgrade(fn, identity)`. The
-//! request's vm does not die; `fn` becomes the connection's program (a
-//! coroutine in that same vm, alive as long as the connection, budgeted
-//! per wake like an object call). The connection SPEAKS AS the minted
-//! identity; `transport = "connection"` decides only the edge kind.
+//! request's vm does not die; `fn` becomes the connection's program,
+//! alive as long as the connection. The connection SPEAKS AS the
+//! minted identity; `transport = "connection"` decides only the edge
+//! kind. The server owns the control loop and there is NO platform
+//! wire protocol in either direction: the wire carries only frames the
+//! app defines, and no stdlib connection program exists (one was
+//! retracted in review precisely because it would have made the
+//! platform's event envelope a de-facto wire format).
 //!
-//! The server owns the control loop and there is NO platform wire
-//! protocol: the wire carries only frames the app defines. The stdlib
-//! ships `sockets.forward(target, topic, filter?)`, a function
-//! returning the obvious seven-line program; anything else is the app
-//! writing its own loop over `sock:each()`.
-//!
-//! # Build plan, in order
-//!
-//! 1. DONE HERE: `InboxItem`, `Inbox` (bounded; overflow closes the
-//!    connection rather than buffering unboundedly, the for-loop IS
-//!    the backpressure), `ConnectionRegistry` (node-local id -> inbox;
-//!    a vanished connection reports Gone so the pump can prune).
-//! 2. Pump integration: `streams::pump` walks connection-kind edges
-//!    (it currently skips them), resolves the registry from app data,
-//!    delivers with NO cursor and NO retry: Gone or a full inbox
-//!    deletes the edge (deliver-or-prune, expected-stale after
-//!    failover). Cross-node: the edge row records the terminating
-//!    node; delivery rides the existing worker dispatch channel, and
-//!    an unroutable node is Gone.
-//! 3. The sock value: a userdata over (connection id, identity, inbox
-//!    receiver, ws sink): `follow`/`unfollow` (ordinary __follow calls
-//!    carrying the identity plus connection id), `send` (json down the
-//!    wire), `each` (async iterator draining the inbox), `close`.
-//! 4. The upgrade seam: the fetch request table gains `upgrade`
-//!    (boolean) and `request:upgrade(fn, identity)`, which returns a
-//!    marker value; the worker's HTTP layer (actias-worker server.rs)
-//!    recognizes it, completes the hyper handshake, registers the
-//!    inbox, spawns the ws read half (frames into the inbox) and runs
-//!    `fn(sock)` as a coroutine in the surviving vm. Return, error or
-//!    peer close: unregister, drop edges made by this connection.
-//! 5. `sockets.forward` preloaded in Lua + prologue retype (the
-//!    sockets namespace loses `follows`, gains `forward`), then the
-//!    examples and worker container rebuild.
-//!
-//! Nothing here adds transport: edge delivery to a LOCAL connection is
-//! a registry push, and remote delivery reuses the dispatch channel.
+//! One bounded inbox per connection merges both producers, edge
+//! deliveries and the client's own frames; a program that stops
+//! pulling fills it, and past the bound the connection closes rather
+//! than buffering unboundedly. The registry maps node-local connection
+//! ids to inbox senders; a missing id reports Gone, which is a pump's
+//! signal to prune the edge (deliver-or-prune, at-most-once,
+//! expected-stale after failover). Nothing here adds transport: local
+//! delivery is a registry push. Still open: cross-node connection
+//! delivery (the edge would record its terminating node and ride the
+//! worker dispatch channel; an unroutable node is Gone) and a bounded
+//! per-wake budget for connection programs.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

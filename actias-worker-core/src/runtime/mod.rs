@@ -777,7 +777,6 @@ impl ActiasRuntime {
                     &CryptoExtension,
                     &crate::extensions::objects::ObjectExtension,
                 ])?;
-                crate::extensions::sockets::install_prelude(&lua.lua).await?;
             }
             // Workflow code keeps json and log; every effect surface is
             // refused by name at the boundary, and uuid journals. The

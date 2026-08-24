@@ -83,10 +83,13 @@ local require: (string) -> any = nil :: any
 local http: any = nil :: any
 local crypto: any = nil :: any
 local Jwt: any = nil :: any
--- Reserved platform namespace for connection programs (the streams
--- surface, docs/SURFACE_REV.md). `each` takes a handler because Luau
--- cannot resume a yield inside a generic-for iterator (the pinned
--- seventeenth revision); `recv` is the manual-while primitive.
+-- The sock value's shape: connection programs receive one of these
+-- from request:upgrade.
+-- `each` takes a handler because Luau cannot resume a yield inside a
+-- generic-for iterator (the pinned seventeenth revision); `recv` is
+-- the manual-while primitive. There is NO stdlib connection program:
+-- the wire carries only frames the app defines, so the app writes its
+-- own loop.
 type SocketEvent = { topic: string, from: { id: string, class: string, name: string }, data: any }
 type SocketItem = { kind: string, event: SocketEvent?, data: any }
 type Socket = {
@@ -97,10 +100,10 @@ type Socket = {
     unfollow: (self: Socket, target: any, topic: string) -> boolean,
     close: (self: Socket) -> boolean,
 }
-local sockets: { forward: (target: any, topic: string, filter: any?) -> (Socket) -> () } = nil :: any
+local _socket_shape: Socket? = nil
 local jwt: any = nil :: any
 local script: any = nil :: any
-local _ = kv and secret and on and object and objects and database and queue and workflow and workflows and json and log and uuid and getfile and dofile and require and http and crypto and jwt and Jwt and sockets and script
+local _ = kv and secret and on and object and objects and database and queue and workflow and workflows and json and log and uuid and getfile and dofile and require and http and crypto and jwt and Jwt and _socket_shape and script
 "#;
 
 /// Runs the strict type check over the project's bundle.

@@ -1,12 +1,13 @@
 //! Streams: publisher-approved edges between objects, with the platform
-//! owning delivery (docs/SURFACE_REV.md).
+//! owning delivery.
 //!
 //! A follow writes ONE ROW in the publisher's own SQLite; a publish
 //! appends to the publisher's event log in the calling transaction; the
-//! delivery pump walks edge rows after commit, copying matching events to
-//! each follower's `receive` hook with a per-edge cursor, retry backoff,
-//! and bounded patience. Everything rides the object's file: edges and
-//! events ship with snapshots and survive takeover like any other rows.
+//! delivery pump walks edge rows after commit, copying matching events
+//! to each follower's `receives` handler with a per-edge cursor, retry
+//! backoff, and bounded patience. Everything rides the object's file:
+//! edges and events ship with snapshots and survive takeover like any
+//! other rows.
 
 use crate::storage::SqliteStorage;
 
@@ -722,9 +723,18 @@ mod tests {
             -- boot-compiled closure handed to request:upgrade, and the
             -- identity is minted from an instance handle.
             if request.upgrade and request.wants_forward then
-                -- The stdlib one-liner: follow one stream, push it down.
-                return request:upgrade(
-                    sockets.forward(Hub("town"), "news"), Reader("ada"))
+                -- The one-stream socket, written out: the app decides
+                -- the wire shape (no stdlib forwarder exists).
+                return request:upgrade(function(sock)
+                    sock:follow(Hub("town"), "news")
+                    sock:each(function(item)
+                        if item.kind == "event" then
+                            sock:send({ topic = item.event.topic,
+                                        from = item.event.from.id,
+                                        kind = item.event.data.kind })
+                        end
+                    end)
+                end, Reader("ada"))
             end
             if request.upgrade then
                 return request:upgrade(function(sock)
@@ -1191,8 +1201,10 @@ mod tests {
         );
     }
 
+    /// The written-out one-stream socket (the app owns the wire
+    /// shape; no stdlib forwarder exists after owner review).
     #[tokio::test(flavor = "multi_thread")]
-    async fn the_forward_program_pushes_one_stream_down() {
+    async fn a_one_stream_program_pushes_shaped_frames() {
         use crate::connections::OutboundFrame;
         use crate::extensions::sockets::{PendingUpgrade, SockShared, run_connection};
 
@@ -1251,7 +1263,7 @@ mod tests {
         }
         if audience != 1 {
             let early = tokio::time::timeout(std::time::Duration::from_secs(1), drive).await;
-            panic!("forward made no edge; the program said: {early:?}");
+            panic!("no edge was made; the program said: {early:?}");
         }
 
         call(
@@ -1271,10 +1283,13 @@ mod tests {
             panic!("expected a frame, got {forwarded:?}");
         };
         assert_eq!(frame["topic"], "news");
-        assert_eq!(frame["from"]["id"], "Hub/town");
-        assert_eq!(frame["data"]["kind"], "sport");
+        assert_eq!(
+            frame["from"], "Hub/town",
+            "the APP's shape, not the envelope"
+        );
+        assert_eq!(frame["kind"], "sport");
 
-        // Closing the wire ends the loop: Closed drains, forward
+        // Closing the wire ends the loop: Closed drains, the program
         // returns, edges sever.
         inbox_tx
             .push(crate::connections::InboxItem::Closed)
@@ -1282,7 +1297,7 @@ mod tests {
         drive
             .await
             .expect("drive joins")
-            .expect("forward ran cleanly");
+            .expect("the program ran cleanly");
     }
 
     #[tokio::test(flavor = "multi_thread")]

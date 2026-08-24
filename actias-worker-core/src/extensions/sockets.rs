@@ -17,6 +17,20 @@
 //! exactly the instance-handle pattern: Luau cannot yield across a
 //! metamethod boundary, so userdata async methods are structurally
 //! wrong here and a table of closures is the shape that works.
+//!
+//! There is deliberately NO stdlib connection program (a
+//! `sockets.forward` existed briefly and was retracted in owner
+//! review): the fifteenth revision's rule is that the wire carries
+//! only frames the app defines, and a shipped forwarder would promote
+//! the platform's internal event envelope into a de-facto wire
+//! protocol while silently dropping client frames. The loop is the
+//! form; it is seven lines, and the app should mean every one of
+//! them. Why `each` takes a CALLBACK and there is no generic-for
+//! iterator: Luau cannot resume a yield made inside a generic-for
+//! iterator call, so a suspending `for item in sock:each()` is
+//! structurally impossible; `sock:each(fn)` keeps the loop in the
+//! platform (where a per-wake budget naturally arms) and
+//! `sock:recv()` is the awaitable primitive for manual `while` loops.
 
 use std::sync::Arc;
 
@@ -24,44 +38,6 @@ use mlua::{Lua, LuaSerdeExt, Table};
 
 use crate::connections::{InboxItem, InboxReceiver, OutboundFrame};
 use crate::extensions::objects::{ObjectRouter, ObjectTarget};
-
-/// Installs the `sockets` stdlib namespace at boot. `sockets.forward`
-/// is the shipped program the doc prints, go-to-definition honest
-/// because this IS its source.
-///
-/// Why `each` takes a CALLBACK and there is no generic-for iterator:
-/// Luau (5.1 lineage) cannot resume a yield made inside a generic-for
-/// iterator call ("attempt to yield across metamethod/C-call
-/// boundary"), so a suspending `for item in sock:each()` is
-/// structurally impossible. `sock:each(fn)` keeps the loop in the
-/// platform (which is also where a per-wake budget naturally arms),
-/// and `sock:recv()` is the awaitable primitive for programs that
-/// want the loop themselves via `while`.
-pub async fn install_prelude(lua: &Lua) -> mlua::Result<()> {
-    const SOURCE: &str = r#"
-        return {
-            forward = function(target, topic, filter)
-                return function(sock)
-                    sock:follow(target, topic, filter)
-                    sock:each(function(item)
-                        if item.kind == "event" then
-                            sock:send(item.event)
-                        end
-                    end)
-                end
-            end,
-        }
-    "#;
-    let prelude: Table = lua
-        .load(SOURCE)
-        .set_name("=[actias.sockets]")
-        .eval_async()
-        .await?;
-    let namespace = lua.create_table()?;
-    namespace.set("forward", prelude.get::<mlua::Function>("forward")?)?;
-    lua.globals().set("sockets", namespace)?;
-    Ok(())
-}
 
 /// A requested upgrade, parked in app data until the HTTP layer picks
 /// it up after the fetch handler returns.
