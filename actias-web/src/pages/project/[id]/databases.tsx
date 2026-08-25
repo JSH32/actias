@@ -464,17 +464,34 @@ function Databases({
               <DrawerSection label="Cells">
                 {columnNames.map((name) => {
                   const column = columns.find((entry) => entry.name === name);
+                  const cell = inspectedRow[name];
+                  const parsed = ((): unknown => {
+                    if (typeof cell !== 'string') return undefined;
+                    const lead = cell.trimStart()[0];
+                    if (lead !== '{' && lead !== '[') return undefined;
+                    try {
+                      return JSON.parse(cell);
+                    } catch {
+                      return undefined;
+                    }
+                  })();
+                  if (parsed !== undefined) {
+                    return (
+                      <div key={name} className={classes.jsonCell}>
+                        <span className={classes.sectionLabel}>
+                          {`${name}${column?.type ? ` · ${column.type}` : ''}`}
+                        </span>
+                        <JsonValue value={parsed} defaultDepth={1} />
+                      </div>
+                    );
+                  }
                   return (
                     <Fact
                       key={name}
                       label={`${name}${
                         column?.type ? ` · ${column.type}` : ''
                       }`}
-                      value={
-                        inspectedRow[name] == null
-                          ? 'NULL'
-                          : String(inspectedRow[name])
-                      }
+                      value={cell == null ? 'NULL' : String(cell)}
                     />
                   );
                 })}

@@ -18,10 +18,17 @@ type Database = {
 
 declare kv: (namespace: string) -> KvNamespace
 declare secret: (name: string) -> string
-declare on: (event: string) -> ((any) -> any) -> ()
-declare database: (name: string) -> Database
+-- "fetch" is a known event with a typed request; queue:* and cron:*
+-- carry runtime names, so they stay open strings.
+declare on: ((event: "fetch") -> ((HttpRequest) -> any) -> ()) & ((event: string) -> ((any) -> any) -> ())
+-- The handle also takes a declaration body (`database "catalog"
+-- { migrations = "dir" }`) and returns itself; bare use is the same
+-- handle without one.
+type DatabaseHandle = ((body: { migrations: string? }) -> Database) & Database
+
+declare database: (name: string) -> DatabaseHandle
 declare json: { stringify: (any) -> string, parse: (string) -> any }
-declare log: { debug: (any) -> (), info: (any) -> (), warn: (any) -> (), error: (any) -> () }
+declare log: { debug: (...any) -> (), info: (...any) -> (), warn: (...any) -> (), error: (...any) -> () }
 declare uuid: { v4: () -> string }
 declare getfile: (path: string) -> { number }?
 declare dofile: (path: string) -> any

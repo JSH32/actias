@@ -29,6 +29,16 @@ const redirects = async () => [
 const nextConfig = {
   rewrites,
   redirects,
+  // The platform's Luau declarations are imported as source text so the
+  // workbench's type check builds its prologue from the very files the
+  // cli ships. One definitions set, three consumers.
+  webpack: (config) => {
+    config.module.rules.push({
+      test: /\.d\.luau$/,
+      type: "asset/source"
+    })
+    return config
+  },
   // Runtime config travels through /api/config (window.PUBLIC_CONFIG),
   // never publicRuntimeConfig: the latter is unreliable on the client.
   publicRuntimeConfig: {

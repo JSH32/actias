@@ -1535,3 +1535,12 @@
   font: 400 11px var(--mono);
   color: var(--ink-3);
 }
+
+/* A row cell holding structured json: label above, explorer below. */
+.jsonCell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+}

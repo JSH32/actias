@@ -39,6 +39,14 @@
             # Task runner; see the justfile for the verb list.
             just
 
+            # The workbench's Luau language service is a wasm target built
+            # from Luau's own analysis library; see luau-web/README.md for
+            # the build. Only needed to regenerate that artifact, which is
+            # vendored, so an ordinary checkout never runs this.
+            emscripten
+            cmake
+            ninja
+
             # The smoke test drives the api with these.
             curl
             jq

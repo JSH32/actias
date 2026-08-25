@@ -18,9 +18,445 @@ import { getPublicConfig } from '@/pages/api/config';
 import { RevisionDataDto } from '@/client';
 import { toast } from '@/ui/toast';
 import { CopyButton } from '@/components/inspector';
+import { luauChecker } from '@/helpers/luauCheck';
+import { PLATFORM_DEFINITIONS } from '@/helpers/luauShadow';
+import { Group, Panel, Separator } from 'react-resizable-panels';
+import {
+  PaneEdge,
+  PaneLeaf,
+  PaneNode,
+  addTab,
+  allLeaves,
+  dropTab,
+  findLeaf,
+  firstLeaf,
+  renameTab,
+  singleLeaf,
+  splitLeaf,
+  updateLeaf,
+} from '@/helpers/paneTree';
 import classes from './workbench.module.css';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
+
+/** Just the monaco surface this page uses; importing monaco's own types
+ * would pull the editor into the server bundle. */
+type Marker = {
+  severity: number;
+  message: string;
+  startLineNumber: number;
+  endLineNumber: number;
+  startColumn: number;
+  endColumn: number;
+};
+type TextModel = {
+  uri: { path: string };
+  getLineCount: () => number;
+  getLineMaxColumn: (line: number) => number;
+};
+type ProviderPosition = { lineNumber: number; column: number };
+/** A model that exists only to back navigation previews. */
+type BackingModel = {
+  getValue: () => string;
+  setValue: (text: string) => void;
+};
+type ProviderModel = {
+  uri: { path: string };
+  getValue: () => string;
+  getLineContent: (line: number) => string;
+  getWordUntilPosition: (position: ProviderPosition) => {
+    startColumn: number;
+    endColumn: number;
+  };
+};
+type MonacoApi = {
+  MarkerSeverity: { Error: number; Warning: number };
+  Uri: { parse: (value: string) => { path: string } };
+  editor: {
+    setModelMarkers: (
+      model: TextModel,
+      owner: string,
+      markers: Marker[],
+    ) => void;
+    getModel: (uri: unknown) => BackingModel | null;
+    createModel: (text: string, language: string, uri: unknown) => BackingModel;
+    registerEditorOpener: (opener: {
+      openCodeEditor: (
+        source: unknown,
+        resource: { path: string },
+        selection?: { startLineNumber?: number; startColumn?: number },
+      ) => boolean;
+    }) => void;
+  };
+  languages: {
+    CompletionItemKind: Record<string, number>;
+    CompletionItemInsertTextRule: { InsertAsSnippet: number };
+    registerCompletionItemProvider: (
+      language: string,
+      provider: object,
+    ) => void;
+    registerHoverProvider: (language: string, provider: object) => void;
+    registerDefinitionProvider: (language: string, provider: object) => void;
+    registerSignatureHelpProvider: (language: string, provider: object) => void;
+    registerDocumentSemanticTokensProvider: (
+      language: string,
+      provider: object,
+    ) => void;
+  };
+};
+type CodeEditor = {
+  getModel: () => TextModel | null;
+  layout: () => void;
+  setModel: (model: unknown) => void;
+  saveViewState: () => unknown;
+  restoreViewState: (state: unknown) => void;
+  revealLineInCenter: (line: number) => void;
+  setPosition: (position: { lineNumber: number; column: number }) => void;
+};
+
+/** The platform's declarations as read-only workbench files: what a
+ * definition jump on a platform symbol lands in. */
+const PLATFORM_FILES: Record<string, string> = Object.fromEntries(
+  PLATFORM_DEFINITIONS.map((file) => [file.path, file.text]),
+);
+
+/** How the module-level monaco providers reach the mounted page: the
+ * component fills these on mount and clears them on unmount. */
+const luauNav: {
+  open: ((path: string, line: number, column: number) => void) | null;
+  hasProjectFile: ((path: string) => boolean) | null;
+  /** The live project and which file the editor shows; the language
+   * providers read through this so they see unsaved text. */
+  project: (() => { files: Record<string, string>; path: string }) | null;
+} = { open: null, hasProjectFile: null, project: null };
+
+/** Providers are per-language and global to the monaco instance, so a
+ * remount must not stack a second copy of each. */
+let luauProvidersRegistered = false;
+
+function registerLuauProviders(monaco: MonacoApi) {
+  if (luauProvidersRegistered) return;
+  luauProvidersRegistered = true;
+
+  // Navigation targets must resolve to a real model or monaco throws
+  // "Model not found" mid-peek; anything jumpable gets one on demand,
+  // refreshed when its text moved on.
+  const ensureModel = (path: string): void => {
+    const text =
+      PLATFORM_FILES[path] ?? luauNav.project?.().files[path] ?? null;
+    if (text == null) return;
+    const uri = monaco.Uri.parse(`actias-view:///${path}`);
+    const existing = monaco.editor.getModel(uri);
+    if (!existing) {
+      monaco.editor.createModel(text, 'lua', uri);
+    } else if (existing.getValue() !== text) {
+      existing.setValue(text);
+    }
+  };
+
+  for (const file of PLATFORM_DEFINITIONS) ensureModel(file.path);
+
+  // Cross-model navigation: monaco hands any foreign-uri target here.
+  monaco.editor.registerEditorOpener({
+    openCodeEditor: (source, resource, selection) => {
+      const path = resource.path.replace(/^\//, '');
+      if (!luauNav.open) return false;
+      if (!(path in PLATFORM_FILES) && !luauNav.hasProjectFile?.(path)) {
+        return false;
+      }
+      luauNav.open(
+        path,
+        selection?.startLineNumber ?? 1,
+        selection?.startColumn ?? 1,
+      );
+      return true;
+    },
+  });
+
+  const kinds = monaco.languages.CompletionItemKind;
+  const kindOf = (entry: { kind: string; type?: string }): number => {
+    switch (entry.kind) {
+      case 'property':
+        return entry.type?.includes('->') ? kinds.Method : kinds.Field;
+      case 'binding':
+        return kinds.Variable;
+      case 'keyword':
+        return kinds.Keyword;
+      case 'type':
+        return kinds.Class;
+      case 'module':
+        return kinds.Module;
+      default:
+        return kinds.Text;
+    }
+  };
+
+  /** The project file a queried model shows, from its uri; null for
+   * platform reference views and anything else outside the bundle. */
+  const modelPath = (model: ProviderModel): string | null => {
+    const path = model.uri.path.replace(/^\//, '');
+    const files = luauNav.project?.().files;
+    return files && files[path] != null ? path : null;
+  };
+
+  monaco.languages.registerCompletionItemProvider('lua', {
+    triggerCharacters: ['.', ':'],
+    provideCompletionItems: async (
+      model: ProviderModel,
+      position: ProviderPosition,
+    ) => {
+      const project = luauNav.project?.();
+      const path = modelPath(model);
+      if (!project || !path) return { suggestions: [] };
+      // The model is the live text; react state lags by the keystroke
+      // that triggered this query.
+      const files = { ...project.files, [path]: model.getValue() };
+      const entries = await luauChecker().complete(
+        files,
+        path,
+        position.lineNumber,
+        position.column,
+      );
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
+      // The character the member access was typed with; when the
+      // analyser says it is the wrong one for an entry, picking that
+      // entry swaps it, so a method chosen after `.` arrives as `:`.
+      const lineText = model.getLineContent(position.lineNumber);
+      const separatorColumn = word.startColumn - 1;
+      const separator = lineText[separatorColumn - 1];
+      const afterIndex = separator === '.' || separator === ':';
+      // After a member access only members belong; when the line does
+      // not parse yet, the analyser falls back to every binding in
+      // scope, and passing that through buries the real entries. The
+      // keep-alive `_` is the prologue's, never the user's.
+      const visible = entries.filter(
+        (entry) =>
+          entry.name !== '_' && (!afterIndex || entry.kind === 'property'),
+      );
+      return {
+        suggestions: visible.map((entry) => {
+          const swap =
+            entry.wrongIndexType && afterIndex
+              ? entry.indexedWithSelf
+                ? '.'
+                : ':'
+              : null;
+          // Accepting a function completes the call: parens in, cursor
+          // between them, parameter hints up. A function TYPE starts
+          // with its argument list (or generics); a table containing
+          // functions merely mentions `->` and is not itself callable.
+          const callable =
+            (entry.kind === 'property' || entry.kind === 'binding') &&
+            entry.type != null &&
+            /^[<(]/.test(entry.type) &&
+            entry.type.includes('->');
+          const zeroArguments = entry.type?.startsWith('() ->') ?? false;
+          return {
+            label: entry.name,
+            kind: kindOf(entry),
+            insertText: callable
+              ? zeroArguments
+                ? `${entry.name}()`
+                : `${entry.name}($1)`
+              : entry.name,
+            insertTextRules:
+              callable && !zeroArguments
+                ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
+                : undefined,
+            command: callable
+              ? { id: 'editor.action.triggerParameterHints', title: 'hints' }
+              : undefined,
+            detail: entry.type,
+            range,
+            additionalTextEdits: swap
+              ? [
+                  {
+                    range: {
+                      startLineNumber: position.lineNumber,
+                      endLineNumber: position.lineNumber,
+                      startColumn: separatorColumn,
+                      endColumn: separatorColumn + 1,
+                    },
+                    text: swap,
+                  },
+                ]
+              : undefined,
+          };
+        }),
+      };
+    },
+  });
+
+  monaco.languages.registerDefinitionProvider('lua', {
+    provideDefinition: async (
+      model: ProviderModel,
+      position: ProviderPosition,
+    ) => {
+      // require("lib/domain") under the cursor jumps into that file;
+      // the analyser cannot, since it sees one module at a time.
+      const lineText = model.getLineContent(position.lineNumber);
+      const requirePattern = /require\s*\(\s*["']([^"']+)["']\s*\)/g;
+      let match: RegExpExecArray | null;
+      while ((match = requirePattern.exec(lineText))) {
+        const start = match.index + 1;
+        const end = start + match[0].length;
+        if (position.column < start || position.column > end) continue;
+        const spec = match[1];
+        const candidate = [spec, `${spec}.lua`].find(
+          (name) => luauNav.hasProjectFile?.(name),
+        );
+        if (!candidate) break;
+        ensureModel(candidate);
+        return {
+          uri: monaco.Uri.parse(`actias-view:///${candidate}`),
+          range: {
+            startLineNumber: 1,
+            endLineNumber: 1,
+            startColumn: 1,
+            endColumn: 1,
+          },
+        };
+      }
+
+      const project = luauNav.project?.();
+      const path = modelPath(model);
+      if (!project || !path) return null;
+      // The model is the live text; react state lags by the keystroke
+      // that triggered this query.
+      const files = { ...project.files, [path]: model.getValue() };
+      const target = await luauChecker().definition(
+        files,
+        path,
+        position.lineNumber,
+        position.column,
+      );
+      if (!target) return null;
+      const range = {
+        startLineNumber: target.line,
+        endLineNumber: target.line,
+        startColumn: target.column,
+        endColumn: target.endColumn,
+      };
+      // A platform symbol resolves into its definitions file, which is
+      // a real, browsable tab.
+      if (target.path) {
+        ensureModel(target.path);
+        return {
+          uri: monaco.Uri.parse(`actias-view:///${target.path}`),
+          range,
+        };
+      }
+      return { uri: model.uri, range };
+    },
+  });
+
+  monaco.languages.registerDocumentSemanticTokensProvider('lua', {
+    getLegend: () => ({
+      tokenTypes: [
+        'function',
+        'method',
+        'property',
+        'parameter',
+        'variable',
+        'type',
+      ],
+      tokenModifiers: [],
+    }),
+    provideDocumentSemanticTokens: async (model: ProviderModel) => {
+      const project = luauNav.project?.();
+      const path = modelPath(model);
+      if (!project || !path) return null;
+      const tokens = await luauChecker().semanticTokens(project.files, path);
+
+      const data: number[] = [];
+      let previousLine = 0;
+      let previousColumn = 0;
+      for (const [line, column, length, type] of tokens) {
+        const deltaLine = line - previousLine;
+        data.push(
+          deltaLine,
+          deltaLine === 0 ? column - previousColumn : column,
+          length,
+          type,
+          0,
+        );
+        previousLine = line;
+        previousColumn = column;
+      }
+      return { data: new Uint32Array(data), resultId: undefined };
+    },
+    releaseDocumentSemanticTokens: () => undefined,
+  });
+
+  monaco.languages.registerSignatureHelpProvider('lua', {
+    signatureHelpTriggerCharacters: ['(', ','],
+    signatureHelpRetriggerCharacters: [','],
+    provideSignatureHelp: async (
+      model: ProviderModel,
+      position: ProviderPosition,
+    ) => {
+      const project = luauNav.project?.();
+      const path = modelPath(model);
+      if (!project || !path) return null;
+      // The model is the live text; react state lags by the keystroke
+      // that triggered this query.
+      const files = { ...project.files, [path]: model.getValue() };
+      const help = await luauChecker().signature(
+        files,
+        path,
+        position.lineNumber,
+        position.column,
+      );
+      if (!help) return null;
+      const label =
+        `(${help.parameters.join(', ')})` +
+        (help.returns ? ` -> ${help.returns}` : '');
+      return {
+        value: {
+          signatures: [
+            {
+              label,
+              parameters: help.parameters.map((parameter) => ({
+                label: parameter,
+              })),
+            },
+          ],
+          activeSignature: 0,
+          activeParameter: Math.min(
+            help.active,
+            Math.max(help.parameters.length - 1, 0),
+          ),
+        },
+        dispose: () => undefined,
+      };
+    },
+  });
+
+  monaco.languages.registerHoverProvider('lua', {
+    provideHover: async (model: ProviderModel, position: ProviderPosition) => {
+      const project = luauNav.project?.();
+      const path = modelPath(model);
+      if (!project || !path) return null;
+      // The model is the live text; react state lags by the keystroke
+      // that triggered this query.
+      const files = { ...project.files, [path]: model.getValue() };
+      const type = await luauChecker().hover(
+        files,
+        path,
+        position.lineNumber,
+        position.column,
+      );
+      if (!type) return null;
+      return { contents: [{ value: '```lua\n' + type + '\n```' }] };
+    },
+  });
+}
 const DiffEditor = dynamic(
   () => import('@monaco-editor/react').then((mod) => mod.DiffEditor),
   { ssr: false },
@@ -33,6 +469,12 @@ const DEFAULT_CONFIG = JSON.stringify(
   null,
   2,
 );
+
+/** What the workbench can hold and the live session should serve:
+ * everything text. Binary assets stay behind publish, since a decoded
+ * byte blob does not survive a text editor. */
+const isTextAsset = (path: string) =>
+  /\.(lua|luau|json|html|css|js|sql|md|txt)$/.test(path);
 
 const DEFAULT_FILES: Record<string, string> = {
   [CONFIG_FILE]: DEFAULT_CONFIG,
@@ -55,10 +497,18 @@ const encode = (source: string) => btoa(unescape(encodeURIComponent(source)));
 const decode = (content: string) => decodeURIComponent(escape(atob(content)));
 
 /** The editor in the site's own colors: the lua syntax palette and the
- * night surfaces from the token sheet. */
+ * night surfaces from the token sheet.
+ *
+ * Defined exactly once: every editor mount calls this through
+ * beforeMount, and REdefining an existing theme makes monaco broadcast
+ * a theme change to every editor it knows, including one mid-disposal
+ * from a pane split, which crashes on its missing dom node. */
+let themeDefined = false;
 function defineTheme(monaco: {
   editor: { defineTheme: (name: string, theme: object) => void };
 }) {
+  if (themeDefined) return;
+  themeDefined = true;
   monaco.editor.defineTheme('actias-night', {
     base: 'vs-dark',
     inherit: true,
@@ -67,6 +517,13 @@ function defineTheme(monaco: {
       { token: 'string', foreground: 'E9B872' },
       { token: 'number', foreground: '7DD3FC' },
       { token: 'comment', foreground: '7C8699' },
+      // Semantic token types, from the analyser's classifications.
+      { token: 'function', foreground: 'C4B5FD' },
+      { token: 'method', foreground: 'C4B5FD' },
+      { token: 'property', foreground: '9AA3B2' },
+      { token: 'parameter', foreground: 'E8EBF0', fontStyle: 'italic' },
+      { token: 'variable', foreground: 'C8CFDB' },
+      { token: 'type', foreground: 'A3E6B4' },
       { token: 'identifier', foreground: 'C8CFDB' },
       { token: 'type', foreground: 'A3E6B4' },
       { token: 'delimiter', foreground: '9AA3B2' },
@@ -141,7 +598,10 @@ function Workbench() {
 
   const [files, setFiles] = React.useState<Record<string, string> | null>(null);
   const [activePath, setActivePath] = React.useState('main.lua');
-  const [openTabs, setOpenTabs] = React.useState<string[]>(['main.lua']);
+  const [layout, setLayout] = React.useState<PaneNode>(() =>
+    singleLeaf('main.lua'),
+  );
+  const [focusedPaneId, setFocusedPaneId] = React.useState<string>('');
   const [session, setSession] = React.useState<string>();
   const [status, setStatus] = React.useState<'connecting' | 'live' | 'closed'>(
     'connecting',
@@ -152,6 +612,31 @@ function Workbench() {
   const [answer, setAnswer] = React.useState<RunnerAnswer | null>(null);
   const [sending, setSending] = React.useState(false);
   const [cursor, setCursor] = React.useState({ line: 1, column: 1 });
+  /** Null until the first check answers, so "no errors" and "not checked
+   * yet" do not read the same in the status bar. */
+  const [typeCheck, setTypeCheck] = React.useState<{
+    errors: number;
+    lints: number;
+  } | null>(null);
+  const [diffRevisionId, setDiffRevisionId] = React.useState<string | null>(
+    null,
+  );
+  const [collapsedDirs, setCollapsedDirs] = React.useState<string[]>([]);
+  const [sideOpen, setSideOpen] = React.useState(true);
+  /** The tab in the air and the leaf it left. Drag state is set a tick
+   * after dragstart: a re-render inside dragstart aborts the drag. */
+  const [dragTab, setDragTab] = React.useState<{
+    tab: string;
+    from: string;
+  } | null>(null);
+  /** Which leaf and which of its five drop zones the drag hovers. */
+  const [hoverZone, setHoverZone] = React.useState<{
+    leaf: string;
+    zone: PaneEdge | 'center';
+  } | null>(null);
+  const [draggingPath, setDraggingPath] = React.useState<string | null>(null);
+  const [dropTarget, setDropTarget] = React.useState<string | null>(null);
+  const [justMoved, setJustMoved] = React.useState<string | null>(null);
   const [diffFiles, setDiffFiles] = React.useState<Record<
     string,
     string
@@ -202,7 +687,7 @@ function Workbench() {
       .then((revision) => {
         const seeded: Record<string, string> = {};
         for (const file of revision.bundle?.files ?? []) {
-          if (file.filePath.endsWith('.lua') && file.content) {
+          if (isTextAsset(file.filePath) && file.content) {
             seeded[file.filePath] = decode(file.content);
           }
         }
@@ -243,7 +728,7 @@ function Workbench() {
       .then((revision) => {
         const tree: Record<string, string> = {};
         for (const file of revision.bundle?.files ?? []) {
-          if (file.filePath.endsWith('.lua') && file.content) {
+          if (isTextAsset(file.filePath) && file.content) {
             tree[file.filePath] = decode(file.content);
           }
         }
@@ -352,28 +837,411 @@ function Workbench() {
     }, 750);
   }, [script, revisionPayload]);
 
-  const openFile = (path: string) => {
-    setActivePath(path);
+  /** The leaf that owns focus; the first one when focus went stale. */
+  const focusedLeaf = findLeaf(layout, focusedPaneId) ?? firstLeaf(layout);
+
+  // A removed leaf must not keep focus; the mirror keeps activePath,
+  // which the checks and status bar read, on the focused leaf's file.
+  React.useEffect(() => {
+    if (!findLeaf(layout, focusedPaneId)) {
+      setFocusedPaneId(firstLeaf(layout).id);
+      return;
+    }
+  }, [layout, focusedPaneId]);
+  React.useEffect(() => {
+    const active = (findLeaf(layout, focusedPaneId) ?? firstLeaf(layout))
+      .active;
+    setActivePath((current) => (current === active ? current : active));
+  }, [layout, focusedPaneId]);
+  React.useEffect(() => {
+    focusedPaneRef.current = focusedLeaf.id;
+    navOpenRef.current = openFile;
+  });
+
+  const warmedUp = React.useRef(false);
+  React.useEffect(() => {
+    if (warmedUp.current || !files) return;
+    warmedUp.current = true;
+    void luauChecker().complete(files, activePathRef.current, 1, 1);
+  }, [files]);
+
+  const openInLeaf = (leafId: string, path: string) => {
     setDiffFiles(null);
-    setOpenTabs((tabs) => (tabs.includes(path) ? tabs : [...tabs, path]));
+    setLayout((tree) => addTab(tree, leafId, path));
+    setFocusedPaneId(leafId);
   };
 
-  const closeTab = (path: string) => {
-    setOpenTabs((tabs) => {
-      const next = tabs.filter((tab) => tab !== path);
-      if (activePath === path) {
-        setActivePath(next[next.length - 1] ?? parsedConfig().entryPoint);
+  /** Opens into whichever group holds focus. */
+  const openFile = (path: string) => openInLeaf(focusedLeaf.id, path);
+
+  const closeTab = (leafId: string, path: string) => {
+    setLayout((tree) => dropTab(tree, leafId, path, parsedConfig().entryPoint));
+  };
+
+  const clearDrag = () => {
+    setDragTab(null);
+    setHoverZone(null);
+    setDraggingPath(null);
+    setDropTarget(null);
+  };
+
+  /** A tab lands in another group's strip or center. */
+  const moveTabToLeaf = (tab: string, from: string, to: string) => {
+    setFocusedPaneId(to);
+    if (from === to) {
+      setLayout((tree) => addTab(tree, to, tab));
+      return;
+    }
+    setLayout((tree) =>
+      addTab(dropTab(tree, from, tab, parsedConfig().entryPoint), to, tab),
+    );
+  };
+
+  /** A tab lands on a group's edge and splits it there. */
+  const dropTabOnEdge = (
+    tab: string,
+    from: string,
+    target: string,
+    edge: PaneEdge,
+  ) => {
+    const source = findLeaf(layout, from);
+    if (from === target && source && source.tabs.length === 1) return;
+    const incoming = singleLeaf(tab);
+    setLayout((tree) =>
+      splitLeaf(
+        dropTab(tree, from, tab, parsedConfig().entryPoint),
+        target,
+        edge,
+        incoming,
+      ),
+    );
+    setFocusedPaneId(incoming.id);
+  };
+
+  /** A file from the tree lands on an edge and opens as a new group. */
+  const openFileOnEdge = (path: string, target: string, edge: PaneEdge) => {
+    const incoming = singleLeaf(path);
+    setLayout((tree) => splitLeaf(tree, target, edge, incoming));
+    setFocusedPaneId(incoming.id);
+  };
+
+  /** One drop, whatever it carries and wherever it lands. */
+  const handleZoneDrop = (
+    leafId: string,
+    zone: PaneEdge | 'center',
+    event: React.DragEvent,
+  ) => {
+    const tab = event.dataTransfer.getData('application/x-actias-tab');
+    const path = event.dataTransfer.getData('application/x-actias-path');
+    const airborne = dragTab;
+    clearDrag();
+    if (tab && airborne) {
+      if (zone === 'center') moveTabToLeaf(tab, airborne.from, leafId);
+      else dropTabOnEdge(tab, airborne.from, leafId, zone);
+      return;
+    }
+    if (path) {
+      if (zone === 'center') openInLeaf(leafId, path);
+      else openFileOnEdge(path, leafId, zone);
+    }
+  };
+
+  // The type check runs against the ACTIVE file only: it is the one with
+  // markers on screen, and checking every file per keystroke would buy
+  // nothing visible.
+  const monacoRef = React.useRef<MonacoApi | null>(null);
+  const paneEditors = React.useRef(new Map<string, CodeEditor>());
+  const hostElements = React.useRef(new Map<string, Element>());
+  const hostLeafOf = React.useRef(new WeakMap<Element, string>());
+  const hostObserver = React.useRef<ResizeObserver | null>(null);
+  if (typeof window !== 'undefined' && !hostObserver.current) {
+    // Layout is ours: monaco's automaticLayout schedules renders from
+    // its own ResizeObserver, and during a grid reshape that queue can
+    // outlive the editor it belongs to. This one resolves through the
+    // registry, so a departed group resolves to nothing.
+    hostObserver.current = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const leafId = hostLeafOf.current.get(entry.target);
+        if (!leafId) continue;
+        try {
+          paneEditors.current.get(leafId)?.layout();
+        } catch {
+          // disposed mid-resize
+        }
       }
-      return next.length ? next : [parsedConfig().entryPoint];
     });
-  };
+  }
 
-  const editFile = (value?: string) => {
+  /** Ref for a group's editor host: observed for size, released when
+   * the group goes. */
+  const observeHost = (leafId: string) => (element: HTMLDivElement | null) => {
+    const previous = hostElements.current.get(leafId);
+    if (previous && previous !== element) {
+      hostObserver.current?.unobserve(previous);
+    }
+    if (element) {
+      hostElements.current.set(leafId, element);
+      hostLeafOf.current.set(element, leafId);
+      hostObserver.current?.observe(element);
+    } else {
+      hostElements.current.delete(leafId);
+    }
+  };
+  const paneShown = React.useRef(new Map<string, string>());
+  const [paneEpoch, setPaneEpoch] = React.useState(0);
+  const activePathRef = React.useRef('main.lua');
+  const focusedPaneRef = React.useRef('');
+  const navOpenRef = React.useRef<(path: string) => void>();
+  const viewStates = React.useRef(new Map<string, unknown>());
+  const suppressChange = React.useRef(false);
+
+  /** The model for a file, created on first need and value-synced to
+   * the project on every fetch. All content flows through here; the
+   * wrapper's own path/value juggling is not used, because its effects
+   * can run against the outgoing model on a tab switch and rewrite one
+   * file with another's text. */
+  const modelFor = React.useCallback((path: string) => {
+    const monaco = monacoRef.current;
+    if (!monaco) return null;
+    const uri = monaco.Uri.parse(`actias:///${path}`);
+    let model = monaco.editor.getModel(uri) as unknown as
+      | (TextModel & BackingModel)
+      | null;
+    const text = filesRef.current[path] ?? PLATFORM_FILES[path] ?? '';
+    if (!model) {
+      const extension = path.split('.').pop() ?? '';
+      const languageOf: Record<string, string> = {
+        json: 'json',
+        html: 'html',
+        css: 'css',
+        js: 'javascript',
+        sql: 'sql',
+        md: 'markdown',
+      };
+      model = monaco.editor.createModel(
+        text,
+        languageOf[extension] ?? 'lua',
+        uri,
+      ) as unknown as TextModel & BackingModel;
+    } else if (model.getValue() !== text) {
+      suppressChange.current = true;
+      model.setValue(text);
+      suppressChange.current = false;
+    }
+    return model;
+  }, []);
+
+  /** Puts every group on its active file. Everything monaco does here
+   * can throw Canceled synchronously (setModel cancels in-flight
+   * language requests; a group mid-teardown is a disposed editor), so
+   * each attach is guarded and the next pass settles whatever one
+   * skipped. */
+  React.useEffect(() => {
+    // A frame later, not in the commit: the commit that reshapes the
+    // grid also disposes editors, and touching one queues a render
+    // against a view that no longer has a dom.
+    const frame = requestAnimationFrame(() => {
+      for (const leaf of allLeaves(layout)) {
+        const editor = paneEditors.current.get(leaf.id);
+        if (!editor) continue;
+        const model = modelFor(leaf.active);
+        if (!model) continue;
+        try {
+          const previous = paneShown.current.get(leaf.id);
+          if (previous && previous !== leaf.active) {
+            viewStates.current.set(
+              `${leaf.id}|${previous}`,
+              editor.saveViewState(),
+            );
+          }
+          paneShown.current.set(leaf.id, leaf.active);
+          if ((editor.getModel() as unknown) !== (model as unknown)) {
+            editor.setModel(model);
+            const saved = viewStates.current.get(`${leaf.id}|${leaf.active}`);
+            if (saved) editor.restoreViewState(saved);
+          }
+        } catch {
+          // cancelled mid-swap
+        }
+      }
+      // Groups that left the layout leave the registry, so nothing can
+      // reach a disposed editor.
+      for (const id of Array.from(paneEditors.current.keys())) {
+        if (!findLeaf(layout, id)) {
+          paneEditors.current.delete(id);
+          paneShown.current.delete(id);
+          const host = hostElements.current.get(id);
+          if (host) hostObserver.current?.unobserve(host);
+          hostElements.current.delete(id);
+        }
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [layout, paneEpoch, modelFor]);
+
+  // Content changed underneath a visible group (a restore, a move, a
+  // remote update): models follow the files map.
+  React.useEffect(() => {
+    if (!files) return;
+    for (const leaf of allLeaves(layout)) modelFor(leaf.active);
+  }, [files, layout, modelFor]);
+  const pendingReveal = React.useRef<{
+    path: string;
+    line: number;
+    column: number;
+  } | null>(null);
+
+  // The module-level providers reach this mount through luauNav.
+  React.useEffect(() => {
+    luauNav.hasProjectFile = (path) => filesRef.current[path] != null;
+    luauNav.project = () => ({
+      files: filesRef.current,
+      path: activePathRef.current,
+    });
+    luauNav.open = (path, line, column) => {
+      if (path === activePathRef.current) {
+        const editor = paneEditors.current.get(focusedPaneRef.current);
+        try {
+          editor?.revealLineInCenter(line);
+          editor?.setPosition({ lineNumber: line, column });
+        } catch {
+          // a disposed pane reveals nothing
+        }
+        return;
+      }
+      pendingReveal.current = { path, line, column };
+      navOpenRef.current?.(path);
+    };
+    return () => {
+      luauNav.open = null;
+      luauNav.hasProjectFile = null;
+      luauNav.project = null;
+    };
+  }, []);
+
+  // The editor swaps models a beat after activePath changes, so the
+  // reveal waits for the new model to be in place.
+  React.useEffect(() => {
+    const reveal = pendingReveal.current;
+    if (!reveal || reveal.path !== activePath) return;
+    pendingReveal.current = null;
+    const timer = setTimeout(() => {
+      const editor = paneEditors.current.get(focusedPaneRef.current);
+      try {
+        editor?.revealLineInCenter(reveal.line);
+        editor?.setPosition({
+          lineNumber: reveal.line,
+          column: reveal.column,
+        });
+      } catch {
+        // a disposed pane reveals nothing
+      }
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [activePath]);
+
+  const checkDebounce = React.useRef<ReturnType<typeof setTimeout>>();
+
+  const checkTypes = React.useCallback((path: string, source: string) => {
+    if (!path.endsWith('.lua')) return;
+    void luauChecker()
+      .check({ ...filesRef.current, [path]: source }, path)
+      .then((diagnostics) => {
+        const monaco = monacoRef.current;
+        if (!monaco) return;
+        // The checked file's model, whichever pane (or none) shows it.
+        const model = monaco.editor.getModel(
+          monaco.Uri.parse(`actias:///${path}`),
+        ) as unknown as TextModel | null;
+        if (!model) return;
+
+        monaco.editor.setModelMarkers(
+          model,
+          'luau',
+          diagnostics.map((item) => {
+            // A parse error at eof can span past the buffer; clamp it
+            // onto its own start line.
+            const bounded = item.endLine <= model.getLineCount();
+            return {
+              severity:
+                item.severity === 'error'
+                  ? monaco.MarkerSeverity.Error
+                  : monaco.MarkerSeverity.Warning,
+              message: item.message,
+              startLineNumber: item.line,
+              startColumn: item.column,
+              endLineNumber: bounded ? item.endLine : item.line,
+              endColumn: bounded
+                ? item.endColumn
+                : model.getLineMaxColumn(item.line),
+            };
+          }),
+        );
+        if (path === activePathRef.current) {
+          setTypeCheck({
+            errors: diagnostics.filter((item) => item.severity === 'error')
+              .length,
+            lints: diagnostics.filter((item) => item.severity === 'lint')
+              .length,
+          });
+        }
+      });
+  }, []);
+
+  /** Typing is not a reason to re-check on every keystroke. */
+  const checkSoon = React.useCallback(
+    (path: string, source: string) => {
+      clearTimeout(checkDebounce.current);
+      checkDebounce.current = setTimeout(() => checkTypes(path, source), 400);
+    },
+    [checkTypes],
+  );
+
+  const lastProjectPath = React.useRef('main.lua');
+
+  React.useEffect(() => {
+    activePathRef.current = activePath;
+    if (!(activePath in PLATFORM_FILES)) lastProjectPath.current = activePath;
+  }, [activePath]);
+
+  // Switching files leaves the previous file's markers on screen, so the
+  // new one is checked as soon as it becomes active. Content comes off
+  // the ref: depending on `files` would re-run this on every keystroke
+  // and blank the indicator while the user types.
+  React.useEffect(() => {
+    setTypeCheck(null);
+    checkSoon(activePath, filesRef.current[activePath] ?? '');
+  }, [activePath, checkSoon]);
+
+  const editFileAt = (path: string, value?: string) => {
     setFiles((previous) => ({
       ...(previous ?? {}),
-      [activePath]: value ?? '',
+      [path]: value ?? '',
     }));
     syncSoon();
+    checkSoon(path, value ?? '');
+  };
+
+  /** Moves a file into a directory ('' is the root), carrying its tab,
+   * the active path and the live sync along. */
+  const moveFile = (from: string, toDir: string) => {
+    const name = from.split('/').pop() as string;
+    const to = toDir ? `${toDir}/${name}` : name;
+    if (to === from || from === CONFIG_FILE) return;
+    if (files?.[to] != null) {
+      toast({ title: 'Not moved', message: `${to} already exists.` });
+      return;
+    }
+    setFiles((previous) => {
+      const next = { ...(previous ?? {}) };
+      next[to] = next[from] ?? '';
+      delete next[from];
+      return next;
+    });
+    setLayout((tree) => renameTab(tree, from, to));
+    syncSoon();
+    setJustMoved(to);
+    setTimeout(() => setJustMoved(null), 700);
   };
 
   const addFile = (initialPath?: string): void => {
@@ -417,8 +1285,7 @@ function Workbench() {
       delete tree[path];
       return tree;
     });
-    setOpenTabs((tabs) => tabs.map((tab) => (tab === path ? next : tab)));
-    if (activePath === path) setActivePath(next);
+    setLayout((tree) => renameTab(tree, path, next));
     syncSoon();
   };
 
@@ -429,8 +1296,15 @@ function Workbench() {
       delete tree[path];
       return tree;
     });
-    setOpenTabs((tabs) => tabs.filter((tab) => tab !== path));
-    if (activePath === path) setActivePath(parsedConfig().entryPoint);
+    setLayout((tree) =>
+      allLeaves(tree).reduce(
+        (acc, leaf) =>
+          leaf.tabs.includes(path)
+            ? dropTab(acc, leaf.id, path, parsedConfig().entryPoint)
+            : acc,
+        tree,
+      ),
+    );
     syncSoon();
   };
 
@@ -457,12 +1331,56 @@ function Workbench() {
       .then((full) => {
         const tree: Record<string, string> = {};
         for (const file of full.bundle?.files ?? []) {
-          if (file.filePath.endsWith('.lua') && file.content) {
+          if (isTextAsset(file.filePath) && file.content) {
             tree[file.filePath] = decode(file.content);
           }
         }
         setDiffFiles(tree);
         setDiffRevision(revision.id.slice(0, 8));
+        setDiffRevisionId(revision.id);
+      })
+      .catch(showError);
+  };
+
+  /** Replaces the working tree with a revision's bundle: the answer to
+   * "this browser's copy is wrong, give me back what was published".
+   * The next sync makes the live session match. */
+  const restoreRevision = (revisionId: string) => {
+    if (
+      !window.confirm(
+        `Replace the working tree with revision ${revisionId.slice(
+          0,
+          8,
+        )}? Edits that only exist in this browser are lost.`,
+      )
+    ) {
+      return;
+    }
+    api.revisions
+      .getRevision(revisionId, true)
+      .then((full) => {
+        const seeded: Record<string, string> = {};
+        for (const file of full.bundle?.files ?? []) {
+          if (isTextAsset(file.filePath) && file.content) {
+            seeded[file.filePath] = decode(file.content);
+          }
+        }
+        const entryPoint = full.bundle?.entryPoint ?? 'main.lua';
+        seeded[CONFIG_FILE] = JSON.stringify(
+          { entryPoint, includes: ['**/*.lua'], ignore: [] },
+          null,
+          2,
+        );
+        setFiles(seeded);
+        setDiffFiles(null);
+        setActivePath(
+          seeded[entryPoint] != null ? entryPoint : Object.keys(seeded)[0],
+        );
+        syncSoon();
+        toast({
+          title: 'Working tree restored',
+          message: `Files now match revision ${revisionId.slice(0, 8)}.`,
+        });
       })
       .catch(showError);
   };
@@ -527,12 +1445,189 @@ function Workbench() {
     return a.localeCompare(b);
   });
   const language = activePath.endsWith('.json') ? 'json' : 'lua';
+  /** One group's tab strip: its own tabs, its own active file, and a
+   * drop surface for tabs travelling between groups. */
+  const renderTabs = (leaf: PaneLeaf) => (
+    <div
+      className={classes.tabsRow}
+      onDragOver={(event) => {
+        if (!dragTab) return;
+        event.preventDefault();
+        setHoverZone({ leaf: leaf.id, zone: 'center' });
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        handleZoneDrop(leaf.id, 'center', event);
+      }}
+    >
+      {leaf.tabs
+        .filter((tab) => files?.[tab] != null || tab in PLATFORM_FILES)
+        .map((tab) => (
+          <button
+            key={tab}
+            className={tab === leaf.active ? classes.tabActive : classes.tab}
+            draggable
+            onDragStart={(event) => {
+              event.dataTransfer.setData('application/x-actias-tab', tab);
+              setTimeout(() => setDragTab({ tab, from: leaf.id }), 0);
+            }}
+            onDragEnd={clearDrag}
+            onClick={() => {
+              setFocusedPaneId(leaf.id);
+              setDiffFiles(null);
+              setLayout((tree) =>
+                updateLeaf(tree, leaf.id, (previous) => ({
+                  ...previous,
+                  active: tab,
+                })),
+              );
+            }}
+          >
+            {isDirty(tab) && <span className={classes.tabDirty} />}
+            {tab.split('/').pop()}
+            <span
+              role="button"
+              tabIndex={-1}
+              className={classes.tabClose}
+              onClick={(event) => {
+                event.stopPropagation();
+                closeTab(leaf.id, tab);
+              }}
+            >
+              ×
+            </span>
+          </button>
+        ))}
+    </div>
+  );
+
+  /** One editor group: strip, breadcrumb, editor, and while a drag is
+   * airborne, five drop zones (center joins, edges split). */
+  const renderLeaf = (leaf: PaneLeaf) => (
+    <div
+      className={classes.pane}
+      data-focused={focusedPaneId === leaf.id ? 'yes' : 'no'}
+      onMouseDown={() => setFocusedPaneId(leaf.id)}
+    >
+      {renderTabs(leaf)}
+      {leaf.active in PLATFORM_FILES ? (
+        <div className={classes.breadcrumbRow}>
+          <span style={{ color: 'var(--viola)' }}>platform</span>
+          <span>›</span>
+          <span style={{ color: 'var(--ink-1)' }}>
+            {leaf.active.split('/').pop()}
+          </span>
+          <span>· read-only reference, not part of your bundle</span>
+        </div>
+      ) : (
+        <div className={classes.breadcrumbRow}>
+          <span>live</span>
+          <span>›</span>
+          <span style={{ color: 'var(--ink-1)' }}>{leaf.active}</span>
+        </div>
+      )}
+      <div className={classes.editorHost} ref={observeHost(leaf.id)}>
+        <Editor
+          height="100%"
+          defaultLanguage="lua"
+          // Each editor bootstraps on its own private model; models on
+          // actias:/// are shared between groups and outlive any one
+          // editor, so no unmount may dispose what it happens to show.
+          defaultPath={`boot:///${leaf.id}`}
+          keepCurrentModel
+          theme="actias-night"
+          beforeMount={defineTheme}
+          onChange={(value) => {
+            if (!suppressChange.current) editFileAt(leaf.active, value);
+          }}
+          onMount={(editor, monaco) => {
+            monacoRef.current = monaco as unknown as MonacoApi;
+            registerLuauProviders(monacoRef.current);
+            paneEditors.current.set(leaf.id, editor as unknown as CodeEditor);
+            editor.onDidChangeCursorPosition(
+              (event: { position: { lineNumber: number; column: number } }) =>
+                setCursor({
+                  line: event.position.lineNumber,
+                  column: event.position.column,
+                }),
+            );
+            setPaneEpoch((epoch) => epoch + 1);
+          }}
+          options={{
+            minimap: { enabled: true },
+            fontSize: 13,
+            fontFamily: 'JetBrains Mono, monospace',
+            readOnly: leaf.active in PLATFORM_FILES,
+            automaticLayout: false,
+            'semanticHighlighting.enabled': true,
+          }}
+        />
+        {(dragTab != null || draggingPath != null) && (
+          <div className={classes.zoneOverlay}>
+            {(['left', 'right', 'top', 'bottom', 'center'] as const).map(
+              (zone) => (
+                <div
+                  key={zone}
+                  className={classes[`zone_${zone}`]}
+                  data-hover={
+                    hoverZone?.leaf === leaf.id && hoverZone.zone === zone
+                      ? 'yes'
+                      : 'no'
+                  }
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setHoverZone({ leaf: leaf.id, zone });
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handleZoneDrop(leaf.id, zone, event);
+                  }}
+                />
+              ),
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  /** The layout tree as nested resizable groups. */
+  const renderNode = (node: PaneNode): React.ReactNode => {
+    if (node.kind === 'leaf') return renderLeaf(node);
+    return (
+      <Group
+        key={node.id}
+        orientation={node.direction === 'row' ? 'horizontal' : 'vertical'}
+        className={classes.paneGroup}
+      >
+        {node.children.map((child, index) => (
+          <React.Fragment key={child.id}>
+            {index > 0 && (
+              <Separator
+                className={
+                  node.direction === 'row'
+                    ? classes.handleRow
+                    : classes.handleColumn
+                }
+              />
+            )}
+            <Panel minSize={80} className={classes.panel}>
+              {renderNode(child)}
+            </Panel>
+          </React.Fragment>
+        ))}
+      </Group>
+    );
+  };
+
   const syncLabel =
     status === 'live'
-      ? 'Synced to live · no save button — edits serve in about a second'
+      ? 'synced to live'
       : status === 'closed'
-      ? 'Session ended · edits stay in this browser'
-      : 'Connecting…';
+      ? 'session ended, edits stay in this browser'
+      : 'connecting';
 
   return (
     <div className={classes.bench}>
@@ -565,6 +1660,15 @@ function Workbench() {
           {dirtyPaths.length === 0 && liveFiles && (
             <span className={classes.clean}>matches live</span>
           )}
+          {script?.currentRevisionId && (
+            <button
+              className={classes.ghostButton}
+              title="Discard this browser's working tree and reload the published revision"
+              onClick={() => restoreRevision(script.currentRevisionId!)}
+            >
+              Reset to published
+            </button>
+          )}
           <button
             className={classes.send}
             disabled={publishing}
@@ -589,7 +1693,7 @@ function Workbench() {
       )}
       {status !== 'closed' && <div />}
 
-      <div className={classes.main}>
+      <div className={sideOpen ? classes.main : classes.mainNoSide}>
         <div className={classes.rail}>
           <button
             title="Explorer"
@@ -651,79 +1755,174 @@ function Workbench() {
               </div>
               <ContextMenu.Root>
                 <ContextMenu.Trigger asChild>
-                  <div className={classes.treeScroll}>
-                    {treeEntries(paths).map((entry) =>
-                      entry.kind === 'dir' ? (
-                        <div
-                          key={`dir-${entry.path}`}
-                          className={classes.folder}
-                          style={{
-                            paddingLeft:
-                              8 + (entry.path.split('/').length - 1) * 12,
-                          }}
-                        >
-                          <svg
-                            width="12"
-                            height="12"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.7"
+                  <div
+                    className={classes.treeScroll}
+                    data-droptarget={
+                      draggingPath != null && dropTarget === '' ? 'yes' : 'no'
+                    }
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      setDropTarget('');
+                    }}
+                    onDrop={(event) => {
+                      setDropTarget(null);
+                      const from = event.dataTransfer.getData(
+                        'application/x-actias-path',
+                      );
+                      if (from) moveFile(from, '');
+                    }}
+                  >
+                    {treeEntries(paths)
+                      .filter(
+                        (entry) =>
+                          !collapsedDirs.some((dir) =>
+                            entry.path.startsWith(`${dir}/`),
+                          ),
+                      )
+                      .map((entry) =>
+                        entry.kind === 'dir' ? (
+                          <button
+                            key={`dir-${entry.path}`}
+                            className={classes.folder}
+                            style={{
+                              paddingLeft:
+                                8 + (entry.path.split('/').length - 1) * 16,
+                            }}
+                            onClick={() =>
+                              setCollapsedDirs((previous) =>
+                                previous.includes(entry.path)
+                                  ? previous.filter((dir) => dir !== entry.path)
+                                  : [...previous, entry.path],
+                              )
+                            }
+                            data-droptarget={
+                              dropTarget === entry.path ? 'yes' : 'no'
+                            }
+                            onDragOver={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setDropTarget(entry.path);
+                            }}
+                            onDragLeave={() =>
+                              setDropTarget((current) =>
+                                current === entry.path ? null : current,
+                              )
+                            }
+                            onDrop={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setDropTarget(null);
+                              const from = event.dataTransfer.getData(
+                                'application/x-actias-path',
+                              );
+                              if (from) moveFile(from, entry.path);
+                            }}
                           >
-                            <path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2" />
-                          </svg>
-                          {entry.path.split('/').pop()}
-                        </div>
-                      ) : (
-                        <ContextMenu.Root key={entry.path}>
-                          <ContextMenu.Trigger asChild>
-                            <button
-                              className={
-                                entry.path === activePath && !diffFiles
-                                  ? classes.fileActive
-                                  : classes.file
+                            <span
+                              className={classes.chevron}
+                              data-open={
+                                collapsedDirs.includes(entry.path)
+                                  ? 'no'
+                                  : 'yes'
                               }
-                              style={{
-                                paddingLeft:
-                                  8 + (entry.path.split('/').length - 1) * 12,
-                              }}
-                              onClick={() => openFile(entry.path)}
                             >
-                              <span>
-                                {entry.path === entryPoint && (
-                                  <span className={classes.entryDot}>● </span>
-                                )}
-                                {entry.path.split('/').pop()}
-                              </span>
-                              {isDirty(entry.path) && (
-                                <span className={classes.tabDirty} />
-                              )}
-                            </button>
-                          </ContextMenu.Trigger>
-                          <ContextMenu.Portal>
-                            <ContextMenu.Content className={classes.menu}>
-                              <ContextMenu.Item
-                                className={classes.menuItem}
-                                onSelect={() => renameFile(entry.path)}
-                                disabled={entry.path === CONFIG_FILE}
+                              <svg
+                                width="11"
+                                height="11"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.4"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
                               >
-                                Rename
-                              </ContextMenu.Item>
-                              <ContextMenu.Item
-                                className={classes.menuItemDanger}
-                                onSelect={() => removeFile(entry.path)}
-                                disabled={
-                                  entry.path === CONFIG_FILE ||
-                                  entry.path === entryPoint
+                                <path d="M9 6l6 6-6 6" />
+                              </svg>
+                            </span>
+                            <svg
+                              width="12"
+                              height="12"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.7"
+                            >
+                              <path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2" />
+                            </svg>
+                            {entry.path.split('/').pop()}
+                          </button>
+                        ) : (
+                          <ContextMenu.Root key={entry.path}>
+                            <ContextMenu.Trigger asChild>
+                              <button
+                                className={
+                                  entry.path === activePath && !diffFiles
+                                    ? classes.fileActive
+                                    : classes.file
                                 }
+                                style={{
+                                  paddingLeft:
+                                    8 + (entry.path.split('/').length - 1) * 16,
+                                }}
+                                data-dragging={
+                                  draggingPath === entry.path ? 'yes' : 'no'
+                                }
+                                data-landed={
+                                  justMoved === entry.path ? 'yes' : 'no'
+                                }
+                                draggable
+                                onDragStart={(event) => {
+                                  event.dataTransfer.setData(
+                                    'application/x-actias-path',
+                                    entry.path,
+                                  );
+                                  setTimeout(
+                                    () => setDraggingPath(entry.path),
+                                    0,
+                                  );
+                                }}
+                                onDragEnd={() => {
+                                  setDraggingPath(null);
+                                  setDropTarget(null);
+                                }}
+                                onClick={() => openFile(entry.path)}
                               >
-                                Delete
-                              </ContextMenu.Item>
-                            </ContextMenu.Content>
-                          </ContextMenu.Portal>
-                        </ContextMenu.Root>
-                      ),
-                    )}
+                                <span className={classes.treeSpacer} />
+                                <span>
+                                  {entry.path === entryPoint && (
+                                    <span className={classes.entryDot}>● </span>
+                                  )}
+                                  {entry.path.split('/').pop()}
+                                </span>
+                                {isDirty(entry.path) && (
+                                  <span className={classes.tabDirty} />
+                                )}
+                              </button>
+                            </ContextMenu.Trigger>
+                            <ContextMenu.Portal>
+                              <ContextMenu.Content className={classes.menu}>
+                                <ContextMenu.Item
+                                  className={classes.menuItem}
+                                  onSelect={() => renameFile(entry.path)}
+                                  disabled={entry.path === CONFIG_FILE}
+                                >
+                                  Rename
+                                </ContextMenu.Item>
+                                <ContextMenu.Item
+                                  className={classes.menuItemDanger}
+                                  onSelect={() => removeFile(entry.path)}
+                                  disabled={
+                                    entry.path === CONFIG_FILE ||
+                                    entry.path === entryPoint
+                                  }
+                                >
+                                  Delete
+                                </ContextMenu.Item>
+                              </ContextMenu.Content>
+                            </ContextMenu.Portal>
+                          </ContextMenu.Root>
+                        ),
+                      )}
                     <button
                       className={classes.newFile}
                       onClick={() => addFile()}
@@ -787,40 +1986,21 @@ function Workbench() {
         </div>
 
         <div className={classes.editorColumn}>
-          <div className={classes.tabsRow}>
-            {openTabs
-              .filter((tab) => files[tab] != null)
-              .map((tab) => (
-                <button
-                  key={tab}
-                  className={
-                    tab === activePath ? classes.tabActive : classes.tab
-                  }
-                  onClick={() => openFile(tab)}
-                >
-                  {isDirty(tab) && <span className={classes.tabDirty} />}
-                  {tab.split('/').pop()}
-                  <span
-                    role="button"
-                    tabIndex={-1}
-                    className={classes.tabClose}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closeTab(tab);
-                    }}
-                  >
-                    ×
-                  </span>
-                </button>
-              ))}
-          </div>
-
           {diffFiles ? (
             <>
               <div className={classes.diffBar}>
                 <span>
                   diff · {diffRevision} → working tree · {activePath}
                 </span>
+                <button
+                  className={classes.diffClose}
+                  style={{ color: 'var(--warn)' }}
+                  onClick={() =>
+                    diffRevisionId && restoreRevision(diffRevisionId)
+                  }
+                >
+                  restore this revision
+                </button>
                 <button
                   className={classes.diffClose}
                   onClick={() => setDiffFiles(null)}
@@ -852,48 +2032,45 @@ function Workbench() {
               </div>
             </>
           ) : (
-            <>
-              <div className={classes.breadcrumbRow}>
-                <span>live</span>
-                <span>›</span>
-                <span style={{ color: 'var(--ink-1)' }}>{activePath}</span>
-              </div>
-              <div className={classes.editorHost}>
-                <Editor
-                  height="100%"
-                  path={activePath}
-                  language={language}
-                  value={files[activePath] ?? ''}
-                  theme="actias-night"
-                  beforeMount={defineTheme}
-                  onChange={editFile}
-                  onMount={(editor) => {
-                    editor.onDidChangeCursorPosition(
-                      (event: {
-                        position: { lineNumber: number; column: number };
-                      }) =>
-                        setCursor({
-                          line: event.position.lineNumber,
-                          column: event.position.column,
-                        }),
-                    );
-                  }}
-                  options={{
-                    minimap: { enabled: true },
-                    fontSize: 13,
-                    fontFamily: 'JetBrains Mono, monospace',
-                  }}
-                />
-              </div>
-            </>
+            <div className={classes.paneRow}>{renderNode(layout)}</div>
           )}
         </div>
 
-        <div className={classes.side}>
+        {!sideOpen && (
+          <button
+            className={classes.sideReopen}
+            onClick={() => setSideOpen(true)}
+            title="Show the runner and logs"
+          >
+            runner
+          </button>
+        )}
+        <div
+          className={classes.side}
+          style={sideOpen ? undefined : { display: 'none' }}
+        >
           <div className={classes.sideSection}>
             <div className={classes.sideHead}>
               <span>Request runner</span>
               <span className={classes.envChip}>→ live</span>
+              <button
+                className={classes.sideCollapse}
+                onClick={() => setSideOpen(false)}
+                title="Hide the runner and logs"
+              >
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M9 6l6 6-6 6" />
+                </svg>
+              </button>
             </div>
             <form className={classes.runnerForm} onSubmit={runnerSubmit}>
               <div className={classes.runnerLine}>
@@ -990,6 +2167,33 @@ function Workbench() {
           <span>Spaces: 4</span>
           <span>UTF-8</span>
           <span>{language === 'lua' ? 'Luau' : 'JSON'}</span>
+          {language === 'lua' && typeCheck != null && (
+            <span
+              style={{
+                color: typeCheck.errors
+                  ? 'var(--err)'
+                  : typeCheck.lints
+                  ? 'var(--warn)'
+                  : 'var(--luna)',
+              }}
+              title="The same analyser actias check runs, under this file's own mode"
+            >
+              {typeCheck.errors === 0 && typeCheck.lints === 0
+                ? 'types ok'
+                : [
+                    typeCheck.errors &&
+                      `${typeCheck.errors} error${
+                        typeCheck.errors === 1 ? '' : 's'
+                      }`,
+                    typeCheck.lints &&
+                      `${typeCheck.lints} lint${
+                        typeCheck.lints === 1 ? '' : 's'
+                      }`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+            </span>
+          )}
           {liveUrl && <CopyButton text={liveUrl} label="live url" />}
         </div>
       </div>

@@ -191,8 +191,8 @@
 .file {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 0;
   width: 100%;
   padding: 3px 8px;
   border: none;
@@ -550,4 +550,276 @@
 .menuItemDanger[data-highlighted] {
   background: var(--err-tint);
   color: var(--err);
+}
+
+/* A quiet action beside Publish: visible, never competing with it. */
+.ghostButton {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  color: var(--ink-2);
+  font: 400 11px var(--mono);
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.ghostButton:hover {
+  color: var(--ink-1);
+  border-color: var(--ink-3);
+}
+
+/* The folder row toggles; the chevron says which way it stands. */
+button.folder {
+  background: none;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chevron {
+  display: flex;
+  align-items: center;
+  color: var(--ink-3);
+  transition: transform 120ms ease;
+}
+
+.chevron[data-open='yes'] {
+  transform: rotate(90deg);
+}
+
+/* Runner hidden: the editor takes the width, a slim strip brings it
+ * back. */
+.mainNoSide {
+  composes: main;
+  grid-template-columns: 46px 216px minmax(0, 1fr) 26px;
+}
+
+.sideReopen {
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: var(--night-1);
+  color: var(--ink-3);
+  font: 500 10px var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  writing-mode: vertical-rl;
+  cursor: pointer;
+  padding: 12px 0;
+}
+
+.sideReopen:hover {
+  color: var(--ink-1);
+}
+
+.sideCollapse {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.sideCollapse:hover {
+  color: var(--ink-1);
+}
+
+/* Tab close: a real target that shows itself on the tabs that matter. */
+.tabClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r2);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.tab:hover .tabClose,
+.tabActive .tabClose {
+  opacity: 1;
+}
+
+.tabClose:hover {
+  background: var(--err-tint);
+  color: var(--err);
+}
+
+
+/* Side-by-side panes. */
+.paneRow {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+
+
+.paneRow {
+  position: relative;
+}
+
+/* Drag lifecycle: the picked file lifts, targets light up, and the
+ * landing row flashes so the eye can follow the move. */
+.file[data-dragging='yes'],
+.fileActive[data-dragging='yes'] {
+  opacity: 0.35;
+}
+
+.folder[data-droptarget='yes'] {
+  background: var(--luna-tint);
+  color: var(--ink-1);
+  box-shadow: inset 2px 0 0 var(--luna);
+}
+
+.treeScroll[data-droptarget='yes'] {
+  box-shadow: inset 0 0 0 1px var(--luna-edge);
+  border-radius: var(--r2);
+}
+
+.file[data-landed='yes'],
+.fileActive[data-landed='yes'] {
+  animation: landed 700ms ease-out;
+}
+
+@keyframes landed {
+  0% {
+    background: var(--luna-tint);
+    box-shadow: inset 2px 0 0 var(--luna);
+  }
+  100% {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+/* File rows carry the same leading width as a folder's chevron and
+ * icon, so names at one depth sit on one line. */
+.treeSpacer {
+  display: inline-block;
+  width: 29px;
+  flex: none;
+}
+
+
+
+/* The dirty dot keeps the right edge; everything else flows left. */
+.file > .tabDirty,
+.fileActive > .tabDirty {
+  margin-left: auto;
+}
+
+
+/* The recursive editor grid. */
+.paneGroup {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane[data-focused='yes'] .tabsRow {
+  box-shadow: inset 0 2px 0 var(--line);
+}
+
+.handleRow,
+.handleColumn {
+  flex: none;
+  background: var(--line-soft);
+  transition: background 100ms ease;
+}
+
+.handleRow {
+  width: 5px;
+  cursor: col-resize;
+}
+
+.handleColumn {
+  height: 5px;
+  cursor: row-resize;
+}
+
+.handleRow:hover,
+.handleColumn:hover {
+  background: var(--luna-edge);
+}
+
+/* Five drop zones over a group while a drag is airborne. */
+.editorHost {
+  position: relative;
+}
+
+.zoneOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+}
+
+.zone_center,
+.zone_left,
+.zone_right,
+.zone_top,
+.zone_bottom {
+  position: absolute;
+  transition: background 80ms ease;
+}
+
+.zone_center {
+  inset: 25%;
+}
+
+.zone_left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 25%;
+}
+
+.zone_right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 25%;
+}
+
+.zone_top {
+  top: 0;
+  left: 25%;
+  right: 25%;
+  height: 25%;
+}
+
+.zone_bottom {
+  bottom: 0;
+  left: 25%;
+  right: 25%;
+  height: 25%;
+}
+
+.zone_center[data-hover='yes'],
+.zone_left[data-hover='yes'],
+.zone_right[data-hover='yes'],
+.zone_top[data-hover='yes'],
+.zone_bottom[data-hover='yes'] {
+  background: rgba(163, 230, 180, 0.09);
+  box-shadow: inset 0 0 0 1px var(--luna-edge);
 }

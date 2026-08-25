@@ -90,7 +90,20 @@ function Node({
           aria-expanded={open}
           aria-label={open ? 'Collapse' : 'Expand'}
         >
-          {open ? '▾' : '▸'}
+          <svg
+            className={classes.toggleIcon}
+            data-open={open ? 'yes' : 'no'}
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M9 6l6 6-6 6" />
+          </svg>
         </button>
         {label}
         <span className={classes.punct}>{shape.open}</span>

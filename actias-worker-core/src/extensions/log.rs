@@ -82,8 +82,8 @@ impl LuaExtension for LogExtension {
 
             log.set(
                 level,
-                lua.create_function(move |lua, value: mlua::Value| {
-                    let message = render(lua, value)?;
+                lua.create_function(move |lua, values: mlua::Variadic<mlua::Value>| {
+                    let message = render_all(lua, values)?;
 
                     debug!(level, message, "script log");
 
@@ -98,6 +98,16 @@ impl LuaExtension for LogExtension {
 
         Ok(mlua::Value::Table(log))
     }
+}
+
+/// Renders every argument into one line, space-joined like `print`, so
+/// the "message, fields" idiom keeps its fields.
+fn render_all(lua: &mlua::Lua, values: mlua::Variadic<mlua::Value>) -> mlua::Result<String> {
+    let mut parts = Vec::with_capacity(values.len());
+    for value in values {
+        parts.push(render(lua, value)?);
+    }
+    Ok(parts.join(" "))
 }
 
 /// Renders a lua value into one log line: strings verbatim, everything else
@@ -141,5 +151,20 @@ mod tests {
         )
         .exec()
         .expect("all levels accept values");
+    }
+
+    /// The "message, fields" idiom: every argument lands in the line,
+    /// space-joined, instead of everything after the first being dropped.
+    #[test]
+    fn extra_arguments_join_the_line() {
+        let lua = lua_with_log();
+        let rendered = render_all(
+            &lua,
+            lua.load(r#"return "listed", { id = 7 }"#)
+                .eval::<mlua::Variadic<mlua::Value>>()
+                .expect("evaluates"),
+        )
+        .expect("renders");
+        assert_eq!(rendered, r#"listed {"id":7}"#);
     }
 }
