@@ -2,7 +2,7 @@ import * as React from 'react';
 import Link from 'next/link';
 
 import type { DocGroup, DocNode, SearchEntry } from '@/helpers/docs';
-import { DocSearch } from './DocSearch';
+import { DocSearch, DocSearchPalette, useSearchHotkey } from './DocSearch';
 import classes from './DocSidebar.module.css';
 
 /** One branch: its own row, and its folder's pages under it. */
@@ -94,10 +94,18 @@ export function DocSidebar({
   active: string;
 }) {
   const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});
+  const [searching, setSearching] = React.useState(false);
+  const openSearch = React.useCallback(() => setSearching(true), []);
+  useSearchHotkey(openSearch);
 
   return (
     <aside className={classes.sidebar}>
-      <DocSearch index={index} />
+      <DocSearch onOpen={openSearch} />
+      <DocSearchPalette
+        index={index}
+        open={searching}
+        onClose={() => setSearching(false)}
+      />
       <nav aria-label="Documentation">
         {nav.map((group) => (
           <div key={group.title} className={classes.group}>

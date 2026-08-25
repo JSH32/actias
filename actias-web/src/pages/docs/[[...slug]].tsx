@@ -7,6 +7,7 @@ import { serialize } from 'next-mdx-remote/serialize';
 import { NextSeo } from 'next-seo';
 import type { MDXComponents } from 'mdx/types';
 import rehypeSlug from 'rehype-slug';
+import rehypeHighlight from 'rehype-highlight';
 
 import {
   DocGroup,
@@ -48,6 +49,11 @@ const components: MDXComponents = {
       <table className={classes.table} {...props} />
     </div>
   ),
+  thead: (props) => <thead {...props} />,
+  tbody: (props) => <tbody {...props} />,
+  tr: (props) => <tr {...props} />,
+  th: (props) => <th {...props} />,
+  td: (props) => <td {...props} />,
   pre: (props) => <pre className={classes.pre} {...props} />,
   code: (props: { className?: string }) =>
     props.className ? (
@@ -134,7 +140,7 @@ export const getStaticProps: GetStaticProps = async ({ params }) => {
 
   const { content, headings, meta } = getDoc(slug);
   const source = await serialize(content, {
-    mdxOptions: { rehypePlugins: [rehypeSlug] },
+    mdxOptions: { rehypePlugins: [rehypeSlug, rehypeHighlight] },
   });
 
   const at = order.findIndex((doc) => doc.slug === slug);

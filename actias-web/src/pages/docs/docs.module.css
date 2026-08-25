@@ -20,26 +20,28 @@
 }
 
 .h1 {
-  font-family: var(--ui);
-  font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-family: var(--doc);
+  font-size: 29px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   margin: 0;
   color: var(--ink-1);
 }
 
 .lead {
-  font-family: var(--prose);
-  font-size: 17px;
+  font-family: var(--doc);
+  font-size: 16px;
+  font-weight: 300;
   line-height: 1.6;
   color: var(--ink-2);
   margin: 8px 0 4px;
 }
 
 .h2 {
-  font-family: var(--ui);
-  font-size: 19px;
-  font-weight: 700;
+  font-family: var(--doc);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--ink-1);
   margin: 34px 0 10px;
   padding-top: 10px;
@@ -48,18 +50,19 @@
 }
 
 .h3 {
-  font-family: var(--ui);
-  font-size: 15px;
-  font-weight: 700;
+  font-family: var(--doc);
+  font-size: 14.5px;
+  font-weight: 600;
   color: var(--ink-1);
   margin: 22px 0 8px;
   scroll-margin-top: 20px;
 }
 
 .p {
-  font-family: var(--prose);
-  font-size: 15.5px;
-  line-height: 1.72;
+  font-family: var(--doc);
+  font-size: 14.5px;
+  font-weight: 300;
+  line-height: 1.75;
   color: var(--ink-1);
   margin: 12px 0;
 }
@@ -70,9 +73,10 @@
 }
 
 .li {
-  font-family: var(--prose);
-  font-size: 15.5px;
-  line-height: 1.68;
+  font-family: var(--doc);
+  font-size: 14.5px;
+  font-weight: 300;
+  line-height: 1.7;
   color: var(--ink-1);
   margin: 6px 0;
 }
@@ -134,14 +138,17 @@
 
 .tableWrap {
   overflow-x: auto;
-  margin: 16px 0;
+  margin: 18px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
 }
 
 .table {
   width: 100%;
   border-collapse: collapse;
-  font-family: var(--ui);
+  font-family: var(--doc);
   font-size: 13px;
+  font-weight: 300;
 }
 
 .table th {
@@ -151,23 +158,74 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-3);
+  background: var(--night-1);
   border-bottom: 1px solid var(--line);
-  padding: 0 12px 7px 0;
+  padding: 8px 14px;
   white-space: nowrap;
 }
 
 .table td {
   border-bottom: 1px solid var(--line-soft);
-  padding: 9px 12px 9px 0;
+  padding: 10px 14px;
   color: var(--ink-1);
   vertical-align: top;
-  line-height: 1.5;
+  line-height: 1.55;
+}
+
+.table tr:last-child td {
+  border-bottom: 0;
+}
+
+.table td:first-child {
+  color: var(--ink-1);
+  white-space: nowrap;
 }
 
 .table code {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--luna);
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+/* highlight.js classes onto the design's syntax tokens. */
+.pre :global(.hljs-keyword),
+.pre :global(.hljs-literal),
+.pre :global(.hljs-built_in) {
+  color: var(--syn-keyword);
+}
+
+.pre :global(.hljs-title),
+.pre :global(.hljs-title.function_),
+.pre :global(.hljs-function) {
+  color: var(--syn-fn);
+}
+
+.pre :global(.hljs-string) {
+  color: var(--syn-string);
+}
+
+.pre :global(.hljs-number) {
+  color: var(--syn-number);
+}
+
+.pre :global(.hljs-comment) {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+.pre :global(.hljs-attr),
+.pre :global(.hljs-property),
+.pre :global(.hljs-params) {
+  color: var(--syn-field);
+}
+
+.pre :global(.hljs-name),
+.pre :global(.hljs-type),
+.pre :global(.hljs-class) {
+  color: var(--syn-decl);
 }
 
 .pager {
@@ -209,9 +267,9 @@
 }
 
 .pagerTitle {
-  font-family: var(--ui);
-  font-size: 13.5px;
-  font-weight: 600;
+  font-family: var(--doc);
+  font-size: 13px;
+  font-weight: 500;
   color: var(--ink-1);
 }
 

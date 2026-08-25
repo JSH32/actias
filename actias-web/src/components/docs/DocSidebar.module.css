@@ -63,8 +63,10 @@
   min-width: 0;
   padding: 4px 8px;
   border-radius: var(--r2);
+  font-family: var(--doc);
   font-size: 13px;
-  line-height: 1.35;
+  font-weight: 300;
+  line-height: 1.4;
   text-decoration: none;
   color: var(--ink-2);
 }

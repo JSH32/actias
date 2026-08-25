@@ -14,11 +14,14 @@ const config: any = {
     'http://localhost:3002/_rev/_IDENTIFIER_/_REVISION_',
 };
 
-// properly access public runtime configuration on both client-side and server-side
-export const getPublicConfig = (name: string): any =>
-  typeof window === 'undefined'
-    ? config[name]
-    : (window as any).PUBLIC_CONFIG[name];
+// Public runtime configuration, from either side. The browser reads the
+// object /api/config installs; a statically generated page can hydrate
+// before that script runs, so an absent object falls back to the build's
+// own values instead of throwing at import time.
+export const getPublicConfig = (name: string): any => {
+  if (typeof window === 'undefined') return config[name];
+  return (window as any).PUBLIC_CONFIG?.[name] ?? config[name];
+};
 
 export default function handler(_req: any, res: any) {
   res.setHeader('Content-Type', 'application/javascript');

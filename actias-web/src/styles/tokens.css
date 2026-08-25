@@ -49,9 +49,12 @@
   --syn-comment: #7c8699;
 
   /* Type */
-  --ui: 'Archivo', system-ui, sans-serif;
+  --ui: 'Sora', system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, monospace;
   --prose: 'Newsreader', Georgia, serif;
+  --doc: 'Sora', system-ui, sans-serif;
+  /* Archivo stays available for display headings and the wordmark. */
+  --display: 'Archivo', system-ui, sans-serif;
 
   /* Shape */
   --r1: 2px;

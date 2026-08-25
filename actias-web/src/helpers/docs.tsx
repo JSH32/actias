@@ -212,11 +212,14 @@ export function getSearchIndex(): SearchEntry[] {
       title: doc.title,
       lead: doc.lead,
       section: sectionOf.get(doc.slug) ?? '',
-      // Prose only: fences and markdown punctuation add noise, not matches.
+      // Prose only: code fences, html tags and markdown punctuation are
+      // noise in an excerpt, not matches.
       body: content
         .replace(/```[\s\S]*?```/g, ' ')
+        .replace(/<[^>]*>/g, ' ')
         .replace(/[#*`_>|-]/g, ' ')
         .replace(/\s+/g, ' ')
+        .trim()
         .slice(0, 4000),
     };
   });
