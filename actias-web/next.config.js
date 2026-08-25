@@ -16,9 +16,19 @@ const rewrites = async () => {
   return rewrites
 }
 
+// /docs has no page of its own; it opens the first one.
+const redirects = async () => [
+  {
+    source: "/docs",
+    destination: "/docs/start/what-is-actias",
+    permanent: false
+  }
+]
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   rewrites,
+  redirects,
   // Runtime config travels through /api/config (window.PUBLIC_CONFIG),
   // never publicRuntimeConfig: the latter is unreliable on the client.
   publicRuntimeConfig: {

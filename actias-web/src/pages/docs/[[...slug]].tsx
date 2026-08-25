@@ -128,7 +128,6 @@ export const getStaticPaths: GetStaticPaths = async () => ({
 
 export const getStaticProps: GetStaticProps = async ({ params }) => {
   const order = getReadingOrder();
-  // Bare /docs opens the first page in reading order.
   const slug = Array.isArray(params?.slug)
     ? (params?.slug as string[]).join('/')
     : order[0].slug;
