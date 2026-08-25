@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
 import { PairDto, ProjectDto } from '@/client';
-import { EmptyState, Field } from '@/ui';
+import { EmptyState, Field, SelectField } from '@/ui';
 import {
   CopyButton,
   Drawer,
@@ -291,11 +291,15 @@ export default function KvPanel({
                             required
                             autoFocus
                           />
-                          <Field
+                          <SelectField
                             label="Type"
                             name="type"
                             defaultValue="string"
-                            hint="string, integer, number, boolean or json."
+                            hint="How the value is parsed when a script reads it."
+                            options={TYPE_NAMES.map((name) => ({
+                              value: name,
+                              label: name,
+                            }))}
                             required
                           />
                           <Field label="Value" name="value" required />

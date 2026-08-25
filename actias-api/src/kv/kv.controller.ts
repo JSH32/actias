@@ -275,7 +275,13 @@ export class KvController {
               namespace,
               key,
               value: body.value.toString(),
-              type: PairType[body.type],
+              // Clients send the lowercase names this api documents; the
+              // wire enum spells them VALUE_TYPE_<NAME>. Without the
+              // mapping the lookup misses and every pair stores as
+              // STRING whatever the caller asked for.
+              type: kv_service.ValueType[
+                `VALUE_TYPE_${body.type.toUpperCase()}` as keyof typeof kv_service.ValueType
+              ],
             },
           ],
         })

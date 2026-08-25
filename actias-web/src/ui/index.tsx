@@ -96,6 +96,31 @@ export const Field = React.forwardRef<HTMLInputElement, InputProps>(
   },
 );
 
+type SelectProps = React.SelectHTMLAttributes<HTMLSelectElement> & {
+  label: string;
+  options: { value: string; label: string }[];
+  hint?: string;
+};
+
+/** A labeled select on the token sheet, shaped like Field. */
+export const SelectField = React.forwardRef<HTMLSelectElement, SelectProps>(
+  function SelectField({ label, hint, options, ...rest }, ref) {
+    return (
+      <label>
+        <span className={classes.label}>{label}</span>
+        <select ref={ref} className={classes.input} {...rest}>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        {hint && <span className={classes.hint}>{hint}</span>}
+      </label>
+    );
+  },
+);
+
 /** Design 02's tab row: line-bottomed triggers, luna underline on the
  * active one. Content panels come from the caller. */
 export function Tabs({
