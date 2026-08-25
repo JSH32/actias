@@ -329,3 +329,65 @@
     width: 100%;
   }
 }
+
+/* Tables written as literal HTML in the MDX never pass through the
+ * component map, so the element selectors carry the styling. Same look
+ * as .table above, with the frame on the table itself since there is no
+ * wrapper to put it on. */
+.article table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 20px 0;
+  font-family: var(--doc);
+  font-size: 13px;
+  font-weight: 300;
+  background: var(--night-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  overflow: hidden;
+}
+
+.article thead th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: var(--night-2);
+  border-bottom: 1px solid var(--line);
+  padding: 9px 14px;
+  white-space: nowrap;
+}
+
+.article tbody td {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 10px 14px;
+  color: var(--ink-1);
+  vertical-align: top;
+  line-height: 1.55;
+}
+
+.article tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.014);
+}
+
+.article tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.article tbody td:first-child {
+  color: var(--ink-1);
+  font-weight: 400;
+}
+
+.article table code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--luna);
+  background: none;
+  border: 0;
+  padding: 0;
+}
