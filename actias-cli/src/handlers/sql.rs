@@ -1,6 +1,7 @@
-//! Database tooling. Migrations are bundle files under
-//! `migrations/<database>/`, applied in file order by the platform at the
-//! database's first touch; the scaffold's only job is the next number.
+//! Database tooling. Migrations are bundle files the declaration points
+//! at, applied in file order by the platform at the database's first
+//! touch. The scaffold writes to `migrations/<database>/` and its only
+//! job is the next number; the declaration is what makes them apply.
 
 use colored::*;
 use std::path::Path;
@@ -43,5 +44,12 @@ fn create(database: &str, name: &str, directory: &str) -> Result<()> {
     .map_err(|e| Error::Io(e.to_string()))?;
 
     println!("📝 {}", file.display().to_string().purple());
+    println!(
+        "   Applied once declared: {}",
+        format!(
+            "database \"{database}\" {{ migrations = \"migrations/{database}\" }}"
+        )
+        .dimmed()
+    );
     Ok(())
 }

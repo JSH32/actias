@@ -59,6 +59,10 @@ pub(crate) struct PlatformContext<'a> {
     pub home: &'a ObjectHome,
     /// The instance name.
     pub name: &'a str,
+    /// Where this instance's schema comes from, when its declaration
+    /// named a directory. [`None`] is manual mode: the platform never
+    /// touches the schema.
+    pub migrations_dir: Option<String>,
     /// The object's own key, seeding any alarm it arms.
     pub own_key: &'a str,
 }
@@ -178,9 +182,23 @@ pub(crate) async fn dispatch(
     // listener's outbound calls read this.
     runtime.set_app_data(CallChain(call.chain.clone()));
 
+    // The DECLARATION decides, not the stored contract: a live session
+    // without a contract still gets its declared schema.
+    let migrations_dir = runtime
+        .app_data_ref::<crate::runtime::Declarations>()
+        .and_then(|declarations| {
+            declarations
+                .databases
+                .iter()
+                .filter_map(|entry| entry.split_once('='))
+                .find(|(name, _)| *name == call.name)
+                .map(|(_, dir)| dir.to_owned())
+        });
+
     let context = PlatformContext {
         home,
         name: &call.name,
+        migrations_dir,
         own_key: call.chain.last().map(String::as_str).unwrap_or_default(),
     };
 

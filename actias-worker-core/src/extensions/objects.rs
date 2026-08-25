@@ -194,8 +194,31 @@ impl LuaExtension for ObjectExtension {
             lua.create_function(|lua, name: String| {
                 ActiasRuntime::assert_declaration_phase(lua, "database")?;
                 ActiasRuntime::assert_contract_allows(lua, ContractKind::Database, &name)?;
+                // `database "name"` is the whole declaration; the handle
+                // also accepts a body, `database "name" { migrations =
+                // "dir" }`, which records where its schema comes from.
+                let handle = instance_handle(lua, DATABASE_CLASS.to_owned(), name.clone())?;
+                let declared = name.clone();
+                let meta = handle.metatable().ok_or_else(|| {
+                    mlua::Error::RuntimeError("handle has no metatable.".to_owned())
+                })?;
+                meta.set(
+                    "__call",
+                    lua.create_function(move |lua, (this, body): (Table, Table)| {
+                        ActiasRuntime::assert_declaration_phase(lua, "database")?;
+                        let dir: Option<String> = body.get("migrations").ok();
+                        ActiasRuntime::record_database_declaration(
+                            lua,
+                            &match dir {
+                                Some(dir) => format!("{declared}={dir}"),
+                                None => declared.clone(),
+                            },
+                        );
+                        Ok(this)
+                    })?,
+                )?;
                 ActiasRuntime::record_database_declaration(lua, &name);
-                instance_handle(lua, DATABASE_CLASS.to_owned(), name)
+                Ok(handle)
             })?,
         )?;
 
@@ -263,6 +286,9 @@ impl LuaExtension for ObjectExtension {
                         "'{class}' declares hooks.receive, which no longer exists: \
                          declare receives = {{ [\"Source:topic\"] = handler }} instead."
                     )));
+                }
+                if let Ok(dir) = methods.get::<String>("migrations") {
+                    ActiasRuntime::record_object_migrations(lua, &class, &dir);
                 }
                 // The publishes key is contract data; record it exactly
                 // as the publish-time extraction spells it.
@@ -914,6 +940,11 @@ async fn run_init_if_fresh(
     // rolls init back WITH the mark (user_version is transactional), so
     // the next call retries it; vm memory must not veto that. Without
     // storage, once per vm life is the record.
+    // Schema from files runs before init, so init only ever seeds.
+    if let (Some(home), Ok(dir)) = (&home, class.get::<String>("migrations")) {
+        crate::platform::database::Database::apply_declared_migrations(home, &dir)
+            .map_err(mlua::Error::RuntimeError)?;
+    }
     let fresh = match &home {
         Some(home) => home
             .with_storage(|storage| storage.is_fresh())

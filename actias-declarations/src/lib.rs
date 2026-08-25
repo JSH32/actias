@@ -289,6 +289,13 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                         recorded.publishes.push(format!("{class}:{topic}={policy}"));
                     }
                 }
+                if let Ok(dir) = body.get::<String>("migrations") {
+                    let mut recorded = table_recorded.lock().expect("no other holder");
+                    recorded
+                        .objects
+                        .retain(|entry| entry.split('=').next().unwrap_or(entry) != class);
+                    recorded.objects.push(format!("{class}={dir}"));
+                }
                 // The receive funnel died in the sixteenth revision;
                 // refusing the old spelling here makes it a check
                 // error, not a silently dead hook.
@@ -343,8 +350,28 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 .lock()
                 .expect("no other holder")
                 .databases
-                .push(name);
-            stub(lua)
+                .push(name.clone());
+            // `database "name" { migrations = "dir" }`: the handle takes
+            // an optional body naming where its schema comes from.
+            let handle = lua.create_table()?;
+            let meta = lua.create_table()?;
+            let body_recorded = database_recorded.clone();
+            meta.set(
+                "__call",
+                lua.create_function(move |_, (this, body): (mlua::Table, mlua::Table)| {
+                    if let Ok(dir) = body.get::<String>("migrations") {
+                        let mut recorded = body_recorded.lock().expect("no other holder");
+                        recorded.databases.retain(|entry| {
+                            entry.split('=').next().unwrap_or(entry) != name
+                        });
+                        recorded.databases.push(format!("{name}={dir}"));
+                    }
+                    Ok(this)
+                })?,
+            )?;
+            meta.set("__index", lua.create_function(|lua, _: (mlua::Table, mlua::Value)| stub(lua))?)?;
+            handle.set_metatable(Some(meta))?;
+            Ok(handle)
         })?,
     )?;
 
@@ -586,6 +613,42 @@ mod tests {
 
         assert_eq!(declarations.receives, vec!["Wall<-Feed:post"]);
         assert_eq!(declarations.follow_sites, vec!["Feed:post"]);
+    }
+
+    #[test]
+    fn declared_migration_directories_ride_the_contract() {
+        let declarations = extract(
+            files(&[(
+                "main.lua",
+                r#"
+                local db = database "catalog" { migrations = "migrations/catalog" }
+                local scratch = database "notes"
+                local Auction = object "Auction" {
+                    migrations = "migrations/Auction",
+                    bid = function(state) end,
+                }
+                local Plain = object "Plain" { poke = function(state) end }
+                on "fetch" (function() end)
+                "#,
+            )]),
+            "main.lua",
+        )
+        .expect("extracts");
+
+        let mut databases = declarations.databases.clone();
+        databases.sort();
+        assert_eq!(
+            databases,
+            vec!["catalog=migrations/catalog".to_owned(), "notes".to_owned()],
+            "a declared directory rides the name; a bare database stays bare"
+        );
+
+        let mut objects = declarations.objects.clone();
+        objects.sort();
+        assert_eq!(
+            objects,
+            vec!["Auction=migrations/Auction".to_owned(), "Plain".to_owned()],
+        );
     }
 
     #[test]

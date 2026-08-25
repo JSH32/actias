@@ -65,6 +65,15 @@ fn module_key(name: &str) -> String {
     name.replace('/', ".")
 }
 
+/// The name half of a capability entry, which may carry a suffix after
+/// '=' (a publish policy, a migrations directory).
+fn bare_name(entry: &str) -> String {
+    entry
+        .split_once('=')
+        .map(|(head, _)| head.to_owned())
+        .unwrap_or_else(|| entry.to_owned())
+}
+
 /// Error for a runtime whose [`PreparedRevision`] app data is missing.
 ///
 /// Only reachable if the runtime was built without one, which
@@ -194,18 +203,21 @@ impl PreparedRevision {
             .map(|capabilities| Contract {
                 kv: capabilities.kv.into_iter().collect(),
                 secrets: capabilities.secrets.into_iter().collect(),
-                objects: capabilities.objects.into_iter().collect(),
-                databases: capabilities.databases.into_iter().collect(),
+                objects: capabilities
+                    .objects
+                    .iter()
+                    .map(|entry| bare_name(entry))
+                    .collect(),
+                databases: capabilities
+                    .databases
+                    .iter()
+                    .map(|entry| bare_name(entry))
+                    .collect(),
                 queues: capabilities.queues.into_iter().collect(),
                 publishes: capabilities
                     .publishes
                     .iter()
-                    .map(|entry| {
-                        entry
-                            .split_once('=')
-                            .map(|(head, _)| head.to_owned())
-                            .unwrap_or_else(|| entry.clone())
-                    })
+                    .map(|entry| bare_name(entry))
                     .collect(),
                 events: capabilities.events,
             });
@@ -284,8 +296,10 @@ impl PreparedRevision {
     /// Migration files for one database, in application order: every
     /// `migrations/<database>/*.sql` in the bundle, sorted by path, which
     /// is why the scaffold numbers them.
-    pub fn migrations(&self, database: &str) -> Vec<(String, String)> {
-        let prefix = format!("migrations/{database}/");
+    /// The `.sql` files directly under `dir`, sorted by path, which is
+    /// why the scaffold numbers them.
+    pub fn migrations_in(&self, dir: &str) -> Vec<(String, String)> {
+        let prefix = format!("{}/", dir.trim_end_matches('/'));
 
         let mut files: Vec<(String, String)> = self
             .bundle
@@ -467,6 +481,15 @@ impl ActiasRuntime {
     pub fn record_database_declaration(lua: &Lua, name: &str) {
         if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
             declarations.databases.push(name.to_owned());
+        }
+    }
+
+    /// Notes a class's declared migrations directory, spelled the way
+    /// the contract stores it.
+    pub fn record_object_migrations(lua: &Lua, class: &str, dir: &str) {
+        if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+            declarations.objects.retain(|entry| bare_name(entry) != class);
+            declarations.objects.push(format!("{class}={dir}"));
         }
     }
 

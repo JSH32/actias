@@ -37,7 +37,13 @@ pub fn handle(directory: &str) -> Result<()> {
     if !declared.databases.is_empty() {
         println!(
             "🗄️ Declares databases: {}",
-            declared.databases.join(", ").purple()
+            declared
+                .databases
+                .iter()
+                .map(|entry| entry.split('=').next().unwrap_or(entry))
+                .collect::<Vec<_>>()
+                .join(", ")
+                .purple()
         );
     }
     if !declared.queues.is_empty() {
@@ -57,6 +63,24 @@ pub fn handle(directory: &str) -> Result<()> {
     }
     if !declared.receives.is_empty() {
         println!("📥 Receives: {}", declared.receives.join(", ").purple());
+    }
+    let migrations: Vec<String> = declared
+        .databases
+        .iter()
+        .chain(declared.objects.iter())
+        .filter(|entry| entry.contains('='))
+        .cloned()
+        .collect();
+    if !migrations.is_empty() {
+        println!(
+            "🗂️ Migrations: {}",
+            migrations
+                .iter()
+                .map(|entry| entry.replacen('=', " from ", 1))
+                .collect::<Vec<_>>()
+                .join(", ")
+                .purple()
+        );
     }
 
     // Flow cross-references (the sixteenth revision's checkable half):
@@ -93,12 +117,52 @@ pub fn handle(directory: &str) -> Result<()> {
             ));
         }
     }
+    let bundle_dirs: std::collections::HashSet<String> = config
+        .to_bundle()
+        .map(|bundle| {
+            bundle
+                .files
+                .iter()
+                .filter(|file| file.file_path.ends_with(".sql"))
+                .filter_map(|file| {
+                    file.file_path
+                        .rsplit_once('/')
+                        .map(|(dir, _)| dir.to_owned())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for entry in &migrations {
+        let Some((name, dir)) = entry.split_once('=') else {
+            continue;
+        };
+        let dir = dir.trim_end_matches('/');
+        if !bundle_dirs.contains(dir) {
+            flow_errors.push(format!(
+                "'{name}' declares migrations in '{dir}', which holds no .sql files."
+            ));
+        }
+    }
+    for dir in &bundle_dirs {
+        let declared_here = migrations
+            .iter()
+            .filter_map(|entry| entry.split_once('='))
+            .any(|(_, declared)| declared.trim_end_matches('/') == dir);
+        if !declared_here {
+            flow_errors.push(format!(
+                "'{dir}' holds migrations nothing declares; add \
+                 migrations = \"{dir}\" to the database or class that owns it."
+            ));
+        }
+    }
+
     if !flow_errors.is_empty() {
         for error in &flow_errors {
             println!("❌ {}", error.red());
         }
         return Err(Error::Script(format!(
-            "{} flow error(s) between follows, receives and publishes.",
+            "{} contract error(s) in follows, receives, publishes or migrations.",
             flow_errors.len()
         )));
     }

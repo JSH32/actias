@@ -14,24 +14,22 @@ use crate::storage::SqliteStorage;
 /// A typed handle to one database instance's operations.
 pub struct Database<'a> {
     home: &'a ObjectHome,
-    name: &'a str,
 }
 
 impl<'a> Database<'a> {
-    /// Opens the instance, applying pending migrations first when this is
-    /// the vm's first touch: the tracking rows ride the call's
-    /// transaction, so a failed migration applies nothing, records
-    /// nothing, and retries on the next touch.
+    /// Opens the instance. A declared `migrations_dir` is applied first
+    /// when this is the vm's first touch: the tracking rows ride the
+    /// call's transaction, so a failed migration applies nothing,
+    /// records nothing, and retries on the next touch. Without one the
+    /// database is manual: the script owns its own schema.
     ///
     /// # Errors
     /// Returns the failed migration's user-safe message.
-    pub fn open(home: &'a ObjectHome, name: &'a str) -> Result<Self, String> {
-        let database = Self { home, name };
-        if home.migrations_unchecked() {
-            database.apply_migrations()?;
-            home.mark_migrations_checked();
+    pub fn open(home: &'a ObjectHome, migrations_dir: Option<&str>) -> Result<Self, String> {
+        if let Some(dir) = migrations_dir {
+            Self::apply_declared_migrations(home, dir)?;
         }
-        Ok(database)
+        Ok(Self { home })
     }
 
     /// Runs one statement; the affected row count is the result.
@@ -82,12 +80,27 @@ impl<'a> Database<'a> {
             .collect()
     }
 
-    /// Applies this database's pending migrations in order.
-    fn apply_migrations(&self) -> Result<(), String> {
-        let Some(revision) = self.home.revision() else {
+    /// Applies the `.sql` files a declaration named to this instance's
+    /// file, once per vm, before its first call proceeds. Pending files
+    /// run in the touching call's transaction, so a failure applies and
+    /// records nothing.
+    ///
+    /// # Errors
+    /// Returns the failed migration's user-safe message.
+    pub fn apply_declared_migrations(home: &ObjectHome, dir: &str) -> Result<(), String> {
+        if !home.migrations_unchecked() {
+            return Ok(());
+        }
+        let Some(revision) = home.revision() else {
             return Err("Runtime has no revision loaded.".to_owned());
         };
-        let migrations = revision.migrations(self.name);
+        Database { home }.run_migrations(revision.migrations_in(dir))?;
+        home.mark_migrations_checked();
+        Ok(())
+    }
+
+    /// Applies the given migration files, skipping any already recorded.
+    fn run_migrations(&self, migrations: Vec<(String, String)>) -> Result<(), String> {
         if migrations.is_empty() {
             return Ok(());
         }
@@ -115,7 +128,7 @@ pub(crate) fn dispatch(
     context: &super::PlatformContext<'_>,
     call: &super::Call,
 ) -> Result<serde_json::Value, String> {
-    let database = Database::open(context.home, context.name)?;
+    let database = Database::open(context.home, context.migrations_dir.as_deref())?;
 
     match call.method.as_str() {
         "exec" => {

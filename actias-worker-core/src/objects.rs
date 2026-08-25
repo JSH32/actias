@@ -710,6 +710,63 @@ mod tests {
         runtime_with_files(&[("main.lua", source)]).await
     }
 
+    /// A class whose schema comes from migration files applies them at
+    /// the instance's first touch, before init, and init then seeds. A
+    /// class without the key keeps init-owns-schema.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn class_migrations_build_the_schema_before_init() {
+        let source = r#"
+            local Ledger = object "Ledger" {
+                migrations = "migrations/Ledger",
+                hooks = {
+                    init = function(state)
+                        -- Seeding, not schema: the table already exists.
+                        state.sql:exec("INSERT INTO entries (note) VALUES ('opened')")
+                    end,
+                },
+                notes = function(state)
+                    return state.sql:query("SELECT note FROM entries ORDER BY rowid")
+                end,
+            }
+            on "fetch" (function() return { body = "ok" } end)
+        "#;
+        let runtime = runtime_with_files(&[
+            ("main.lua", source),
+            (
+                "migrations/Ledger/0001_entries.sql",
+                "CREATE TABLE entries (note TEXT);",
+            ),
+        ])
+        .await;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("ledger.db"))
+                        .expect("opens"),
+                ),
+                ..Default::default()
+            },
+        );
+
+        let notes = handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "Ledger", "name": "house", "method": "notes",
+                    "args": [], "chain": [],
+                }),
+            )
+            .await
+            .expect("the migration ran before init, so init could seed");
+        assert_eq!(
+            notes[0]["note"], "opened",
+            "schema from files, first row from init: {notes}"
+        );
+    }
+
     /// Like [`runtime_with`] but with a whole bundle of files.
     async fn runtime_with_files(files: &[(&str, &str)]) -> ActiasRuntime {
         let revision = Revision {
@@ -1430,12 +1487,53 @@ mod tests {
         );
     }
 
+    /// A database declared without a migrations directory is manual: the
+    /// platform applies nothing, even when files sit where the old
+    /// convention would have found them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_database_without_a_declared_directory_applies_nothing() {
+        let runtime = runtime_with_files(&[
+            ("main.lua", r#"local db = database "notes""#),
+            (
+                "migrations/notes/0001_init.sql",
+                "CREATE TABLE visits (at INTEGER);",
+            ),
+        ])
+        .await;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("notes.db"))
+                        .expect("opens"),
+                ),
+                ..Default::default()
+            },
+        );
+        let error = handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "__database", "name": "notes", "method": "exec",
+                    "args": ["INSERT INTO visits VALUES (1)"],
+                }),
+            )
+            .await
+            .expect_err("no schema was applied, so the table cannot exist");
+        assert!(
+            error.to_string().contains("visits"),
+            "the failure must be the missing table, got: {error}"
+        );
+    }
+
     /// Migrations apply at first touch, exactly once per database, and a
     /// respawn over the same file never reapplies them (the CREATE would
     /// fail if it did).
     #[tokio::test(flavor = "multi_thread")]
     async fn migrations_apply_once_at_first_touch() {
-        const MAIN: &str = r#"local db = database "main""#;
+        const MAIN: &str = r#"local db = database "main" { migrations = "migrations/main" }"#;
         const MIGRATION: &str = "CREATE TABLE visits (at INTEGER);";
         let files = [
             ("main.lua", MAIN),
