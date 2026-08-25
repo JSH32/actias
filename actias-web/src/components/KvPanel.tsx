@@ -23,15 +23,19 @@ import classes from './inspector.module.css';
 import shared from '../pages/projects.module.css';
 import { toast } from '@/ui/toast';
 
-/** Proto ValueType order; the api elides the zero, which reads string. */
+/** Every type a pair can carry, in the order the type filter lists them. */
 const TYPE_NAMES = ['string', 'number', 'integer', 'boolean', 'json'] as const;
 
 /** The pair table's column template (design 06, less its bulk-select
  * column). */
 const COLUMNS = '300px 82px 74px minmax(0,1fr)';
 
+/** The api names the type ("INTEGER"), and omits it entirely for the
+ * zero value, which is a string. Reading it as a number here is what
+ * made every pair render as a string. */
 function typeName(pair: PairDto): string {
-  return TYPE_NAMES[Number(pair.type ?? 0)] ?? 'string';
+  const name = String(pair.type ?? '').toLowerCase();
+  return (TYPE_NAMES as readonly string[]).includes(name) ? name : 'string';
 }
 
 function ttlLabel(ttl: number): string {
