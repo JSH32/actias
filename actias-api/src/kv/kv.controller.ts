@@ -23,7 +23,7 @@ import {
   ListNamespaceDto,
   NamespaceDto,
   PairDto,
-  PairType,
+  pairTypeOf,
 } from './dto/responses.dto';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { SetKeyDto } from './dto/requests.dto';
@@ -154,7 +154,7 @@ export class KvController {
         (item) =>
           new PairDto({
             ...item,
-            type: PairType[item.type],
+            type: pairTypeOf(item.type),
           }),
       ),
     };
@@ -183,7 +183,7 @@ export class KvController {
     );
     return {
       ...(pair as unknown as PairDto),
-      type: PairType[pair.type],
+      type: pairTypeOf(pair.type),
     };
   }
 
