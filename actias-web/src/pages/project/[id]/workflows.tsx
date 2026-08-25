@@ -17,6 +17,7 @@ import {
   copyText,
 } from '@/components/inspector';
 import { toast } from '@/ui/toast';
+import { JsonValue } from '@/components/JsonValue';
 import classes from '../../../components/inspector.module.css';
 
 /** Design 11's runs table template. */
@@ -121,7 +122,14 @@ type HistoryRow = {
   note?: string;
   time?: string;
   attempts?: number;
-  result?: string;
+  /** Boxed so a recorded `null` still counts as a result. */
+  result?: { value: unknown };
+  /** A failure's text, which is prose rather than a structured value. */
+  error?: string;
+  /** For a gate (await, race, all): every name it can resolve on.
+   * `taken` is true for the one that arrived, false for the ones that
+   * did not, and null while the gate is still open. */
+  branches?: { name: string; taken: boolean | null }[];
 };
 
 /**
@@ -138,7 +146,35 @@ function foldHistory(
   const executed = new Set<string>();
   let openIntent: { name: string; at: number; attempts: number } | null = null;
 
-  for (const entry of journal) {
+  // A parked run's trailing TIMER is the gate it is sitting on. The live
+  // gate row below renders it, so the loop must not render it too.
+  const parked = status === 'awaiting' || status === 'sleeping';
+  const openGate =
+    parked && journal.length > 0 && journal[journal.length - 1].kind === 'TIMER'
+      ? journal.length - 1
+      : -1;
+
+  /** The signal that resolved the gate at `from`, or null if it timed out
+   * or is still open. The next TIMER ends the search: a later signal
+   * belongs to a later gate. */
+  const resolvedBy = (from: number): string | null => {
+    for (let ahead = from + 1; ahead < journal.length; ahead += 1) {
+      const next = journal[ahead];
+      if (next.kind === 'SIGNAL') {
+        return String((next.data as Record<string, unknown>).name ?? '');
+      }
+      if (next.kind === 'TIMER') return null;
+    }
+    return null;
+  };
+
+  /** Every name a gate can resolve on, whatever spelling it was written
+   * in: race and all carry an array, a bare await carries one name. */
+  const gateNames = (gate: unknown): string[] =>
+    Array.isArray(gate) ? gate.map(String) : [String(gate)];
+
+  for (let index = 0; index < journal.length; index += 1) {
+    const entry = journal[index];
     const data = entry.data as Record<string, unknown>;
     switch (entry.kind) {
       case 'STARTED':
@@ -171,42 +207,50 @@ function foldHistory(
           attempts: openIntent?.attempts,
           note: 'recorded',
           time: openIntent ? duration(openIntent.at, entry.at) : undefined,
-          result: JSON.stringify(data.value),
+          result: { value: data.value },
         });
         openIntent = null;
         break;
       }
-      case 'TIMER':
-        rows.push(
-          data.for == null
-            ? {
-                key: `t${entry.seq}`,
-                name: 'sleep',
-                kind: 'sleep',
-                state: 'done',
-                note: `until ${when(Number(data.due_ms))}`,
-              }
-            : {
-                key: `t${entry.seq}`,
-                name: Array.isArray(data.for)
-                  ? (data.for as unknown[]).join(' | ')
-                  : String(data.for),
-                kind: 'await',
-                state: 'done',
-                note:
-                  data.due_ms == null
-                    ? 'no timeout'
-                    : `times out ${when(Number(data.due_ms))}`,
-              },
-        );
+      case 'TIMER': {
+        if (index === openGate) break;
+        if (data.for == null) {
+          rows.push({
+            key: `t${entry.seq}`,
+            name: 'sleep',
+            kind: 'sleep',
+            state: 'done',
+            note: `until ${when(Number(data.due_ms))}`,
+          });
+          break;
+        }
+        const names = gateNames(data.for);
+        const winner = resolvedBy(index);
+        rows.push({
+          key: `t${entry.seq}`,
+          name: names.join(' | '),
+          kind: 'await',
+          state: 'done',
+          note:
+            winner != null
+              ? `resolved on ${winner}`
+              : data.due_ms == null
+              ? 'no timeout'
+              : `timed out ${when(Number(data.due_ms))}`,
+          branches:
+            names.length > 1
+              ? names.map((name) => ({ name, taken: name === winner }))
+              : undefined,
+        });
         break;
+      }
       case 'SIGNAL':
         rows.push({
           key: `g${entry.seq}`,
           name: String(data.name ?? ''),
           kind: 'signal',
           state: 'done',
-          result: JSON.stringify(data.payload),
+          result: { value: data.payload },
           time: agoShort(entry.at),
         });
         break;
@@ -221,7 +265,7 @@ function foldHistory(
           note: `attempt ${String(data.attempt ?? 1)} failed${
             isFinal ? ' · retries exhausted' : ''
           }`,
-          result: String(data.error ?? ''),
+          error: String(data.error ?? ''),
           time: agoShort(entry.at),
         });
         openIntent = null;
@@ -242,7 +286,7 @@ function foldHistory(
           name: 'completed',
           kind: 'end',
           state: 'done',
-          result: JSON.stringify(data.value),
+          result: { value: data.value },
           time: agoShort(entry.at),
         });
         break;
@@ -272,17 +316,22 @@ function foldHistory(
     });
   }
   if (status === 'awaiting') {
+    const names = gateNames(detail.signal ?? '');
     rows.push({
       key: 'gate',
-      name: String(detail.signal ?? ''),
+      name: names.join(' | '),
       kind: 'await',
       state: 'live',
       note:
         detail.due_ms != null
-          ? `signal from any script, or times out (${until(
+          ? `waiting for a signal, or times out (${until(
               Number(detail.due_ms),
             )})`
-          : 'signal from any script; no timeout',
+          : 'waiting for a signal; no timeout',
+      branches:
+        names.length > 1
+          ? names.map((name) => ({ name, taken: null }))
+          : undefined,
     });
   }
 
@@ -303,35 +352,91 @@ function foldHistory(
   return rows;
 }
 
+/** The row's state as a small node on the run's rail. A tick would put
+ * a saturated glyph on every line of a finished run, so a done node is
+ * just a filled dot and colour is spent on the states that are still
+ * moving. */
 function HistoryDot({ row }: { row: HistoryRow }) {
-  if (row.state === 'done') {
+  if (row.state === 'live') {
     return (
       <svg
-        width="12"
-        height="12"
+        width="11"
+        height="11"
         viewBox="0 0 24 24"
         fill="none"
-        stroke="var(--luna)"
-        strokeWidth="3"
+        stroke="var(--warn)"
+        strokeWidth="3.5"
         strokeLinecap="round"
-        strokeLinejoin="round"
-        style={{ flexShrink: 0 }}
+        className={classes.spin}
       >
-        <path d="M5 12l5 5l9 -9" />
+        <circle cx="12" cy="12" r="8" opacity="0.25" />
+        <path d="M12 4a8 8 0 0 1 8 8" />
       </svg>
     );
   }
+
+  if (row.state === 'hollow') {
+    return (
+      <svg
+        width="11"
+        height="11"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="var(--ink-3)"
+        strokeWidth="3"
+        strokeDasharray="3 3.5"
+      >
+        <circle cx="12" cy="12" r="8" />
+      </svg>
+    );
+  }
+
   return (
-    <span
-      style={{
-        width: 9,
-        height: 9,
-        borderRadius: 99,
-        flexShrink: 0,
-        background: row.state === 'live' ? 'var(--warn)' : 'transparent',
-        border: row.state === 'hollow' ? '1px solid var(--ink-3)' : 'none',
-      }}
-    />
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="5" fill={KIND_COLORS[row.kind]} />
+    </svg>
+  );
+}
+
+/** What each kind of row is, in colour. Terminal rows earn the accent;
+ * the ordinary run of steps stays quiet. */
+const KIND_COLORS: Record<HistoryRow['kind'], string> = {
+  start: 'var(--ink-3)',
+  step: 'var(--ink-2)',
+  sleep: 'var(--ink-3)',
+  await: 'var(--ink-3)',
+  signal: 'var(--viola)',
+  end: 'var(--luna)',
+};
+
+/** A gate's alternatives: the one that arrived, and the ones that did
+ * not. Which steps a branch would have run is not derivable from the
+ * journal, so only the names are shown. */
+function GateBranches({
+  branches,
+}: {
+  branches: { name: string; taken: boolean | null }[];
+}) {
+  return (
+    <div className={classes.branches}>
+      {branches.map((branch) => (
+        <div
+          key={branch.name}
+          className={classes.branch}
+          data-taken={branch.taken === true ? 'yes' : 'no'}
+        >
+          <span className={classes.branchStem} />
+          <span className={classes.branchName}>{branch.name}</span>
+          <span className={classes.branchState}>
+            {branch.taken === null
+              ? 'waiting'
+              : branch.taken
+              ? 'arrived'
+              : 'not taken'}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -466,9 +571,7 @@ function RunDrawer({
       </DrawerSection>
 
       <DrawerSection label="INPUT">
-        <pre className={classes.pre}>
-          {JSON.stringify(run.input ?? null, null, 2)}
-        </pre>
+        <JsonValue value={run.input ?? null} />
       </DrawerSection>
 
       <DrawerSection
@@ -479,80 +582,48 @@ function RunDrawer({
           </span>
         }
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div className={classes.histList}>
           {rows.map((row) => (
             <details
               key={row.key}
-              style={{
-                opacity: row.state === 'hollow' ? 0.45 : 1,
-                borderLeft:
-                  row.state === 'live'
-                    ? '2px solid var(--warn)'
-                    : '2px solid transparent',
-                padding: '6px 8px',
-                background:
-                  row.state === 'live' ? 'var(--night-2)' : 'transparent',
-                borderRadius: 'var(--r1)',
-              }}
+              className={classes.histRow}
+              data-state={row.state}
+              data-last={row.key === rows[rows.length - 1]?.key ? 'yes' : 'no'}
             >
               <summary
+                className={classes.histSummary}
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  cursor: row.result ? 'pointer' : 'default',
-                  listStyle: 'none',
+                  cursor: row.result || row.error ? 'pointer' : 'default',
                 }}
               >
-                <HistoryDot row={row} />
-                <span
-                  style={{
-                    font: '500 12px var(--mono)',
-                    color: 'var(--ink-1)',
-                    minWidth: 0,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {row.name}
+                <span className={classes.histMark}>
+                  <HistoryDot row={row} />
                 </span>
-                <span className={classes.wordChip}>{row.kind}</span>
+                <span className={classes.histName}>{row.name}</span>
+                <span className={classes.histKind}>{row.kind}</span>
                 {row.attempts != null && row.attempts > 1 && (
-                  <span
-                    className={classes.wordChip}
-                    style={{ color: 'var(--warn)' }}
-                  >
+                  <span className={classes.histAttempts}>
                     {row.attempts} attempts
                   </span>
                 )}
-                <span
-                  style={{
-                    marginLeft: 'auto',
-                    font: '400 10px var(--mono)',
-                    color: 'var(--ink-3)',
-                    flexShrink: 0,
-                  }}
-                >
-                  {row.time ?? ''}
-                </span>
+                <span className={classes.histTime}>{row.time ?? ''}</span>
               </summary>
-              {(row.note || row.result) && (
-                <div
-                  style={{
-                    padding: '4px 0 2px 20px',
-                    font: '400 11px var(--mono)',
-                    color: 'var(--ink-3)',
-                  }}
-                >
+              {(row.note || row.result || row.error || row.branches) && (
+                <div className={classes.histDetail}>
                   {row.note}
-                  {row.result && (
+                  {row.branches && <GateBranches branches={row.branches} />}
+                  {row.error && (
                     <pre
                       className={classes.pre}
-                      style={{ marginTop: 4, maxHeight: 120, overflow: 'auto' }}
+                      style={{ marginTop: 4, color: 'var(--err)' }}
                     >
-                      {row.result}
+                      {row.error}
                     </pre>
+                  )}
+                  {row.result && (
+                    <div style={{ marginTop: 6 }}>
+                      <JsonValue value={row.result.value} defaultDepth={1} />
+                    </div>
                   )}
                 </div>
               )}

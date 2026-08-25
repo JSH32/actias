@@ -1361,3 +1361,177 @@
   cursor: not-allowed;
   opacity: 0.55;
 }
+
+/* A gate's alternatives in the run drawer. Which steps a branch would
+ * have run is not derivable from the journal, so a branch is its name
+ * and its verdict, nothing more. */
+.branches {
+  display: flex;
+  flex-direction: column;
+  margin: 5px 0 2px;
+}
+
+.branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.branchStem {
+  width: 10px;
+  height: 1px;
+  background: var(--line);
+  flex: none;
+}
+
+.branchName {
+  font: 400 11px var(--mono);
+  color: var(--ink-2);
+}
+
+.branchState {
+  font: 400 10px var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  opacity: 0.7;
+}
+
+.branch[data-taken='yes'] .branchName {
+  color: var(--ink-1);
+  font-weight: 500;
+}
+
+.branch[data-taken='yes'] .branchState {
+  color: var(--luna);
+  opacity: 1;
+}
+
+.branch[data-taken='yes'] .branchStem {
+  background: var(--luna-edge);
+  width: 14px;
+}
+
+.branch[data-taken='no'] .branchName {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-color: var(--line);
+}
+
+.spin {
+  transform-origin: 50% 50%;
+  animation: spin 1.4s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+/* The run drawer's history as a timeline: one rail down the node
+ * column, a row per journal fact. Names share a column so the eye reads
+ * down them, and the kind sits to their right as a dim label. */
+.histList {
+  display: flex;
+  flex-direction: column;
+}
+
+.histRow {
+  position: relative;
+  padding: 5px 6px 5px 0;
+}
+
+/* The rail, drawn between this row's node and the next one's. */
+.histRow::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 16px;
+  bottom: -5px;
+  width: 1px;
+  background: var(--line);
+}
+
+.histRow[data-last='yes']::before {
+  display: none;
+}
+
+.histRow[data-state='hollow'] {
+  opacity: 0.5;
+}
+
+.histRow[data-state='hollow']::before {
+  background: none;
+  border-left: 1px dashed var(--line);
+}
+
+.histSummary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  list-style: none;
+}
+
+.histSummary::-webkit-details-marker {
+  display: none;
+}
+
+.histMark {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 17px;
+  flex: none;
+  justify-content: center;
+  background: var(--night-1);
+}
+
+.histName {
+  font: 500 12px var(--mono);
+  color: var(--ink-1);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.histRow[data-state='hollow'] .histName {
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+.histKind {
+  font: 400 10px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  opacity: 0.7;
+  flex: none;
+}
+
+.histAttempts {
+  font: 400 10px var(--mono);
+  color: var(--warn);
+  flex: none;
+}
+
+.histTime {
+  margin-left: auto;
+  font: 400 10px var(--mono);
+  color: var(--ink-3);
+  flex: none;
+}
+
+.histDetail {
+  padding: 2px 0 4px 26px;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
