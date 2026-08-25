@@ -4,7 +4,7 @@ lead: Durable message queues and their handlers.
 order: 4
 ---
 
-## Declaring
+## Declare
 
 ```lua
 local mailroom = queue "mailroom"
@@ -14,25 +14,40 @@ on "queue:mailroom" (function(job)
 end)
 ```
 
-The handler name must match the queue name.
+Top level only. The handler name must match the queue name exactly.
 
 ## Methods
 
-```lua
-mailroom:send(payload)   -- returns true; payload is json-representable
-mailroom:stats()         -- depth, in flight, dead letters
-```
+<table>
+  <thead>
+    <tr><th>Method</th><th>Returns</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>send(payload)</code></td><td>true, as soon as the message is durable</td></tr>
+    <tr><td><code>stats()</code></td><td><code>depth</code>, <code>in_flight</code>, <code>oldest_pending</code>, <code>dead_letters</code></td></tr>
+  </tbody>
+</table>
 
-## Behaviour
+`depth` counts everything still queued, in-flight messages included.
+The payload must be JSON-representable, since a message can cross
+machines.
 
-- Delivery is at-least-once. A handler that throws is retried with
-  growing backoff.
-- After a bounded number of attempts the message becomes a dead
-  letter: it stops retrying and waits for inspection.
-- One message produces one handler run. Queues distribute, they do not
-  broadcast.
+## Delivery
 
-Write handlers that tolerate running twice on the same message.
+<table>
+  <thead>
+    <tr><th>Promise</th><th>What your handler must do</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>at-least-once</td><td>tolerate running twice on one message</td></tr>
+    <tr><td>one message, one run</td><td>nothing; queues distribute, they do not broadcast</td></tr>
+    <tr><td>5 attempts, then dead-lettered</td><td>throw when the input can never work</td></tr>
+  </tbody>
+</table>
+
+The first retry waits 2 seconds and each further one doubles, capped
+at an hour. A dead letter stops retrying, does not block the queue, and
+waits in the console until you requeue or drop it.
 
 ## Example
 
@@ -53,5 +68,17 @@ on "fetch" (function(request)
 end)
 ```
 
-Errors are how you dead-letter deliberately: a job whose input can
-never work should throw, not silently succeed.
+### Gotchas
+
+- Throwing is how you dead-letter deliberately. A job whose input can
+  never work should throw rather than silently succeed.
+- `send` returns before the handler runs, so a handler failure never
+  surfaces at the call site. The console is where you see it.
+- A queue with no matching handler accepts sends and never delivers
+  them. Nothing warns you, so check the name.
+
+## Related
+
+- [Queues](/docs/runtime/queues): when a queue is the wrong tool.
+- [workflow](/docs/reference/workflow): for jobs someone will ask
+  about by name.

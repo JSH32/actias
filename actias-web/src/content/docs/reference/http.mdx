@@ -6,15 +6,20 @@ order: 7
 
 ## request
 
-| Field | Type | Notes |
-|---|---|---|
-| `request.method` | string | `"GET"`, `"POST"`, … |
-| `request.path` | string | relative to your script |
-| `request.query` | table | decoded query parameters |
-| `request.headers` | table | lowercase keys |
-| `request.body` | string | raw body |
-| `request.uri` | string | full uri |
-| `request.upgrade` | function or nil | present on websocket handshakes |
+<table>
+  <thead>
+    <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>request.method</code></td><td>string</td><td><code>"GET"</code>, <code>"POST"</code>, …</td></tr>
+    <tr><td><code>request.path</code></td><td>string</td><td>relative to your script</td></tr>
+    <tr><td><code>request.query</code></td><td>table</td><td>decoded query parameters</td></tr>
+    <tr><td><code>request.headers</code></td><td>table</td><td>lowercase keys</td></tr>
+    <tr><td><code>request.body</code></td><td>string</td><td>raw body</td></tr>
+    <tr><td><code>request.uri</code></td><td>string</td><td>full uri</td></tr>
+    <tr><td><code>request.upgrade</code></td><td>function or nil</td><td>present on websocket handshakes</td></tr>
+  </tbody>
+</table>
 
 `request.path` has the routing prefix removed: a script served at
 `/hello/` sees `/api/thing`, not `/hello/api/thing`.
@@ -49,11 +54,8 @@ response.body
 ```
 
 Outbound calls go through a guarded client. A refused or unreachable
-host raises an error, so wrap calls that may fail with `pcall`, or let
-a [queue](/docs/reference/queue) handler retry.
-
-`http` is not available in [workflow](/docs/reference/workflow) run
-code.
+host raises an error, so wrap calls that may fail in `pcall` or let a
+[queue](/docs/reference/queue) handler retry them.
 
 ## Uri
 
@@ -64,3 +66,19 @@ uri.path      -- "/a"
 uri.query     -- "b=c"
 uri:tostring()
 ```
+
+### Gotchas
+
+- `http` is absent from a [workflow](/docs/reference/workflow)
+  environment, step bodies included. Call an object from a step to
+  reach the network.
+- An outbound call spends the request's 30 second budget. A slow host
+  takes the whole request down with it.
+- `request.headers` keys are lowercase. `request.headers["Content-Type"]`
+  is nil.
+
+## Related
+
+- [How a request runs](/docs/runtime/requests): the environment around
+  these tables.
+- [Websockets](/docs/runtime/sockets): what `request.upgrade` does.

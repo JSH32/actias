@@ -21,17 +21,37 @@ local Auction = object "Auction" {
 ```
 
 `state:publish` appends the event to this object's log in the same
-transaction as the write above it. Delivery happens after the call
-commits, along whatever edges exist.
+transaction as the write above it. An event therefore never describes a
+write that did not happen.
 
-Publishing a topic that is not declared is an error.
+Delivery runs after the call commits, along whatever edges exist.
+Publishing an undeclared topic is an error.
 
 ## Who may follow
 
-An edge exists only if the publisher accepted it. There are two ways
-to accept.
+An edge exists only if the publisher accepted it.
 
-A gate, when the answer depends on state:
+```lua
+publishes = {
+    "bid",               -- the follow hook decides
+    events = "self",     -- only this instance's own identity
+    tick = "public",     -- any identity
+}
+```
+
+<table>
+  <thead>
+    <tr><th>Spelling</th><th>Who gets in</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>bare name</td><td>whoever the <code>follow</code> hook returns true for</td></tr>
+    <tr><td><code>= "self"</code></td><td>only an identity equal to this instance</td></tr>
+    <tr><td><code>= "public"</code></td><td>any identity</td></tr>
+    <tr><td>neither</td><td>nobody. A missing hook fails closed</td></tr>
+  </tbody>
+</table>
+
+Use the hook when the answer depends on state:
 
 ```lua
 local Server = object "Server" {
@@ -45,29 +65,21 @@ local Server = object "Server" {
 }
 ```
 
-The gate receives the follower's identity: `follower.name`,
-`follower.id`, and `follower:is(SomeClass)` to check its class. It is
-data, not a live handle.
+The follower argument is data, not a live handle: `follower.name`,
+`follower.id`, and `follower:is(SomeClass)` for its class.
 
-A built-in policy, when the answer is fixed:
+### When to use "self"
 
-```lua
-publishes = {
-    events = "self",     -- only this instance's own identity
-    tick = "public",     -- any identity
-}
-```
+`"self"` is the personal stream: a user's own notifications, reaching
+whichever of their devices is connected.
 
-A topic listed as a bare name uses the gate. A topic with neither a
-gate nor a policy cannot be followed, so a missing gate fails closed.
+A websocket's identity is minted server-side after authentication, so
+a connection following `Account("ada"):events` genuinely is
+`Account/ada`. Anyone speaking as someone else is refused.
 
-`"self"` is the personal-stream case. A websocket's identity is minted
-server-side after authentication, so a connection following
-`Account("ada"):events` genuinely is `Account/ada`, and the policy
-admits it while refusing a connection speaking as anyone else. That
-covers a user's laptop, phone and tablet all receiving their own
-notifications, without writing
-`follower:is(Account) and follower.name == state.name` on every class.
+It replaces writing
+`follower:is(Account) and follower.name == state.name` on every class
+that has a per-user stream.
 
 ## Following and receiving
 
@@ -89,15 +101,20 @@ local Account = object "Account" {
 `receives` keys are `"Class:topic"`. `publishes` and `receives` at the
 top of a class show both directions of its data flow.
 
-- `state:follow(handle, topic, filter?)` creates the edge.
-- `state:unfollow(handle, topic)` removes it.
-- `state:drop_followers(Account(name))` removes every edge that
-  identity holds.
-- `state:followers(topic)` lists current followers.
+<table>
+  <thead>
+    <tr><th>Verb</th><th>Does</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>state:follow(handle, topic, filter?)</code></td><td>creates the edge</td></tr>
+    <tr><td><code>state:unfollow(handle, topic)</code></td><td>removes it</td></tr>
+    <tr><td><code>state:drop_followers(Account(name))</code></td><td>removes every edge that identity holds</td></tr>
+    <tr><td><code>state:followers(topic)</code></td><td>lists current followers</td></tr>
+  </tbody>
+</table>
 
-An optional filter table matches equality against top-level fields of
-the event data, so one filtered edge can replace many topic-specific
-ones.
+The optional filter matches equality against top-level fields of the
+event data, so one filtered edge replaces many topic-specific ones.
 
 ## Delivery to objects
 
@@ -106,12 +123,8 @@ edge tracks how far the follower has read, and delivery wakes the
 follower.
 
 An account with nothing running receives every event for what it
-follows, in order. Unread counts accrue while a user is away, with no
-catch-up protocol to write.
-
-Delivery is at-least-once: a machine failure at the wrong moment can
-repeat one, so `receives` handlers should tolerate running twice on
-the same event.
+follows, in order. Unread counts accrue while a user is away, and there
+is no catch-up protocol to write.
 
 ## Delivery to browsers
 
@@ -120,5 +133,23 @@ at-most-once, no retry, and the edge dies with the tab. See
 [sockets](/docs/runtime/sockets).
 
 Keep anything that must survive on an object edge, one hop back from
-the connection. A device may miss a frame; the object does not miss
-the event.
+the connection. A device may miss a frame; the object does not miss the
+event.
+
+### Gotchas
+
+- Delivery to objects is at-least-once. A machine failure at the wrong
+  moment repeats an event, so a `receives` handler must tolerate
+  running twice on the same one.
+- Order holds per publisher, not across publishers. If order matters
+  across sources, put a sequence number in the data.
+- An edge that keeps failing is dropped after 8 attempts. It is not
+  retried forever and it does not resume by itself.
+
+## Related
+
+- [Objects](/docs/runtime/objects): the entities that publish.
+- [Sockets](/docs/runtime/sockets): connection edges and their weaker
+  promises.
+- [Guarantees](/docs/runtime/guarantees): every promise and limit in
+  one table.

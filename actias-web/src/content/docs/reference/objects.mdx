@@ -4,11 +4,12 @@ lead: Class declarations, state, hooks, and calling instances.
 order: 3
 ---
 
-## Declaring a class
+## Declare a class
 
 ```lua
 local Auction = object "Auction" {
-    publishes = { "bid" },
+    migrations = "migrations/Auction",
+    publishes = { "bid", events = "self" },
     receives = { ["Floor:tick"] = function(state, event) end },
     hooks = {
         init = function(state) end,
@@ -20,13 +21,19 @@ local Auction = object "Auction" {
 }
 ```
 
-Three reserved keys; every other key is a method.
+Four reserved keys; every other key is a method.
 
-| Key | Meaning |
-|---|---|
-| `publishes` | topics this class emits; see [streams](/docs/runtime/streams) |
-| `receives` | `["Class:topic"] = handler` for streams it consumes |
-| `hooks` | `init`, `alarm`, `follow` |
+<table>
+  <thead>
+    <tr><th>Key</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>migrations</code></td><td>directory of <code>.sql</code> files that build each instance's schema</td></tr>
+    <tr><td><code>publishes</code></td><td>topics this class emits; <code>name = "self"</code> or <code>= "public"</code> sets a policy instead of using the hook</td></tr>
+    <tr><td><code>receives</code></td><td><code>["Class:topic"] = handler</code> for streams it consumes</td></tr>
+    <tr><td><code>hooks</code></td><td><code>init</code>, <code>alarm</code>, <code>follow</code></td></tr>
+  </tbody>
+</table>
 
 Referencing a class declared elsewhere:
 
@@ -45,18 +52,23 @@ Arguments and return values must be JSON-representable.
 
 ## state
 
-| Field | Meaning |
-|---|---|
-| `state.sql` | this instance's private database |
-| `state.name` | instance name |
-| `state.now()` | platform clock, milliseconds |
-| `state:set_alarm(duration)` | schedule the `alarm` hook |
-| `state:publish(topic, event)` | emit on a declared topic |
-| `state:follow(handle, topic, filter?)` | follow another object |
-| `state:unfollow(handle, topic)` | drop that edge |
-| `state:followers(topic?)` | current followers |
-| `state:drop_followers(handle)` | drop every edge an identity holds |
-| any other key | in-memory scratch, lost when the object sleeps |
+<table>
+  <thead>
+    <tr><th>Field</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>state.sql</code></td><td>this instance's private database</td></tr>
+    <tr><td><code>state.name</code></td><td>instance name</td></tr>
+    <tr><td><code>state.now()</code></td><td>platform clock, milliseconds</td></tr>
+    <tr><td><code>state:set_alarm(duration)</code></td><td>schedule the <code>alarm</code> hook</td></tr>
+    <tr><td><code>state:publish(topic, event)</code></td><td>emit on a declared topic</td></tr>
+    <tr><td><code>state:follow(handle, topic, filter?)</code></td><td>follow another object</td></tr>
+    <tr><td><code>state:unfollow(handle, topic)</code></td><td>drop that edge</td></tr>
+    <tr><td><code>state:followers(topic?)</code></td><td>current followers</td></tr>
+    <tr><td><code>state:drop_followers(handle)</code></td><td>drop every edge an identity holds</td></tr>
+    <tr><td>any other key</td><td>in-memory scratch, lost when the object sleeps</td></tr>
+  </tbody>
+</table>
 
 `state.sql` takes the same `exec` / `query` / `query_one` as a
 [database](/docs/reference/database), minus the read variants.
@@ -71,27 +83,57 @@ hooks = {
 }
 ```
 
-- `init` runs once, on the first ever call to an instance, before that
-  call proceeds.
-- `alarm` runs when a set alarm comes due.
-- `follow` decides whether `follower` may follow `topic`. Truthy
-  accepts.
+<table>
+  <thead>
+    <tr><th>Hook</th><th>Runs</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>init</code></td><td>once per instance ever, before its first call proceeds</td></tr>
+    <tr><td><code>alarm</code></td><td>when a set alarm comes due</td></tr>
+    <tr><td><code>follow</code></td><td>to decide whether <code>follower</code> may follow <code>topic</code>; truthy accepts</td></tr>
+  </tbody>
+</table>
 
 Hooks are called by the platform. They cannot be invoked through a
 handle.
+
+With `migrations` declared, the files apply before `init`, so `init`
+only ever seeds rows. Without it, `init` is where the tables get
+created.
 
 ## follower
 
 The identity a `follow` hook receives:
 
-| Field | Meaning |
-|---|---|
-| `follower.name` | instance name it speaks as |
-| `follower.id` | `"Class/name"` |
-| `follower.transport` | `"object"` or `"connection"` |
-| `follower:is(Class)` | class check against a class value |
+<table>
+  <thead>
+    <tr><th>Field</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>follower.name</code></td><td>instance name it speaks as</td></tr>
+    <tr><td><code>follower.id</code></td><td><code>"Class/name"</code></td></tr>
+    <tr><td><code>follower.transport</code></td><td><code>"object"</code> or <code>"connection"</code></td></tr>
+    <tr><td><code>follower:is(Class)</code></td><td>class check against a class value</td></tr>
+  </tbody>
+</table>
 
 ## Durations
 
 `set_alarm` and workflow timeouts take `"500ms"`, `"30s"`, `"10m"`,
 `"24h"`, `"7d"`, or a bare number of seconds.
+
+### Gotchas
+
+- A method cannot be named `init`, `alarm`, `follow`, `receive`,
+  `receives` or `hooks`, and a name starting with `_` is not callable
+  through a handle either.
+- Scratch keys on `state` look durable and are not. Anything needed
+  after the object sleeps goes in `state.sql`.
+- `state.sql` has no `read` variants. An object's storage has no
+  replica to read from.
+
+## Related
+
+- [Objects](/docs/runtime/objects): serialization, alarms, placement.
+- [Streams](/docs/runtime/streams): what `publishes` and `receives`
+  do.

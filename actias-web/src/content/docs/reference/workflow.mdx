@@ -4,7 +4,7 @@ lead: "Durable multi-step processes: steps, waiting, signals, runs."
 order: 5
 ---
 
-## Declaring
+## Declare
 
 ```lua
 local settle = workflow "settle-sale" (function(wf, input)
@@ -37,7 +37,7 @@ address a run without a lookup table.
 
 ```lua
 wf:step(name, body)
-wf:step(name, { retries = 3 }, body)
+wf:step(name, { retries = 3, backoff = "5s", timeout = "30s" }, body)
 wf:sleep(duration)
 wf:await(name, { timeout = duration })
 wf:race({ "a", "b" }, { timeout = duration })
@@ -45,14 +45,32 @@ wf:all({ "a", "b" }, { timeout = duration })
 wf:spawn(definition, input)
 ```
 
-| Verb | Returns |
-|---|---|
-| `step` | whatever the body returned, recorded on first run |
-| `sleep` | nothing, after the duration |
-| `await` | the signal payload, or `nil` on timeout |
-| `race` | payload, name of the first to arrive; `nil, nil` on timeout |
-| `all` | payloads in argument order; `nil` per timed-out entry |
-| `spawn` | a job handle whose completion `all` and `race` accept |
+<table>
+  <thead>
+    <tr><th>Verb</th><th>Returns</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>step</code></td><td>whatever the body returned, recorded on first run</td></tr>
+    <tr><td><code>sleep</code></td><td>nothing, after the duration</td></tr>
+    <tr><td><code>await</code></td><td>the signal payload, or <code>nil</code> on timeout</td></tr>
+    <tr><td><code>race</code></td><td>payload, name of the first to arrive; <code>nil, nil</code> on timeout</td></tr>
+    <tr><td><code>all</code></td><td>payloads in argument order; <code>nil</code> per timed-out entry</td></tr>
+    <tr><td><code>spawn</code></td><td>a job handle whose completion <code>all</code> and <code>race</code> accept</td></tr>
+  </tbody>
+</table>
+
+### step options
+
+<table>
+  <thead>
+    <tr><th>Option</th><th>Default</th><th>Means</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>retries</code></td><td>1</td><td>total attempts, not attempts after the first</td></tr>
+    <tr><td><code>backoff</code></td><td>2s</td><td>wait before attempt 2, doubling after that</td></tr>
+    <tr><td><code>timeout</code></td><td>none</td><td>how long one attempt may run</td></tr>
+  </tbody>
+</table>
 
 ## Determinism
 
@@ -91,3 +109,19 @@ local settle = workflow "settle-sale" (function(wf, sale)
     return { outcome = "settled" }
 end)
 ```
+
+### Gotchas
+
+- `retries = 3` is three attempts in total.
+- Steps do not nest. One effect per step; a `wf:step` inside a step
+  body is an error.
+- Renaming a step breaks runs already in flight. Replay compares the
+  journal against the code it re-executes and fails on a mismatch
+  rather than guessing.
+- A duplicate signal is safe. An unconsumed extra is set aside instead
+  of breaking replay, because buttons get clicked twice.
+
+## Related
+
+- [Workflows](/docs/runtime/workflows): when to use one at all.
+- [queue](/docs/reference/queue): the anonymous alternative.

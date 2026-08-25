@@ -5,10 +5,7 @@ order: 1
 navLabel: What Actias is
 ---
 
-You write a Lua file, publish it, and it answers HTTP requests. The
-platform also provides the things applications usually need a separate
-service for: storage, background jobs, scheduled work, long-running
-processes, and live updates to browsers.
+You write a Lua file and publish it. It answers HTTP requests.
 
 ```lua
 local visits = kv "visits"
@@ -23,33 +20,40 @@ on "fetch" (function(request)
 end)
 ```
 
-That is a complete program. No package file, no database setup, no
-connection string.
+That is the whole program. No package file, no database setup, no
+connection string: storage, background jobs, scheduled work and live
+updates are part of the runtime, not services you attach.
 
 ## Declarations
 
 `kv "visits"` declares that this script uses a key-value namespace
 called `visits`. Databases, queues, workflows, object classes and
-secrets are declared the same way, at the top level of the entry
-point.
+secrets are declared the same way, at the top level of the entry point.
 
-The platform derives the full list by running your file with every
-surface stubbed out, and stores it with the revision. `actias check`
-prints the same list locally. A script can only reach what its
-declarations name.
+A script can only reach what its declarations name. Ask for a namespace
+you never declared and the call fails.
+
+The platform derives the list by running your file with every surface
+stubbed out, then stores it with the revision. `actias check` prints
+the same list locally before you publish.
 
 ## What is available
 
-| Surface | Use it for |
-|---|---|
-| `kv` | small values read by name |
-| `database` | SQL, migrations, queries across rows |
-| `object` | one entity's state, serialized access, its own alarm |
-| `queue` | retried background work |
-| `workflow` | processes lasting minutes to days |
-| streams + sockets | pushing events to objects and browsers |
-| `secret` | versioned credentials |
-| `on "cron:..."` | scheduled jobs |
+<table>
+  <thead>
+    <tr><th>Surface</th><th>Use it for</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>kv</code></td><td>small values read by name</td></tr>
+    <tr><td><code>database</code></td><td>SQL, migrations, queries across rows</td></tr>
+    <tr><td><code>object</code></td><td>one entity's state, serialized access, its own alarm</td></tr>
+    <tr><td><code>queue</code></td><td>retried background work</td></tr>
+    <tr><td><code>workflow</code></td><td>processes lasting minutes to days</td></tr>
+    <tr><td>streams + sockets</td><td>pushing events to objects and browsers</td></tr>
+    <tr><td><code>secret</code></td><td>versioned credentials</td></tr>
+    <tr><td><code>on "cron:..."</code></td><td>scheduled jobs</td></tr>
+  </tbody>
+</table>
 
 Each has a chapter in [How it runs](/docs/runtime/requests) and a page
 in the [reference](/docs/reference/kv).

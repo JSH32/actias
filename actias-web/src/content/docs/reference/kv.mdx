@@ -4,23 +4,52 @@ lead: Key-value namespaces.
 order: 1
 ---
 
-## Declaring
+## Declare
 
 ```lua
 local visits = kv "visits"
 ```
 
-Top level only. The namespace is scoped to the project, so two scripts
-in the same project declaring `kv "visits"` share it.
+Top level only. Scoped to the project, so two scripts in one project
+declaring `kv "visits"` share it.
 
 ## Methods
 
 ```lua
-ns:get(key)              -- value, or nil
-ns:set(key, value)       -- value is anything json can represent
-ns:delete(key)
-ns:list()                -- { [key] = value }
+ns:get("hits")                          -- value, or nil
+ns:set("hits", 41)
+ns:set_batch({ hits = 41, banner = { text = "back at 09:00" } })
+ns:delete("hits")
 ```
+
+<table>
+  <thead>
+    <tr><th>Method</th><th>Returns</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>get(key)</code></td><td>the value, or nil</td></tr>
+    <tr><td><code>set(key, value)</code></td><td>nothing</td></tr>
+    <tr><td><code>set_batch(table)</code></td><td>nothing; writes every pair, deletes the nil ones</td></tr>
+    <tr><td><code>delete(key)</code></td><td>nothing</td></tr>
+  </tbody>
+</table>
+
+## Types
+
+kv stores the type you wrote and returns it.
+
+<table>
+  <thead>
+    <tr><th>You write</th><th>You get back</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>string</td><td>string</td></tr>
+    <tr><td>integer</td><td>integer</td></tr>
+    <tr><td>number</td><td>number</td></tr>
+    <tr><td>boolean</td><td>boolean</td></tr>
+    <tr><td>table</td><td>table, through JSON</td></tr>
+  </tbody>
+</table>
 
 ## Example
 
@@ -34,10 +63,15 @@ on "fetch" (function(request)
 end)
 ```
 
-## Notes
+### Gotchas
 
-- Values round-trip through JSON. Lua tables come back as tables;
-  functions and userdata cannot be stored.
-- There are no queries. Anything you store must be reachable by key.
-- `list()` reads the whole namespace. Use it for small namespaces, not
-  as a substitute for a [database](/docs/reference/database).
+- There is no listing and no query. Every value must be reachable by a
+  key you can construct.
+- Functions and userdata cannot be stored. Tables go through JSON, so
+  what comes back is a copy, not the table you put in.
+- A nil value in `set_batch` is a delete, not a stored nil.
+
+## Related
+
+- [Where data goes](/docs/runtime/storage) compares kv with databases
+  and objects.

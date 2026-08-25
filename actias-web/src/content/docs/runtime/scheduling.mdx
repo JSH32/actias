@@ -10,7 +10,7 @@ A cron handler runs on a schedule for the whole script.
 
 ```lua
 local cache = kv "cache"
-local db = database "catalog"
+local db = database "catalog" { migrations = "migrations/catalog" }
 
 on "cron:*/2 * * * *" (function(event)
     local soon = db:read(
@@ -20,13 +20,23 @@ on "cron:*/2 * * * *" (function(event)
 end)
 ```
 
-The expression follows the standard five-field format
-(minute, hour, day, month, weekday); a six-field expression adds
-seconds at the front. `event.scheduled_at` is the occurrence the run
-belongs to.
+<table>
+  <thead>
+    <tr><th>Expression</th><th>Fields</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>*/2 * * * *</code></td><td>minute, hour, day, month, weekday</td></tr>
+    <tr><td><code>0 */2 * * * *</code></td><td>the same, with seconds at the front</td></tr>
+  </tbody>
+</table>
 
-The schedule arms itself the first time a worker touches the revision
-and re-arms after restarts.
+The event carries `event.cron`, the expression that fired, and
+`event.scheduled_at`, the platform clock in milliseconds when the run
+started.
+
+The schedule arms itself the first time a worker touches the revision.
+The next occurrence is armed before your handler runs, so nothing the
+handler does can kill the schedule.
 
 ## Cron or alarm
 
@@ -35,10 +45,16 @@ cache rebuild, a periodic cleanup.
 
 Use an [alarm](/docs/runtime/objects#alarms) when the deadline belongs
 to one entity: this auction closes at 14:02, this trial ends on the
-30th, this timeout lifts in an hour. The entity arms its own alarm,
-which means no query has to find overdue rows and nothing is missed
-when the number of entities grows.
+30th. The entity arms it, so no query has to find overdue rows.
 
-The distinction matters at scale. One cron scanning a table of
-deadlines gets slower as the table grows. A million objects with their
-own alarms cost nothing until they fire.
+One cron scanning a table of deadlines gets slower as the table grows.
+A million objects with their own alarms cost nothing until they fire.
+
+### Gotchas
+
+- Downtime collapses. A schedule that should have fired four times
+  while no worker was up fires once when one returns, not four times.
+- A failing handler is logged and not retried. There is no cron retry;
+  the next occurrence is the next attempt.
+- `scheduled_at` is when the run started, so it drifts from the
+  nominal minute. Do not use it as an occurrence identifier.

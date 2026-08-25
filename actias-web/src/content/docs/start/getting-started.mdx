@@ -6,12 +6,16 @@ order: 2
 
 ## Get the tools
 
-The CLI is one binary, `actias`. Grab it from the download page, or
-build it from the repository with `cargo build -p actias-cli`.
+The CLI is one binary, `actias`. Take it from the download page or
+build it from the repository:
 
-Everything below also needs somewhere to publish to. Locally that is
-`docker-compose up -d` in the repository root, which boots the api,
-the console, workers, and storage.
+```sh
+cargo build -p actias-cli
+```
+
+You also need somewhere to publish to. Locally that is
+`docker-compose up -d` in the repository root, which boots the api, the
+console, workers and storage.
 
 ## Log in and make a project
 
@@ -20,8 +24,9 @@ actias login          # asks for the api url and your credentials
 actias project create my-project
 ```
 
-A **project** owns your scripts and everything they declare: the kv
-namespaces, databases, objects and secrets they use are scoped to it.
+A **project** owns your scripts and everything they declare. The kv
+namespaces, databases, objects and secrets a script uses are scoped to
+it.
 
 ## Create a script
 
@@ -30,9 +35,16 @@ actias init hello
 cd hello
 ```
 
-You get `main.lua`, a `script.json` (which records the script's id and
-which files belong to the bundle), and a `definitions/` folder that
-gives your editor autocomplete for the platform surface.
+<table>
+  <thead>
+    <tr><th>What you get</th><th>What it is</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>main.lua</code></td><td>the entry point</td></tr>
+    <tr><td><code>script.json</code></td><td>the script's id and which files belong to the bundle</td></tr>
+    <tr><td><code>definitions/</code></td><td>editor autocomplete for the platform surface</td></tr>
+  </tbody>
+</table>
 
 Open `main.lua`:
 
@@ -51,20 +63,19 @@ end)
 actias check
 ```
 
-This runs the same declaration pass the server runs at publish, so it
-catches anything the platform would reject, then type-checks every
-file. It prints the contract it derived:
-
 ```
 📜 Project validated!
 ⚡ Handles events: fetch
 🔎 Types check out (luau-analyze).
 ```
 
-As your script grows, that list grows with it: the kv namespaces,
+`check` runs the same declaration pass the server runs at publish, then
+type-checks every file. Anything the platform would reject fails here
+first.
+
+As your script grows the printed list grows with it: the kv namespaces,
 databases, queues, workflows, object classes and streams it declares.
-It is the same list the console shows, and the same list the server
-enforces.
+The console shows the same list, and the server enforces it.
 
 ## Publish it
 
@@ -72,11 +83,11 @@ enforces.
 actias publish
 ```
 
-The bundle uploads (only the files that changed), the server derives
-the contract again from your code, and the revision goes live. The CLI
-prints the public identifier and the revision id.
+Only changed files upload. The server derives the contract from your
+code again, the revision goes live, and the CLI prints the public
+identifier and the revision id.
 
-Your script now answers at `<worker-url>/<identifier>/`. Curl it:
+Your script answers at `<worker-url>/<identifier>/`:
 
 ```sh
 curl http://localhost:3002/hello/
@@ -102,15 +113,11 @@ end)
 ```
 
 Publish again and refresh a few times. The counter survives requests,
-restarts, and deploys, and the console's KV section shows the value
-changing.
+restarts and deploys, and the console's KV section shows it changing.
 
 ## Where to go next
 
 - [How a request runs](/docs/runtime/requests) explains the execution
-  model, one concept per chapter, starting from the problem each one
-  solves.
+  model, one concept per chapter.
 - [The Lua reference](/docs/reference/kv) documents every namespace
   with signatures and examples.
-- The [chat example](/docs/examples/chat) is the shortest complete
-  application worth reading.

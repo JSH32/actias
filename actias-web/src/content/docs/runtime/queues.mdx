@@ -7,9 +7,8 @@ order: 4
 ## What a queue is
 
 A queue is a durable message list with a handler. Sending returns
-immediately; the platform delivers the message to the handler, retries
-with backoff if the handler throws, and sets the message aside after
-enough failures.
+immediately. The platform delivers, retries with backoff when the
+handler throws, and dead-letters the message after enough failures.
 
 ```lua
 local mailroom = queue "mailroom"
@@ -36,18 +35,33 @@ name.
 ## Guarantees
 
 **At-least-once delivery.** A handler that throws gets the message
-again after a delay, then a longer delay. Write handlers that are safe
-to run twice on the same message: check an id, or use statements like
-`INSERT OR IGNORE` and `UPDATE ... WHERE state = 'pending'`.
+again after a delay, then a longer one. Make a second run harmless:
+check an id, or write `INSERT OR IGNORE` and `UPDATE ... WHERE state = 'pending'`.
 
 **One message, one handler run.** Queues distribute work, they do not
 broadcast. Ten workers draining a thousand messages produce a thousand
 handler runs.
 
-**Bounded retries.** After enough failed attempts a message moves to
-the dead-letter list. It stops retrying, does not block the queue, and
-stays there until you look at it. The console lists dead letters and
-can requeue them.
+**Bounded retries.** A message gets 5 attempts by default. The first
+retry waits 2 seconds and each further one doubles, capped at an hour.
+Operators tune both numbers.
+
+<table>
+  <thead>
+    <tr><th>Attempt</th><th>Runs after</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>immediately</td></tr>
+    <tr><td>2</td><td>2s</td></tr>
+    <tr><td>3</td><td>4s</td></tr>
+    <tr><td>4</td><td>8s</td></tr>
+    <tr><td>5</td><td>16s</td></tr>
+  </tbody>
+</table>
+
+After the last one the message moves to the dead-letter list. It stops
+retrying, does not block the queue, and stays there until you look at
+it. The console lists dead letters and can requeue them.
 
 ## What belongs in a queue
 
@@ -61,11 +75,24 @@ that object, not a queue message. Queues are for work no specific
 entity owns.
 
 **Multi-step processes.** If the job waits on a human or has stages,
-use a [workflow](/docs/runtime/workflows). The test: if anyone will
-ask "how is that specific job doing", it needs a workflow, because
-queue messages are anonymous.
+use a [workflow](/docs/runtime/workflows). Queue messages are
+anonymous, so a queue cannot answer "how is that one doing".
 
 ## Inspecting
 
 The console shows depth, in-flight count, the delivery journal, dead
 letters, and a retry action.
+
+### Gotchas
+
+- A handler that throws is a retry, not a failure you see at the call
+  site. `send` returned long before the handler ran.
+- Retries are per message. A poison message does not stall the ones
+  behind it; it dead-letters and the queue keeps draining.
+- The handler name must match the queue name exactly.
+  `on "queue:mailroom"` serves `queue "mailroom"` and nothing else.
+
+## Related
+
+- [Workflows](/docs/runtime/workflows): staged jobs you can ask about.
+- [queue reference](/docs/reference/queue): every method.

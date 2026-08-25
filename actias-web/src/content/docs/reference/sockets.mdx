@@ -20,14 +20,19 @@ connection speaks as it for the rest of its life.
 
 ## Methods
 
-```lua
-sock:each(handler)                     -- loop until close; return true to stop
-sock:recv()                            -- one item, or nil once closed
-sock:send(value)                       -- one json frame
-sock:follow(target, topic, filter?)    -- connection edge
-sock:unfollow(target, topic)
-sock:close()
-```
+<table>
+  <thead>
+    <tr><th>Method</th><th>Does</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>each(handler)</code></td><td>runs the handler per item until close; return true to stop</td></tr>
+    <tr><td><code>recv()</code></td><td>one item, or nil once closed</td></tr>
+    <tr><td><code>send(value)</code></td><td>writes one json frame</td></tr>
+    <tr><td><code>follow(target, topic, filter?)</code></td><td>makes a connection edge</td></tr>
+    <tr><td><code>unfollow(target, topic)</code></td><td>removes it</td></tr>
+    <tr><td><code>close()</code></td><td>ends the connection</td></tr>
+  </tbody>
+</table>
 
 ## Items
 
@@ -62,10 +67,19 @@ return request:upgrade(function(sock)
 end, Account(user))
 ```
 
-## Notes
+### Gotchas
 
+- Iterate with `each`, not a generic for. Luau cannot resume a yield
+  inside an iterator, so `for item in sock:each()` fails at runtime.
 - Connection edges are at-most-once and die with the connection.
-- The inbox is bounded; a program that stops consuming closes the
-  connection.
-- There is no platform wire protocol. Frames are the ones your program
-  sends and interprets.
+  Anything that must survive belongs on an object one hop back.
+- The inbox holds 256 items. A program that stops consuming closes the
+  connection rather than buffering.
+- There is no platform wire protocol. The frames on the wire are the
+  ones your program sends and interprets, so follow targets come from
+  your code, never from a string the client sent.
+
+## Related
+
+- [Websockets](/docs/runtime/sockets): the upgrade path and identity.
+- [Streams](/docs/runtime/streams): the publisher side.

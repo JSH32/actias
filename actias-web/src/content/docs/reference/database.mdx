@@ -4,67 +4,102 @@ lead: SQL databases with migrations.
 order: 2
 ---
 
-## Declaring
+## Declare
 
 ```lua
-local db = database "catalog"
+local db = database "catalog" { migrations = "migrations/catalog" }
 ```
 
-Top level only, scoped to the project.
+Top level only. Scoped to the project, so two scripts in one project
+declaring `database "catalog"` share it.
 
-## Methods
+The body is optional:
 
-```lua
-db:exec(sql, params?)       -- write; returns rows affected
-db:query(sql, params?)      -- rows
-db:query_one(sql, params?)  -- first row, or nil
-db:read(sql, params?)       -- rows, read path
-db:read_one(sql, params?)   -- first row, or nil
-db:batch(statements)        -- several statements together
-```
+<table>
+  <thead>
+    <tr><th>Form</th><th>Schema comes from</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>database "catalog" &#123; migrations = "dir" &#125;</code></td><td>the <code>.sql</code> files in <code>dir</code></td></tr>
+    <tr><td><code>database "notes"</code></td><td>nothing. Manual mode: the platform never touches the schema</td></tr>
+  </tbody>
+</table>
 
-`read` and `read_one` are reads that can be served from the nearest
-copy. Use them for queries; use `query` when you need to read your own
-uncommitted writes inside the same call.
+In manual mode the file starts empty and stays yours: nothing is
+created, migrated or checked. Add the key later and the files apply at
+the next touch.
 
-Parameters are bound, never interpolated:
+## Query
 
 ```lua
 db:exec("INSERT INTO listings (id, title) VALUES (?, ?)", { id, title })
 local row = db:read_one("SELECT * FROM listings WHERE id = ?", { id })
+local rows = db:read("SELECT id, title FROM listings LIMIT 50")
 ```
+
+<table>
+  <thead>
+    <tr><th>Method</th><th>Returns</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>exec(sql, params?)</code></td><td>rows affected</td></tr>
+    <tr><td><code>query(sql, params?)</code></td><td>rows</td></tr>
+    <tr><td><code>query_one(sql, params?)</code></td><td>first row, or nil</td></tr>
+    <tr><td><code>read(sql, params?)</code></td><td>rows, from the nearest copy</td></tr>
+    <tr><td><code>read_one(sql, params?)</code></td><td>first row, or nil</td></tr>
+    <tr><td><code>batch(statements)</code></td><td>several statements together</td></tr>
+  </tbody>
+</table>
+
+Parameters are bound, never interpolated.
+
+Use `read` and `read_one` for queries. Use `query` when the same call
+wrote the rows you are reading back.
 
 ## Migrations
 
-Schema lives in SQL files in the bundle, under
-`migrations/<database-name>/`:
-
-```
-migrations/catalog/0001_listings.sql
-migrations/catalog/0002_sales.sql
-```
-
-Create them with the CLI, then fill in the SQL:
+Create the files with the CLI:
 
 ```sh
 actias sql catalog create listings
 ```
 
-Files apply in filename order, at the first call that touches the
-database, inside that call's transaction. A failed migration applies
-nothing and surfaces as that call's error.
+That writes `migrations/catalog/0001_listings.sql`. Fill in the SQL:
 
-Adding `0003_*.sql` and publishing upgrades the schema on the next
-touch. Nothing runs migrations at publish time.
+```sql
+CREATE TABLE listings (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+```
 
-## Example
+Declare the directory on the database, and the platform applies the
+files in filename order at the first call that touches it, inside that
+call's transaction.
 
 ```lua
-local db = database "catalog"
-
-on "fetch" (function(request)
-    db:exec("INSERT INTO visits (at) VALUES (?)", { os.time() })
-    local total = db:read_one("SELECT COUNT(*) AS n FROM visits").n
-    return { body = json.stringify({ visits = total }) }
-end)
+local db = database "catalog" { migrations = "migrations/catalog" }
 ```
+
+The declaration is what makes files apply. A directory nothing declares
+is never read, whatever it is named.
+
+Adding `0003_*.sql` and publishing upgrades the schema on the next
+touch. Nothing runs at publish time.
+
+### Gotchas
+
+- A failed migration applies nothing and surfaces as that call's
+  error. Fix the file and publish again; the next touch retries.
+- The first caller after a deploy pays for the migration. Keep
+  migrations cheap, or touch the database yourself after publishing.
+- `actias check` fails if the declared directory holds no `.sql`
+  files, or if a directory of `.sql` files is declared by nothing.
+
+## Related
+
+- [Where data goes](/docs/runtime/storage) compares databases with kv
+  and objects.
+- [object](/docs/reference/objects) takes the same `migrations` key
+  for a class's private storage.

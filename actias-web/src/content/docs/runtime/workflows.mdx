@@ -42,10 +42,9 @@ settle:start({ id = "lot-42", winner = "ada", price = 25 },
 
 ## Replay
 
-Each step, signal and timer is written to a journal before it takes
-effect. When a run resumes, the platform replays the function from the
-top, and steps that already ran return their recorded results instead
-of running again.
+Each step, signal and timer is journaled before it takes effect. A
+resuming run replays the function from the top, and steps that already
+ran return their recorded results instead of running again.
 
 This requires the run's own code to be deterministic: given the same
 journal it must take the same path. Effects belong inside steps.
@@ -76,12 +75,26 @@ again.
 
 ```lua
 wf:step("name", function() ... end)
-wf:step("name", { retries = 3 }, function() ... end)
+wf:step("name", { retries = 3, backoff = "5s", timeout = "30s" }, function() ... end)
 ```
 
-Names must be stable across revisions. Retries apply per step. When a
-step exhausts its retries the run fails and stops; the console can
-resume it.
+<table>
+  <thead>
+    <tr><th>Option</th><th>Default</th><th>Means</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>retries</code></td><td>1</td><td>total attempts, not attempts after the first</td></tr>
+    <tr><td><code>backoff</code></td><td>2s</td><td>wait before attempt 2, doubling after that</td></tr>
+    <tr><td><code>timeout</code></td><td>none</td><td>how long one attempt may run</td></tr>
+  </tbody>
+</table>
+
+Step names must be stable across revisions, because replay matches
+recorded results to them by name.
+
+When a step exhausts its attempts the run parks as failed and stops
+there. The journal keeps everything up to that point, and the console
+can resume it.
 
 ## Waiting
 
@@ -92,9 +105,17 @@ wf:race({ "paid", "cancelled" }, { timeout = "72h" })
 wf:all({ "shipped", "received" }, { timeout = "7d" })
 ```
 
-- `await` returns the signal payload, or `nil` on timeout.
-- `race` returns the payload and the name that arrived first.
-- `all` returns payloads in argument order; a timed-out entry is `nil`.
+<table>
+  <thead>
+    <tr><th>Verb</th><th>Returns</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>sleep</code></td><td>nothing; resumes after the duration</td></tr>
+    <tr><td><code>await</code></td><td>the signal payload, or nil on timeout</td></tr>
+    <tr><td><code>race</code></td><td>the payload and the name that arrived first</td></tr>
+    <tr><td><code>all</code></td><td>payloads in argument order; a timed-out entry is nil</td></tr>
+  </tbody>
+</table>
 
 A parked run holds no resources. It is journal rows and a timer.
 
@@ -128,3 +149,19 @@ are named, inspectable and signalable, and each carries a journal.
 Otherwise use a [queue](/docs/runtime/queues): anonymous, cheap,
 retried in bulk. A queue handler can start a workflow when a message
 turns out to need one.
+
+### Gotchas
+
+- `retries = 3` is three attempts in total, not one plus three.
+- Steps do not nest. One effect per step; a `wf:step` inside a step
+  body is an error.
+- Renaming a step breaks runs already in flight. Replay compares the
+  journal against the code it re-executes, and a mismatch fails the
+  run with a journal divergence rather than guessing.
+- `http`, `crypto` and `Jwt` are absent from a workflow environment,
+  step bodies included. Call an object to reach them.
+
+## Related
+
+- [Queues](/docs/runtime/queues): the anonymous alternative.
+- [workflow reference](/docs/reference/workflow): every method.

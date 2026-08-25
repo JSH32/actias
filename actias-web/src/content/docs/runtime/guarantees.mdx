@@ -6,23 +6,27 @@ order: 8
 
 ## Delivery
 
-| Surface | Promise | What your code must do |
-|---|---|---|
-| Object method call | exactly once, serialized per object | nothing |
-| Queue message | at-least-once | handler safe to run twice |
-| Object stream edge | at-least-once, in order per publisher | `receives` handler safe to run twice |
-| Connection edge | at-most-once | client re-reads state on reconnect |
-| Workflow step | recorded once, replayed after | keep run code deterministic |
-| Alarm | fires once per set, survives restarts | nothing |
+<table>
+  <thead>
+    <tr><th>Surface</th><th>Promise</th><th>What your code must do</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Object method call</td><td>exactly once, serialized per object</td><td>nothing</td></tr>
+    <tr><td>Queue message</td><td>at-least-once</td><td>handler safe to run twice</td></tr>
+    <tr><td>Object stream edge</td><td>at-least-once, in order per publisher</td><td><code>receives</code> handler safe to run twice</td></tr>
+    <tr><td>Connection edge</td><td>at-most-once</td><td>client re-reads state on reconnect</td></tr>
+    <tr><td>Workflow step</td><td>recorded once, replayed after</td><td>keep run code deterministic</td></tr>
+    <tr><td>Alarm</td><td>fires once per set, survives restarts</td><td>nothing</td></tr>
+  </tbody>
+</table>
 
 At-least-once means a repeat is possible after a machine failure at
 the wrong moment. Make repeated work harmless: check an id, use
 `INSERT OR IGNORE`, or update conditionally on current state.
 
-At-most-once means loss is possible. Only connection edges have this
-promise, deliberately: a browser tab can vanish mid-frame, so events
-are not buffered for it. Anything that must survive belongs on the
-object one hop back.
+At-most-once means loss is possible. Only connection edges promise
+this, because a tab can vanish mid-frame. Anything that must survive
+belongs on the object one hop back.
 
 ## Ordering
 
@@ -47,14 +51,27 @@ between two steps replays from the last recorded one.
 
 ## Limits
 
-| Limit | Value |
-|---|---|
-| Request budget | a few seconds per request |
-| Object call budget | same as a request, per call |
-| Connection inbox | bounded; overflow closes the connection |
-| Object database | size-capped per instance |
-| Queue attempts | bounded, then dead-lettered |
-| Stream edge attempts | bounded, then the edge is dropped |
+Defaults. An operator running their own workers can change every one
+of them.
+
+<table>
+  <thead>
+    <tr><th>Limit</th><th>Value</th><th>What happens at it</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Request budget</td><td>30 seconds</td><td>the request is cut off</td></tr>
+    <tr><td>Object call budget</td><td>10 seconds per call</td><td>the call is cut off</td></tr>
+    <tr><td>Object database</td><td>64 MB per instance</td><td>writes fail, reads keep working</td></tr>
+    <tr><td>Queue attempts</td><td>5, first retry 2s, doubling to 1h</td><td>dead-lettered</td></tr>
+    <tr><td>Stream edge attempts</td><td>8, first retry 500ms, doubling to 60s</td><td>the edge is dropped</td></tr>
+    <tr><td>Stream delivery</td><td>10 seconds per attempt</td><td>counts as a failed attempt</td></tr>
+    <tr><td>Connection inbox</td><td>256 items</td><td>the connection is closed</td></tr>
+  </tbody>
+</table>
+
+The connection inbox is not a buffer to fill. A program that stops
+pulling from its socket has chosen to fall behind, and the platform
+closes it rather than growing memory on its behalf.
 
 ## Failure behaviour
 

@@ -17,12 +17,12 @@ on "fetch" (function(request)
 end)
 ```
 
-The counter is always `1`. Each request gets its own copy of the
-script's state. There is no shared mutable state between requests, and
-nothing to clean up after one finishes.
+Each request gets its own copy of the script's state. Nothing is
+shared between requests, and nothing needs cleaning up after one
+finishes.
 
-Compiled code is shared across requests; only the mutable environment
-is per-request, so building one is cheap.
+Compiled code is shared; only the mutable environment is per-request,
+so building one is cheap.
 
 Anything you need to keep goes in [kv](/docs/reference/kv), a
 [database](/docs/reference/database), or an
@@ -35,19 +35,16 @@ where declarations go:
 
 ```lua
 local visits = kv "visits"
-local db = database "main"
+local db = database "catalog" { migrations = "migrations/catalog" }
 
 on "fetch" (function(request)
     -- handler body
 end)
 ```
 
-Declarations are only valid at the top level. The platform runs your
-entry point with every effectful surface stubbed out to collect them,
-which is how it derives the contract without executing handlers.
-
-Do not read or write data at the top level. Those surfaces are inert
-during the declaration pass.
+Declarations are only valid at the top level. To collect them the
+platform runs your entry point with every effectful surface stubbed
+out, so it derives the contract without executing a single handler.
 
 ## Request and response
 
@@ -66,13 +63,21 @@ on "fetch" (function(request)
 end)
 ```
 
-`request.path` is relative to your script: a script served at
-`/hello/` sees `/api/echo`, not `/hello/api/echo`. `request.query` is
-a decoded table. Full field list in the
-[http reference](/docs/reference/http).
+`request.path` is relative to your script: one served at `/hello/`
+sees `/api/echo`, not `/hello/api/echo`. `request.query` is a decoded
+table. Every field is in the [http reference](/docs/reference/http).
 
 ## Time limit
 
-A request has a budget of a few seconds. Work that does not fit
-belongs in a [queue](/docs/runtime/queues) or a
+A request gets 30 seconds by default, and the operator can change it.
+Work that does not fit belongs in a [queue](/docs/runtime/queues) or a
 [workflow](/docs/runtime/workflows).
+
+### Gotchas
+
+- Top-level state looks like a cache and is not one. The counter above
+  resets on every request, including in production.
+- Work at the top level is paid on every request, since the
+  environment is rebuilt each time. Put it in the handler.
+- `kv "visits"` inside a handler is an error, not a late declaration.
+  The declaration forms are top level only.

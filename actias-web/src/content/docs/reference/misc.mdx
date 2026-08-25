@@ -1,6 +1,6 @@
 ---
-title: json, uuid, log, crypto, getfile
-lead: The remaining globals.
+title: Globals
+lead: json, uuid, log, getfile, crypto, Jwt and script.
 order: 9
 ---
 
@@ -79,11 +79,24 @@ local claims = signer:decode(token)   -- nil when invalid
 Algorithms: HS256/384/512, RS256/384/512, PS256/384/512, ES256/384,
 EdDSA.
 
-`crypto` and `Jwt` are unavailable in workflow run code. Call an
-object from a step when a run needs them.
-
 ## script
 
 ```lua
 script.identifier   -- the script's public identifier
+script.project_id   -- the project it belongs to
 ```
+
+### Gotchas
+
+- `crypto` and `Jwt` are absent from a workflow environment, step
+  bodies included. Call an object from a step when a run needs them.
+- `json.parse` raises on bad input. Wrap it in `pcall` whenever the
+  text came from outside.
+- `getfile` returns nil for a path that is not in the bundle. Add the
+  file to `script.json`'s `includes` or it does not ship.
+
+## Related
+
+- [secret](/docs/reference/secret): what `Jwt.new` usually signs with.
+- [http](/docs/reference/http): returning `getfile` output as a
+  response body.

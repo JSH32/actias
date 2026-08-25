@@ -45,9 +45,8 @@ program is a closure over whatever the handler already computed.
 ## Identity
 
 The second argument is an object handle: `User(name)`,
-`Account(name)`. The connection speaks as that identity, and every
-[stream gate](/docs/runtime/streams) sees it in the same shape an
-object follower has.
+`Account(name)`. The connection speaks as that identity, and a
+[stream gate](/docs/runtime/streams) sees it shaped like any follower.
 
 Mint it after authenticating. It is fixed for the life of the
 connection and cannot be changed by anything the client sends.
@@ -76,9 +75,10 @@ to write the loop yourself.
 ## Sending
 
 `sock:send(value)` writes one JSON frame. There is no platform wire
-protocol: the frames on the wire are the ones your program sends. If
-you want clients to change subscriptions, define a frame for it and
-handle it in the loop:
+protocol: the frames on the wire are the ones your program sends.
+
+To let clients change subscriptions, define a frame for it and handle
+it in the loop:
 
 ```lua
 sock:each(function(item)
@@ -90,20 +90,22 @@ sock:each(function(item)
 end)
 ```
 
-Follow targets are handles named in your code, never strings taken
-from the wire.
-
 ## Connection edges
 
 `sock:follow` makes an edge like `state:follow` does, with different
 promises:
 
-| | object edge | connection edge |
-|---|---|---|
-| delivery | at-least-once | at-most-once |
-| retry | yes, with backoff | none |
-| on failure | retried, then dropped | edge removed |
-| lifetime | until unfollowed | dies with the connection |
+<table>
+  <thead>
+    <tr><th></th><th>object edge</th><th>connection edge</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>delivery</td><td>at-least-once</td><td>at-most-once</td></tr>
+    <tr><td>retry</td><td>yes, with backoff</td><td>none</td></tr>
+    <tr><td>on failure</td><td>retried, then dropped</td><td>edge removed</td></tr>
+    <tr><td>lifetime</td><td>until unfollowed</td><td>dies with the connection</td></tr>
+  </tbody>
+</table>
 
 A tab that closes takes its edges with it. Nothing accumulates for
 dead connections.
@@ -114,9 +116,26 @@ reconnect the client reads the object's state and continues.
 
 ## Backpressure and limits
 
-Each connection has a bounded inbox. A program that stops consuming
-fills it, and the connection closes rather than buffering without
-limit.
+Each connection has an inbox of 256 items. A program that stops
+consuming fills it, and the connection closes rather than buffering
+without limit.
 
-Returning from the program, throwing, or the peer disconnecting all
-end the connection and remove the edges it made.
+Returning from the program, throwing, or the peer disconnecting all end
+the connection and remove the edges it made.
+
+### Gotchas
+
+- Follow targets are handles named in your code, never strings taken
+  from the wire. A client sends `{op = "watch", id = "lot-42"}` and
+  your code decides that means `Auction("lot-42")`.
+- A dropped frame is not reported. At-most-once means the client can
+  miss one and never learn that it did, which is why reconnect should
+  re-read state rather than resume.
+- The identity is fixed at upgrade. Nothing the client sends later can
+  change what the connection speaks as.
+
+## Related
+
+- [Streams](/docs/runtime/streams): the publisher side and who may
+  follow.
+- [sock reference](/docs/reference/sockets): every method.

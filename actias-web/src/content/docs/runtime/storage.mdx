@@ -6,8 +6,7 @@ order: 2
 
 ## Key-value
 
-[`kv`](/docs/reference/kv) maps keys to JSON values within a
-namespace.
+[`kv`](/docs/reference/kv) maps keys to values within a namespace.
 
 ```lua
 local cache = kv "cache"
@@ -26,7 +25,7 @@ must be findable by key alone.
 migrations.
 
 ```lua
-local db = database "catalog"
+local db = database "catalog" { migrations = "migrations/catalog" }
 
 db:exec("INSERT INTO listings (id, title, seller) VALUES (?, ?, ?)",
     { id, title, seller })
@@ -40,9 +39,9 @@ local top = db:read(
 Use it for questions spanning many rows: joins, aggregates, filtered
 lists. Nothing else here answers those.
 
-Schema comes from migration files in the bundle. The first call that
-touches the database applies pending migrations inside that call's
-transaction. See [migrations](/docs/reference/database#migrations).
+Schema comes from the `.sql` files in the declared directory, applied
+at the first call that touches the database. Declare no directory and
+nothing is applied: see [migrations](/docs/reference/database#migrations).
 
 ## Objects
 
@@ -51,11 +50,8 @@ call at a time and owns a private database.
 
 ```lua
 local Auction = object "Auction" {
-    hooks = {
-        init = function(state)
-            state.sql:exec("CREATE TABLE bids (at INT, user TEXT, amount INT)")
-        end,
-    },
+    migrations = "migrations/Auction",
+
     bid = function(state, user, amount)
         state.sql:exec("INSERT INTO bids VALUES (?, ?, ?)",
             { state.now(), user, amount })
@@ -70,12 +66,17 @@ to that entity must not interleave.
 
 ## Choosing
 
-| Question | Use |
-|---|---|
-| Small value, looked up by name | kv |
-| Search or join across many rows | database |
-| State owned by one entity | object |
-| Two simultaneous changes must not collide | object |
+<table>
+  <thead>
+    <tr><th>Question</th><th>Use</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Small value, looked up by name</td><td>kv</td></tr>
+    <tr><td>Search or join across many rows</td><td>database</td></tr>
+    <tr><td>State owned by one entity</td><td>object</td></tr>
+    <tr><td>Two simultaneous changes must not collide</td><td>object</td></tr>
+  </tbody>
+</table>
 
 Using both an object and a database is normal. An auction keeps its
 bid history in its own object and writes a row to a shared `sales`
@@ -83,3 +84,18 @@ database when it closes, because "what sold this week" spans lots.
 
 All three are durable, scoped to the project, declared in code, and
 browsable in the console.
+
+### Gotchas
+
+- An object's `state.sql` is private to that instance. No query spans
+  instances, so "the top ten lots across every auction" needs a shared
+  database.
+- kv remembers the type you wrote. A number comes back a number, a
+  boolean a boolean, a table a table. Nothing is stringified on your
+  behalf.
+
+## Related
+
+- [Objects](/docs/runtime/objects): serialization, alarms, placement.
+- [database](/docs/reference/database) and [kv](/docs/reference/kv):
+  every method with signatures.
