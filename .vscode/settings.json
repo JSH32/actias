@@ -2,5 +2,5 @@
   // The workspace compiler is the arbiter of type errors; the editor's
   // bundled typescript is newer and disagrees (deprecations, stricter lib
   // types), so the ts server runs the version the repo actually builds with.
-  "typescript.tsdk": "actias-web/node_modules/typescript/lib"
+  "js/ts.tsdk.path": "actias-web/node_modules/typescript/lib"
 }
