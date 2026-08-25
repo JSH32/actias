@@ -1,0 +1,58 @@
+---
+title: What Actias is
+lead: A serverless platform for Luau with storage, durable objects, queues, workflows and streams built in.
+order: 1
+navLabel: What Actias is
+---
+
+You write a Lua file, publish it, and it answers HTTP requests. The
+platform also provides the things applications usually need a separate
+service for: storage, background jobs, scheduled work, long-running
+processes, and live updates to browsers.
+
+```lua
+local visits = kv "visits"
+
+on "fetch" (function(request)
+    local count = (visits:get("count") or 0) + 1
+    visits:set("count", count)
+    return {
+        headers = { ["content-type"] = "application/json" },
+        body = json.stringify({ hello = "actias", visits = count }),
+    }
+end)
+```
+
+That is a complete program. No package file, no database setup, no
+connection string.
+
+## Declarations
+
+`kv "visits"` declares that this script uses a key-value namespace
+called `visits`. Databases, queues, workflows, object classes and
+secrets are declared the same way, at the top level of the entry
+point.
+
+The platform derives the full list by running your file with every
+surface stubbed out, and stores it with the revision. `actias check`
+prints the same list locally. A script can only reach what its
+declarations name.
+
+## What is available
+
+| Surface | Use it for |
+|---|---|
+| `kv` | small values read by name |
+| `database` | SQL, migrations, queries across rows |
+| `object` | one entity's state, serialized access, its own alarm |
+| `queue` | retried background work |
+| `workflow` | processes lasting minutes to days |
+| streams + sockets | pushing events to objects and browsers |
+| `secret` | versioned credentials |
+| `on "cron:..."` | scheduled jobs |
+
+Each has a chapter in [How it runs](/docs/runtime/requests) and a page
+in the [reference](/docs/reference/kv).
+
+> **Under construction.** Surfaces change without notice. These docs
+> describe what works today.

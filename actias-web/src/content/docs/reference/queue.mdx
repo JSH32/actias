@@ -1,0 +1,57 @@
+---
+title: queue
+lead: Durable message queues and their handlers.
+order: 4
+---
+
+## Declaring
+
+```lua
+local mailroom = queue "mailroom"
+
+on "queue:mailroom" (function(job)
+    -- job is whatever was sent
+end)
+```
+
+The handler name must match the queue name.
+
+## Methods
+
+```lua
+mailroom:send(payload)   -- returns true; payload is json-representable
+mailroom:stats()         -- depth, in flight, dead letters
+```
+
+## Behaviour
+
+- Delivery is at-least-once. A handler that throws is retried with
+  growing backoff.
+- After a bounded number of attempts the message becomes a dead
+  letter: it stops retrying and waits for inspection.
+- One message produces one handler run. Queues distribute, they do not
+  broadcast.
+
+Write handlers that tolerate running twice on the same message.
+
+## Example
+
+```lua
+local mailroom = queue "mailroom"
+
+on "queue:mailroom" (function(job)
+    if job.kind == "thumbnail" then
+        local response = http.make_request({ uri = job.url, method = "GET" })
+        db:exec("UPDATE listings SET preview = ? WHERE id = ?",
+            { response.status_code == 200 and "ok" or "unavailable", job.id })
+    end
+end)
+
+on "fetch" (function(request)
+    mailroom:send({ kind = "thumbnail", id = "lot-1", url = "https://..." })
+    return { status_code = 202, body = "queued" }
+end)
+```
+
+Errors are how you dead-letter deliberately: a job whose input can
+never work should throw, not silently succeed.

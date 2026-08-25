@@ -1,0 +1,130 @@
+---
+title: A chat room
+lead: One object, a REST api, and a websocket that pushes new messages.
+order: 1
+---
+
+The smallest application that uses storage, streams and sockets
+together. A room keeps its own message history; browsers receive new
+messages live.
+
+## The room
+
+```lua
+local User = object "User" {}
+
+local Room = object "Room" {
+    publishes = { "message" },
+
+    hooks = {
+        init = function(state)
+            state.sql:exec(
+                "CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, \
+                 at INT, from_user TEXT, text TEXT)")
+        end,
+        follow = function(state, topic, follower)
+            return follower:is(User)
+        end,
+    },
+
+    send = function(state, from, text)
+        state.sql:exec("INSERT INTO messages (at, from_user, text) VALUES (?, ?, ?)",
+            { state.now(), from, text })
+        local head = state.sql:query_one("SELECT MAX(seq) AS seq FROM messages")
+        state:publish("message",
+            { seq = head.seq, from = from, text = text, at = state.now() })
+        return head.seq
+    end,
+
+    history = function(state, before, limit)
+        limit = math.min(limit or 50, 200)
+        local rows = before
+            and state.sql:query(
+                "SELECT seq, at, from_user, text FROM messages \
+                 WHERE seq < ? ORDER BY seq DESC LIMIT ?", { before, limit })
+            or state.sql:query(
+                "SELECT seq, at, from_user, text FROM messages \
+                 ORDER BY seq DESC LIMIT ?", { limit })
+        local messages = {}
+        for index = #rows, 1, -1 do
+            messages[#messages + 1] = rows[index]
+        end
+        return { messages = messages }
+    end,
+
+    since = function(state, after)
+        return state.sql:query(
+            "SELECT seq, at, from_user, text FROM messages \
+             WHERE seq > ? ORDER BY seq LIMIT 500", { after or 0 })
+    end,
+}
+```
+
+`User` is declared only as an identity for the socket to speak as. It
+is never called, so no `User` instance is ever created.
+
+## Routes and the socket
+
+```lua
+on "fetch" (function(request)
+    local path = request.path or "/"
+    local query = request.query or {}
+
+    if request.upgrade and path == "/ws" then
+        local user = query.user
+        if not user or #user == 0 then
+            return { status_code = 401, body = "name required" }
+        end
+        return request:upgrade(function(sock)
+            sock:follow(Room(query.room or "lobby"), "message")
+            sock:each(function(item)
+                if item.kind == "event" then
+                    sock:send({
+                        event = "message",
+                        seq = item.event.data.seq,
+                        from = item.event.data.from,
+                        text = item.event.data.text,
+                    })
+                end
+            end)
+        end, User(user))
+    end
+
+    if request.method == "GET" and path == "/api/history" then
+        return reply(200, Room(query.room or "lobby")
+            :history(tonumber(query.before), tonumber(query.limit)))
+    end
+
+    if request.method == "POST" and path == "/api/send" then
+        local body = json.parse(request.body)
+        local seq = Room(body.room or "lobby"):send(body.user, body.text)
+        return reply(201, { seq = seq })
+    end
+
+    return reply(404, { error = "no such route" })
+end)
+```
+
+## Catching up
+
+The room's `seq` column is monotonic, which gives clients three reads
+from one column:
+
+| Need | Call |
+|---|---|
+| Initial load | `history(nil, 50)` |
+| Older messages | `history(oldest_seq_rendered, 50)` |
+| Missed while away | `since(last_seq_rendered)` |
+
+The third one exists because connection edges are at-most-once: a
+disconnected browser misses frames. The room's table is where
+durability lives, so a reconnecting client asks for everything after
+the last sequence it rendered and continues from there.
+
+## What to take from it
+
+- The domain object does not know how frames reach clients. The same
+  `Room` works behind REST, behind a socket, or both.
+- Membership rules live in the publisher's `follow` gate, stated once.
+- Live delivery and durable history are separate mechanisms with
+  separate promises, and the client uses both.

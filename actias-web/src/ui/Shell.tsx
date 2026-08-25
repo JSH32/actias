@@ -32,6 +32,7 @@ const publicRoutes = [
   /^\/register/,
   /^\/blog/,
   /^\/posts/,
+  /^\/docs/,
   /^\/404/,
 ];
 

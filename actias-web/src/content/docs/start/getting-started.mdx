@@ -1,0 +1,116 @@
+---
+title: Your first script
+lead: Install the CLI, create a project, publish it, and watch it answer a request.
+order: 2
+---
+
+## Get the tools
+
+The CLI is one binary, `actias`. Grab it from the download page, or
+build it from the repository with `cargo build -p actias-cli`.
+
+Everything below also needs somewhere to publish to. Locally that is
+`docker-compose up -d` in the repository root, which boots the api,
+the console, workers, and storage.
+
+## Log in and make a project
+
+```sh
+actias login          # asks for the api url and your credentials
+actias project create my-project
+```
+
+A **project** owns your scripts and everything they declare: the kv
+namespaces, databases, objects and secrets they use are scoped to it.
+
+## Create a script
+
+```sh
+actias init hello
+cd hello
+```
+
+You get `main.lua`, a `script.json` (which records the script's id and
+which files belong to the bundle), and a `definitions/` folder that
+gives your editor autocomplete for the platform surface.
+
+Open `main.lua`:
+
+```lua
+on "fetch" (function(request)
+    return {
+        headers = { ["content-type"] = "application/json" },
+        body = json.stringify({ hello = "actias" }),
+    }
+end)
+```
+
+## Check it
+
+```sh
+actias check
+```
+
+This runs the same declaration pass the server runs at publish, so it
+catches anything the platform would reject, then type-checks every
+file. It prints the contract it derived:
+
+```
+📜 Project validated!
+⚡ Handles events: fetch
+🔎 Types check out (luau-analyze).
+```
+
+As your script grows, that list grows with it: the kv namespaces,
+databases, queues, workflows, object classes and streams it declares.
+It is the same list the console shows, and the same list the server
+enforces.
+
+## Publish it
+
+```sh
+actias publish
+```
+
+The bundle uploads (only the files that changed), the server derives
+the contract again from your code, and the revision goes live. The CLI
+prints the public identifier and the revision id.
+
+Your script now answers at `<worker-url>/<identifier>/`. Curl it:
+
+```sh
+curl http://localhost:3002/hello/
+{"hello":"actias"}
+```
+
+## Add something that remembers
+
+Declare a key-value namespace at the top level and use it inside the
+handler:
+
+```lua
+local visits = kv "visits"
+
+on "fetch" (function(request)
+    local count = (visits:get("count") or 0) + 1
+    visits:set("count", count)
+    return {
+        headers = { ["content-type"] = "application/json" },
+        body = json.stringify({ visits = count }),
+    }
+end)
+```
+
+Publish again and refresh a few times. The counter survives requests,
+restarts, and deploys, and the console's KV section shows the value
+changing.
+
+## Where to go next
+
+- [How a request runs](/docs/runtime/requests) explains the execution
+  model, one concept per chapter, starting from the problem each one
+  solves.
+- [The Lua reference](/docs/reference/kv) documents every namespace
+  with signatures and examples.
+- The [chat example](/docs/examples/chat) is the shortest complete
+  application worth reading.

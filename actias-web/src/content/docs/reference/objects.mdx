@@ -1,0 +1,97 @@
+---
+title: object
+lead: Class declarations, state, hooks, and calling instances.
+order: 3
+---
+
+## Declaring a class
+
+```lua
+local Auction = object "Auction" {
+    publishes = { "bid" },
+    receives = { ["Floor:tick"] = function(state, event) end },
+    hooks = {
+        init = function(state) end,
+        alarm = function(state) end,
+        follow = function(state, topic, follower) return true end,
+    },
+
+    bid = function(state, user, amount) end,   -- a method
+}
+```
+
+Three reserved keys; every other key is a method.
+
+| Key | Meaning |
+|---|---|
+| `publishes` | topics this class emits; see [streams](/docs/runtime/streams) |
+| `receives` | `["Class:topic"] = handler` for streams it consumes |
+| `hooks` | `init`, `alarm`, `follow` |
+
+Referencing a class declared elsewhere:
+
+```lua
+local Auction = objects "Auction"
+```
+
+## Instances
+
+```lua
+Auction("lot-42"):bid("ada", 25)     -- callable form
+Auction:get("lot-42"):bid("ada", 25) -- same thing
+```
+
+Arguments and return values must be JSON-representable.
+
+## state
+
+| Field | Meaning |
+|---|---|
+| `state.sql` | this instance's private database |
+| `state.name` | instance name |
+| `state.now()` | platform clock, milliseconds |
+| `state:set_alarm(duration)` | schedule the `alarm` hook |
+| `state:publish(topic, event)` | emit on a declared topic |
+| `state:follow(handle, topic, filter?)` | follow another object |
+| `state:unfollow(handle, topic)` | drop that edge |
+| `state:followers(topic?)` | current followers |
+| `state:drop_followers(handle)` | drop every edge an identity holds |
+| any other key | in-memory scratch, lost when the object sleeps |
+
+`state.sql` takes the same `exec` / `query` / `query_one` as a
+[database](/docs/reference/database), minus the read variants.
+
+## Hooks
+
+```lua
+hooks = {
+    init = function(state) end,
+    alarm = function(state) end,
+    follow = function(state, topic, follower) return true end,
+}
+```
+
+- `init` runs once, on the first ever call to an instance, before that
+  call proceeds.
+- `alarm` runs when a set alarm comes due.
+- `follow` decides whether `follower` may follow `topic`. Truthy
+  accepts.
+
+Hooks are called by the platform. They cannot be invoked through a
+handle.
+
+## follower
+
+The identity a `follow` hook receives:
+
+| Field | Meaning |
+|---|---|
+| `follower.name` | instance name it speaks as |
+| `follower.id` | `"Class/name"` |
+| `follower.transport` | `"object"` or `"connection"` |
+| `follower:is(Class)` | class check against a class value |
+
+## Durations
+
+`set_alarm` and workflow timeouts take `"500ms"`, `"30s"`, `"10m"`,
+`"24h"`, `"7d"`, or a bare number of seconds.

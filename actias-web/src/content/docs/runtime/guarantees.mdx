@@ -1,0 +1,67 @@
+---
+title: Guarantees and limits
+lead: What each surface promises, and what your code has to do about it.
+order: 8
+---
+
+## Delivery
+
+| Surface | Promise | What your code must do |
+|---|---|---|
+| Object method call | exactly once, serialized per object | nothing |
+| Queue message | at-least-once | handler safe to run twice |
+| Object stream edge | at-least-once, in order per publisher | `receives` handler safe to run twice |
+| Connection edge | at-most-once | client re-reads state on reconnect |
+| Workflow step | recorded once, replayed after | keep run code deterministic |
+| Alarm | fires once per set, survives restarts | nothing |
+
+At-least-once means a repeat is possible after a machine failure at
+the wrong moment. Make repeated work harmless: check an id, use
+`INSERT OR IGNORE`, or update conditionally on current state.
+
+At-most-once means loss is possible. Only connection edges have this
+promise, deliberately: a browser tab can vanish mid-frame, so events
+are not buffered for it. Anything that must survive belongs on the
+object one hop back.
+
+## Ordering
+
+Events from one publisher reach one follower in publish order. There
+is no ordering promise across different publishers. If order matters
+across sources, put a sequence number in the data.
+
+Calls to one object are ordered. Calls to different objects are not.
+
+## Transactions
+
+A method's writes to `state.sql` commit together when the method
+returns. A `state:publish` inside the method is part of the same
+commit, so an event never describes a write that did not happen.
+
+Migrations apply inside the transaction of the call that triggered
+them: a failing migration applies nothing and surfaces as that call's
+error.
+
+Workflow steps commit their journal entry with their result. A crash
+between two steps replays from the last recorded one.
+
+## Limits
+
+| Limit | Value |
+|---|---|
+| Request budget | a few seconds per request |
+| Object call budget | same as a request, per call |
+| Connection inbox | bounded; overflow closes the connection |
+| Object database | size-capped per instance |
+| Queue attempts | bounded, then dead-lettered |
+| Stream edge attempts | bounded, then the edge is dropped |
+
+## Failure behaviour
+
+A machine going away does not lose durable state. Objects move,
+alarms re-arm from storage, workflow runs resume from their journal,
+queue messages redeliver.
+
+Connections do not survive a machine going away. Clients reconnect and
+re-follow; that path runs often enough in normal operation (deploys,
+scaling) that it should be part of the client from the start.

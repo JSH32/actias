@@ -1,0 +1,85 @@
+---
+title: Where data goes
+lead: Three storage kinds, and which one fits which question.
+order: 2
+---
+
+## Key-value
+
+[`kv`](/docs/reference/kv) maps keys to JSON values within a
+namespace.
+
+```lua
+local cache = kv "cache"
+
+cache:set("banner", { text = "back at 09:00" })
+local banner = cache:get("banner")
+```
+
+Use it for small values read by name: flags, counters, cached
+summaries, session markers. It has no queries, so anything you store
+must be findable by key alone.
+
+## SQL databases
+
+[`database`](/docs/reference/database) is a SQLite database with
+migrations.
+
+```lua
+local db = database "catalog"
+
+db:exec("INSERT INTO listings (id, title, seller) VALUES (?, ?, ?)",
+    { id, title, seller })
+
+local top = db:read(
+    "SELECT category, COUNT(*) AS sold FROM sales \
+     JOIN listings ON listings.id = sales.listing_id \
+     GROUP BY category ORDER BY sold DESC LIMIT 5")
+```
+
+Use it for questions spanning many rows: joins, aggregates, filtered
+lists. Nothing else here answers those.
+
+Schema comes from migration files in the bundle. The first call that
+touches the database applies pending migrations inside that call's
+transaction. See [migrations](/docs/reference/database#migrations).
+
+## Objects
+
+An [object](/docs/runtime/objects) is a named entity that handles one
+call at a time and owns a private database.
+
+```lua
+local Auction = object "Auction" {
+    hooks = {
+        init = function(state)
+            state.sql:exec("CREATE TABLE bids (at INT, user TEXT, amount INT)")
+        end,
+    },
+    bid = function(state, user, amount)
+        state.sql:exec("INSERT INTO bids VALUES (?, ?, ?)",
+            { state.now(), user, amount })
+    end,
+}
+
+Auction("lot-42"):bid("ada", 25)
+```
+
+Use it when state belongs to one entity, and when concurrent changes
+to that entity must not interleave.
+
+## Choosing
+
+| Question | Use |
+|---|---|
+| Small value, looked up by name | kv |
+| Search or join across many rows | database |
+| State owned by one entity | object |
+| Two simultaneous changes must not collide | object |
+
+Using both an object and a database is normal. An auction keeps its
+bid history in its own object and writes a row to a shared `sales`
+database when it closes, because "what sold this week" spans lots.
+
+All three are durable, scoped to the project, declared in code, and
+browsable in the console.

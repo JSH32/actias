@@ -8,9 +8,10 @@ result
 result-*
 
 # Local-only working layer: planning, analysis, rules and session scratch.
-# These stay on the machine and are never pushed; see docs/rules/60-git-ci.md.
-scratch/
-docs/
-TODO.md
+# These stay on the machine and are never pushed. Anchored to the repo
+# root: the docs SITE under actias-web ships and must not match here.
+/scratch/
+/docs/
+/TODO.md
 CLAUDE.md
 claudedesign/

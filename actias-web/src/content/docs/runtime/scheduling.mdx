@@ -1,0 +1,44 @@
+---
+title: Scheduled work
+lead: Cron handlers for site-wide schedules, alarms for deadlines an entity owns.
+order: 9
+---
+
+## Cron
+
+A cron handler runs on a schedule for the whole script.
+
+```lua
+local cache = kv "cache"
+local db = database "catalog"
+
+on "cron:*/2 * * * *" (function(event)
+    local soon = db:read(
+        "SELECT id, title FROM listings WHERE state = 'open' \
+         ORDER BY created_at DESC LIMIT 8")
+    cache:set("ending-soon", { at = event.scheduled_at, items = soon })
+end)
+```
+
+The expression follows the standard five-field format
+(minute, hour, day, month, weekday); a six-field expression adds
+seconds at the front. `event.scheduled_at` is the occurrence the run
+belongs to.
+
+The schedule arms itself the first time a worker touches the revision
+and re-arms after restarts.
+
+## Cron or alarm
+
+Use cron when the schedule belongs to the site: a nightly digest, a
+cache rebuild, a periodic cleanup.
+
+Use an [alarm](/docs/runtime/objects#alarms) when the deadline belongs
+to one entity: this auction closes at 14:02, this trial ends on the
+30th, this timeout lifts in an hour. The entity arms its own alarm,
+which means no query has to find overdue rows and nothing is missed
+when the number of entities grows.
+
+The distinction matters at scale. One cron scanning a table of
+deadlines gets slower as the table grows. A million objects with their
+own alarms cost nothing until they fire.

@@ -1,0 +1,71 @@
+---
+title: sock
+lead: The value a connection program receives.
+order: 8
+---
+
+## Upgrading
+
+```lua
+if request.upgrade and request.path == "/ws" then
+    return request:upgrade(function(sock)
+        -- connection program
+    end, User(name))
+end
+```
+
+`request:upgrade(program, identity)` returns the value your fetch
+handler should return. The identity is an object handle; the
+connection speaks as it for the rest of its life.
+
+## Methods
+
+```lua
+sock:each(handler)                     -- loop until close; return true to stop
+sock:recv()                            -- one item, or nil once closed
+sock:send(value)                       -- one json frame
+sock:follow(target, topic, filter?)    -- connection edge
+sock:unfollow(target, topic)
+sock:close()
+```
+
+## Items
+
+`each` and `recv` yield items of two kinds:
+
+```lua
+-- a delivered stream event
+{ kind = "event", event = { topic = "...", from = { id, class, name }, data = {...} } }
+
+-- a json frame from the client
+{ kind = "frame", data = {...} }
+```
+
+Both arrive on the same inbox.
+
+## Example
+
+```lua
+return request:upgrade(function(sock)
+    sock:follow(Account(user), "events")
+    local watching = nil
+
+    sock:each(function(item)
+        if item.kind == "event" then
+            sock:send({ topic = item.event.topic, data = item.event.data })
+        elseif item.kind == "frame" and item.data.op == "watch" then
+            if watching then sock:unfollow(Auction(watching), "bid") end
+            watching = item.data.id
+            sock:follow(Auction(watching), "bid")
+        end
+    end)
+end, Account(user))
+```
+
+## Notes
+
+- Connection edges are at-most-once and die with the connection.
+- The inbox is bounded; a program that stops consuming closes the
+  connection.
+- There is no platform wire protocol. Frames are the ones your program
+  sends and interprets.

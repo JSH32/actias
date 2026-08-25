@@ -1,0 +1,124 @@
+---
+title: Streams
+lead: Objects publish events on named topics; followers the publisher approved receive them.
+order: 6
+---
+
+## Publishing
+
+An object declares its topics and publishes events on them.
+
+```lua
+local Auction = object "Auction" {
+    publishes = { "bid", "closed" },
+
+    bid = function(state, user, amount)
+        state.sql:exec("INSERT INTO bids VALUES (?, ?, ?)",
+            { state.now(), user, amount })
+        state:publish("bid", { user = user, amount = amount })
+    end,
+}
+```
+
+`state:publish` appends the event to this object's log in the same
+transaction as the write above it. Delivery happens after the call
+commits, along whatever edges exist.
+
+Publishing a topic that is not declared is an error.
+
+## Who may follow
+
+An edge exists only if the publisher accepted it. There are two ways
+to accept.
+
+A gate, when the answer depends on state:
+
+```lua
+local Server = object "Server" {
+    publishes = { "activity" },
+    hooks = {
+        follow = function(state, topic, follower)
+            return follower:is(Account) and state.sql:query_one(
+                "SELECT 1 FROM members WHERE user = ?", { follower.name }) ~= nil
+        end,
+    },
+}
+```
+
+The gate receives the follower's identity: `follower.name`,
+`follower.id`, and `follower:is(SomeClass)` to check its class. It is
+data, not a live handle.
+
+A built-in policy, when the answer is fixed:
+
+```lua
+publishes = {
+    events = "self",     -- only this instance's own identity
+    tick = "public",     -- any identity
+}
+```
+
+A topic listed as a bare name uses the gate. A topic with neither a
+gate nor a policy cannot be followed, so a missing gate fails closed.
+
+`"self"` is the personal-stream case. A websocket's identity is minted
+server-side after authentication, so a connection following
+`Account("ada"):events` genuinely is `Account/ada`, and the policy
+admits it while refusing a connection speaking as anyone else. That
+covers a user's laptop, phone and tablet all receiving their own
+notifications, without writing
+`follower:is(Account) and follower.name == state.name` on every class.
+
+## Following and receiving
+
+```lua
+local Account = object "Account" {
+    receives = {
+        ["Auction:closed"] = function(state, event)
+            state.sql:exec("INSERT INTO notifications VALUES (?, ?)",
+                { state.now(), json.stringify(event.data) })
+        end,
+    },
+
+    watch = function(state, auction_id)
+        state:follow(Auction(auction_id), "closed")
+    end,
+}
+```
+
+`receives` keys are `"Class:topic"`. `publishes` and `receives` at the
+top of a class show both directions of its data flow.
+
+- `state:follow(handle, topic, filter?)` creates the edge.
+- `state:unfollow(handle, topic)` removes it.
+- `state:drop_followers(Account(name))` removes every edge that
+  identity holds.
+- `state:followers(topic)` lists current followers.
+
+An optional filter table matches equality against top-level fields of
+the event data, so one filtered edge can replace many topic-specific
+ones.
+
+## Delivery to objects
+
+Events reach a sleeping object. The publisher's log keeps them, the
+edge tracks how far the follower has read, and delivery wakes the
+follower.
+
+An account with nothing running receives every event for what it
+follows, in order. Unread counts accrue while a user is away, with no
+catch-up protocol to write.
+
+Delivery is at-least-once: a machine failure at the wrong moment can
+repeat one, so `receives` handlers should tolerate running twice on
+the same event.
+
+## Delivery to browsers
+
+Websocket connections are also followers, with weaker promises:
+at-most-once, no retry, and the edge dies with the tab. See
+[sockets](/docs/runtime/sockets).
+
+Keep anything that must survive on an object edge, one hop back from
+the connection. A device may miss a frame; the object does not miss
+the event.

@@ -1,0 +1,89 @@
+---
+title: json, uuid, log, crypto, getfile
+lead: The remaining globals.
+order: 9
+---
+
+## json
+
+```lua
+json.stringify(value)   -- string
+json.parse(text)        -- value; raises on bad input
+```
+
+Wrap `parse` with `pcall` when the input is untrusted.
+
+## uuid
+
+```lua
+uuid.v4()   -- "3f2b…"
+```
+
+In [workflow](/docs/reference/workflow) run code, generated ids are
+journaled so replay reproduces them.
+
+## log
+
+```lua
+log.debug(value)
+log.info(value)
+log.warn(value)
+log.error(value)
+```
+
+Lines appear in the console's live log for the script, and in
+`actias dev` sessions.
+
+## getfile
+
+```lua
+local page = getfile("web/index.html")
+```
+
+Reads a file from the published bundle and returns its bytes, or `nil`
+when the path is not in the bundle. Return it as a response body
+directly:
+
+```lua
+return {
+    status_code = 200,
+    headers = { ["content-type"] = "text/html" },
+    body = getfile("web/index.html"),
+}
+```
+
+Include the files in `script.json`'s `includes` so they ship.
+
+## crypto
+
+```lua
+crypto.sha256(data)      -- also sha224, sha384, sha512, sha512_224, sha512_256
+
+local argon = crypto.Argon2.new("Argon2id")
+local hash = argon:hash(password)
+argon:verify(hash, password)   -- boolean
+
+local key = crypto.RsaPrivateKey.new(2048)
+key:to_pem()
+key:public_key():encrypt(bytes)
+```
+
+## Jwt
+
+```lua
+local signer = Jwt.new("HS256", secret "jwt-signing-key")
+local token = signer:encode({ sub = "ada", exp = os.time() + 3600 })
+local claims = signer:decode(token)   -- nil when invalid
+```
+
+Algorithms: HS256/384/512, RS256/384/512, PS256/384/512, ES256/384,
+EdDSA.
+
+`crypto` and `Jwt` are unavailable in workflow run code. Call an
+object from a step when a run needs them.
+
+## script
+
+```lua
+script.identifier   -- the script's public identifier
+```

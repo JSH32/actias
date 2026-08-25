@@ -1,0 +1,66 @@
+---
+title: http, request, response
+lead: The request table, the response table, and outbound calls.
+order: 7
+---
+
+## request
+
+| Field | Type | Notes |
+|---|---|---|
+| `request.method` | string | `"GET"`, `"POST"`, … |
+| `request.path` | string | relative to your script |
+| `request.query` | table | decoded query parameters |
+| `request.headers` | table | lowercase keys |
+| `request.body` | string | raw body |
+| `request.uri` | string | full uri |
+| `request.upgrade` | function or nil | present on websocket handshakes |
+
+`request.path` has the routing prefix removed: a script served at
+`/hello/` sees `/api/thing`, not `/hello/api/thing`.
+
+## response
+
+```lua
+return {
+    status_code = 200,          -- defaults to 200
+    headers = { ["content-type"] = "application/json" },
+    body = json.stringify({ ok = true }),
+}
+```
+
+`body` takes a string or a byte array, so
+[`getfile`](/docs/reference/misc#getfile) output can be returned
+directly.
+
+## Outbound requests
+
+```lua
+local response = http.make_request({
+    uri = "https://example.com/api",
+    method = "POST",
+    headers = { ["content-type"] = "application/json" },
+    body = json.stringify({ hello = "world" }),
+})
+
+response.status_code
+response.headers
+response.body
+```
+
+Outbound calls go through a guarded client. A refused or unreachable
+host raises an error, so wrap calls that may fail with `pcall`, or let
+a [queue](/docs/reference/queue) handler retry.
+
+`http` is not available in [workflow](/docs/reference/workflow) run
+code.
+
+## Uri
+
+```lua
+local uri = Uri.parse("https://example.com/a?b=c")
+uri.scheme    -- "https"
+uri.path      -- "/a"
+uri.query     -- "b=c"
+uri:tostring()
+```

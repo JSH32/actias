@@ -1,0 +1,86 @@
+---
+title: An auction house
+lead: A worked example that uses every surface at once.
+order: 2
+---
+
+The auction example exercises the whole platform in one script. It is
+the reference for how the pieces fit together.
+
+## Shape
+
+| Piece | Surface |
+|---|---|
+| Accounts, passwords, sessions | `kv`, `crypto.Argon2`, `Jwt`, `secret` |
+| Listings, sales, reporting | `database` with migrations |
+| One auction | `object` with private storage |
+| Closing time | `state:set_alarm` on the auction |
+| Bid feed | `publishes` + connection edges |
+| Notifications when offline | `queue` |
+| Thumbnail fetching | `queue` + `http` |
+| Settlement | `workflow` with race, all and signals |
+| "Ending soon" strip | `on "cron:..."` writing to `kv` |
+| The frontend | `getfile` serving html, js and css |
+
+## The parts worth copying
+
+**The auction owns its deadline.** No sweeper looks for auctions that
+should have closed:
+
+```lua
+open = function(state, seller, title, duration_ms)
+    state.sql:exec("INSERT OR REPLACE INTO meta VALUES ('state', 'open')")
+    state:set_alarm(tostring(duration_ms) .. "ms")
+end,
+```
+
+The `alarm` hook writes the sale row, publishes `closed`, and starts
+the settlement workflow.
+
+**Bids serialize without locks.** Two equal bids arriving together
+produce one winner and one refusal, because the object handles one
+call at a time.
+
+**Presence picks the transport.** The same notification goes to a live
+socket or into a queue, depending on whether anything is connected:
+
+```lua
+notify = function(state, kind, data)
+    state.sql:exec("INSERT INTO notifications VALUES (?, ?, ?)",
+        { state.now(), kind, json.stringify(data) })
+    if #state:followers("events") > 0 then
+        state:publish("events", { kind = kind, data = data })
+    else
+        mailroom:send({ kind = "notify", user = state.name, about = kind })
+    end
+end,
+```
+
+**A hub relays a busy stream.** Every auction publishes `bid`; one
+`Floor` object follows all of them and republishes a single `tick`
+stream, so a browser holds one edge no matter how many auctions exist.
+
+**Settlement is a workflow, not object code.** It races the buyer's
+payment against a 72 hour window, then waits for both sides to confirm
+handover, and survives every restart in between.
+
+**The catalog answers cross-entity questions.** "Top categories by
+volume" joins sales and listings, which no single auction object can
+do.
+
+## Running it
+
+The example lives in the repository under `docs/examples/bazaar`. Set
+its two secrets, point `script.json` at a script you created, and
+publish:
+
+```sh
+actias secret <project-id> put jwt-signing-key <value>
+actias secret <project-id> put receipt-signing-key <value>
+actias publish docs/examples/bazaar
+```
+
+Its README has a numbered walk that fills every console section with
+real rows: list a lot, bid from two browsers, watch the alarm close
+it, settle the sale, rotate a secret mid-run, and poison a queue job
+on purpose to see dead letters and retry.

@@ -1,0 +1,132 @@
+---
+title: Objects
+lead: Named entities that handle one call at a time, own their storage, and arm their own alarms.
+order: 3
+---
+
+## What an object is
+
+An object is a named entity with two properties:
+
+1. It handles one call at a time. Calls to the same object run in
+   order, start to finish.
+2. It owns a private SQLite database no other object or request can
+   read.
+
+```lua
+local Auction = object "Auction" {
+    hooks = {
+        init = function(state)
+            state.sql:exec(
+                "CREATE TABLE bids (seq INTEGER PRIMARY KEY AUTOINCREMENT, \
+                 at INT, user TEXT, amount INT)")
+        end,
+    },
+
+    bid = function(state, user, amount)
+        local high = state.sql:query_one(
+            "SELECT amount FROM bids ORDER BY amount DESC LIMIT 1")
+        if high and amount <= high.amount then
+            return { ok = false, refusal = "does not beat " .. high.amount }
+        end
+        state.sql:exec("INSERT INTO bids (at, user, amount) VALUES (?, ?, ?)",
+            { state.now(), user, amount })
+        return { ok = true, high = amount }
+    end,
+}
+```
+
+Two bids arriving together cannot interleave that read and write, so
+exactly one wins. No lock, transaction or retry loop is needed.
+
+`Auction("lot-42")` and `Auction("lot-43")` are separate objects with
+separate storage, running in parallel. Serialization applies per
+object, not per class.
+
+## Calling one
+
+```lua
+local result = Auction("lot-42"):bid("ada", 25)
+```
+
+The call routes to that instance wherever it runs and returns what the
+method returned. Arguments and returns must be JSON-representable,
+since the call can cross machines.
+
+Objects are lazy. An instance costs nothing until something calls it;
+there is no create step. A name nobody calls does not exist.
+
+## State
+
+Methods receive `state` first.
+
+```lua
+tally = function(state, user)
+    state.sql:exec("UPDATE counts SET n = n + 1 WHERE user = ?", { user })
+    state.hits = (state.hits or 0) + 1
+    return state.name
+end,
+```
+
+- `state.sql` is the private database. Durable.
+- `state.name` is the instance name.
+- `state.now()` is the platform clock in milliseconds.
+- Any other key is scratch: in memory while the object is awake, gone
+  when it sleeps.
+
+## init
+
+`hooks.init` runs once, the first time an instance is called, before
+that call proceeds. Create tables there.
+
+It never runs again: not on restart, not after a deploy. An instance
+created before a schema change keeps its old schema.
+
+## Alarms
+
+An object can schedule itself to wake later.
+
+```lua
+local Auction = object "Auction" {
+    hooks = {
+        alarm = function(state)
+            local high = state.sql:query_one(
+                "SELECT user, amount FROM bids ORDER BY amount DESC LIMIT 1")
+            state.sql:exec("INSERT OR REPLACE INTO meta VALUES ('state', 'closed')")
+        end,
+    },
+
+    open = function(state, duration_ms)
+        state:set_alarm(tostring(duration_ms) .. "ms")
+    end,
+}
+```
+
+`state:set_alarm(duration)` schedules the class's `alarm` hook. One
+alarm per object; setting another replaces it. Durations are written
+`"500ms"`, `"30s"`, `"10m"`, `"24h"`, `"7d"`.
+
+The alarm fires with no browser open and no request arriving. It is
+stored with the object's state, so a restart or a move to another
+machine re-arms it.
+
+Use alarms for deadlines an entity owns: an auction closing, a trial
+ending, a cooldown expiring. Do not sweep a table looking for overdue
+rows.
+
+## Placement
+
+The platform decides which machine hosts each object, moves it when a
+machine goes away, and keeps its storage available. Calls to the same
+object always reach the same one; a call to a sleeping object wakes it
+first.
+
+Since an object handles one call at a time, a single very busy object
+is a bottleneck. The fix is more objects (one per lot, room, user),
+not a bigger one. Sleeping objects are files, so having millions is
+fine.
+
+## Related
+
+Objects exchange events through [streams](/docs/runtime/streams) and
+push work to [queues](/docs/runtime/queues).

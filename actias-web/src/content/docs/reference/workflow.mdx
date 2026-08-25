@@ -1,0 +1,93 @@
+---
+title: workflow
+lead: "Durable multi-step processes: steps, waiting, signals, runs."
+order: 5
+---
+
+## Declaring
+
+```lua
+local settle = workflow "settle-sale" (function(wf, input)
+    -- run body
+    return { outcome = "done" }
+end)
+```
+
+Referencing one declared elsewhere:
+
+```lua
+local settle = workflows "settle-sale"
+```
+
+## Starting and addressing runs
+
+```lua
+local run = settle:start(input, { id = "sale-lot-42" })
+local run = settle:get("sale-lot-42")
+
+run:signal("paid", { by = "ada" })
+run:cancel("no longer needed")
+run:status()
+```
+
+Run ids are yours. A deterministic id (`"sale-" .. lot`) lets routes
+address a run without a lookup table.
+
+## wf verbs
+
+```lua
+wf:step(name, body)
+wf:step(name, { retries = 3 }, body)
+wf:sleep(duration)
+wf:await(name, { timeout = duration })
+wf:race({ "a", "b" }, { timeout = duration })
+wf:all({ "a", "b" }, { timeout = duration })
+wf:spawn(definition, input)
+```
+
+| Verb | Returns |
+|---|---|
+| `step` | whatever the body returned, recorded on first run |
+| `sleep` | nothing, after the duration |
+| `await` | the signal payload, or `nil` on timeout |
+| `race` | payload, name of the first to arrive; `nil, nil` on timeout |
+| `all` | payloads in argument order; `nil` per timed-out entry |
+| `spawn` | a job handle whose completion `all` and `race` accept |
+
+## Determinism
+
+Run code replays from the journal after every park, crash or deploy.
+It must take the same path given the same journal.
+
+- Put effects inside `wf:step`. The step result is journaled and
+  reused on replay.
+- Do not branch on wall-clock time, randomness, or anything read
+  outside a step.
+- `http`, `crypto` and `Jwt` do not exist in a workflow environment.
+  Reach them by calling an [object](/docs/reference/objects) from
+  inside a step.
+
+## Example
+
+```lua
+local settle = workflow "settle-sale" (function(wf, sale)
+    wf:step("notify", { retries = 3 }, function()
+        Account(sale.winner):notify("pay-up", { price = sale.price })
+    end)
+
+    local _, which = wf:race({ "paid", "cancelled" }, { timeout = "72h" })
+    if which ~= "paid" then
+        return { outcome = "void" }
+    end
+
+    local confirmations = wf:all({ "shipped", "received" }, { timeout = "7d" })
+    if confirmations[1] == nil or confirmations[2] == nil then
+        return { outcome = "disputed" }
+    end
+
+    wf:step("settle", { retries = 3 }, function()
+        db:exec("UPDATE sales SET state = 'settled' WHERE id = ?", { sale.id })
+    end)
+    return { outcome = "settled" }
+end)
+```

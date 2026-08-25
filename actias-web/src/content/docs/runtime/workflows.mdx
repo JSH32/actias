@@ -1,0 +1,130 @@
+---
+title: Workflows
+lead: Processes that run for minutes or days, replay from a journal after restarts, and wait on signals.
+order: 5
+---
+
+## What a workflow is
+
+A workflow is a function that runs like ordinary code but can pause
+for days and resume where it stopped, including across crashes and
+deploys.
+
+```lua
+local settle = workflow "settle-sale" (function(wf, sale)
+    wf:step("notify", { retries = 3 }, function()
+        Account(sale.winner):notify("pay-up", { price = sale.price })
+    end)
+
+    local paid, which = wf:race({ "paid", "cancelled" }, { timeout = "72h" })
+
+    if which ~= "paid" then
+        wf:step("void", { retries = 3 }, function()
+            db:exec("UPDATE sales SET state = 'void' WHERE id = ?", { sale.id })
+        end)
+        return { outcome = "void" }
+    end
+
+    wf:step("settle", { retries = 3 }, function()
+        db:exec("UPDATE sales SET state = 'settled' WHERE id = ?", { sale.id })
+    end)
+
+    return { outcome = "settled" }
+end)
+```
+
+Start a run with an id you choose:
+
+```lua
+settle:start({ id = "lot-42", winner = "ada", price = 25 },
+    { id = "sale-lot-42" })
+```
+
+## Replay
+
+Each step, signal and timer is written to a journal before it takes
+effect. When a run resumes, the platform replays the function from the
+top, and steps that already ran return their recorded results instead
+of running again.
+
+This requires the run's own code to be deterministic: given the same
+journal it must take the same path. Effects belong inside steps.
+
+```lua
+-- Wrong: replay can take a different branch
+if os.time() % 2 == 0 then ... end
+
+-- Right: the step result is journaled
+local now = wf:step("stamp", function() return os.time() end)
+if now % 2 == 0 then ... end
+```
+
+Workflow environments do not include `http`, `crypto` or `Jwt`, even
+inside step bodies. Reach effects by calling an
+[object](/docs/runtime/objects) from a step:
+
+```lua
+local receipt = wf:step("sign", function()
+    return Registrar("desk"):sign(payload)
+end)
+```
+
+The step records what the object returned, so replay does not sign
+again.
+
+## Steps
+
+```lua
+wf:step("name", function() ... end)
+wf:step("name", { retries = 3 }, function() ... end)
+```
+
+Names must be stable across revisions. Retries apply per step. When a
+step exhausts its retries the run fails and stops; the console can
+resume it.
+
+## Waiting
+
+```lua
+wf:sleep("24h")
+wf:await("approved", { timeout = "48h" })
+wf:race({ "paid", "cancelled" }, { timeout = "72h" })
+wf:all({ "shipped", "received" }, { timeout = "7d" })
+```
+
+- `await` returns the signal payload, or `nil` on timeout.
+- `race` returns the payload and the name that arrived first.
+- `all` returns payloads in argument order; a timed-out entry is `nil`.
+
+A parked run holds no resources. It is journal rows and a timer.
+
+## Signals
+
+Signals come from outside the run:
+
+```lua
+routes["POST /api/sale/pay"] = function(request, body, user)
+    settle:get("sale-" .. body.id):signal("paid", { by = user })
+    return reply(200, {})
+end
+```
+
+Run ids are yours to choose, so a route can address a run without a
+lookup table.
+
+Duplicate signals are safe. An unconsumed extra is set aside rather
+than breaking replay, which matters because buttons get clicked twice.
+
+## Inspecting
+
+The console lists runs with status and current step, shows the journal
+as a timeline, and offers resume for failed runs.
+
+## Workflow or queue
+
+If anyone will ask how one specific job is doing, use a workflow: runs
+are named, inspectable and signalable, and each carries a journal.
+
+Otherwise use a [queue](/docs/runtime/queues): anonymous, cheap,
+retried in bulk. A queue handler can start a workflow when a message
+turns out to need one.

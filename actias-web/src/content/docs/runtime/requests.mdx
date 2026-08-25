@@ -1,0 +1,78 @@
+---
+title: How a request runs
+lead: Each request builds a fresh Lua environment, runs your handler, and discards it.
+order: 1
+---
+
+## One environment per request
+
+Nothing survives in memory between requests.
+
+```lua
+local seen = 0
+
+on "fetch" (function(request)
+    seen = seen + 1
+    return { body = tostring(seen) }   -- always "1"
+end)
+```
+
+The counter is always `1`. Each request gets its own copy of the
+script's state. There is no shared mutable state between requests, and
+nothing to clean up after one finishes.
+
+Compiled code is shared across requests; only the mutable environment
+is per-request, so building one is cheap.
+
+Anything you need to keep goes in [kv](/docs/reference/kv), a
+[database](/docs/reference/database), or an
+[object](/docs/runtime/objects).
+
+## The top level runs once
+
+Code outside your handler runs when the environment is built. That is
+where declarations go:
+
+```lua
+local visits = kv "visits"
+local db = database "main"
+
+on "fetch" (function(request)
+    -- handler body
+end)
+```
+
+Declarations are only valid at the top level. The platform runs your
+entry point with every effectful surface stubbed out to collect them,
+which is how it derives the contract without executing handlers.
+
+Do not read or write data at the top level. Those surfaces are inert
+during the declaration pass.
+
+## Request and response
+
+The handler takes a request table and returns a response table.
+
+```lua
+on "fetch" (function(request)
+    if request.method == "POST" and request.path == "/api/echo" then
+        return {
+            status_code = 200,
+            headers = { ["content-type"] = "application/json" },
+            body = request.body,
+        }
+    end
+    return { status_code = 404, body = "no such route" }
+end)
+```
+
+`request.path` is relative to your script: a script served at
+`/hello/` sees `/api/echo`, not `/hello/api/echo`. `request.query` is
+a decoded table. Full field list in the
+[http reference](/docs/reference/http).
+
+## Time limit
+
+A request has a budget of a few seconds. Work that does not fit
+belongs in a [queue](/docs/runtime/queues) or a
+[workflow](/docs/runtime/workflows).

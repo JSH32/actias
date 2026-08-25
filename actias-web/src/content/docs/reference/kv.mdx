@@ -1,0 +1,43 @@
+---
+title: kv
+lead: Key-value namespaces.
+order: 1
+---
+
+## Declaring
+
+```lua
+local visits = kv "visits"
+```
+
+Top level only. The namespace is scoped to the project, so two scripts
+in the same project declaring `kv "visits"` share it.
+
+## Methods
+
+```lua
+ns:get(key)              -- value, or nil
+ns:set(key, value)       -- value is anything json can represent
+ns:delete(key)
+ns:list()                -- { [key] = value }
+```
+
+## Example
+
+```lua
+local cache = kv "cache"
+
+on "fetch" (function(request)
+    local hits = (cache:get("hits") or 0) + 1
+    cache:set("hits", hits)
+    return { body = tostring(hits) }
+end)
+```
+
+## Notes
+
+- Values round-trip through JSON. Lua tables come back as tables;
+  functions and userdata cannot be stored.
+- There are no queries. Anything you store must be reachable by key.
+- `list()` reads the whole namespace. Use it for small namespaces, not
+  as a substitute for a [database](/docs/reference/database).
