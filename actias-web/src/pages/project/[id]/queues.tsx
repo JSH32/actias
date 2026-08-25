@@ -9,6 +9,7 @@ import {
   ResourceInstanceDto,
 } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
+import { JsonValue } from '@/components/JsonValue';
 import { EmptyState } from '@/ui';
 import {
   CopyButton,
@@ -528,9 +529,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
                 </span>
               }
             >
-              <pre className={classes.pre}>
-                {selected.payload ?? selected.preview ?? ''}
-              </pre>
+              <PayloadView text={selected.payload ?? selected.preview ?? ''} />
             </DrawerSection>
 
             <DrawerSection label="Facts">
@@ -606,6 +605,21 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
       </div>
     </div>
   );
+}
+
+/** A queue payload is text on the wire. Explore it when it parses as
+ * json, show it verbatim when it does not. */
+function PayloadView({ text }: { text: string }) {
+  const parsed = React.useMemo(() => {
+    try {
+      return { ok: true as const, value: JSON.parse(text) as unknown };
+    } catch {
+      return { ok: false as const };
+    }
+  }, [text]);
+
+  if (!parsed.ok) return <pre className={classes.pre}>{text}</pre>;
+  return <JsonValue value={parsed.value} defaultDepth={2} />;
 }
 
 export default function QueuesPage() {

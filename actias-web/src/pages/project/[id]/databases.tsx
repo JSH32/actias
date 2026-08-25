@@ -11,6 +11,7 @@ import {
   TableInfoDto,
 } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
+import { JsonValue } from '@/components/JsonValue';
 import { EmptyState } from '@/ui';
 import {
   Drawer,
@@ -536,9 +537,9 @@ function Databases({
             )}
           </div>
           {consoleRows && (
-            <pre className={classes.pre}>
-              {JSON.stringify(consoleRows, null, 2)}
-            </pre>
+            <div style={{ marginTop: 8 }}>
+              <JsonValue value={consoleRows} defaultDepth={2} />
+            </div>
           )}
         </div>
       )}

@@ -1,0 +1,142 @@
+.root {
+  position: relative;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--syn-default);
+  overflow-x: auto;
+}
+
+.node {
+  display: block;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  white-space: pre;
+  border-radius: var(--r1);
+  padding-right: 6px;
+}
+
+.row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Disclosure */
+
+.toggle {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  width: 13px;
+  flex: none;
+  cursor: pointer;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: inherit;
+  text-align: left;
+  opacity: 0.7;
+}
+
+.toggle:hover {
+  color: var(--ink-1);
+  opacity: 1;
+}
+
+.spacer {
+  width: 13px;
+  flex: none;
+}
+
+.children {
+  padding-left: 13px;
+  margin-left: 6px;
+  border-left: 1px solid var(--line-soft);
+}
+
+/* Tokens */
+
+.key {
+  color: var(--syn-field);
+}
+
+/* A colon hugs its key and pushes only the value away. */
+.colon {
+  color: var(--ink-3);
+  margin-right: 6px;
+}
+
+.string {
+  color: var(--syn-string);
+}
+
+.number {
+  color: var(--syn-number);
+}
+
+.boolean {
+  color: var(--syn-keyword);
+}
+
+.null {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.punct {
+  color: var(--ink-3);
+}
+
+.summary {
+  color: var(--ink-3);
+  opacity: 0.8;
+}
+
+.empty {
+  color: var(--ink-3);
+}
+
+/* Chrome */
+
+.bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.root:hover .bar,
+.bar:focus-within {
+  opacity: 1;
+}
+
+.action {
+  appearance: none;
+  background: var(--night-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.action:hover {
+  color: var(--ink-1);
+  border-color: var(--ink-3);
+}
+
+.scalar {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--syn-default);
+}
