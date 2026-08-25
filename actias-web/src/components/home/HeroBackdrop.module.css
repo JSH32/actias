@@ -1,0 +1,75 @@
+.backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: clip;
+  z-index: 0;
+}
+
+.grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(232, 235, 240, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232, 235, 240, 0.022) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(120% 52% at 72% 2%, #000 0%, transparent 76%);
+  -webkit-mask-image: radial-gradient(
+    120% 52% at 72% 2%,
+    #000 0%,
+    transparent 76%
+  );
+}
+
+.bloom {
+  position: absolute;
+  top: -260px;
+  right: -160px;
+  width: 880px;
+  height: 820px;
+  background: radial-gradient(
+    circle,
+    rgba(163, 230, 180, 0.13),
+    rgba(163, 230, 180, 0.035) 44%,
+    transparent 68%
+  );
+  filter: blur(40px);
+  animation: breathe 14s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.counter {
+  position: absolute;
+  bottom: -300px;
+  left: -220px;
+  width: 760px;
+  height: 760px;
+  background: radial-gradient(
+    circle,
+    rgba(167, 139, 250, 0.07),
+    transparent 64%
+  );
+  filter: blur(48px);
+}
+
+.vignette {
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 220px 56px rgba(0, 0, 0, 0.75);
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bloom {
+    animation: none;
+  }
+}

@@ -66,6 +66,7 @@ function PublicChrome({ children }: React.PropsWithChildren) {
           <span>ACTIAS</span>
         </Link>
         <nav className={classes.publicNav}>
+          <Link href="/docs">Docs</Link>
           <Link href="/download">Download</Link>
           {user ? (
             <Link href="/projects">Open console</Link>

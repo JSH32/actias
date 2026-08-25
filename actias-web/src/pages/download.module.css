@@ -1,0 +1,191 @@
+.page {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 72px 24px 80px;
+}
+
+.title {
+  font-family: var(--display);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+}
+
+.lead {
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.65;
+  max-width: 62ch;
+  margin: 0 0 20px;
+}
+
+.notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--warn);
+  border-radius: var(--r3);
+  background: var(--night-1);
+  padding: 12px 14px;
+  margin-bottom: 40px;
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.noticeLabel {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--warn);
+  flex: none;
+  padding-top: 2px;
+}
+
+.heading {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-1);
+  border-top: 1px solid var(--line-soft);
+  padding-top: 26px;
+  margin: 0 0 6px;
+}
+
+.sub {
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 62ch;
+  margin: 0 0 16px;
+}
+
+.block {
+  margin-bottom: 40px;
+}
+
+/* Platform table */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r3);
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.table th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: var(--night-1);
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-2);
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.table td:first-child {
+  color: var(--ink-1);
+}
+
+.artifact {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+/* Command wells */
+
+.command {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--ink-1);
+  background: var(--night-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  padding: 12px 14px;
+  margin: 0 0 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.prompt {
+  color: var(--ink-3);
+  user-select: none;
+}
+
+.comment {
+  color: var(--syn-comment);
+}
+
+/* Steps */
+
+.step {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 14px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.step:last-child {
+  border-bottom: none;
+}
+
+.stepIndex {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  padding-top: 2px;
+}
+
+.stepTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+  margin: 0 0 4px;
+}
+
+.stepBody {
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+
+.next {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Inline code inside prose: a tint, not a well. */
+.lead code,
+.sub code,
+.notice code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  color: var(--ink-1);
+  background: var(--night-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r2);
+  padding: 1px 5px;
+}
