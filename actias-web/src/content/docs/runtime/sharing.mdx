@@ -1,0 +1,92 @@
+---
+title: Sharing across scripts
+lead: Objects, queues, databases and workflows are project resources; every script in a project reaches the same instance by the same name.
+order: 9
+---
+
+## The rule
+
+A durable name scopes to the project. Two scripts saying
+`queue "mailroom"` talk to one queue; `Auction("lot-42")` is one
+instance with one mailbox, whichever script addresses it.
+
+<table>
+  <thead>
+    <tr><th>Declaration</th><th>Scope</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>object</code> classes</td><td>project</td></tr>
+    <tr><td><code>queue</code></td><td>project</td></tr>
+    <tr><td><code>database</code></td><td>project</td></tr>
+    <tr><td><code>workflow</code> definitions</td><td>project</td></tr>
+    <tr><td><code>on "cron:..."</code> schedules</td><td>script</td></tr>
+  </tbody>
+</table>
+
+Cron is the exception on purpose: a schedule belongs to the script
+that declared it, so equal expressions across scripts never collide.
+
+## Objects from another script
+
+One script declares the class and owns its behavior:
+
+```lua
+-- auctions script
+local Auction = object "Auction" {
+    migrations = "migrations/Auction",
+    bid = function(state, user, amount)
+        -- ...
+    end,
+}
+```
+
+Any other script in the project references it by name:
+
+```lua
+-- storefront script
+local Auction = objects "Auction"
+
+on "fetch" (function(request, body, user)
+    return { body = json.stringify(Auction(body.lot):bid(user, body.amount)) }
+end)
+```
+
+`objects "Auction"` claims nothing and needs no body. The call routes
+to the instance, and the method runs in the declaring script's
+current published revision. Republishing the declaring script moves
+every caller to the new code.
+
+## Queues across scripts
+
+Any script may declare `queue "mailroom"` and send. The script that
+declares `on "queue:mailroom"` is the consumer, and the consumer's
+code drains the queue. Each message records which script produced it;
+the console's journal shows the producer.
+
+## Workflows across scripts
+
+`workflows "settle-sale"` is the cross-script handle to a definition
+declared elsewhere: `start` mints a run, `get` addresses one.
+
+```lua
+local settle = workflows "settle-sale"
+settle:start({ lot = "lot-42" }, { id = "lot-42" })
+```
+
+### Gotchas
+
+- The editor types `objects "Auction"` instances as `any`: the checker
+  reads one bundle at a time, so another script's class body is out of
+  reach. The call still routes; the completions stop at the boundary.
+- Keep one declarer per class. The declaring script owns the code that
+  runs; siblings use `objects`. Two scripts declaring the same class
+  leaves ownership to contract resolution instead of your intent.
+- Ownership follows the current revision pointer. Deleting the
+  declaring script strands its instances' data until another script
+  declares the class.
+
+## Related
+
+- [Objects](/docs/runtime/objects): classes, state, alarms.
+- [Queues](/docs/runtime/queues): delivery, retries, dead letters.
+- [Workflows](/docs/runtime/workflows): staged jobs you can ask about.
