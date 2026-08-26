@@ -49,6 +49,16 @@ export type LuauSignature = {
   returns?: string;
 };
 
+/** One file's standing in a bundle-wide sweep: how many diagnostics of
+ * each severity, and where the first one sits so a click can land on
+ * it. */
+export type LuauProblem = {
+  errors: number;
+  lints: number;
+  line: number;
+  column: number;
+};
+
 /** The project's files, verbatim, keyed by bundle path. */
 export type ProjectFiles = Record<string, string>;
 
@@ -166,8 +176,16 @@ class LuauChecker {
     this.checkIds.delete(id);
     if (id !== this.newestCheck || !Array.isArray(result)) return [];
 
+    return this.onOwnLines(fileMeta, result as LuauDiagnostic[]);
+  }
+
+  /** Diagnostics moved off the shadowed text onto the user's lines. */
+  private onOwnLines(
+    fileMeta: ShadowMeta,
+    raw: LuauDiagnostic[],
+  ): LuauDiagnostic[] {
     return (
-      (result as LuauDiagnostic[])
+      raw
         .map((item) => {
           const line = item.line - fileMeta.offset;
           // A span that runs into the prologue's tail (a parse error at
@@ -183,6 +201,34 @@ class LuauChecker {
         // A diagnostic inside the prologue is ours, not the user's.
         .filter((item) => item.line >= 1)
     );
+  }
+
+  /**
+   * Diagnostic counts for every lua file, for the bundle-wide problems
+   * view. Runs outside the newest-wins pool: sweep requests are awaited
+   * one at a time so they never pile up, and an active-file check
+   * landing mid-sweep must not evict one into a false-clean answer.
+   */
+  async sweep(files: ProjectFiles): Promise<Record<string, LuauProblem>> {
+    const { shadowed, meta } = shadowProject(files);
+    const found: Record<string, LuauProblem> = {};
+    for (const [path, fileMeta] of Array.from(meta.entries())) {
+      const result = await this.request({
+        op: 'check',
+        files: shadowed,
+        module: path,
+      });
+      if (!Array.isArray(result)) continue;
+      const items = this.onOwnLines(fileMeta, result as LuauDiagnostic[]);
+      if (items.length === 0) continue;
+      found[path] = {
+        errors: items.filter((item) => item.severity === 'error').length,
+        lints: items.filter((item) => item.severity === 'lint').length,
+        line: items[0].line,
+        column: items[0].column,
+      };
+    }
+    return found;
   }
 
   /** Completions at a one-based editor position.
@@ -232,7 +278,9 @@ class LuauChecker {
       ...files,
       [path]: patchedSource,
     });
-    return ask(patched);
+    // On an untyped receiver the splice itself becomes an inferred
+    // member, so the retry's own artifact is dropped from its answer.
+    return (await ask(patched)).filter((entry) => entry.name !== '__ac');
   }
 
   /** The type under a one-based editor position, or null. */

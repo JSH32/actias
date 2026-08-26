@@ -164,6 +164,47 @@ export function dropTab(
   }));
 }
 
+function adoptIds(node: PaneNode): void {
+  const numbered = Number(/^pane-(\d+)$/.exec(node.id)?.[1]);
+  if (Number.isFinite(numbered)) counter = Math.max(counter, numbered);
+  if (node.kind === 'split') node.children.forEach(adoptIds);
+}
+
+function pruneTabs(
+  node: PaneNode,
+  keep: (tab: string) => boolean,
+): PaneNode | null {
+  if (node.kind === 'leaf') {
+    const tabs = node.tabs.filter(keep);
+    if (tabs.length === 0) return null;
+    return {
+      ...node,
+      tabs,
+      active: tabs.includes(node.active) ? node.active : tabs[tabs.length - 1],
+    };
+  }
+  const children = node.children
+    .map((child) => pruneTabs(child, keep))
+    .filter((child): child is PaneNode => child != null);
+  if (children.length === 0) return null;
+  if (children.length === 1) return children[0];
+  return { ...node, children };
+}
+
+/**
+ * Rehydrates a stored layout: drops tabs the caller no longer knows,
+ * dissolves groups that emptied, and moves the id counter past every
+ * restored id so panes made later never collide with restored ones.
+ * Null when nothing of the stored tree survives.
+ */
+export function adoptLayout(
+  node: PaneNode,
+  keep: (tab: string) => boolean,
+): PaneNode | null {
+  adoptIds(node);
+  return pruneTabs(node, keep);
+}
+
 /** A tab joins a leaf and takes focus there. */
 export function addTab(node: PaneNode, leafId: string, tab: string): PaneNode {
   return updateLeaf(node, leafId, (leaf) => ({

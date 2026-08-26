@@ -192,7 +192,7 @@
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 0;
+  gap: 6px;
   width: 100%;
   padding: 3px 8px;
   border: none;
@@ -217,10 +217,26 @@
   box-shadow: inset 2px 0 0 var(--luna);
 }
 .entryDot {
-  color: var(--luna);
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--luna);
+  flex-shrink: 0;
+}
+
+.fileLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .newFile {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font: 400 10px var(--mono);
   color: var(--ink-3);
   background: none;
@@ -236,6 +252,8 @@
 .revisionDate {
   font: 400 10px var(--mono);
   color: var(--ink-3);
+  margin-left: auto;
+  padding-left: 12px;
 }
 .paneHint {
   padding: 10px;
@@ -261,6 +279,19 @@
   background: var(--night-0);
   overflow-x: auto;
   flex-shrink: 0;
+  /* An overflowing strip scrolls behind a sliver, not a full bar. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.tabsRow::-webkit-scrollbar {
+  height: 4px;
+}
+.tabsRow::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 2px;
+}
+.tabsRow::-webkit-scrollbar-track {
+  background: transparent;
 }
 .tab {
   display: inline-flex;
@@ -710,7 +741,8 @@ button.folder {
  * icon, so names at one depth sit on one line. */
 .treeSpacer {
   display: inline-block;
-  width: 29px;
+  /* The chevron's footprint, so file icons align with folder icons. */
+  width: 11px;
   flex: none;
 }
 
@@ -822,4 +854,215 @@ button.folder {
 .zone_bottom[data-hover='yes'] {
   background: rgba(163, 230, 180, 0.09);
   box-shadow: inset 0 0 0 1px var(--luna-edge);
+}
+
+/* runner extras: header rows, recent list, response detail */
+.headerRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.headerInput {
+  flex: 1;
+  min-width: 0;
+  background: var(--night-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  color: var(--ink-1);
+  font: 400 11px var(--mono);
+  padding: 4px 8px;
+}
+.rowDelete {
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  font: 400 13px var(--mono);
+  padding: 0 4px;
+}
+.rowDelete:hover {
+  color: var(--err);
+}
+.runnerFoot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.miniButton {
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font: 400 11px var(--mono);
+  cursor: pointer;
+  padding: 0;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.miniButton:hover {
+  color: var(--ink-1);
+}
+.answerHeaders {
+  margin: 6px 12px 0;
+  font: 400 11px/1.7 var(--mono);
+  color: var(--ink-3);
+}
+.answerHeaders summary {
+  cursor: pointer;
+}
+.answerHeaders div {
+  padding-left: 12px;
+  word-break: break-all;
+}
+
+/* console: request groups and the level filter */
+.headRight {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.headRight .clearButton {
+  margin-left: 0;
+}
+.levelChips {
+  display: flex;
+  gap: 2px;
+}
+.levelChip {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ink-3);
+  font: 400 10px var(--mono);
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 999px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.levelChip:hover {
+  color: var(--ink-1);
+}
+.levelChip[data-on='yes'] {
+  color: var(--ink-1);
+  border-color: var(--line);
+  background: var(--night-2);
+}
+.consoleRequest {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+.consoleRequest:hover {
+  color: var(--ink-1);
+}
+.consoleNested {
+  padding-left: 19px;
+}
+
+/* status bar: the bundle problems chip */
+.problemChip {
+  border: 0;
+  background: none;
+  color: var(--warn);
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* publish confirm: the changed-file list */
+.publishList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  font: 400 12px var(--mono);
+}
+.publishRow {
+  display: flex;
+  gap: 8px;
+  color: var(--ink-2);
+}
+.publishMark {
+  width: 14px;
+  color: var(--ink-3);
+}
+
+/* diff mode: the changed-file strip under the diff bar */
+.diffFiles {
+  display: flex;
+  gap: 4px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--night-1);
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.diffFile {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: none;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font: 400 11px var(--mono);
+  color: var(--ink-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.diffFile:hover {
+  color: var(--ink-1);
+}
+.diffFile[data-on='yes'] {
+  color: var(--ink-1);
+  border-color: var(--luna-edge);
+  background: var(--luna-tint);
+}
+
+/* icon buttons: svg and text share the baseline */
+.tabClose,
+.rowDelete {
+  display: inline-flex;
+  align-items: center;
+}
+.miniButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.diffLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.breadcrumbRow svg {
+  flex-shrink: 0;
+}
+
+/* explorer multi-select */
+.file[data-selected='yes'] {
+  background: var(--luna-tint);
+  color: var(--ink-1);
+}
+.folder[data-dragging='yes'] {
+  opacity: 0.45;
+}
+
+.file svg {
+  flex-shrink: 0;
 }

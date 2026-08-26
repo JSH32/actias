@@ -1,0 +1,84 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.45);
+  z-index: 90;
+}
+
+.box {
+  position: fixed;
+  top: 10vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(600px, 92vw);
+  background: var(--night-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  box-shadow: var(--shadow-modal);
+  z-index: 91;
+  overflow: hidden;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.input {
+  width: 100%;
+  border: 0;
+  outline: none;
+  background: var(--night-2);
+  color: var(--ink-1);
+  font: 400 13px var(--mono);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.list {
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  border-radius: var(--r2);
+  color: var(--ink-2);
+  font: 400 12px var(--mono);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.item[data-active='yes'] {
+  background: var(--night-2);
+  color: var(--ink-1);
+}
+
+.itemText {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.itemPath {
+  color: var(--ink-3);
+  margin-left: auto;
+  padding-left: 16px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.empty {
+  padding: 10px 14px;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}

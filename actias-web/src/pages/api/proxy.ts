@@ -10,10 +10,22 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse,
 ) {
-  const { url, method, body } = req.body ?? {};
+  const { url, method, body, headers } = req.body ?? {};
   if (typeof url !== 'string') {
     res.status(400).json({ error: 'url required' });
     return;
+  }
+
+  // Caller headers ride along, minus the ones that describe this hop
+  // rather than the request being made.
+  const hopByHop = new Set(['host', 'connection', 'content-length']);
+  const forwarded: Record<string, string> = {};
+  if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
+    for (const [name, value] of Object.entries(headers).slice(0, 32)) {
+      if (typeof value === 'string' && !hopByHop.has(name.toLowerCase())) {
+        forwarded[name] = value;
+      }
+    }
   }
 
   const allowed = [
@@ -28,13 +40,17 @@ export default async function handler(
 
   const started = Date.now();
   try {
+    const hasBody = typeof body === 'string' && body.length > 0;
+    const hasContentType = Object.keys(forwarded).some(
+      (name) => name.toLowerCase() === 'content-type',
+    );
     const answer = await fetch(url, {
       method: typeof method === 'string' ? method : 'GET',
-      body: typeof body === 'string' && body.length ? body : undefined,
+      body: hasBody ? body : undefined,
       headers:
-        typeof body === 'string' && body.length
-          ? { 'content-type': 'application/json' }
-          : undefined,
+        hasBody && !hasContentType
+          ? { ...forwarded, 'content-type': 'application/json' }
+          : forwarded,
       redirect: 'manual',
     });
     const text = await answer.text();
@@ -42,6 +58,7 @@ export default async function handler(
       status: answer.status,
       timeMs: Date.now() - started,
       contentType: answer.headers.get('content-type') ?? '',
+      headers: Object.fromEntries(answer.headers.entries()),
       body: text.slice(0, 65536),
     });
   } catch {
