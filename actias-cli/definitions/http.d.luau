@@ -21,6 +21,10 @@ type Socket = {
     close: (self: Socket) -> boolean,
 }
 
+-- An incoming request. `upgrade` is typed present (not optional):
+-- calling through an optional field leaves the old solver unable to
+-- pick the function type, so the program's sock parameter would stay
+-- untyped; non-upgradable requests refuse at runtime either way.
 type HttpRequest = {
     uri: string,
     method: string?,
@@ -30,7 +34,15 @@ type HttpRequest = {
     context_uri: string?,
     path: string?,
     query: { [string]: string }?,
-    upgrade: ((self: HttpRequest, program: (Socket) -> (), identity: any) -> any)?,
+    upgrade: (self: HttpRequest, program: (Socket) -> (), identity: any) -> any,
+}
+
+-- What make_request sends; outgoing requests carry no upgrade.
+type HttpRequestInit = {
+    uri: string,
+    method: string?,
+    headers: { [string]: string }?,
+    body: any?,
 }
 
 type HttpResponse = {
@@ -40,7 +52,7 @@ type HttpResponse = {
 }
 
 type HttpModule = {
-    make_request: (request: HttpRequest) -> HttpResponse,
+    make_request: (request: HttpRequestInit) -> HttpResponse,
     Uri: { parse: (uri: string) -> Uri, new: (parts: any) -> Uri },
 }
 

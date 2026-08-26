@@ -48,9 +48,12 @@ type ClassBody = {
 }
 
 -- Callable: `Room("lobby")` is the blessed spelling of `Room:get("lobby")`.
-type ObjectHandle = ((name: string) -> any) & {
-    get: (self: ObjectHandle, name: string) -> any,
+-- Generic over the class body, so an instance offers the class's own
+-- methods: their state-first signatures are what `:` calls satisfy.
+-- The reference form has no body to carry, so its instances stay any.
+type ObjectHandle<Body> = ((name: string) -> Body) & {
+    get: (self: ObjectHandle<Body>, name: string) -> Body,
 }
 
-declare object: (class: string) -> (body: ClassBody) -> ObjectHandle
-declare objects: (class: string) -> ObjectHandle
+declare object: (class: string) -> <Body>(body: Body) -> ObjectHandle<Body>
+declare objects: (class: string) -> ObjectHandle<any>
