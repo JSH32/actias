@@ -9,6 +9,12 @@
 import dynamic from 'next/dynamic';
 import { luauChecker } from '@/helpers/luauCheck';
 import { PLATFORM_DEFINITIONS } from '@/helpers/luauShadow';
+import {
+  SQL_KEYWORDS,
+  inSqlString,
+  parseSqlSchema,
+  sqlCompletionFocus,
+} from './sqlSchema';
 
 export const Editor = dynamic(() => import('@monaco-editor/react'), {
   ssr: false,
@@ -515,6 +521,99 @@ export function registerLuauProviders(monaco: MonacoApi) {
     },
   });
 
+  /** Schema-aware sql completions: the schema is read from the code
+   * itself (migrations plus the CREATE TABLE strings in object init
+   * hooks), so the editor offers the writer's own tables and columns.
+   * Shared by .sql files and sql written inline in lua strings. */
+  const sqlSuggestions = (model: ProviderModel, position: ProviderPosition) => {
+    const project = luauNav.project?.();
+    const files = { ...(project?.files ?? {}) };
+    const path = modelPath(model);
+    if (path) files[path] = model.getValue();
+
+    const word = model.getWordUntilPosition(position);
+    const range = {
+      startLineNumber: position.lineNumber,
+      endLineNumber: position.lineNumber,
+      startColumn: word.startColumn,
+      endColumn: word.endColumn,
+    };
+    const lineText = model.getLineContent(position.lineNumber);
+    const beforeCursor = lineText.slice(0, position.column - 1);
+    const schema = parseSqlSchema(files);
+    const focus = sqlCompletionFocus(beforeCursor);
+
+    if (focus.kind === 'columns-of') {
+      const known = schema.find((entry) => entry.table === focus.table);
+      if (known) {
+        return known.columns.map((column) => ({
+          label: column,
+          kind: kinds.Field,
+          insertText: column,
+          detail: `column · ${focus.table}`,
+          range,
+        }));
+      }
+    }
+
+    const tables = schema.map((entry) => ({
+      label: entry.table,
+      kind: kinds.Class,
+      insertText: entry.table,
+      detail: `table · ${entry.columns.length} column${
+        entry.columns.length === 1 ? '' : 's'
+      }`,
+      sortText: focus.kind === 'tables' ? `0${entry.table}` : `1${entry.table}`,
+      range,
+    }));
+    const columns =
+      focus.kind === 'tables'
+        ? []
+        : schema.flatMap((entry) =>
+            entry.columns.map((column) => ({
+              label: column,
+              kind: kinds.Field,
+              insertText: column,
+              detail: `column · ${entry.table}`,
+              sortText: `1${column}`,
+              range,
+            })),
+          );
+    const keywords = SQL_KEYWORDS.map((keyword) => ({
+      label: keyword,
+      kind: kinds.Keyword,
+      insertText: keyword,
+      sortText: `2${keyword}`,
+      range,
+    }));
+    return [...tables, ...columns, ...keywords];
+  };
+
+  monaco.languages.registerCompletionItemProvider('sql', {
+    triggerCharacters: ['.', ' '],
+    provideCompletionItems: (
+      model: ProviderModel,
+      position: ProviderPosition,
+    ) => ({ suggestions: sqlSuggestions(model, position) }),
+  });
+
+  // Inline queries: the same completions inside a lua string that
+  // reads as sql; anywhere else this provider stays silent and the
+  // luau provider owns the position.
+  monaco.languages.registerCompletionItemProvider('lua', {
+    triggerCharacters: ['.'],
+    provideCompletionItems: (
+      model: ProviderModel,
+      position: ProviderPosition,
+    ) => {
+      const lineText = model.getLineContent(position.lineNumber);
+      if (!inSqlString(lineText, position.column)) {
+        return { suggestions: [] };
+      }
+      return { suggestions: sqlSuggestions(model, position) };
+    },
+  });
+
   monaco.languages.registerHoverProvider('lua', {
     provideHover: async (model: ProviderModel, position: ProviderPosition) => {
       const project = luauNav.project?.();
@@ -581,6 +680,8 @@ export function defineTheme(monaco: {
       { token: 'type', foreground: 'A3E6B4' },
       { token: 'operator', foreground: '9AA3B2' },
       { token: 'delimiter', foreground: '9AA3B2' },
+      // Monaco's sql monarch marks builtin functions as `predefined`.
+      { token: 'predefined', foreground: '7DD3FC' },
       { token: 'string.key.json', foreground: '9AA3B2' },
       { token: 'string.value.json', foreground: 'E9B872' },
     ],

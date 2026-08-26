@@ -232,6 +232,8 @@ export function PaneGrid({
             readOnly: leaf.active in PLATFORM_FILES,
             automaticLayout: false,
             'semanticHighlighting.enabled': true,
+            // Strings included: inline sql completes while typing.
+            quickSuggestions: { other: true, comments: false, strings: true },
           }}
         />
         {(dragTab != null || treeDragActive) && (
