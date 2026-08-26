@@ -1235,7 +1235,11 @@ mod tests {
             "Hub",
             "town",
             "__follow",
-            vec![serde_json::json!("plaza"), serde_json::json!(null), stranger],
+            vec![
+                serde_json::json!("plaza"),
+                serde_json::json!(null),
+                stranger,
+            ],
         )
         .await
         .expect("public topics admit anyone");

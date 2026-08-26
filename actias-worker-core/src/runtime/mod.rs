@@ -488,7 +488,9 @@ impl ActiasRuntime {
     /// the contract stores it.
     pub fn record_object_migrations(lua: &Lua, class: &str, dir: &str) {
         if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
-            declarations.objects.retain(|entry| bare_name(entry) != class);
+            declarations
+                .objects
+                .retain(|entry| bare_name(entry) != class);
             declarations.objects.push(format!("{class}={dir}"));
         }
     }
