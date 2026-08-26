@@ -117,9 +117,12 @@ static void ensureFrontend()
     options.runLintChecks = true;
 
     frontend = new Luau::Frontend(fileResolver, configResolver, options);
-    // The old solver, which is what luau-analyze (and so `actias
-    // check`) runs; the new solver disagrees on nonstrict findings.
-    frontend->setLuauSolverMode(Luau::SolverMode::Old);
+    // The new solver, which is what luau-analyze defaults to (and so
+    // what `actias check` actually runs: the cli passes no --solver).
+    // It also carries the bidirectional inference that types class-body
+    // method parameters from ClassBody's indexer, which the old solver
+    // never propagates.
+    frontend->setLuauSolverMode(Luau::SolverMode::New);
 
     Luau::unfreeze(frontend->globals.globalTypes);
     Luau::registerBuiltinGlobals(*frontend, frontend->globals);
@@ -444,22 +447,34 @@ extern "C" const char* hoverScript(const char* module, int line, int column)
     try
     {
         ensureFrontend();
-        Luau::FrontendOptions options = frontend->options;
-        options.forAutocomplete = true;
-        frontend->check(module, options);
+        frontend->check(module);
 
-        // The autocomplete arena, not the diagnostic one: it checks
-        // strictly, so a required module's exports carry their real
-        // types instead of nonstrict any.
+        // One arena under the new solver: the main resolver holds the
+        // checked module, and v2 nonstrict keeps real types, so the old
+        // strict-autocomplete-arena detour is gone with the old solver.
         const Luau::SourceModule* sourceModule = frontend->getSourceModule(module);
-        Luau::ModulePtr checked = frontend->moduleResolverForAutocomplete.getModule(module);
+        Luau::ModulePtr checked = frontend->moduleResolver.getModule(module);
         if (!sourceModule || !checked)
             return nullptr;
 
         Luau::Position position(line - 1, column - 1);
-        std::optional<Luau::TypeId> type = Luau::findTypeAtPosition(*checked, *sourceModule, position);
-        // The expression query misses the name in `local visits = ...`;
-        // the binding query is what covers declaration sites.
+        std::optional<Luau::TypeId> type;
+        // A name at its declaration site (a local's, a parameter's) is
+        // an AstLocal, not an expression; asked first, so a parameter
+        // hover answers with the parameter's type instead of the
+        // enclosing function's, which is what the expression query
+        // resolves at that position.
+        Luau::ExprOrLocal exprOrLocal = Luau::findExprOrLocalAtPosition(*sourceModule, position);
+        if (Luau::AstLocal* local = exprOrLocal.getLocal())
+        {
+            if (Luau::ScopePtr scope = Luau::findScopeAtPosition(*checked, position))
+            {
+                if (std::optional<Luau::TypeId> found = scope->lookup(local))
+                    type = found;
+            }
+        }
+        if (!type)
+            type = Luau::findTypeAtPosition(*checked, *sourceModule, position);
         if (!type)
         {
             if (std::optional<Luau::Binding> binding = Luau::findBindingAtPosition(*checked, *sourceModule, position))
@@ -495,12 +510,10 @@ extern "C" const char* signatureScript(const char* module, int line, int column)
     try
     {
         ensureFrontend();
-        Luau::FrontendOptions options = frontend->options;
-        options.forAutocomplete = true;
-        frontend->check(module, options);
+        frontend->check(module);
 
         const Luau::SourceModule* sourceModule = frontend->getSourceModule(module);
-        Luau::ModulePtr checked = frontend->moduleResolverForAutocomplete.getModule(module);
+        Luau::ModulePtr checked = frontend->moduleResolver.getModule(module);
         if (!sourceModule || !checked)
             return nullptr;
 
@@ -615,14 +628,12 @@ extern "C" const char* definitionScript(const char* module, int line, int column
     try
     {
         ensureFrontend();
-        Luau::FrontendOptions options = frontend->options;
-        options.forAutocomplete = true;
-        frontend->check(module, options);
+        frontend->check(module);
 
-        // Same arena as hover, for the same reason: property lookups
+        // Same resolver as hover, for the same reason: property lookups
         // need the table's real type.
         const Luau::SourceModule* sourceModule = frontend->getSourceModule(module);
-        Luau::ModulePtr checked = frontend->moduleResolverForAutocomplete.getModule(module);
+        Luau::ModulePtr checked = frontend->moduleResolver.getModule(module);
         if (!sourceModule || !checked)
             return nullptr;
 

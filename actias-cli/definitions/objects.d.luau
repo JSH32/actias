@@ -19,7 +19,10 @@ type Follower = {
 
 -- The state table an object's hooks and methods receive. Plain keys
 -- are in-memory scratch and die with the vm; `sql` is the instance's
--- own durable storage.
+-- own durable storage. The class's own routable methods ride the
+-- indexer too: `state:method(...)` dispatches them directly (no
+-- mailbox, so no self-call cycle), which is how sibling behavior is
+-- reached from hooks and other methods.
 type ObjectState = {
     name: string,
     sql: Sql,
@@ -35,16 +38,21 @@ type ObjectState = {
 
 -- A class body: `publishes` entries are bare topics (the hooks.follow
 -- gate decides) or topic = policy ("self", "public"); `receives` maps
--- "Class:topic" to a handler; every other key is a routable method.
+-- "Class:topic" to a handler; `migrations` names a bundle dir applied
+-- to each instance's own storage before init (init only ever seeds);
+-- every other key is a routable method.
 type ClassBody = {
     publishes: { [number | string]: string }?,
+    migrations: string?,
     receives: { [string]: (state: ObjectState, event: StreamEvent) -> () }?,
     hooks: {
         init: ((state: ObjectState) -> ())?,
         alarm: ((state: ObjectState) -> ())?,
         follow: ((state: ObjectState, topic: string, follower: Follower) -> boolean)?,
     }?,
-    [string]: any,
+    -- Methods are state-first; the new solver types their parameter
+    -- from this indexer, so `state` needs no annotation in a method.
+    [string]: (state: ObjectState, ...any) -> any,
 }
 
 -- Callable: `Room("lobby")` is the blessed spelling of `Room:get("lobby")`.
@@ -55,5 +63,5 @@ type ObjectHandle<Body> = ((name: string) -> Body) & {
     get: (self: ObjectHandle<Body>, name: string) -> Body,
 }
 
-declare object: (class: string) -> <Body>(body: Body) -> ObjectHandle<Body>
+declare object: (class: string) -> <Body>(body: Body & ClassBody) -> ObjectHandle<Body>
 declare objects: (class: string) -> ObjectHandle<any>

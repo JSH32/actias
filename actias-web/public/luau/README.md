@@ -5,21 +5,27 @@ The workbench's Luau language service: Luau's own analysis library
 root. Vendored so the app builds hermetically; regenerate with
 `nix develop -c ./build.sh` in that directory.
 
-- sha256: `cd3a16618127cdcefce63cd1811d55f3db4cffd8b9ee74edd70766d5c3cf31a9`
+- sha256: `57aeb7d71f0de99e4f1121145972fec9517fb4d7738a361c806a458c10029a2b`
 
-Three plain C exports, reached through `ccall`; `checker.js` beside this
-file is the worker that owns the module and speaks them:
+The build runs the new solver, which is what `luau-analyze` defaults
+to and therefore what `actias check` runs; the editor must never
+contradict the check.
+
+Plain C exports, reached through `ccall`; `checker.js` beside this
+file is the worker that owns the module and speaks them. The module
+holds the project: `setFile`/`removeFile` feed it, the query exports
+take a module path into that state. Positions are one-based both ways;
+line shifting for the shadow prologue is the caller's.
 
 | Export | Returns |
 | --- | --- |
-| `checkScript(source, strict)` | JSON diagnostics with begin/end positions; lints included |
-| `autocompleteScript(source, line, column, strict)` | JSON entries `{name, kind, type?}` |
-| `hoverScript(source, line, column, strict)` | `{"type": "..."}` or null |
-
-Positions are one-based both ways. The mode parameter exists because
-`actias check` runs nonstrict by default and the editor must never
-contradict it; upstream's own web build hardwires strict, which is why
-it is not used here.
+| `setFile(name, text)` / `removeFile(name)` | nothing; marks the module dirty |
+| `checkScript(module)` | JSON diagnostics with begin/end positions; lints included |
+| `autocompleteScript(module, line, column)` | JSON entries `{name, kind, type?, wrongIndexType?, indexedWithSelf?}` |
+| `hoverScript(module, line, column)` | `{"type": "..."}` or null |
+| `definitionScript(module, line, column)` | `{module, line, column, endColumn}` or null |
+| `signatureScript(module, line, column)` | `{parameters, active, returns?}` or null |
+| `semanticScript(module)` | JSON `[line, column, length, type]` rows, zero-based |
 
 ## Updating
 
