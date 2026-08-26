@@ -137,7 +137,7 @@
   align-items: center;
   gap: 8px;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 15px;
   letter-spacing: 0.07em;
   padding: 14px;
   color: var(--ink-1);
@@ -152,14 +152,6 @@
   gap: 10px;
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
-}
-
-/* The moonrise gradient tints the wordmark and nothing else. */
-.brand span {
-  background: linear-gradient(100deg, var(--luna), var(--viola));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
 }
 
 .nav {

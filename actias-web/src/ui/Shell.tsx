@@ -62,7 +62,7 @@ function PublicChrome({ children }: React.PropsWithChildren) {
     <div className={classes.publicPage}>
       <header className={classes.publicHeader}>
         <Link href="/" className={classes.brand}>
-          <Mark size={20} />
+          <Mark size={26} />
           <span>ACTIAS</span>
         </Link>
         <nav className={classes.publicNav}>
@@ -304,7 +304,7 @@ export function Shell({ children }: React.PropsWithChildren) {
     <div className={railed ? classes.shellRailed : classes.shell}>
       <aside className={classes.sidebar}>
         <Link href="/" className={classes.brandRow}>
-          <Mark size={20} />
+          <Mark size={26} />
           <span>ACTIAS</span>
         </Link>
         {user && (
