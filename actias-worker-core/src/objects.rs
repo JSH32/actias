@@ -767,6 +767,71 @@ mod tests {
         );
     }
 
+    /// `state:method(...)` dispatches the class's own routable methods
+    /// directly, so sibling behavior needs no hoisted helper; hooks and
+    /// non-method keys stay invisible through the same gate handles use.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_reaches_its_own_methods_directly() {
+        let source = r#"
+            local Counter = object "Counter" {
+                publishes = { "ticks" },
+                hooks = {
+                    init = function(state)
+                        state.sql:exec("CREATE TABLE ticks (at INTEGER)")
+                        -- A hook may use a sibling method too.
+                        state:bump(0)
+                    end,
+                },
+                bump = function(state, at)
+                    state.sql:exec("INSERT INTO ticks (at) VALUES (?)", { at })
+                end,
+                twice = function(state)
+                    state:bump(1)
+                    state:bump(2)
+                    return {
+                        count = state.sql:query_one("SELECT COUNT(*) AS n FROM ticks").n,
+                        hooks_hidden = state.hooks == nil and state.init == nil,
+                        contracts_hidden = state.publishes == nil,
+                    }
+                end,
+            }
+            on "fetch" (function() return { body = "ok" } end)
+        "#;
+        let runtime = runtime_with(source).await;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("counter.db"))
+                        .expect("opens"),
+                ),
+                ..Default::default()
+            },
+        );
+
+        let result = handle
+            .call(
+                "__dispatch",
+                serde_json::json!({
+                    "class": "Counter", "name": "c", "method": "twice",
+                    "args": [], "chain": [],
+                }),
+            )
+            .await
+            .expect("sibling dispatch works from init and from a method");
+        assert_eq!(result["count"], 3, "init's bump plus two more: {result}");
+        assert_eq!(
+            result["hooks_hidden"], true,
+            "hooks stay out of the state surface: {result}"
+        );
+        assert_eq!(
+            result["contracts_hidden"], true,
+            "contract keys stay out of the state surface: {result}"
+        );
+    }
+
     /// Like [`runtime_with`] but with a whole bundle of files.
     async fn runtime_with_files(files: &[(&str, &str)]) -> ActiasRuntime {
         let revision = Revision {

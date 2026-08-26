@@ -856,6 +856,38 @@ fn object_state(lua: &Lua) -> mlua::Result<(Table, bool)> {
         })?,
     )?;
 
+    // `state:method(...)` reaches the class's own routable methods as a
+    // DIRECT call: inside a dispatch this vm already is the single
+    // writer, so sibling behavior needs no mailbox ride (a handle
+    // self-call is a refused cycle) and no hoisted-helper idiom.
+    // Resolved per call through the dispatch, because one state table
+    // serves every class in the vm; real state keys (platform verbs,
+    // user scratch) shadow this fallthrough, hooks and reserved names
+    // stay out through the same gate handles use, and non-function
+    // class keys (publishes, migrations) stay invisible.
+    let fallthrough = lua.create_function(|lua, (_state, key): (Table, String)| {
+        if !callable_method(&key) {
+            return Ok(mlua::Value::Nil);
+        }
+        let Some(class_name) = lua
+            .app_data_ref::<CurrentDispatch>()
+            .map(|current| current.class.clone())
+        else {
+            return Ok(mlua::Value::Nil);
+        };
+        let classes: Table = lua.named_registry_value(CLASSES_KEY)?;
+        let Ok(class) = classes.get::<Table>(class_name.as_str()) else {
+            return Ok(mlua::Value::Nil);
+        };
+        match class.get::<mlua::Value>(key.as_str()) {
+            Ok(mlua::Value::Function(method)) => Ok(mlua::Value::Function(method)),
+            _ => Ok(mlua::Value::Nil),
+        }
+    })?;
+    let meta = lua.create_table()?;
+    meta.set("__index", fallthrough)?;
+    state.set_metatable(Some(meta))?;
+
     lua.set_named_registry_value(STATE_KEY, state.clone())?;
     Ok((state, true))
 }
