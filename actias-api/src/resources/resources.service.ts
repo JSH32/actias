@@ -238,7 +238,12 @@ export class ResourcesService {
           const capabilities = revision.scriptConfig?.capabilities;
           return {
             script,
-            names: capabilities?.[kind] ?? [],
+            // A declaration may carry an annotation after '=' (a
+            // database's migrations directory); identity is the name
+            // before it.
+            names: (capabilities?.[kind] ?? []).map(
+              (entry) => entry.split('=')[0],
+            ),
             // A queue's consumer (`on "queue:<name>"`) outranks its
             // producers for the "declared by" chip, mirroring owner
             // resolution.
