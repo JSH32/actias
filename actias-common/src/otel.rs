@@ -121,9 +121,17 @@ where
     fn call(&mut self, request: http::Request<B>) -> Self::Future {
         use tracing::Instrument;
 
-        // The metrics scrape would otherwise mint a trace every poll;
-        // pure noise, at the scraper's own cadence, forever.
-        if request.uri().path() == "/_metrics" {
+        // Steady-state chatter would otherwise mint traces forever, at
+        // its own cadence: the metrics scrape, liveness beats, health
+        // probes and the alarm sweep. Real registry work (claims, node
+        // lookups) rides a request's span and stays traced.
+        const UNTRACED: [&str; 4] = [
+            "/_metrics",
+            "/node_registry.NodeRegistryService/Heartbeat",
+            "/node_registry.NodeRegistryService/DueAlarms",
+            "/grpc.health.v1.Health/Check",
+        ];
+        if UNTRACED.contains(&request.uri().path()) {
             return Box::pin(self.0.call(request));
         }
 

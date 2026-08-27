@@ -47,6 +47,11 @@ struct ObjectCall {
     method: String,
     payload: serde_json::Value,
     reply: oneshot::Sender<Result<serde_json::Value, ObjectError>>,
+    /// The caller's span, captured at send: the mailbox hop would
+    /// otherwise sever the trace, and every effect inside the object
+    /// (kv, sql, publishes) would root its own. A caller with no span
+    /// (a sweep, a test) makes the dispatch a root, which is truthful.
+    span: actias_common::tracing::Span,
 }
 
 /// A clonable address for one object's mailbox.
@@ -74,6 +79,7 @@ impl ObjectHandle {
                 method: method.to_owned(),
                 payload,
                 reply,
+                span: actias_common::tracing::Span::current(),
             })
             .await
             .map_err(|_| ObjectError::Gone)?;
@@ -394,6 +400,14 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
     }
     runtime.set_app_data(home.clone());
 
+    // The pinned vm's identity, when the host set it; names the span
+    // every dispatched call runs under, so a trace reads
+    // "Channel/general.post" instead of a bare method.
+    let span_prefix = runtime
+        .app_data_ref::<crate::streams::PublisherIdentity>()
+        .map(|id| format!("{}/{}.", id.class, id.name))
+        .unwrap_or_default();
+
     tokio::spawn(async move {
         // Popping only after the previous call finished is the input gate;
         // there is deliberately no concurrency inside this loop. A due
@@ -423,10 +437,29 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                         let deliver_first = delivery.is_some_and(|d| alarm_due.is_none_or(|a| d <= a));
                         if deliver_first {
                             home.take_delivery_due();
-                            crate::streams::pump(&runtime, &home).await;
+                            // Platform-initiated work roots its own trace,
+                            // named for why it ran.
+                            let span = actias_common::tracing::info_span!(
+                                "stream delivery",
+                                otel.name = %format!("deliver {span_prefix}events"),
+                                otel.kind = "internal",
+                            );
+                            actias_common::tracing::Instrument::instrument(
+                                crate::streams::pump(&runtime, &home),
+                                span,
+                            )
+                            .await;
                         } else if let Some(alarm) = pending {
-                            fire_alarm(&runtime, &home, alarm, call_budget, after_write.as_ref())
-                                .await;
+                            let span = actias_common::tracing::info_span!(
+                                "alarm",
+                                otel.name = %format!("alarm {}", alarm.own_key),
+                                otel.kind = "internal",
+                            );
+                            actias_common::tracing::Instrument::instrument(
+                                fire_alarm(&runtime, &home, alarm, call_budget, after_write.as_ref()),
+                                span,
+                            )
+                            .await;
                         }
                         continue;
                     }
@@ -448,13 +481,25 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                 }
             };
 
-            let result = guarded_dispatch(
-                &runtime,
-                &home,
-                &call.method,
-                call.payload,
-                call_budget,
-                after_write.as_ref(),
+            // The dispatch runs as a child of the caller's span, so the
+            // whole causal chain (request, object, its kv and sql, the
+            // objects IT calls) reads as one trace.
+            let span = actias_common::tracing::info_span!(
+                parent: &call.span,
+                "object call",
+                otel.name = %format!("{span_prefix}{}", call.method),
+                otel.kind = "internal",
+            );
+            let result = actias_common::tracing::Instrument::instrument(
+                guarded_dispatch(
+                    &runtime,
+                    &home,
+                    &call.method,
+                    call.payload,
+                    call_budget,
+                    after_write.as_ref(),
+                ),
+                span,
             )
             .await;
 

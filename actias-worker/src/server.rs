@@ -2,8 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use actias_common::tracing::Level;
-use actias_common::tracing::{error, span};
+use actias_common::tracing::error;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, State};
@@ -497,9 +496,11 @@ fn live_session_of(state: &AppState, request: &axum::extract::Request) -> Option
 }
 
 /// Handles every inbound request by running the addressed script.
+///
+/// No manual span here: the TraceExtract layer already wraps every
+/// request in one, and a guard held across an await leaks the span onto
+/// the executor thread, chaining unrelated tasks into one trace.
 async fn handle(State(state): State<AppState>, request: axum::extract::Request) -> Response {
-    let span = span!(Level::DEBUG, "lua_http_request");
-    let _enter = span.enter();
     let _in_flight = InFlight::enter(&state.in_flight);
 
     let label = metrics_label(&state, &request);
