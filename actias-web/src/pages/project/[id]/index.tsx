@@ -10,7 +10,7 @@ import {
   WorkflowRunDto,
 } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
-import { StatePill } from '@/components/inspector';
+import { DocsHint, StatePill } from '@/components/inspector';
 import classes from '../../../components/inspector.module.css';
 
 /** One thing that needs a human, with the door that fixes it. */
@@ -273,14 +273,16 @@ function Overview({ project }: { project: ProjectDto }) {
                 >
                   {project.name}
                 </h1>
+                <DocsHint
+                  slug="runtime/sharing"
+                  label="Sharing across scripts"
+                />
                 {user?.id === project.ownerId && (
                   <span className={classes.wordChip}>owner</span>
                 )}
               </div>
               <p className={classes.lede} style={{ maxWidth: '76ch' }}>
-                Created {new Date(project.createdAt).toLocaleDateString()}.
-                Scripts here share the project&apos;s KV, databases, queues and
-                workflows; the access list governs all of them at once.
+                Created {new Date(project.createdAt).toLocaleDateString()}
               </p>
             </div>
             <Link href={`${base}/scripts`}>

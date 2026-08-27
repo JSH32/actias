@@ -1,15 +1,17 @@
 /**
  * The members screen per design 07: access is independent read/write
  * bits per resource, but almost everyone lands on one of four named
- * shapes. The roster shows each member's bits as a fingerprint; the
+ * shapes. The roster names each member's reach in words; the
  * panel beside it says what the selected member's access actually
- * permits, in words, and edits it by preset or by bit.
+ * permits, in words, and edits it by preset or by bit. The roster's
+ * access column carries the same words, compressed.
  */
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
 import { AclListDto, ProjectDto, UserDto } from '@/client';
+import { EmptyState } from '@/ui';
 import dialogClasses from '../pages/projects.module.css';
 import classes from './inspector.module.css';
 import { toast } from '@/ui/toast';
@@ -70,6 +72,22 @@ function granted(entry: AclListDto): string[] {
   return Object.keys(entry.permissions).filter(
     (key) => realBit(key) && entry.permissions[key] === true,
   );
+}
+
+/** The grant list in words, "script read+write \u00b7 kv read"; the
+ * precise toggles live in the member panel. */
+function accessWords(bits: string[], groups: [string, string[]][]): string {
+  const parts: string[] = [];
+  for (const [resource, permissions] of groups) {
+    const verbs = permissions
+      .filter((permission) => bits.includes(permission))
+      .map((permission) =>
+        permission.split('_').slice(1).join(' ').toLowerCase(),
+      );
+    if (verbs.length)
+      parts.push(`${resource.toLowerCase()} ${verbs.join('+')}`);
+  }
+  return parts.length ? parts.join(' \u00b7 ') : 'no access';
 }
 
 function sameBits(a: string[], b: string[]): boolean {
@@ -235,9 +253,8 @@ export default function AccessPanel({
                 Members
               </h1>
               <p className={classes.lede} style={{ maxWidth: '82ch' }}>
-                Access is independent read and write bits per resource, but
-                almost everyone lands on one of four shapes. Pick a member to
-                see what their access actually permits, in words.
+                Per-member read and write access to this project&apos;s
+                resources.
               </p>
             </div>
             {write && (
@@ -302,130 +319,110 @@ export default function AccessPanel({
             )}
           </div>
 
-          <div className={classes.memberSplit}>
-            <div className={classes.card}>
-              <div className={classes.memberHead}>
-                <span>member</span>
-                <span>role</span>
-                <span className={classes.fpCol}>access</span>
-                <span />
-              </div>
-              {roster.map((entry: AclListDto) => {
-                const isOwner = entry.user.id === project.ownerId;
-                const role = roleOf(entry);
-                const bits = granted(entry);
-                const isSelected = selected?.user.id === entry.user.id;
-                return (
-                  <div
-                    key={entry.user.id}
-                    role="button"
-                    tabIndex={0}
-                    className={
-                      isSelected
-                        ? `${classes.memberRow} ${classes.rowSelected}`
-                        : classes.memberRow
-                    }
-                    onClick={() => setSelectedId(entry.user.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') setSelectedId(entry.user.id);
-                    }}
-                  >
-                    <div className={classes.memberCol}>
-                      <span
-                        className={
-                          isOwner
-                            ? classes.memberAvatarOwner
-                            : classes.memberAvatar
-                        }
-                      >
-                        {entry.user.username.slice(0, 2).toLowerCase()}
-                      </span>
-                      <div className={classes.memberId}>
-                        <span className={classes.memberName}>
-                          {entry.user.username}
-                        </span>
-                        <span className={classes.memberEmail}>
-                          {entry.user.email}
-                        </span>
-                      </div>
-                    </div>
-                    <span className={rolePillClass(role)}>{role}</span>
-                    <span className={`${classes.fingerprint} ${classes.fpCol}`}>
-                      {groups.map(([resource, permissions]) => (
-                        <span key={resource} className={classes.fpPair}>
-                          {permissions.map((permission) => (
-                            <span
-                              key={permission}
-                              className={
-                                isOwner || bits.includes(permission)
-                                  ? classes.fpCellOn
-                                  : classes.fpCell
-                              }
-                              title={permission}
-                            />
-                          ))}
-                        </span>
-                      ))}
-                    </span>
-                    <span
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'center',
-                        color: 'var(--ink-3)',
+          {roster.length === 0 ? (
+            <EmptyState
+              title="Only the owner so far"
+              body="The owner holds every permission implicitly and is not listed. Invite a member to grant a narrower set."
+            />
+          ) : (
+            <div className={classes.memberSplit}>
+              <div className={classes.card}>
+                <div className={classes.memberHead}>
+                  <span>member</span>
+                  <span>role</span>
+                  <span>access</span>
+                  <span />
+                </div>
+                {roster.map((entry: AclListDto) => {
+                  const isOwner = entry.user.id === project.ownerId;
+                  const role = roleOf(entry);
+                  const bits = granted(entry);
+                  const isSelected = selected?.user.id === entry.user.id;
+                  return (
+                    <div
+                      key={entry.user.id}
+                      role="button"
+                      tabIndex={0}
+                      className={
+                        isSelected
+                          ? `${classes.memberRow} ${classes.rowSelected}`
+                          : classes.memberRow
+                      }
+                      onClick={() => setSelectedId(entry.user.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') setSelectedId(entry.user.id);
                       }}
                     >
-                      {isOwner ? (
-                        <span title="The owner implicitly holds every permission and cannot be edited.">
-                          <LockIcon />
+                      <div className={classes.memberCol}>
+                        <span
+                          className={
+                            isOwner
+                              ? classes.memberAvatarOwner
+                              : classes.memberAvatar
+                          }
+                        >
+                          {entry.user.username.slice(0, 2).toLowerCase()}
                         </span>
-                      ) : (
-                        write && (
-                          <button
-                            className={classes.copy}
-                            title="Remove from project"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              remove(entry);
-                            }}
-                          >
-                            <TrashIcon />
-                          </button>
-                        )
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
-              <div className={classes.fpLegend}>
-                <span style={{ textTransform: 'uppercase' }}>fingerprint</span>
-                <span className={classes.fpCellOn} />
-                <span>granted</span>
-                <span className={classes.fpCell} />
-                <span>denied</span>
-                <span className={classes.fpLegendWords}>
-                  {groups
-                    .map(([resource]) => resource.toLowerCase())
-                    .join(' · ')}
-                  , read then write
-                </span>
+                        <div className={classes.memberId}>
+                          <span className={classes.memberName}>
+                            {entry.user.username}
+                          </span>
+                          <span className={classes.memberEmail}>
+                            {entry.user.email}
+                          </span>
+                        </div>
+                      </div>
+                      <span className={rolePillClass(role)}>{role}</span>
+                      <span className={classes.accessWords}>
+                        {isOwner ? 'everything' : accessWords(bits, groups)}
+                      </span>
+                      <span
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'center',
+                          color: 'var(--ink-3)',
+                        }}
+                      >
+                        {isOwner ? (
+                          <span title="The owner implicitly holds every permission and cannot be edited.">
+                            <LockIcon />
+                          </span>
+                        ) : (
+                          write && (
+                            <button
+                              className={classes.copy}
+                              title="Remove from project"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                remove(entry);
+                              }}
+                            >
+                              <TrashIcon />
+                            </button>
+                          )
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
 
-            {selected && (
-              <MemberDetail
-                key={selected.user.id}
-                entry={selected}
-                isOwner={selected.user.id === project.ownerId}
-                role={roleOf(selected)}
-                rolePillClass={rolePillClass(roleOf(selected))}
-                groups={groups}
-                shapes={shapes}
-                write={write}
-                onGrants={(bits) => setGrants(selected.user, bits)}
-                onRemove={() => remove(selected)}
-              />
-            )}
-          </div>
+              {selected && (
+                <MemberDetail
+                  key={selected.user.id}
+                  entry={selected}
+                  isOwner={selected.user.id === project.ownerId}
+                  role={roleOf(selected)}
+                  rolePillClass={rolePillClass(roleOf(selected))}
+                  groups={groups}
+                  shapes={shapes}
+                  write={write}
+                  onGrants={(bits) => setGrants(selected.user, bits)}
+                  onRemove={() => remove(selected)}
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -532,7 +529,11 @@ function MemberDetail({
                         <span
                           className={on ? classes.permBit : classes.permBitOff}
                         >
-                          {permission}
+                          {permission
+                            .split('_')
+                            .slice(1)
+                            .join(' ')
+                            .toLowerCase()}
                         </span>
                         {BIT_WORDS[permission] && (
                           <span className={classes.permWords}>

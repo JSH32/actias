@@ -13,6 +13,7 @@ import { JsonValue } from '@/components/JsonValue';
 import { EmptyState } from '@/ui';
 import {
   CopyButton,
+  DocsHint,
   Drawer,
   DrawerSection,
   Fact,
@@ -309,6 +310,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
           <div className={classes.headMain}>
             <div className={classes.pageHead}>
               <h1 className={classes.pageTitle}>{active.name}</h1>
+              <DocsHint slug="runtime/queues" label="Queues" />
               <StatePill
                 state={paused ? 'paused' : 'live'}
                 color={paused ? 'var(--warn)' : 'var(--luna)'}
@@ -319,21 +321,12 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
                 <strong>{active.declaredBy || 'no live revision'}</strong>
               </span>
             </div>
-            <p className={classes.lede}>
-              {active.orphaned ? (
-                <>
-                  No live revision declares this queue; its data persists until
-                  it is deleted explicitly.
-                </>
-              ) : (
-                <>
-                  Producers call <code>:send</code> from any script in this
-                  project; the consumer is whichever revision declares{' '}
-                  <code>on &quot;queue:{active.name}&quot;</code>. Messages
-                  retry with backoff, then move to the dead letter list.
-                </>
-              )}
-            </p>
+            {active.orphaned && (
+              <p className={classes.lede}>
+                No live revision declares this queue; its data persists until it
+                is deleted explicitly.
+              </p>
+            )}
           </div>
           <div className={classes.pageActions}>
             <button

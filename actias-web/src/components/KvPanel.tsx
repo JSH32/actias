@@ -12,6 +12,7 @@ import api, { showError } from '@/helpers/api';
 import { PairDto, ProjectDto } from '@/client';
 import { EmptyState, Field, SelectField } from '@/ui';
 import {
+  DocsHint,
   CopyButton,
   Drawer,
   DrawerSection,
@@ -236,15 +237,15 @@ export default function KvPanel({
               <div className={classes.headMain}>
                 <div className={classes.pageHead}>
                   <h1 className={classes.pageTitle}>{active}</h1>
+                  <DocsHint slug="runtime/storage" label="Where data goes" />
                   <span className={classes.metaChip}>
                     {allPairs.length} pairs
                   </span>
                 </div>
                 <p className={classes.lede}>
-                  A namespace is a keyspace inside this project. Any script that
-                  declares <code>kv &quot;{active}&quot;</code> reads and writes
-                  these exact pairs, so editing a value here changes what
-                  production sees.
+                  Live data, read by any script declaring{' '}
+                  <code>kv &quot;{active}&quot;</code>; edits take effect
+                  immediately.
                 </p>
               </div>
               {write && (
@@ -532,8 +533,7 @@ export default function KvPanel({
                       </button>
                     </div>
                     <p className={classes.drawerNote}>
-                      Saving writes through to the live namespace. Scripts
-                      reading this key see the new value on their next request.
+                      Saves write through to the live namespace immediately.
                     </p>
                   </>
                 )}

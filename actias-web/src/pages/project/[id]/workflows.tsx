@@ -11,6 +11,7 @@ import {
 import ProjectSection from '@/components/ProjectSection';
 import { EmptyState } from '@/ui';
 import {
+  DocsHint,
   Drawer,
   DrawerSection,
   StatePill,
@@ -652,8 +653,8 @@ function RunDrawer({
               {String(statusDetail.error ?? '')}
             </span>
             <span className={classes.lede}>
-              Earlier steps stay recorded. Resuming re-enters at the failed step
-              and replays nothing before it.
+              Resuming re-enters at the failed step; earlier steps stay
+              recorded.
             </span>
             {write && (
               <div style={{ display: 'flex', gap: 8 }}>
@@ -833,6 +834,7 @@ function Workflows({
                 >
                   {active.name}
                 </h1>
+                <DocsHint slug="runtime/workflows" label="Workflows" />
                 <span className={classes.metaChip}>
                   declared by <strong>{active.declaredBy}</strong>
                 </span>
@@ -840,11 +842,6 @@ function Workflows({
                   {active.stepNames.length} declared steps
                 </span>
               </div>
-              <p className={classes.lede}>
-                Durable runs that replay their journal. Waiting costs nothing: a
-                parked run holds no compute, and its history below is journal
-                fact, never a plan.
-              </p>
             </div>
             {write && (
               <button

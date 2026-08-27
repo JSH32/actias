@@ -14,6 +14,7 @@ import ProjectSection from '@/components/ProjectSection';
 import { JsonValue } from '@/components/JsonValue';
 import { EmptyState } from '@/ui';
 import {
+  DocsHint,
   Drawer,
   DrawerSection,
   Fact,
@@ -259,6 +260,7 @@ function Databases({
               <h1 className={classes.pageTitle}>
                 {table?.name ?? sourceLabel}
               </h1>
+              <DocsHint slug="runtime/storage" label="Where data goes" />
               <StatePill
                 state={
                   objectSource
@@ -287,20 +289,17 @@ function Databases({
             <p className={classes.lede}>
               {objectSource ? (
                 <>
-                  The private storage of <code>{objectSource.class}</code>{' '}
-                  instance <code>&quot;{objectSource.name}&quot;</code>, running{' '}
+                  Storage of <code>{objectSource.class}</code> instance{' '}
+                  <code>&quot;{objectSource.name}&quot;</code>, running{' '}
                   <code>{objectSource.declaredBy || 'unknown'}</code>. Read-only
-                  from the nearest copy; writes happen through the object&apos;s
-                  own methods.
+                  here.
                 </>
               ) : active?.orphaned ? (
                 'No live revision declares this database; its data persists until it is deleted explicitly.'
               ) : (
                 <>
-                  Declared by <code>{active?.declaredBy}</code> with database{' '}
-                  <code>&quot;{active?.name}&quot;</code>. Distributed SQLite:
-                  reads are served from a replica, writes go to the single
-                  writer.
+                  Declared by <code>{active?.declaredBy}</code> as{' '}
+                  <code>database &quot;{active?.name}&quot;</code>
                 </>
               )}
             </p>
@@ -581,8 +580,7 @@ function Databases({
               </div>
               {(followers?.edges ?? []).length === 0 ? (
                 <div className={classes.emptyRows}>
-                  Nobody follows this object yet; edges appear when a gate
-                  admits a follower.
+                  Nobody follows this object yet.
                 </div>
               ) : (
                 (followers?.edges ?? []).map(

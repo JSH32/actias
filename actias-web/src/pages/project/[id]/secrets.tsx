@@ -13,7 +13,7 @@ import { ProjectDto, SecretDto, SecretVersionDto } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
 import { EmptyState } from '@/ui';
 import { Icon } from '@/ui/icons';
-import { copyText } from '@/components/inspector';
+import { DocsHint, copyText } from '@/components/inspector';
 import { toast } from '@/ui/toast';
 import dialogClasses from '../../projects.module.css';
 import classes from '../../../components/inspector.module.css';
@@ -129,20 +129,22 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
         >
           <div className={classes.headTop}>
             <div className={classes.headMain} style={{ gap: 7 }}>
-              <h1
-                style={{
-                  margin: 0,
-                  fontSize: 20,
-                  fontWeight: 650,
-                  letterSpacing: '-0.01em',
-                }}
-              >
-                Secrets
-              </h1>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <h1
+                  style={{
+                    margin: 0,
+                    fontSize: 20,
+                    fontWeight: 650,
+                    letterSpacing: '-0.01em',
+                  }}
+                >
+                  Secrets
+                </h1>
+                <DocsHint slug="reference/secret" label="The secret api" />
+              </div>
               <p className={classes.lede} style={{ maxWidth: '82ch' }}>
-                A secret goes in and never comes back out. So this page is not
-                about values: it is about which revisions can reach each one,
-                when it was last rotated, and what breaks if you delete it.
+                Values are write-only: set or rotate them here, they are never
+                shown again.
               </p>
             </div>
             {write && (
@@ -463,9 +465,8 @@ function SecretDetail({
           <span
             style={{ fontSize: 11, lineHeight: 1.55, color: 'var(--ink-2)' }}
           >
-            Encrypted at rest and never returned by the api: not to you, not to
-            the dashboard, not to the CLI. Rotating replaces it; there is no
-            read.
+            Encrypted at rest and never returned by the api. Rotate to replace
+            the value.
           </span>
         </div>
 
@@ -574,8 +575,7 @@ function SecretDetail({
             ))}
           </div>
           <p className={classes.drawerNote} style={{ paddingTop: 8 }}>
-            Timestamps and authors only. Old values stay readable solely to
-            workflow runs that pinned them; a rotation cannot be undone.
+            Timestamps and authors only; a rotation cannot be undone.
           </p>
         </div>
 

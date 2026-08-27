@@ -122,9 +122,8 @@ function Tokens({ project, write }: { project: ProjectDto; write: boolean }) {
                 Service tokens
               </h1>
               <p className={classes.lede} style={{ maxWidth: '82ch' }}>
-                A machine credential scoped to this project, so CI can publish
-                without a human login. The secret is shown once at creation;
-                afterwards only the prefix identifies it.
+                Machine credentials for publishing from CI. The secret is shown
+                once, at creation.
               </p>
             </div>
             {write && (

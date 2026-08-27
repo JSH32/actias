@@ -7,7 +7,12 @@ import { AuthGuard } from '@/helpers/auth';
 import { getPublicConfig } from '@/pages/api/config';
 import { RevisionDataDto } from '@/client';
 import LogTail from '@/components/LogTail';
-import { StatePill, copyText } from '@/components/inspector';
+import {
+  DocsHint,
+  InfoHint,
+  StatePill,
+  copyText,
+} from '@/components/inspector';
 import classes from '../../components/inspector.module.css';
 import { toast } from '@/ui/toast';
 
@@ -188,6 +193,7 @@ const Script = () => {
               >
                 {script.publicIdentifier}
               </h1>
+              <DocsHint slug="runtime/requests" label="How a request runs" />
               <StatePill
                 state={script.currentRevisionId ? 'serving' : 'unpublished'}
                 color={
@@ -203,11 +209,6 @@ const Script = () => {
                 {liveHost}
               </button>
             </div>
-            <p className={classes.lede}>
-              Revisions are immutable published bundles. Exactly one is live;
-              rolling back points the live alias at an older one. The capability
-              contract is read from the script&apos;s declarations at publish.
-            </p>
           </div>
           <div className={classes.pageActions}>
             <a href={liveUrl} target="_blank" rel="noreferrer">
@@ -296,19 +297,37 @@ const Script = () => {
                   contractGroups.map((group) => {
                     const chips = group.entries.flatMap(
                       ({ key, label, token }) =>
-                        (capabilities[key] ?? []).map((name) => (
-                          <span
-                            key={`${key}:${name}`}
-                            className={classes.kindChip}
-                          >
+                        (capabilities[key] ?? []).map((entry) => {
+                          // The stored spelling may carry an annotation
+                          // after '=' (a migrations directory, a publish
+                          // policy); the chip shows the name and parks
+                          // the detail behind a hover.
+                          const [name, annotation] = entry.split(/=(.*)/s);
+                          return (
                             <span
-                              className={classes.kindDot}
-                              style={{ background: token }}
-                            />
-                            {label}{' '}
-                            <span className={classes.kindName}>{name}</span>
-                          </span>
-                        )),
+                              key={`${key}:${entry}`}
+                              className={classes.kindChip}
+                            >
+                              <span
+                                className={classes.kindDot}
+                                style={{ background: token }}
+                              />
+                              {label}{' '}
+                              <span className={classes.kindName}>{name}</span>
+                              {annotation && (
+                                <InfoHint
+                                  text={
+                                    key === 'databases'
+                                      ? `migrations from ${annotation}`
+                                      : key === 'publishes'
+                                      ? `publish policy: ${annotation}`
+                                      : annotation
+                                  }
+                                />
+                              )}
+                            </span>
+                          );
+                        }),
                     );
                     if (!chips.length) return null;
                     return (
@@ -560,10 +579,8 @@ const Script = () => {
               <div className={classes.cardBody} style={{ gap: 6 }}>
                 <span className={classes.cardTitle}>Identifier</span>
                 <p className={classes.lede}>
-                  Identifiers are immutable.{' '}
                   <code>{script.publicIdentifier}</code> is the script&apos;s
-                  subdomain, and revisions already published reference it. There
-                  is nothing to rename here.
+                  subdomain and cannot be renamed.
                 </p>
               </div>
             </div>

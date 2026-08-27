@@ -7,6 +7,7 @@ import { AuthGuard, useUser } from '@/helpers/auth';
 import { ProjectDto } from '@/client';
 import { EmptyState, Field } from '@/ui';
 import dialogClasses from './projects.module.css';
+import { DocsHint } from '@/components/inspector';
 import classes from '../components/inspector.module.css';
 import { toast } from '@/ui/toast';
 
@@ -63,21 +64,22 @@ function Projects() {
         >
           <div className={classes.headTop}>
             <div className={classes.headMain} style={{ gap: 7 }}>
-              <h1
-                style={{
-                  margin: 0,
-                  fontSize: 20,
-                  fontWeight: 650,
-                  letterSpacing: '-0.01em',
-                }}
-              >
-                Projects
-              </h1>
-              <p className={classes.lede} style={{ maxWidth: '76ch' }}>
-                A project owns scripts, KV namespaces, databases and an access
-                list. Everything a script can reach is scoped to the project
-                that holds it.
-              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <h1
+                  style={{
+                    margin: 0,
+                    fontSize: 20,
+                    fontWeight: 650,
+                    letterSpacing: '-0.01em',
+                  }}
+                >
+                  Projects
+                </h1>
+                <DocsHint
+                  slug="runtime/sharing"
+                  label="Sharing across scripts"
+                />
+              </div>
             </div>
             <Dialog.Root open={createOpen} onOpenChange={setCreateOpen}>
               <Dialog.Trigger asChild>

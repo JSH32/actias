@@ -1,4 +1,5 @@
 import * as React from 'react';
+import * as Tooltip from '@radix-ui/react-tooltip';
 import { toast } from '@/ui/toast';
 import classes from './inspector.module.css';
 
@@ -202,6 +203,83 @@ export function FilterTabs<T extends string>({
         </button>
       ))}
     </div>
+  );
+}
+
+/** A discreet pointer from a surface to its concept's docs page: a
+ * small glyph beside the title, a tooltip naming where it leads, and a
+ * new tab so reading never navigates away from live data. */
+export function DocsHint({ slug, label }: { slug: string; label: string }) {
+  return (
+    <Tooltip.Provider delayDuration={200}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <a
+            className={classes.docsHint}
+            href={`/docs/${slug}`}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`${label} (docs)`}
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+              <path d="M12 17v.01" />
+              <path d="M12 13.5a1.5 1.5 0 0 1 1 -1.5a2.6 2.6 0 1 0 -3 -4" />
+            </svg>
+          </a>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content className={classes.docsTip} sideOffset={6}>
+            {label} <span aria-hidden>↗</span>
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
+  );
+}
+
+/** A quiet circled-i beside a chip, holding detail that would crowd
+ * the row: hover reveals it, nothing navigates. */
+export function InfoHint({ text }: { text: string }) {
+  return (
+    <Tooltip.Provider delayDuration={150}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <span className={classes.infoHint} tabIndex={0} aria-label={text}>
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+              <path d="M12 8v.01" />
+              <path d="M11 12h1v4h1" />
+            </svg>
+          </span>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content className={classes.docsTip} sideOffset={6}>
+            {text}
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
   );
 }
 

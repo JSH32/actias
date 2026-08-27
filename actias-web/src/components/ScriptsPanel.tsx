@@ -10,7 +10,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
 import { ProjectDto, ScriptDto } from '@/client';
 import { EmptyState, Field } from '@/ui';
-import { StatePill } from '@/components/inspector';
+import { DocsHint, StatePill } from '@/components/inspector';
 import dialogClasses from '../pages/projects.module.css';
 import classes from './inspector.module.css';
 import { toast } from '@/ui/toast';
@@ -94,19 +94,24 @@ export default function ScriptsPanel({
         >
           <div className={classes.headTop}>
             <div className={classes.headMain} style={{ gap: 7 }}>
-              <h1
-                style={{
-                  margin: 0,
-                  fontSize: 20,
-                  fontWeight: 650,
-                  letterSpacing: '-0.01em',
-                }}
-              >
-                Scripts
-              </h1>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <h1
+                  style={{
+                    margin: 0,
+                    fontSize: 20,
+                    fontWeight: 650,
+                    letterSpacing: '-0.01em',
+                  }}
+                >
+                  Scripts
+                </h1>
+                <DocsHint
+                  slug="start/getting-started"
+                  label="Your first script"
+                />
+              </div>
               <p className={classes.lede} style={{ maxWidth: '76ch' }}>
-                A script gets a URL the moment its first revision publishes.
-                Identifiers are immutable and become the subdomain.
+                Each script serves at its own subdomain.
               </p>
             </div>
             {write && (
