@@ -119,6 +119,23 @@ export function Explorer({
     setTimeout(() => setJustMoved(null), 700);
   };
 
+  // .lua fills in only when the author typed no extension at all; a
+  // typed .sql or .txt is a choice, not a typo.
+  const ensureExtension = (typed: string) =>
+    /\.[A-Za-z0-9]+$/.test(typed) ? typed : `${typed}.lua`;
+
+  const starterContent = (name: string) => {
+    if (name.endsWith('.lua')) return `-- ${name}\nreturn {}\n`;
+    if (name.endsWith('.sql')) return `-- ${name}\n`;
+    return '';
+  };
+
+  const createFile = (name: string, content: string) => {
+    setFiles((previous) => ({ ...(previous ?? {}), [name]: content }));
+    openFile(name);
+    syncSoon();
+  };
+
   const addFile = (initialPath?: string): void => {
     const typed = window
       .prompt('File path (e.g. utils/router.lua)', initialPath)
@@ -134,13 +151,8 @@ export function Explorer({
       addFile(typed);
       return;
     }
-    const name = typed.endsWith('.lua') ? typed : `${typed}.lua`;
-    setFiles((previous) => ({
-      ...(previous ?? {}),
-      [name]: `-- ${name}\nreturn {}\n`,
-    }));
-    openFile(name);
-    syncSoon();
+    const name = ensureExtension(typed);
+    createFile(name, starterContent(name));
   };
 
   const addFolder = () => {
@@ -149,10 +161,38 @@ export function Explorer({
     addFile(`${name.replace(/\/$/, '')}/`);
   };
 
+  // The cli's `sql <db> create <name>` shape: the next ordinal in the
+  // database's migrations folder, so the ladder stays ordered.
+  const addMigration = () => {
+    const existingDb = Object.keys(files ?? {})
+      .map((path) => /^migrations\/([^/]+)\//.exec(path)?.[1])
+      .find(Boolean);
+    const database = window
+      .prompt('Database name', existingDb ?? 'main')
+      ?.trim();
+    if (!database) return;
+    const label = window
+      .prompt('Migration name (e.g. add_users)')
+      ?.trim()
+      ?.replace(/\.sql$/, '');
+    if (!label) return;
+    const dir = `migrations/${database}/`;
+    const ordinal =
+      Math.max(
+        0,
+        ...Object.keys(files ?? {})
+          .filter((path) => path.startsWith(dir))
+          .map((path) => parseInt(path.slice(dir.length), 10))
+          .filter(Number.isFinite),
+      ) + 1;
+    const name = `${dir}${String(ordinal).padStart(4, '0')}_${label}.sql`;
+    createFile(name, `-- ${label}\n`);
+  };
+
   const renameFile = (path: string) => {
     const typed = window.prompt('New path', path)?.trim();
     if (!typed) return;
-    const next = typed.endsWith('.lua') ? typed : `${typed}.lua`;
+    const next = ensureExtension(typed);
     if (next === path) return;
     setFiles((previous) => {
       const tree = { ...(previous ?? {}) };
@@ -693,6 +733,12 @@ export function Explorer({
                     onSelect={addFolder}
                   >
                     New folder
+                  </ContextMenu.Item>
+                  <ContextMenu.Item
+                    className={classes.menuItem}
+                    onSelect={addMigration}
+                  >
+                    New migration
                   </ContextMenu.Item>
                 </ContextMenu.Content>
               </ContextMenu.Portal>
