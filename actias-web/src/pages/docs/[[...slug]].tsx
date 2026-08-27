@@ -21,7 +21,16 @@ import {
   getSearchIndex,
 } from '@/helpers/docs';
 import { DocSidebar } from '@/components/docs/DocSidebar';
+import { MermaidDiagram } from '@/components/docs/MermaidDiagram';
 import classes from './docs.module.css';
+
+/** The source text of a ```mermaid fence, or null for any other pre. */
+function mermaidSource(children: React.ReactNode): string | null {
+  if (!React.isValidElement(children)) return null;
+  const props = children.props as { className?: string; children?: unknown };
+  if (!props.className?.split(' ').includes('language-mermaid')) return null;
+  return typeof props.children === 'string' ? props.children : null;
+}
 
 interface Props {
   source: MDXRemoteSerializeResult;
@@ -54,7 +63,11 @@ const components: MDXComponents = {
   tr: (props) => <tr {...props} />,
   th: (props) => <th {...props} />,
   td: (props) => <td {...props} />,
-  pre: (props) => <pre className={classes.pre} {...props} />,
+  pre: (props) => {
+    const chart = mermaidSource(props.children);
+    if (chart !== null) return <MermaidDiagram chart={chart} />;
+    return <pre className={classes.pre} {...props} />;
+  },
   code: (props: { className?: string }) =>
     props.className ? (
       <code {...props} />
@@ -140,7 +153,15 @@ export const getStaticProps: GetStaticProps = async ({ params }) => {
 
   const { content, headings, meta } = getDoc(slug);
   const source = await serialize(content, {
-    mdxOptions: { rehypePlugins: [rehypeSlug, rehypeHighlight] },
+    mdxOptions: {
+      rehypePlugins: [
+        rehypeSlug,
+        // Mermaid fences pass through as plain text for the client-side
+        // renderer; the highlighter would otherwise throw on the unknown
+        // language.
+        [rehypeHighlight, { plainText: ['mermaid'] }],
+      ],
+    },
   });
 
   const at = order.findIndex((doc) => doc.slug === slug);

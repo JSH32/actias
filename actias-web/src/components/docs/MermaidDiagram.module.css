@@ -1,0 +1,29 @@
+.diagram {
+  margin: 20px 0 28px;
+  padding: 20px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: var(--night-1);
+  overflow-x: auto;
+}
+
+.diagram svg {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  height: auto;
+}
+
+/* The fence's source, shown until the svg arrives (and kept if the
+   source fails to parse); styled like a code block so nothing jumps. */
+.pending {
+  margin: 20px 0 28px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--night-2);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  overflow-x: auto;
+}
