@@ -750,6 +750,26 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
 
     let relative_path = script_relative_path(parts.uri.path(), consumed_segments);
 
+    // A path-routed script root without its trailing slash breaks every
+    // relative url the page carries ("app.js" resolving beside the
+    // script instead of inside it), so the canonical form is enforced
+    // the way webservers always have: redirect, let the browser
+    // re-anchor. Host-routed requests consume no segments and already
+    // serve the script at "/".
+    if consumed_segments > 0 && relative_path.is_empty() && !parts.uri.path().ends_with('/') {
+        let location = match parts.uri.query() {
+            Some(query) => format!("{}/?{query}", parts.uri.path()),
+            None => format!("{}/", parts.uri.path()),
+        };
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::PERMANENT_REDIRECT;
+        response.headers_mut().insert(
+            axum::http::header::LOCATION,
+            axum::http::HeaderValue::from_str(&location)?,
+        );
+        return Ok(response);
+    }
+
     // A GET or HEAD naming an asset is answered from the bundle itself: no
     // vm is created and the script never observes the request. Any other
     // method falls through to the script.
@@ -1705,6 +1725,24 @@ mod tests {
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(body.is_empty(), "a 304 must not carry the bytes");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_script_root_missing_its_slash_redirects_to_the_canonical_form() {
+        let app = router(state_with(caches_with_cached_script().await), 1024);
+
+        let request = axum::http::Request::builder()
+            .uri("/cached-script?tab=docs")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            response.headers()[axum::http::header::LOCATION],
+            "/cached-script/?tab=docs"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
