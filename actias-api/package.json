@@ -4,7 +4,7 @@
   "description": "",
   "author": "",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
@@ -64,6 +64,8 @@
     "@nestjs/platform-ws": "^9.0.0",
     "@nestjs/swagger": "^6.1.4",
     "@nestjs/websockets": "^9.0.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.79.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
     "@types/ws": "^8.5.8",
     "argon2": "^0.30.3",
     "bitfield": "^4.1.0",

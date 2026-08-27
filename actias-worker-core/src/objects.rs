@@ -857,7 +857,7 @@ mod tests {
 
         let runtime = ActiasRuntime::new(
             prepared,
-            KvServiceClient::new(channel),
+            KvServiceClient::new(crate::plain_grpc(channel)),
             egress,
             None,
             None,
@@ -1106,7 +1106,7 @@ mod tests {
 
         let result = ActiasRuntime::new(
             prepared,
-            KvServiceClient::new(channel),
+            KvServiceClient::new(crate::plain_grpc(channel)),
             egress,
             None,
             None,

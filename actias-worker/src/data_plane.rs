@@ -63,9 +63,10 @@ pub(crate) fn authed<T>(token: &str, message: T) -> Request<T> {
 pub(crate) async fn peer_client(
     state: &AppState,
     address: &str,
-) -> Result<WorkerDataClient<Channel>, String> {
+) -> Result<WorkerDataClient<actias_worker_core::Grpc>, String> {
+    let inject: actias_worker_core::GrpcInterceptor = actias_common::otel::trace_inject;
     if let Some(channel) = state.peers.get(address).await {
-        return Ok(WorkerDataClient::new(channel));
+        return Ok(WorkerDataClient::with_interceptor(channel, inject));
     }
     let endpoint = Channel::from_shared(format!("http://{address}"))
         .map_err(|_| "The peer's address is not routable.".to_owned())?;
@@ -74,7 +75,7 @@ pub(crate) async fn peer_client(
         .peers
         .insert(address.to_owned(), channel.clone())
         .await;
-    Ok(WorkerDataClient::new(channel))
+    Ok(WorkerDataClient::with_interceptor(channel, inject))
 }
 
 /// The read a request asks for; `sql` outranks `messages` outranks the

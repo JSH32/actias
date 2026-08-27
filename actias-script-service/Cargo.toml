@@ -2,11 +2,12 @@
 name = "actias-script-service"
 version.workspace = true
 edition = "2024"
+license = "AGPL-3.0-only"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actias-common = { workspace = true }
+actias-common = { workspace = true, features = ["otel"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1.2.2", features = ["v4", "serde"] }

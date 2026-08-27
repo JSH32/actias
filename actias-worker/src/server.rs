@@ -41,8 +41,8 @@ use crate::routing::{ObjectRouting, ResolveError, cached_revision};
 /// The service clients every request handler needs.
 #[derive(Clone)]
 pub struct Clients {
-    pub script: ScriptServiceClient<Channel>,
-    pub kv: KvServiceClient<Channel>,
+    pub script: ScriptServiceClient<actias_worker_core::Grpc>,
+    pub kv: KvServiceClient<actias_worker_core::Grpc>,
 }
 
 /// Hot-path caches shared across requests.
@@ -113,7 +113,7 @@ pub struct AppState {
     /// Decrypts stored secrets; without it `secret` declarations error.
     pub secret_client: Option<
         actias_worker_core::proto::secret_service::secret_service_client::SecretServiceClient<
-            tonic::transport::Channel,
+            actias_worker_core::Grpc,
         >,
     >,
     pub request_timeout: Duration,
@@ -147,7 +147,7 @@ pub struct AppState {
     /// object claims speak as it.
     pub node_identity: Arc<std::sync::RwLock<Option<String>>>,
     /// The placement store, for object lease claims.
-    pub registry: NodeRegistryServiceClient<Channel>,
+    pub registry: NodeRegistryServiceClient<actias_worker_core::Grpc>,
     /// Domain subdomain routing hangs off; [`None`] leaves only the path
     /// forms.
     pub base_domain: Option<String>,
@@ -341,7 +341,7 @@ fn cache_load_error(error: Arc<anyhow::Error>) -> anyhow::Error {
 /// infrastructure failing.
 async fn resolve_script(
     caches: &WorkerCaches,
-    client: &ScriptServiceClient<Channel>,
+    client: &ScriptServiceClient<actias_worker_core::Grpc>,
     identifier: String,
 ) -> Result<Script, Arc<anyhow::Error>> {
     caches
@@ -1034,8 +1034,8 @@ pub(crate) mod test_state {
     fn lazy_clients() -> Clients {
         let channel = Channel::from_static("http://127.0.0.1:1").connect_lazy();
         Clients {
-            script: ScriptServiceClient::new(channel.clone()),
-            kv: KvServiceClient::new(channel),
+            script: ScriptServiceClient::new(actias_worker_core::plain_grpc(channel.clone())),
+            kv: KvServiceClient::new(actias_worker_core::plain_grpc(channel)),
         }
     }
 
@@ -1076,9 +1076,9 @@ pub(crate) mod test_state {
             object_idle_after: Duration::from_secs(300),
             queue_policy: Default::default(),
             node_identity: Arc::default(),
-            registry: NodeRegistryServiceClient::new(
+            registry: NodeRegistryServiceClient::new(actias_worker_core::plain_grpc(
                 Channel::from_static("http://127.0.0.1:1").connect_lazy(),
-            ),
+            )),
             base_domain: None,
             connections: Arc::default(),
         }

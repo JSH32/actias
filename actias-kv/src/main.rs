@@ -84,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     Server::builder()
+        .layer(actias_common::otel::TraceExtract)
         .add_service(health_service)
         .add_service(KvServiceServer::new(KvService::new(store)))
         .serve(addr)

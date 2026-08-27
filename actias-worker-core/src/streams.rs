@@ -1203,7 +1203,7 @@ mod tests {
         let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
         ActiasRuntime::new(
             prepared,
-            KvServiceClient::new(channel),
+            KvServiceClient::new(crate::plain_grpc(channel)),
             crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
                 .expect("egress builds"),
             None,
@@ -1377,7 +1377,7 @@ mod tests {
         let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
         let runtime = ActiasRuntime::new(
             prepared,
-            KvServiceClient::new(channel),
+            KvServiceClient::new(crate::plain_grpc(channel)),
             crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
                 .expect("egress builds"),
             None,
@@ -2252,7 +2252,7 @@ mod tests {
         let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
         let refused = ActiasRuntime::new(
             prepared,
-            KvServiceClient::new(channel),
+            KvServiceClient::new(crate::plain_grpc(channel)),
             crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
                 .expect("egress builds"),
             None,

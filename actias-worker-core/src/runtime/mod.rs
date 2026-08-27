@@ -703,10 +703,10 @@ impl ActiasRuntime {
     /// - `time_limit` - Total Time limit in seconds, this is based on seconds and will start when [`start_timer`] is called
     pub async fn new(
         prepared: Arc<PreparedRevision>,
-        kv_client: KvServiceClient<tonic::transport::Channel>,
+        kv_client: KvServiceClient<crate::Grpc>,
         egress: crate::egress::EgressClient,
         logs: Option<crate::extensions::log::LogPublisher>,
-        secret_client: Option<SecretServiceClient<tonic::transport::Channel>>,
+        secret_client: Option<SecretServiceClient<crate::Grpc>>,
         time_limit: Option<u64>,
     ) -> mlua::Result<Self> {
         Self::with_profile(
@@ -729,10 +729,10 @@ impl ActiasRuntime {
     /// [`Self::apply_determinism`].
     pub async fn with_profile(
         prepared: Arc<PreparedRevision>,
-        kv_client: KvServiceClient<tonic::transport::Channel>,
+        kv_client: KvServiceClient<crate::Grpc>,
         egress: crate::egress::EgressClient,
         logs: Option<crate::extensions::log::LogPublisher>,
-        secret_client: Option<SecretServiceClient<tonic::transport::Channel>>,
+        secret_client: Option<SecretServiceClient<crate::Grpc>>,
         time_limit: Option<u64>,
         profile: VmProfile,
     ) -> mlua::Result<Self> {
@@ -1243,7 +1243,9 @@ mod tests {
         let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
         ActiasRuntime::with_profile(
             prepared_with(vec![lua_file("main.lua", source)]),
-            crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
+            crate::proto::kv_service::kv_service_client::KvServiceClient::new(crate::plain_grpc(
+                channel,
+            )),
             crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
                 .expect("client builds"),
             None,
@@ -1430,7 +1432,9 @@ mod tests {
 
         ActiasRuntime::new(
             prepared_with(vec![lua_file("main.lua", source)]),
-            crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
+            crate::proto::kv_service::kv_service_client::KvServiceClient::new(crate::plain_grpc(
+                channel,
+            )),
             crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
                 .expect("client builds"),
             None,
@@ -1518,7 +1522,9 @@ mod tests {
 
         ActiasRuntime::new(
             Arc::new(PreparedRevision::prepare(Script::default(), revision)?),
-            crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
+            crate::proto::kv_service::kv_service_client::KvServiceClient::new(crate::plain_grpc(
+                channel,
+            )),
             crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
                 .expect("client builds"),
             None,

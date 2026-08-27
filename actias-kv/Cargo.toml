@@ -2,6 +2,7 @@
 name = "actias-kv"
 version.workspace = true
 edition = "2024"
+license = "AGPL-3.0-only"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,7 +13,7 @@ async-trait = "0.1.92"
 base64 = "0.21.2"
 thiserror = "1.0.47"
 uuid = "1.4.1"
-actias-common = { workspace = true }
+actias-common = { workspace = true, features = ["otel"] }
 prost = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }

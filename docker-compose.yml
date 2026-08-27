@@ -64,6 +64,9 @@ services:
       args:
         CRATE_NAME: actias-script-service
     environment:
+      # Observability, pluggable: empty ACTIAS_OTEL unplugs it.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - OTEL_SERVICE_NAME=actias_script_service
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
       - REDIS_URL=redis://redis:6379
@@ -98,6 +101,9 @@ services:
       args:
         CRATE_NAME: actias-secret-service
     environment:
+      # Observability, pluggable: empty ACTIAS_OTEL unplugs it.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - OTEL_SERVICE_NAME=actias_secret_service
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_secret_service
       # The active master key; it only ever wraps per-version data keys.
@@ -135,6 +141,9 @@ services:
       args:
         CRATE_NAME: actias-worker
     environment:
+      # Observability, pluggable: empty ACTIAS_OTEL unplugs it.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - OTEL_SERVICE_NAME=actias_worker_1
       - PORT=3000
       - SCRIPT_SERVICE_URI=http://script_service:3000
       - KV_SERVICE_URI=http://kv_service:3000
@@ -186,6 +195,9 @@ services:
       args:
         CRATE_NAME: actias-worker
     environment:
+      # Observability, pluggable: empty ACTIAS_OTEL unplugs it.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - OTEL_SERVICE_NAME=actias_worker_2
       - PORT=3000
       - SCRIPT_SERVICE_URI=http://script_service:3000
       - KV_SERVICE_URI=http://kv_service:3000
@@ -238,6 +250,9 @@ services:
       kv_migration:
         condition: service_completed_successfully
     environment:
+      # Observability, pluggable: empty ACTIAS_OTEL unplugs it.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - OTEL_SERVICE_NAME=actias_kv_service
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_kv
 
@@ -272,6 +287,9 @@ services:
       script_service:
         condition: service_started
     environment:
+      # Observability, pluggable: empty ACTIAS_OTEL unplugs it.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4318}
+      - OTEL_SERVICE_NAME=actias_api
       - INVITE_ONLY=${INVITE_ONLY:-false}
       - SCRIPT_SERVICE_URL=script_service:3000
       - KV_SERVICE_URL=kv_service:3000
@@ -303,9 +321,23 @@ services:
       - WORKER_BASE=${WORKER_URL:-http://localhost:3002}/_IDENTIFIER_
       - WORKER_REVISION_BASE=${WORKER_URL:-http://localhost:3002}/_rev/_IDENTIFIER_/_REVISION_
 
+  # Observability backend, pluggable: the all-in-one grafana bundle
+  # (grafana + tempo + loki + prometheus) with OTLP in on 4317/4318.
+  # Services point OTEL_EXPORTER_OTLP_ENDPOINT here; set ACTIAS_OTEL to
+  # an empty value to unplug exporting without touching this container,
+  # or point it at external infrastructure instead.
+  otel:
+    image: grafana/otel-lgtm:latest
+    restart: unless-stopped
+    ports:
+      - "${ACTIAS_GRAFANA_PORT:-3030}:3000"
+    volumes:
+      - grafana_data:/data
+
 volumes:
   objects_data:
   objects_data_2:
   postgres_data:
   redis_data:
   minio_data:
+  grafana_data:

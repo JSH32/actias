@@ -316,7 +316,9 @@ mod tests {
                 Arc::new(PreparedRevision::prepare(Script::default(), revision).expect("prepares"));
             let runtime = ActiasRuntime::with_profile(
                 prepared,
-                crate::proto::kv_service::kv_service_client::KvServiceClient::new(channel),
+                crate::proto::kv_service::kv_service_client::KvServiceClient::new(
+                    crate::plain_grpc(channel),
+                ),
                 crate::egress::EgressClient::new(crate::egress::EgressPolicy::new([], false))
                     .expect("client builds"),
                 None,

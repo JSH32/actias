@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub struct KvExtension {
-    pub kv_client: KvServiceClient<tonic::transport::Channel>,
+    pub kv_client: KvServiceClient<crate::Grpc>,
     pub project_id: String,
 }
 
@@ -61,7 +61,7 @@ impl LuaExtension for KvExtension {
 
 #[derive(Clone)]
 pub struct KvNamespace {
-    kv_client: KvServiceClient<tonic::transport::Channel>,
+    kv_client: KvServiceClient<crate::Grpc>,
     namespace: String,
     project_id: String,
 }

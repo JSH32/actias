@@ -2,6 +2,7 @@
 name = "actias-declarations"
 version.workspace = true
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 cron = "0.12"

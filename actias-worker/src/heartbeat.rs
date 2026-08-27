@@ -11,11 +11,10 @@ use std::time::Duration;
 use actias_common::tracing::{info, warn};
 use actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient;
 use actias_worker_core::proto::node_registry::{HeartbeatRequest, RegisterNodeRequest};
-use tonic::transport::Channel;
 
 /// Runs forever; spawn it and forget it.
 pub async fn register_and_heartbeat(
-    mut client: NodeRegistryServiceClient<Channel>,
+    mut client: NodeRegistryServiceClient<actias_worker_core::Grpc>,
     address: String,
     in_flight: Arc<AtomicU32>,
     identity: Arc<std::sync::RwLock<Option<String>>>,

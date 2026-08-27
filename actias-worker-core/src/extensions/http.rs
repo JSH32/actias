@@ -374,7 +374,7 @@ mod tests {
 
         ActiasRuntime::new(
             Arc::new(prepared),
-            KvServiceClient::new(channel),
+            KvServiceClient::new(crate::plain_grpc(channel)),
             EgressClient::new(policy).expect("client builds"),
             None,
             None,

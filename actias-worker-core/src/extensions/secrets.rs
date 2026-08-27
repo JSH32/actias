@@ -18,7 +18,7 @@ use crate::{
 pub struct SecretsExtension {
     /// Absent when the worker has no secret service configured, in which
     /// case declaring a secret reports exactly that.
-    pub secret_client: Option<SecretServiceClient<tonic::transport::Channel>>,
+    pub secret_client: Option<SecretServiceClient<crate::Grpc>>,
     pub project_id: String,
     /// Script whose vms declare; audit metadata on every resolution.
     pub script_id: String,

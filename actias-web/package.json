@@ -2,6 +2,7 @@
   "name": "actias-web",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "dotenv -c -- next dev",
     "build": "next build",

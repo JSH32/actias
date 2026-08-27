@@ -64,17 +64,27 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         actias_worker_core::egress::EgressPolicy::new(denied_hosts, config.egress_allow_private),
     )?;
 
-    let script_client = ScriptServiceClient::connect(config.script_service_uri.clone()).await?;
-    let kv_client = KvServiceClient::connect(config.kv_service_uri).await?;
+    // Every platform client carries the trace-inject interceptor; it is
+    // a no-op until otel is configured (actias_common::otel).
+    let inject: actias_worker_core::GrpcInterceptor = actias_common::otel::trace_inject;
+    let script_channel =
+        tonic::transport::Endpoint::from_shared(config.script_service_uri.clone())?
+            .connect()
+            .await?;
+    let script_client = ScriptServiceClient::with_interceptor(script_channel.clone(), inject);
+    let kv_channel = tonic::transport::Endpoint::from_shared(config.kv_service_uri)?
+        .connect()
+        .await?;
+    let kv_client = KvServiceClient::with_interceptor(kv_channel, inject);
 
     // The registry rides in the script-service binary, so it answers on the
     // same channel. Membership is not on the request path: the loop retries
     // forever and the worker serves regardless.
     let registry_client =
-        actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient::connect(
-            config.script_service_uri.clone(),
-        )
-        .await?;
+        actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient::with_interceptor(
+            script_channel,
+            inject,
+        );
     let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let node_identity = std::sync::Arc::new(std::sync::RwLock::new(None));
     tokio::spawn(heartbeat::register_and_heartbeat(
@@ -90,10 +100,16 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .await?;
 
     let secret_client = match config.secret_service_uri {
-        Some(uri) => Some(
-            actias_worker_core::proto::secret_service::secret_service_client::SecretServiceClient::connect(uri)
-                .await?,
-        ),
+        Some(uri) => {
+            let channel = tonic::transport::Endpoint::from_shared(uri)?
+                .connect()
+                .await?;
+            Some(
+                actias_worker_core::proto::secret_service::secret_service_client::SecretServiceClient::with_interceptor(
+                    channel, inject,
+                ),
+            )
+        }
         None => None,
     };
 
@@ -166,6 +182,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .set_service_status("", tonic_health::ServingStatus::Serving)
         .await;
     let data_plane = tonic::transport::Server::builder()
+        .layer(actias_common::otel::TraceExtract)
         .add_service(health_service)
         .add_service(
             actias_worker_core::proto::worker_data::worker_data_server::WorkerDataServer::with_interceptor(
@@ -175,7 +192,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .serve_with_shutdown(grpc_addr, shutdown_signal());
 
-    let app = server::router(state.clone(), config.max_body_bytes);
+    let app = server::router(state.clone(), config.max_body_bytes)
+        .layer(actias_common::otel::TraceExtract);
 
     info!("Serving http on {addr}, data plane on {grpc_addr}");
 

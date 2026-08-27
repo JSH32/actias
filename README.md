@@ -120,3 +120,22 @@ objects, `actias-script-service` owns revisions and contracts,
 the public REST gateway, and `actias-web` (Next.js) is the console and
 workbench. `actias-cli` talks to the api and embeds the same Luau
 analysis the workbench runs.
+
+## Licensing
+
+Actias is licensed under two licenses.
+
+| Components | License |
+| --- | --- |
+| worker, worker-core, script-service, secret-service, kv, common, api, web | [AGPL-3.0-only](./LICENSE) |
+| `actias-cli` and its Luau definitions, `actias-declarations`, `luau-web` | [MIT](./LICENSE-MIT) |
+
+Modifying an AGPL component and offering it to others over a network
+requires offering those users the corresponding source. AGPL section 13.
+
+Lua and Luau you publish to Actias is not a derivative work of Actias,
+in the same way a Python script is not a derivative of CPython. The
+AGPL binds modification and hosting of Actias itself.
+
+A commercial license is available. [NOTICE](./NOTICE) has the
+component-by-component breakdown.

@@ -2,9 +2,10 @@
 name = "actias-secret-service"
 version.workspace = true
 edition = "2024"
+license = "AGPL-3.0-only"
 
 [dependencies]
-actias-common = { workspace = true }
+actias-common = { workspace = true, features = ["otel"] }
 sea-orm = { version = "1.1", default-features = false, features = [
     "sqlx-postgres",
     "runtime-tokio-rustls",

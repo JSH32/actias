@@ -1,0 +1,49 @@
+Actias
+Copyright (c) 2023 Josh Rudnik
+
+Actias is licensed under two licenses. Full texts are in LICENSE
+(AGPL-3.0-only) and LICENSE-MIT.
+
+COMPONENTS
+
+  actias-worker                AGPL-3.0-only
+  actias-worker-core           AGPL-3.0-only
+  actias-script-service        AGPL-3.0-only
+  actias-secret-service        AGPL-3.0-only
+  actias-kv                    AGPL-3.0-only
+  actias-common                AGPL-3.0-only
+  actias-api                   AGPL-3.0-only
+  actias-web                   AGPL-3.0-only
+  protobufs/                   AGPL-3.0-only
+  observability/               AGPL-3.0-only
+  docker/                      AGPL-3.0-only
+  actias-cli                   MIT
+  actias-cli/definitions       MIT
+  actias-declarations          MIT
+  luau-web                     MIT
+
+MIT components may be consumed by AGPL components. The reverse does not
+hold.
+
+NETWORK USE
+
+Modifying an AGPL component and offering it to others over a network
+requires offering those users the corresponding source. AGPL section 13.
+
+SCRIPTS
+
+Lua and Luau code published to Actias is not a derivative work of
+Actias, in the same way a Python script is not a derivative of CPython.
+The AGPL binds modification and hosting of Actias itself.
+
+THIRD PARTY
+
+Luau is vendored at luau-web/vendor/luau under the MIT license,
+Copyright (c) Roblox Corporation.
+
+Rust and npm dependencies are MIT, Apache-2.0, ISC, or BSD. See
+Cargo.lock and the package-lock.json files.
+
+COMMERCIAL LICENSING
+
+A commercial license is available. Contact the copyright holder.

@@ -1,3 +1,6 @@
+// First import on purpose: the otel sdk must patch libraries before
+// anything else pulls them in. No-op unless the endpoint is configured.
+import './tracing';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
