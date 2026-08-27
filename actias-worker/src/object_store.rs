@@ -53,7 +53,23 @@ impl ObjectStore {
             ));
         }
 
-        let bytes = tokio::fs::read(file).await.map_err(|e| e.to_string())?;
+        // The snapshot goes through sqlite, never a raw byte copy: the
+        // object's task may be writing and the WAL may hold committed
+        // frames the main file lacks; VACUUM INTO sees all of it,
+        // consistently. The passive checkpoint afterwards bounds WAL
+        // growth without waiting on anyone.
+        let source = file.to_path_buf();
+        let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+            let tmp = source.with_extension("ship");
+            let mut storage = actias_worker_core::storage::SqliteStorage::open(&source)?;
+            storage.snapshot_to(&tmp)?;
+            let bytes = std::fs::read(&tmp).map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(&tmp);
+            let _ = storage.checkpoint_passive();
+            Ok(bytes)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         self.client
             .put_object()
             .bucket(&self.bucket)

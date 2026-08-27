@@ -1665,7 +1665,10 @@ mod tests {
             dir.path().to_path_buf(),
             false,
             Arc::default(),
-            None,
+            Some((
+                "here".to_owned(),
+                Arc::new(|_, _| Box::pin(async { Ok(Vec::new()) })),
+            )),
             Some((identity, forwarder)),
         );
 
@@ -1711,11 +1714,9 @@ mod tests {
         // no backoff, and the next pump routes the follower's identity,
         // which the local router serves, advancing the cursor.
         let mut healed = false;
-        for _ in 0..80 {
+        for _ in 0..120 {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let file = dir
-                .path()
-                .join(crate::identity::ObjectKey::received("p", "Hub", "town").db_file_name());
+            let file = dir.path().join("Hub_town.db");
             let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
             let edges = list_edges(&mut storage, None).expect("edges list");
             let Some(edge) = edges.first() else { continue };

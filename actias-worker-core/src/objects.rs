@@ -553,9 +553,8 @@ async fn fire_alarm(
     }
 }
 
-/// One dispatched call, fully guarded: its own budget, its own
-/// transaction (a failed method persists nothing partial), and the
-/// checkpoint before any caller hears the result.
+/// One dispatched call, fully guarded: its own budget and its own
+/// transaction (a failed method persists nothing partial).
 async fn guarded_dispatch(
     runtime: &ActiasRuntime,
     home: &ObjectHome,
@@ -601,11 +600,10 @@ async fn guarded_dispatch(
             }
         }
 
-        // The handler is done; give storage its flush moment before the
-        // caller hears anything.
-        if let Err(error) = home.with_storage(|storage| storage.checkpoint()) {
-            actias_common::tracing::warn!(%error, "object storage checkpoint failed");
-        }
+        // No checkpoint here: synchronous=FULL already fsynced the WAL
+        // frame at commit, which is the durability the old per-write
+        // TRUNCATE bought, minus folding the log on every call. The
+        // shipper owns checkpoints now (docs/WAL-SHIPPING.md).
 
         // The output gate: a call that wrote does not answer until the
         // write has also left the building.

@@ -29,8 +29,35 @@ impl SqliteStorage {
         connection
             .pragma_update(None, "synchronous", "FULL")
             .map_err(|e| e.to_string())?;
+        // The WAL folds when the shipper decides, never behind our back:
+        // an implicit checkpoint mid-flight would move bytes the frame
+        // reader is about to ship (docs/WAL-SHIPPING.md).
+        connection
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .map_err(|e| e.to_string())?;
 
         Ok(Self { connection })
+    }
+
+    /// A consistent snapshot of the database into `dest`, taken through
+    /// sqlite itself, so it is safe beside a live writer; copying the
+    /// file's bytes is not. The copy is compacted and carries every
+    /// committed write, checkpointed or not.
+    pub fn snapshot_to(&mut self, dest: &Path) -> Result<(), String> {
+        let _ = std::fs::remove_file(dest);
+        let quoted = dest.to_string_lossy().replace('\'', "''");
+        self.connection
+            .execute_batch(&format!("VACUUM INTO '{quoted}'"))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Folds what it can of the WAL into the main file without waiting
+    /// on anyone; the shipper calls it to bound log growth, and a busy
+    /// answer is fine because the next flight retries.
+    pub fn checkpoint_passive(&mut self) -> Result<(), String> {
+        self.connection
+            .pragma_update(None, "wal_checkpoint", "PASSIVE")
+            .map_err(|e| e.to_string())
     }
 
     /// Opens the file read-only, for reads that bypass the owner's
