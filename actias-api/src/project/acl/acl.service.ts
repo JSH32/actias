@@ -113,7 +113,10 @@ export class AclService {
       });
     }
 
-    const access = await this.em.findOneOrFail(Access, { project, user });
+    // findOne, not findOneOrFail: a user with no access row is an answer
+    // (no permissions), not an error. The dashboard asks on every project
+    // page and renders the refusal.
+    const access = await this.em.findOne(Access, { project, user });
     if (!access) {
       return new AclListDto({
         user: new UserDto(user),

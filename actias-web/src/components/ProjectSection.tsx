@@ -22,17 +22,30 @@ function Section({
   const router = useRouter();
   const projectId = router.query.id as string | undefined;
 
-  const { data: project } = useQuery({
+  const { data: project, error: projectError } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => api.project.getProject(projectId as string),
     enabled: !!projectId,
   });
-  const { data: permissions } = useQuery({
-    queryKey: ['acl-me', project?.id],
-    queryFn: () => api.acl.getAclMe(project?.id as string),
-    enabled: !!project,
+  // Keyed by the route's id, not the fetched project, so both halves of
+  // the gate resolve in parallel on a hard load.
+  const { data: permissions, error: aclError } = useQuery({
+    queryKey: ['acl-me', projectId],
+    queryFn: () => api.acl.getAclMe(projectId as string),
+    enabled: !!projectId,
   });
 
+  const failure = (projectError ?? aclError) as {
+    body?: { message?: string };
+  } | null;
+  if (failure) {
+    return (
+      <p style={{ color: 'var(--ink-2)', padding: 20 }}>
+        This project could not be loaded:{' '}
+        {failure.body?.message ?? 'the request failed'}.
+      </p>
+    );
+  }
   if (!project || !permissions) {
     return <p style={{ color: 'var(--ink-3)', padding: 20 }}>Loading…</p>;
   }
