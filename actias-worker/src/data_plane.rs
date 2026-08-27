@@ -17,6 +17,7 @@ use actias_worker_core::proto::worker_data::worker_data_client::WorkerDataClient
 use actias_worker_core::proto::worker_data::worker_data_server::WorkerData;
 use actias_worker_core::proto::worker_data::{
     CallResult, ConnectionEvents, InboxBatch, InboxReceipts, ObjectCall, ReadRequest, ReadValue,
+    ReceiveBatch, ReceiveEntry, ReceiveOutcome, ReceiveReceipts,
 };
 
 use crate::routing::{ObjectRouting, fresh_replica_file, owner_prepared};
@@ -334,6 +335,138 @@ impl WorkerData for WorkerDataService {
         }
         Ok(Response::new(InboxReceipts { gone }))
     }
+
+    /// One publisher's due events for the durable followers THIS node
+    /// hosts: materialize each entry's events (inline, or a range read
+    /// from the nearest copy of the publisher's log), dispatch
+    /// __receive in order, report how far each follower got. The
+    /// follower's own cursor makes redelivery skip, so a repeat of
+    /// anything here is safe.
+    async fn deliver_receives(
+        &self,
+        request: Request<ReceiveBatch>,
+    ) -> Result<Response<ReceiveReceipts>, Status> {
+        let batch = request.into_inner();
+        let mut outcomes = Vec::new();
+        for entry in batch.entries {
+            let outcome = self
+                .deliver_one_receive(
+                    &batch.scope_id,
+                    &batch.publisher_class,
+                    &batch.publisher_name,
+                    entry,
+                )
+                .await;
+            outcomes.push(outcome);
+        }
+        Ok(Response::new(ReceiveReceipts { outcomes }))
+    }
+}
+
+impl WorkerDataService {
+    async fn deliver_one_receive(
+        &self,
+        scope: &str,
+        publisher_class: &str,
+        publisher_name: &str,
+        entry: ReceiveEntry,
+    ) -> ReceiveOutcome {
+        let failed = |delivered_to: i64| ReceiveOutcome {
+            follower_class: entry.follower_class.clone(),
+            follower_name: entry.follower_name.clone(),
+            delivered_to,
+            failed: true,
+        };
+
+        // The events, from the wire or from the nearest copy of the
+        // publisher's log (read_routed prefers the local file, then
+        // the holder, then the shipped replica).
+        let events: Vec<serde_json::Value> = if !entry.events_json.is_empty() {
+            match serde_json::from_str(&entry.events_json) {
+                Ok(events) => events,
+                Err(_) => return failed(0),
+            }
+        } else {
+            let read = PlatformRead::StreamEvents {
+                topic: entry.topic.clone(),
+                after: entry.range_after,
+                upto: entry.range_upto,
+            };
+            let request = ReadRequest {
+                scope_id: scope.to_owned(),
+                class: publisher_class.to_owned(),
+                name: publisher_name.to_owned(),
+                sql: None,
+                messages: false,
+                followers: false,
+                since: 0,
+                first_hop: true,
+            };
+            let value = match self.read_routed(request, read).await {
+                Ok(response) => response.into_inner().value_json,
+                Err(_) => return failed(0),
+            };
+            let filter: Option<serde_json::Value> = if entry.filter_json.is_empty() {
+                None
+            } else {
+                serde_json::from_str(&entry.filter_json).ok()
+            };
+            match serde_json::from_str::<Vec<serde_json::Value>>(&value) {
+                Ok(events) => events
+                    .into_iter()
+                    .filter(|event| {
+                        actias_worker_core::streams::filter_matches(filter.as_ref(), &event["data"])
+                    })
+                    .collect(),
+                Err(_) => return failed(0),
+            }
+        };
+
+        let follower_key = ObjectKey::received(scope, &entry.follower_class, &entry.follower_name);
+        let mut delivered_to = 0;
+        for event in events {
+            let payload = serde_json::json!({
+                "seq": event["seq"],
+                "topic": event["topic"],
+                "from": { "class": event["from_class"], "name": event["from_name"] },
+                "data": event["data"],
+            });
+            let answer = async {
+                let owner = owner_prepared(&self.state, &follower_key).await?;
+                ObjectRouting::new(&self.state, owner)
+                    .route_inner(
+                        ObjectTarget {
+                            class: entry.follower_class.clone(),
+                            name: entry.follower_name.clone(),
+                            method: "__receive".to_owned(),
+                            arguments: vec![payload],
+                            // A delivery is a fresh causal root, exactly
+                            // as the publisher-side pump treats it.
+                            chain: Vec::new(),
+                            caller: None,
+                        },
+                        // One forward is allowed: the home hint that
+                        // brought the batch here may be stale.
+                        true,
+                    )
+                    .await
+            }
+            .await;
+            match answer {
+                Ok(_) => delivered_to = event["seq"].as_i64().unwrap_or(delivered_to),
+                Err(error) => {
+                    actias_common::tracing::debug!(%error, "batched receive refused");
+                    return failed(delivered_to);
+                }
+            }
+        }
+        ReceiveOutcome {
+            follower_class: entry.follower_class,
+            follower_name: entry.follower_name,
+            delivered_to,
+            failed: false,
+        }
+    }
 }
 
 /// The publisher's half of node-grouped fan-out: resolve the node,
@@ -367,6 +500,69 @@ pub(crate) fn connection_forwarder(
                 .map_err(|e| e.message().to_owned())?
                 .into_inner();
             Ok(receipts.gone)
+        })
+    })
+}
+
+/// The publisher's half of durable node-grouped fan-out; handed to
+/// worker-core as the pump's [`ReceiveForwarder`].
+pub(crate) fn receive_forwarder(
+    state: &crate::server::AppState,
+) -> actias_worker_core::streams::ReceiveForwarder {
+    let state = state.clone();
+    std::sync::Arc::new(move |node: String, identity, deliveries| {
+        let state = state.clone();
+        Box::pin(async move {
+            let resolved = state
+                .registry
+                .clone()
+                .get_node(GetNodeRequest { node_id: node })
+                .await
+                .map_err(|e| format!("the follower's node could not be resolved: {e}"))?
+                .into_inner();
+            let mut client = peer_client(&state, &resolved.address).await?;
+            let entries = deliveries
+                .into_iter()
+                .map(|delivery| ReceiveEntry {
+                    follower_class: delivery.follower_class,
+                    follower_name: delivery.follower_name,
+                    events_json: if delivery.events.is_empty() {
+                        String::new()
+                    } else {
+                        serde_json::Value::Array(delivery.events).to_string()
+                    },
+                    range_after: delivery.range.map(|range| range.0).unwrap_or_default(),
+                    range_upto: delivery.range.map(|range| range.1).unwrap_or_default(),
+                    topic: delivery.topic,
+                    filter_json: delivery
+                        .filter
+                        .map(|filter| filter.to_string())
+                        .unwrap_or_default(),
+                })
+                .collect();
+            let receipts = client
+                .deliver_receives(authed(
+                    &state.internal_token,
+                    ReceiveBatch {
+                        scope_id: identity.scope,
+                        publisher_class: identity.class,
+                        publisher_name: identity.name,
+                        entries,
+                    },
+                ))
+                .await
+                .map_err(|e| e.message().to_owned())?
+                .into_inner();
+            Ok(receipts
+                .outcomes
+                .into_iter()
+                .map(|outcome| actias_worker_core::streams::ReceiveReport {
+                    follower_class: outcome.follower_class,
+                    follower_name: outcome.follower_name,
+                    delivered_to: outcome.delivered_to,
+                    failed: outcome.failed,
+                })
+                .collect())
         })
     })
 }

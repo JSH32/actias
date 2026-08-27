@@ -96,6 +96,14 @@ pub enum PlatformRead {
     /// The publisher's edge table plus its event-log head: the
     /// console's followers panel, for any object.
     Followers,
+    /// One topic's events in (after, upto], for batched durable
+    /// delivery reading a RANGE from the nearest copy of the log
+    /// instead of shipping the bytes inline.
+    StreamEvents {
+        topic: String,
+        after: i64,
+        upto: i64,
+    },
 }
 
 impl PlatformRead {
@@ -149,6 +157,24 @@ impl PlatformRead {
                 serde_json::to_value(workflow::read_journal_readonly_from(&mut storage, *since)?)
             }
             Self::Followers => return crate::streams::read_followers(&mut storage),
+            Self::StreamEvents { topic, after, upto } => {
+                let events = crate::streams::events_after(&mut storage, topic, *after)?;
+                return Ok(serde_json::Value::Array(
+                    events
+                        .into_iter()
+                        .filter(|event| event.seq <= *upto)
+                        .map(|event| {
+                            serde_json::json!({
+                                "seq": event.seq,
+                                "topic": event.topic,
+                                "from_class": event.from_class,
+                                "from_name": event.from_name,
+                                "data": event.data,
+                            })
+                        })
+                        .collect(),
+                ));
+            }
         };
         value.map_err(|e| e.to_string())
     }

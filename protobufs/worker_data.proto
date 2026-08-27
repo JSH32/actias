@@ -34,6 +34,13 @@ service WorkerData {
     // everything else advanced regardless (connection edges are
     // at-most-once). Publish cost is nodes listening, never listeners.
     rpc DeliverInbox(InboxBatch) returns (InboxReceipts);
+
+    // Node-grouped delivery for DURABLE followers: the node dispatches
+    // __receive to each of its resident follower objects in order and
+    // reports how far each got. The follower's own receive cursor
+    // makes any redelivery skip, so at-least-once stays safe to
+    // repeat.
+    rpc DeliverReceives(ReceiveBatch) returns (ReceiveReceipts);
 }
 
 // Due events for the connections one node hosts.
@@ -50,6 +57,46 @@ message ConnectionEvents {
 message InboxReceipts {
     // Connections the node no longer holds; their edges are dead.
     repeated string gone = 1;
+}
+
+// Due events for the durable followers one node hosts, from one
+// publisher. Small sets ride inline; past the cap only the range
+// travels and the node reads the events from the nearest copy of the
+// publisher's log (usually its own replica).
+message ReceiveBatch {
+    string scope_id = 1;
+    string publisher_class = 2;
+    string publisher_name = 3;
+    repeated ReceiveEntry entries = 4;
+}
+
+message ReceiveEntry {
+    string follower_class = 1;
+    string follower_name = 2;
+    // Inline: a json array of {seq, topic, from_class, from_name,
+    // data}; empty when a range travels instead.
+    string events_json = 3;
+    // The range (after, upto], meaningful when events_json is empty.
+    int64 range_after = 4;
+    int64 range_upto = 5;
+    string topic = 6;
+    // The edge's filter, json-encoded; empty means unfiltered. Range
+    // reads apply it where the events materialize.
+    string filter_json = 7;
+}
+
+message ReceiveReceipts {
+    repeated ReceiveOutcome outcomes = 1;
+}
+
+message ReceiveOutcome {
+    string follower_class = 1;
+    string follower_name = 2;
+    // Highest seq whose handler committed; 0 when nothing landed.
+    int64 delivered_to = 3;
+    // True when delivery stopped early; the publisher backs the edge
+    // off exactly as a per-event failure would have.
+    bool failed = 4;
 }
 
 // What one object call carries: the identity and the call, never code

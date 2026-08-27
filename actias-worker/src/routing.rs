@@ -377,6 +377,17 @@ impl ObjectRouting {
                 runtime.set_app_data::<actias_worker_core::streams::ConnectionForwarder>(
                     crate::data_plane::connection_forwarder(&routing.state),
                 );
+                // Durable followers batch the same way; the identity
+                // names this publisher so a range entry can be read
+                // from the nearest copy of its log.
+                runtime.set_app_data(actias_worker_core::streams::PublisherIdentity {
+                    scope: identity.scope().to_owned(),
+                    class: identity.class().to_owned(),
+                    name: identity.name().to_owned(),
+                });
+                runtime.set_app_data::<actias_worker_core::streams::ReceiveForwarder>(
+                    crate::data_plane::receive_forwarder(&routing.state),
+                );
 
                 let mut storage = actias_worker_core::storage::SqliteStorage::open(&file)
                     .map_err(mlua::Error::RuntimeError)?;

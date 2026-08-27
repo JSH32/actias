@@ -94,6 +94,105 @@ pub type ConnectionForwarder = std::sync::Arc<
         + Sync,
 >;
 
+/// Who this vm publishes as, set by the host at vm creation; batched
+/// durable delivery names the publisher so the receiving node can
+/// read ranges from the nearest copy of its log.
+#[derive(Clone)]
+pub struct PublisherIdentity {
+    pub scope: String,
+    pub class: String,
+    pub name: String,
+}
+
+/// One durable follower's due events, batched per node. Small sets
+/// ride inline; past the cap only the RANGE travels and the receiving
+/// node reads the events from the nearest copy of the publisher's log
+/// (its own replica, usually).
+pub struct ReceiveDelivery {
+    pub edge_id: i64,
+    pub follower_class: String,
+    pub follower_name: String,
+    pub topic: String,
+    pub filter: Option<serde_json::Value>,
+    /// Inline events, each {seq, topic, from_class, from_name, data};
+    /// empty when a range travels instead.
+    pub events: Vec<serde_json::Value>,
+    /// (after, upto]: set when the payload outgrew the inline cap.
+    pub range: Option<(i64, i64)>,
+}
+
+/// What one node reports back per follower it delivered for.
+pub struct ReceiveReport {
+    pub follower_class: String,
+    pub follower_name: String,
+    pub delivered_to: i64,
+    pub failed: bool,
+}
+
+/// Sends one node's durable batch; the reports drive cursor advances
+/// and failure backoff exactly as per-edge delivery would have.
+pub type ReceiveForwarder = std::sync::Arc<
+    dyn Fn(
+            String,
+            PublisherIdentity,
+            Vec<ReceiveDelivery>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<ReceiveReport>, String>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+/// Inline events past this many serialized bytes travel as a range
+/// instead, and the receiving node reads them from the nearest copy.
+const INLINE_EVENT_CAP: usize = 32 * 1024;
+
+const CREATE_RECEIVE_CURSORS: &str = "CREATE TABLE IF NOT EXISTS __actias_receive_cursors (
+        publisher TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        PRIMARY KEY (publisher, topic)
+    )";
+
+/// The FOLLOWER's own high-water mark for one stream: with the cursor
+/// beside the handler's writes, a redelivered event skips instead of
+/// re-running, and both commit together.
+pub fn receive_cursor(
+    storage: &mut SqliteStorage,
+    publisher: &str,
+    topic: &str,
+) -> Result<i64, String> {
+    let connection = storage.platform();
+    connection
+        .execute(CREATE_RECEIVE_CURSORS, [])
+        .map_err(|e| e.to_string())?;
+    connection
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM __actias_receive_cursors              WHERE publisher = ? AND topic = ?",
+            rusqlite::params![publisher, topic],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
+}
+
+pub fn advance_receive_cursor(
+    storage: &mut SqliteStorage,
+    publisher: &str,
+    topic: &str,
+    seq: i64,
+) -> Result<(), String> {
+    let connection = storage.platform();
+    connection
+        .execute(CREATE_RECEIVE_CURSORS, [])
+        .map_err(|e| e.to_string())?;
+    connection
+        .execute(
+            "INSERT INTO __actias_receive_cursors (publisher, topic, seq) VALUES (?, ?, ?)              ON CONFLICT (publisher, topic) DO UPDATE SET seq = MAX(seq, excluded.seq)",
+            rusqlite::params![publisher, topic, seq],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Appends one published event in the calling transaction and returns
 /// its sequence number.
 pub fn append_event(
@@ -588,12 +687,20 @@ pub async fn pump(
     let forwarder = runtime
         .app_data_ref::<ConnectionForwarder>()
         .map(|forwarder| forwarder.clone());
+    let receive_forwarder = runtime
+        .app_data_ref::<ReceiveForwarder>()
+        .map(|forwarder| forwarder.clone());
+    let publisher_identity = runtime
+        .app_data_ref::<PublisherIdentity>()
+        .map(|identity| identity.clone());
 
     // Remote connection edges batch per node: every node with
     // followers hears ONE call carrying everything due for it, and
     // fans out to its own sockets. Publish cost is the number of
     // nodes listening, never the number of listeners.
     let mut remote: std::collections::HashMap<String, Vec<RemoteDelivery>> =
+        std::collections::HashMap::new();
+    let mut remote_receives: std::collections::HashMap<String, Vec<ReceiveDelivery>> =
         std::collections::HashMap::new();
 
     for edge in edges {
@@ -613,6 +720,20 @@ pub async fn pump(
             continue;
         }
         if edge.next_at > now {
+            continue;
+        }
+        // A durable edge whose follower lives elsewhere batches into
+        // that node's one call instead of one routed dispatch per
+        // event from here.
+        let elsewhere = edge
+            .node
+            .as_deref()
+            .filter(|node| !node.is_empty() && !local_node.is_empty() && *node != local_node);
+        if let Some(node) = elsewhere
+            && receive_forwarder.is_some()
+            && publisher_identity.is_some()
+        {
+            stage_receive_edge(home, &edge, node, head, &mut remote_receives);
             continue;
         }
         let events =
@@ -637,6 +758,7 @@ pub async fn pump(
                 continue;
             }
             let payload = serde_json::json!({
+                "seq": event.seq,
                 "topic": event.topic,
                 "from": { "class": event.from_class, "name": event.from_name },
                 "data": event.data,
@@ -682,6 +804,11 @@ pub async fn pump(
 
     for (node, batch) in remote {
         flush_remote_batch(home, forwarder.as_ref(), &node, batch).await;
+    }
+    if let (Some(forward), Some(identity)) = (receive_forwarder, publisher_identity) {
+        for (node, batch) in remote_receives {
+            flush_receive_batch(home, &forward, identity.clone(), &node, batch).await;
+        }
     }
 
     match home.with_storage(next_delivery_due) {
@@ -733,6 +860,109 @@ fn stage_remote_edge(
         });
 }
 
+/// Reads one durable edge's due, filtered events into its node's
+/// batch: inline under the cap, as a range past it (the receiving
+/// node reads ranges from the nearest copy of this log).
+fn stage_receive_edge(
+    home: &std::sync::Arc<crate::objects::ObjectHome>,
+    edge: &Edge,
+    node: &str,
+    head: i64,
+    remote: &mut std::collections::HashMap<String, Vec<ReceiveDelivery>>,
+) {
+    let events = match home.with_storage(|storage| events_after(storage, &edge.topic, edge.cursor))
+    {
+        Ok(events) => events,
+        Err(error) => {
+            actias_common::tracing::warn!(%error, "stream pump could not read events");
+            return;
+        }
+    };
+    let due: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|event| filter_matches(edge.filter.as_ref(), &event.data))
+        .map(|event| {
+            serde_json::json!({
+                "seq": event.seq,
+                "topic": event.topic,
+                "from_class": event.from_class,
+                "from_name": event.from_name,
+                "data": event.data,
+            })
+        })
+        .collect();
+    let inline_bytes: usize = due.iter().map(|event| event.to_string().len()).sum();
+    let (events, range) = if inline_bytes > INLINE_EVENT_CAP {
+        (Vec::new(), Some((edge.cursor, head)))
+    } else {
+        (due, None)
+    };
+    remote
+        .entry(node.to_owned())
+        .or_default()
+        .push(ReceiveDelivery {
+            edge_id: edge.id,
+            follower_class: edge.class.clone(),
+            follower_name: edge.name.clone(),
+            topic: edge.topic.clone(),
+            filter: edge.filter.clone(),
+            events,
+            range,
+        });
+}
+
+/// One node's durable batch over the wire, with per-edge outcomes
+/// mapped back exactly as per-edge delivery would have scored them:
+/// delivered_to advances the cursor, failed backs the edge off, and a
+/// transport failure backs off everything it carried (the follower's
+/// own cursor makes any redelivery skip instead of re-run).
+async fn flush_receive_batch(
+    home: &std::sync::Arc<crate::objects::ObjectHome>,
+    forward: &ReceiveForwarder,
+    identity: PublisherIdentity,
+    node: &str,
+    batch: Vec<ReceiveDelivery>,
+) {
+    let edge_of: std::collections::HashMap<(String, String), i64> = batch
+        .iter()
+        .map(|delivery| {
+            (
+                (
+                    delivery.follower_class.clone(),
+                    delivery.follower_name.clone(),
+                ),
+                delivery.edge_id,
+            )
+        })
+        .collect();
+    let all_edges: Vec<i64> = batch.iter().map(|delivery| delivery.edge_id).collect();
+
+    match forward(node.to_owned(), identity, batch).await {
+        Ok(reports) => {
+            for report in reports {
+                let key = (report.follower_class, report.follower_name);
+                let Some(edge_id) = edge_of.get(&key) else {
+                    continue;
+                };
+                if report.delivered_to > 0 {
+                    let _ = home.with_storage(|storage| {
+                        advance_cursor(storage, *edge_id, report.delivered_to)
+                    });
+                }
+                if report.failed {
+                    let _ = home.with_storage(|storage| record_failure(storage, *edge_id));
+                }
+            }
+        }
+        Err(error) => {
+            actias_common::tracing::debug!(%error, node, "durable batch missed; backing off");
+            for edge_id in all_edges {
+                let _ = home.with_storage(|storage| record_failure(storage, edge_id));
+            }
+        }
+    }
+}
+
 /// One node's batch over the wire. At-most-once all the way: cursors
 /// advance to head whatever happens (a miss is a miss), and only an
 /// explicit "gone" from the hosting node prunes an edge. A transport
@@ -776,9 +1006,12 @@ async fn flush_remote_batch(
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        ConnectionForwarder, Edge, LocalNode, PublisherIdentity, ReceiveForwarder, ReceiveReport,
+        head_seq, list_edges,
+    };
     use crate::extensions::objects::{ObjectRouter, ObjectTarget};
     use crate::objects::{ObjectHandle, TaskOptions, spawn_object_task};
-    use super::{ConnectionForwarder, Edge, LocalNode, head_seq, list_edges};
     use crate::proto::bundle::{Bundle, File};
     use crate::proto::kv_service::kv_service_client::KvServiceClient;
     use crate::proto::script_service::{Revision, Script};
@@ -971,7 +1204,7 @@ mod tests {
     /// The in-test placement: one vm per identity, all sharing one
     /// router, so follows and deliveries route for real.
     fn town_router(dir: std::path::PathBuf, flaky: bool) -> ObjectRouter {
-        town_router_with(dir, flaky, Arc::default(), None)
+        town_router_with(dir, flaky, Arc::default(), None, None)
     }
 
     /// Same placement with a shared connection registry, so connection
@@ -981,6 +1214,7 @@ mod tests {
         flaky: bool,
         registry: Arc<crate::connections::ConnectionRegistry>,
         fanout: Option<(String, ConnectionForwarder)>,
+        durable: Option<(PublisherIdentity, ReceiveForwarder)>,
     ) -> ObjectRouter {
         type Registry = Arc<tokio::sync::Mutex<std::collections::HashMap<String, ObjectHandle>>>;
         let registry_map: Registry = Arc::default();
@@ -994,6 +1228,7 @@ mod tests {
             let dir = dir.clone();
             let connections = connections.clone();
             let fanout = fanout.clone();
+            let durable = durable.clone();
             Box::pin(async move {
                 let key = format!("{}/{}", target.class, target.name);
                 let handle = {
@@ -1010,6 +1245,10 @@ mod tests {
                         if let Some((node, forwarder)) = fanout.clone() {
                             runtime.set_app_data(LocalNode(node));
                             runtime.set_app_data::<ConnectionForwarder>(forwarder);
+                        }
+                        if let Some((identity, forwarder)) = durable.clone() {
+                            runtime.set_app_data(identity);
+                            runtime.set_app_data::<ReceiveForwarder>(forwarder);
                         }
                         let file = dir.join(format!("{}.db", key.replace(['/', ':'], "_")));
                         let handle = spawn_object_task(
@@ -1178,7 +1417,13 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
-        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone(), None);
+        let router = town_router_with(
+            dir.path().to_path_buf(),
+            false,
+            connections.clone(),
+            None,
+            None,
+        );
 
         call(
             &router,
@@ -1307,6 +1552,165 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_redelivered_event_skips_by_the_followers_own_cursor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let router = town_router(dir.path().to_path_buf(), false);
+
+        let event = |seq: i64| {
+            serde_json::json!({
+                "seq": seq,
+                "topic": "news",
+                "from": { "class": "Hub", "name": "town" },
+                "data": { "kind": "sport", "text": "goal" },
+            })
+        };
+
+        // The same seq lands twice (at-least-once will do that); the
+        // handler must run once. A later seq still lands.
+        call(&router, "Reader", "ada", "__receive", vec![event(7)])
+            .await
+            .expect("first delivery");
+        call(&router, "Reader", "ada", "__receive", vec![event(7)])
+            .await
+            .expect("redelivery is quietly skipped");
+        call(&router, "Reader", "ada", "__receive", vec![event(8)])
+            .await
+            .expect("the next seq lands");
+
+        let rows = seen_rows(&router, "ada").await;
+        assert_eq!(rows.len(), 2, "seq 7 ran once, seq 8 once: {rows:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_remote_durable_edge_batches_and_scores_like_per_edge_delivery() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        type Heard = Arc<std::sync::Mutex<Vec<(String, String, Vec<(String, usize)>)>>>;
+        let heard: Heard = Arc::default();
+        let flaky_once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let forwarder: ReceiveForwarder = {
+            let heard = heard.clone();
+            let flaky_once = flaky_once.clone();
+            Arc::new(move |node, identity, batch| {
+                let heard = heard.clone();
+                let flaky_once = flaky_once.clone();
+                Box::pin(async move {
+                    let shape = batch
+                        .iter()
+                        .map(|delivery| (delivery.follower_name.clone(), delivery.events.len()))
+                        .collect();
+                    heard
+                        .lock()
+                        .expect("no panics")
+                        .push((node, identity.name, shape));
+                    // First call: transport failure, so every edge in
+                    // the batch backs off and nothing advances.
+                    if flaky_once.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        return Err("node unreachable".to_owned());
+                    }
+                    Ok(batch
+                        .iter()
+                        .map(|delivery| ReceiveReport {
+                            follower_class: delivery.follower_class.clone(),
+                            follower_name: delivery.follower_name.clone(),
+                            delivered_to: delivery
+                                .events
+                                .iter()
+                                .filter_map(|event| event["seq"].as_i64())
+                                .max()
+                                .unwrap_or(0),
+                            failed: false,
+                        })
+                        .collect())
+                })
+            })
+        };
+
+        let identity = PublisherIdentity {
+            scope: "p".to_owned(),
+            class: "Hub".to_owned(),
+            name: "town".to_owned(),
+        };
+        let router = town_router_with(
+            dir.path().to_path_buf(),
+            false,
+            Arc::default(),
+            Some((
+                "here".to_owned(),
+                Arc::new(|_, _| Box::pin(async { Ok(Vec::new()) })),
+            )),
+            Some((identity, forwarder)),
+        );
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "admit",
+            vec![serde_json::json!("ada")],
+        )
+        .await
+        .expect("admitted");
+        call(
+            &router,
+            "Hub",
+            "town",
+            "__follow",
+            vec![
+                serde_json::json!("news"),
+                serde_json::Value::Null,
+                serde_json::json!({
+                    "class": "Reader",
+                    "name": "ada",
+                    "transport": "object",
+                    "node": "elsewhere",
+                }),
+            ],
+        )
+        .await
+        .expect("the gate admits the member");
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "post",
+            vec![serde_json::json!("sport"), serde_json::json!("goal")],
+        )
+        .await
+        .expect("posted");
+
+        // Two forwarder calls arrive: the failed one, then the retry
+        // after backoff... the retry waits DELIVERY seconds; assert
+        // the first (failed) call and the backoff bookkeeping instead.
+        let first = 'wait: {
+            for _ in 0..80 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let seen = heard.lock().expect("no panics").clone();
+                if !seen.is_empty() {
+                    break 'wait seen;
+                }
+            }
+            panic!("the forwarder never heard the durable batch");
+        };
+        let (node, publisher, shape) = &first[0];
+        assert_eq!(node, "elsewhere");
+        assert_eq!(publisher, "town");
+        assert_eq!(shape, &vec![("ada".to_owned(), 1usize)]);
+
+        let file = dir.path().join("Hub_town.db");
+        let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
+        let edge = list_edges(&mut storage, Some("news"))
+            .expect("edges")
+            .into_iter()
+            .find(|edge| edge.kind == "object")
+            .expect("the durable edge survives a transport failure");
+        assert_eq!(edge.cursor, 0, "nothing advanced on the failed send");
+        assert!(edge.attempts >= 1, "the transport failure backed off");
+        assert!(edge.next_at > 0, "a retry is scheduled");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_remote_connection_edge_batches_through_the_forwarder() {
         let dir = tempfile::tempdir().expect("tempdir");
 
@@ -1335,6 +1739,7 @@ mod tests {
             false,
             Arc::default(),
             Some(("here".to_owned(), forwarder)),
+            None,
         );
 
         call(
@@ -1605,7 +2010,13 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
-        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone(), None);
+        let router = town_router_with(
+            dir.path().to_path_buf(),
+            false,
+            connections.clone(),
+            None,
+            None,
+        );
 
         call(
             &router,
@@ -1700,7 +2111,13 @@ mod tests {
     async fn connection_edges_deliver_at_most_once_and_prune() {
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
-        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone(), None);
+        let router = town_router_with(
+            dir.path().to_path_buf(),
+            false,
+            connections.clone(),
+            None,
+            None,
+        );
 
         call(
             &router,

@@ -394,6 +394,12 @@ async fn stream_edge_call(
         (router.clone(), chain)
     };
 
+    // Where this follower lives, so the publisher's pump can batch
+    // its deliveries into this node's one call.
+    let node = lua
+        .app_data_ref::<crate::streams::LocalNode>()
+        .map(|node| node.0.clone())
+        .unwrap_or_default();
     router(ObjectTarget {
         class: target_class,
         name: target_name,
@@ -405,6 +411,7 @@ async fn stream_edge_call(
                 "class": current.0,
                 "name": current.1,
                 "transport": "object",
+                "node": node,
             }),
         ],
         chain,

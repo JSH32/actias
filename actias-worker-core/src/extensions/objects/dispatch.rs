@@ -285,6 +285,31 @@ async fn dispatch_internal(
                 .unwrap_or(serde_json::Value::Null);
             let from_class = event_json["from"]["class"].as_str().unwrap_or_default();
             let topic = event_json["topic"].as_str().unwrap_or_default();
+            // The FOLLOWER owns its high-water mark: a redelivered seq
+            // skips instead of re-running, and the cursor bump commits
+            // with the handler's own writes, so at-least-once delivery
+            // becomes exactly-once effect here.
+            let seq = event_json["seq"].as_i64().unwrap_or(0);
+            let publisher = format!(
+                "{from_class}/{}",
+                event_json["from"]["name"].as_str().unwrap_or_default()
+            );
+            let cursor_home = lua
+                .app_data_ref::<std::sync::Arc<crate::objects::ObjectHome>>()
+                .map(|home| home.clone())
+                .filter(|home| home.has_storage());
+            if seq > 0
+                && let Some(home) = &cursor_home
+            {
+                let already = home
+                    .with_storage(|storage| {
+                        crate::streams::receive_cursor(storage, &publisher, topic)
+                    })
+                    .unwrap_or(0);
+                if seq <= already {
+                    return Ok(mlua::Value::Nil);
+                }
+            }
             // Routing is the key: one declared handler per consumed
             // stream, "Source:topic". No entry means delivered and
             // discarded (the checker refuses the follow that would
@@ -317,7 +342,16 @@ async fn dispatch_internal(
                 "object",
             )?;
             event.set("from", from)?;
-            handler.call_async::<mlua::Value>((state, event)).await
+            let outcome = handler.call_async::<mlua::Value>((state, event)).await?;
+            if seq > 0
+                && let Some(home) = &cursor_home
+            {
+                home.with_storage(|storage| {
+                    crate::streams::advance_receive_cursor(storage, &publisher, topic, seq)
+                })
+                .map_err(mlua::Error::RuntimeError)?;
+            }
+            Ok(outcome)
         }
         other => Err(mlua::Error::RuntimeError(format!(
             "No platform verb '__{other}'."
