@@ -3,7 +3,7 @@
 		<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/JSH32/actias/master/.github/assets/banner-dark.png">
 		<img width="460" alt="Actias" src="https://raw.githubusercontent.com/JSH32/actias/master/.github/assets/banner-light.png">
 	</picture><br>
-	<img src="https://img.shields.io/badge/license-MIT-a3e6b4.svg">
+	<img src="https://img.shields.io/badge/license-AGPL--3.0%20%7C%20MIT-a3e6b4.svg">
 	<img src="https://img.shields.io/badge/contributions-welcome-orange.svg">
 	<img src="https://img.shields.io/badge/Made%20with-%E2%9D%A4-ff69b4?logo=love">
 </p>
