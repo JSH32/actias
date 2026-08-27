@@ -37,15 +37,9 @@
   color: var(--ink-2);
 }
 
+/* The topbar already wears the mark; the headline stands alone. */
 .brandRow {
-  display: flex;
-  align-items: center;
-  gap: 14px;
   margin-bottom: 20px;
-}
-
-.brandRow svg {
-  flex: none;
 }
 
 .title {

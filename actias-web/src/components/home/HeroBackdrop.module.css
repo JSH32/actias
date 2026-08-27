@@ -38,6 +38,26 @@
   will-change: opacity;
 }
 
+/* The mark at a scale only the hero can afford, sitting inside the
+ * bloom's glow beside the headline and lead. Size and position keep
+ * it wholly inside the one region no text enters: right of the copy,
+ * ending before the two-column section begins, so nothing ever reads
+ * as overlaying it. */
+.mark {
+  position: absolute;
+  top: 16px;
+  right: max(4vw, 40px);
+  width: clamp(240px, 26vw, 400px);
+  height: auto;
+  color: var(--luna);
+  opacity: 0.05;
+}
+@media (max-width: 760px) {
+  .mark {
+    display: none;
+  }
+}
+
 .counter {
   position: absolute;
   bottom: -300px;

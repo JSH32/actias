@@ -1,5 +1,4 @@
 import Link from 'next/link';
-import { Mark } from '@/ui/Mark';
 import { Button } from '@/ui';
 import { HeroBackdrop } from '@/components/home/HeroBackdrop';
 import { Reveal } from '@/components/home/Reveal';
@@ -74,7 +73,6 @@ export default function Landing() {
 
       <section className={classes.hero}>
         <div className={`${classes.brandRow} ${classes.rise}`}>
-          <Mark size={34} />
           <h1 className={classes.title}>Write a script. Get a backend.</h1>
         </div>
 
