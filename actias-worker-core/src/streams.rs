@@ -239,19 +239,32 @@ pub struct Edge {
     pub node: Option<String>,
 }
 
+/// One accepted follow, as [`upsert_edge`] records it.
+pub struct EdgeSpec<'a> {
+    pub kind: &'a str,
+    pub class: &'a str,
+    pub name: &'a str,
+    /// Present for connection edges only.
+    pub connection_id: Option<&'a str>,
+    pub topic: &'a str,
+    pub filter: Option<&'a serde_json::Value>,
+    /// Where the follower lives; [`None`] means this node.
+    pub node: Option<&'a str>,
+}
+
 /// Records (or re-records) an accepted follow: one edge per
 /// (kind, class, name, topic); re-following replaces the filter and
 /// resets patience, keeping the cursor so no history replays.
-pub fn upsert_edge(
-    storage: &mut SqliteStorage,
-    kind: &str,
-    class: &str,
-    name: &str,
-    connection_id: Option<&str>,
-    topic: &str,
-    filter: Option<&serde_json::Value>,
-    node: Option<&str>,
-) -> Result<(), String> {
+pub fn upsert_edge(storage: &mut SqliteStorage, edge: EdgeSpec<'_>) -> Result<(), String> {
+    let EdgeSpec {
+        kind,
+        class,
+        name,
+        connection_id,
+        topic,
+        filter,
+        node,
+    } = edge;
     ensure_tables(storage)?;
     let filter_text = filter.map(|value| value.to_string());
     let connection = storage.platform();
@@ -1830,26 +1843,31 @@ mod tests {
             let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
             // Follow FIRST: a fresh edge starts at head (no backfill),
             // so lag only accrues for events published after it.
+            let sport = serde_json::json!({ "kind": "sport" });
             crate::streams::upsert_edge(
                 &mut storage,
-                "object",
-                "Reader",
-                "ada",
-                None,
-                "news",
-                None,
-                None,
+                crate::streams::EdgeSpec {
+                    kind: "object",
+                    class: "Reader",
+                    name: "ada",
+                    connection_id: None,
+                    topic: "news",
+                    filter: None,
+                    node: None,
+                },
             )
             .expect("edges");
             crate::streams::upsert_edge(
                 &mut storage,
-                "connection",
-                "Reader",
-                "ada",
-                Some("conn#7"),
-                "news",
-                Some(&serde_json::json!({ "kind": "sport" })),
-                None,
+                crate::streams::EdgeSpec {
+                    kind: "connection",
+                    class: "Reader",
+                    name: "ada",
+                    connection_id: Some("conn#7"),
+                    topic: "news",
+                    filter: Some(&sport),
+                    node: None,
+                },
             )
             .expect("edges");
             crate::streams::append_event(

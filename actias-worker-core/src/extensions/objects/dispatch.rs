@@ -265,13 +265,15 @@ async fn dispatch_internal(
             home.with_storage(|storage| {
                 crate::streams::upsert_edge(
                     storage,
-                    kind,
-                    &follower_class,
-                    &follower_name,
-                    connection_id.as_deref(),
-                    &topic,
-                    filter_option,
-                    node.as_deref(),
+                    crate::streams::EdgeSpec {
+                        kind,
+                        class: &follower_class,
+                        name: &follower_name,
+                        connection_id: connection_id.as_deref(),
+                        topic: &topic,
+                        filter: filter_option,
+                        node: node.as_deref(),
+                    },
                 )
             })
             .map_err(mlua::Error::RuntimeError)?;
