@@ -1,6 +1,6 @@
 [package]
 name = "actias-script-service"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -23,6 +23,7 @@ futures = "0.3.29"
 prost = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tonic-health = { workspace = true }
 blake3 = { workspace = true }
 aws-sdk-s3 = "1.142.0"
 aws-config = "1.10.1"

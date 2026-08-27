@@ -1,6 +1,6 @@
 [package]
 name = "actias-worker"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -20,6 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 blake3 = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tonic-health = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
 moka = { version = "0.12.16", features = ["future"] }
 aws-sdk-s3 = "1.142.0"

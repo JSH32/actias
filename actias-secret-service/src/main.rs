@@ -33,7 +33,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.previous_master,
     );
 
+    // The standard grpc health service, the probe target: overall
+    // status flips to serving once everything above constructed.
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_service_status("", tonic_health::ServingStatus::Serving)
+        .await;
+
     Server::builder()
+        .add_service(health_service)
         .add_service(SecretServiceServer::new(SecretService::new(
             database, envelope,
         )))

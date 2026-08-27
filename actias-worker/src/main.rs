@@ -159,7 +159,14 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // The data plane: object dispatch and typed reads, cluster-internal.
     // The registry address other nodes and the api dial is THIS listener.
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
+    // The standard grpc health service rides the data plane unguarded
+    // (health is not a capability), the probe target for this node.
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_service_status("", tonic_health::ServingStatus::Serving)
+        .await;
     let data_plane = tonic::transport::Server::builder()
+        .add_service(health_service)
         .add_service(
             actias_worker_core::proto::worker_data::worker_data_server::WorkerDataServer::with_interceptor(
                 data_plane::WorkerDataService::new(state.clone()),

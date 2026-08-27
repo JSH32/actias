@@ -5,6 +5,7 @@ import config from './config';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { ProjectModule } from './project/project.module';
+import { HealthModule } from './health/health.module';
 import { ScriptModule } from './scripts/scripts.module';
 import { AspectLogger } from './util/aspectlogger';
 import { APP_INTERCEPTOR } from '@nestjs/core';
@@ -15,6 +16,7 @@ import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
+    HealthModule,
     ScriptModule,
     ConfigModule.forRoot({
       isGlobal: true,
