@@ -1,0 +1,11 @@
+# Replaces the lgtm bundle's demo dashboards (RED, JVM) with the
+# actias set. Mounted over
+# /otel-lgtm/grafana/conf/provisioning/dashboards/grafana-dashboards.yaml.
+apiVersion: 1
+
+providers:
+  - name: "Actias"
+    type: file
+    options:
+      path: /otel-lgtm/actias-dashboards
+      foldersFromFilesStructure: false

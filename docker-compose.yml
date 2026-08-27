@@ -333,6 +333,11 @@ services:
       - "${ACTIAS_GRAFANA_PORT:-3030}:3000"
     volumes:
       - grafana_data:/data
+      # The bundle's prometheus config plus the worker /_metrics scrape.
+      - ./docker/otel/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
+      # Replaces the demo dashboards (RED, JVM) with the actias set.
+      - ./docker/otel/grafana-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/grafana-dashboards.yaml:ro
+      - ./docker/otel/dashboards:/otel-lgtm/actias-dashboards:ro
 
 volumes:
   objects_data:

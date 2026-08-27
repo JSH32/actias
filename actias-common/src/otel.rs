@@ -121,6 +121,12 @@ where
     fn call(&mut self, request: http::Request<B>) -> Self::Future {
         use tracing::Instrument;
 
+        // The metrics scrape would otherwise mint a trace every poll;
+        // pure noise, at the scraper's own cadence, forever.
+        if request.uri().path() == "/_metrics" {
+            return Box::pin(self.0.call(request));
+        }
+
         let parent = opentelemetry::global::get_text_map_propagator(|propagator| {
             propagator.extract(&HeaderExtractor(request.headers()))
         });
