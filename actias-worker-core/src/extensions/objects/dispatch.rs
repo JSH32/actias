@@ -253,6 +253,10 @@ async fn dispatch_internal(
                     "a connection follower names its connection.".to_owned(),
                 ));
             }
+            // Where the follower's socket lives; empty means the
+            // publisher's own node (single-node installs, and edges
+            // made before registration finished).
+            let node = follower["node"].as_str().map(str::to_owned);
             let filter_option = if filter.is_null() {
                 None
             } else {
@@ -267,6 +271,7 @@ async fn dispatch_internal(
                     connection_id.as_deref(),
                     &topic,
                     filter_option,
+                    node.as_deref(),
                 )
             })
             .map_err(mlua::Error::RuntimeError)?;

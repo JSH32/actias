@@ -922,8 +922,16 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             anyhow::anyhow!("an upgrade was parked without a websocket handshake")
         })?;
         let registry = state.connections.clone();
+        // The connection remembers which node hosts it, so a publisher
+        // homed elsewhere knows where its events must travel.
+        let node = state
+            .node_identity
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .unwrap_or_default();
         return Ok(websocket.on_upgrade(move |socket| {
-            drive_socket(socket, lua, pending, registry, connection_router)
+            drive_socket(socket, lua, pending, registry, connection_router, node)
         }));
     }
 
@@ -944,6 +952,7 @@ async fn drive_socket(
     pending: actias_worker_core::extensions::sockets::PendingUpgrade,
     registry: Arc<actias_worker_core::connections::ConnectionRegistry>,
     router: ObjectRouter,
+    node: String,
 ) {
     use actias_worker_core::connections::{InboxItem, OutboundFrame, inbox};
     use actias_worker_core::extensions::sockets::{SockShared, run_connection};
@@ -956,6 +965,7 @@ async fn drive_socket(
 
     let shared = SockShared::new(
         connection_id.clone(),
+        node,
         pending.class.clone(),
         pending.name.clone(),
         inbox_rx,

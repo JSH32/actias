@@ -94,6 +94,9 @@ pub fn arm_request(lua: &Lua, request: &Table) -> mlua::Result<()> {
 /// bridge after the handshake.
 pub struct SockShared {
     pub connection_id: String,
+    /// The node hosting this socket; edges record it so a publisher
+    /// homed elsewhere knows where to send.
+    pub node: String,
     /// The identity this connection speaks as.
     pub class: String,
     pub name: String,
@@ -108,6 +111,7 @@ pub struct SockShared {
 impl SockShared {
     pub fn new(
         connection_id: String,
+        node: String,
         class: String,
         name: String,
         inbox: InboxReceiver,
@@ -116,6 +120,7 @@ impl SockShared {
     ) -> Arc<Self> {
         Arc::new(Self {
             connection_id,
+            node,
             class,
             name,
             inbox: Arc::new(tokio::sync::Mutex::new(inbox)),
@@ -132,6 +137,7 @@ impl SockShared {
             "name": self.name,
             "transport": "connection",
             "connection": self.connection_id,
+            "node": self.node,
         })
     }
 

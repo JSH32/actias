@@ -26,6 +26,30 @@ service WorkerData {
     // The queue's journal after the `since` cursor, oldest first; routed
     // exactly like ReadStats.
     rpc ReadJournal(ReadRequest) returns (ReadValue);
+
+    // Node-grouped connection delivery: one call carries every due
+    // stream event for every followed connection this node hosts, and
+    // the node fans out to its own sockets. The reply names the
+    // connections that are gone so the publisher prunes their edges;
+    // everything else advanced regardless (connection edges are
+    // at-most-once). Publish cost is nodes listening, never listeners.
+    rpc DeliverInbox(InboxBatch) returns (InboxReceipts);
+}
+
+// Due events for the connections one node hosts.
+message InboxBatch {
+    repeated ConnectionEvents entries = 1;
+}
+
+message ConnectionEvents {
+    string connection = 1;
+    // A json array of {topic, from_class, from_name, data} objects.
+    string events_json = 2;
+}
+
+message InboxReceipts {
+    // Connections the node no longer holds; their edges are dead.
+    repeated string gone = 1;
 }
 
 // What one object call carries: the identity and the call, never code

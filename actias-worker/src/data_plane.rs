@@ -15,7 +15,9 @@ use actias_worker_core::platform::PlatformRead;
 use actias_worker_core::proto::node_registry::{GetLeaseRequest, GetNodeRequest};
 use actias_worker_core::proto::worker_data::worker_data_client::WorkerDataClient;
 use actias_worker_core::proto::worker_data::worker_data_server::WorkerData;
-use actias_worker_core::proto::worker_data::{CallResult, ObjectCall, ReadRequest, ReadValue};
+use actias_worker_core::proto::worker_data::{
+    CallResult, ConnectionEvents, InboxBatch, InboxReceipts, ObjectCall, ReadRequest, ReadValue,
+};
 
 use crate::routing::{ObjectRouting, fresh_replica_file, owner_prepared};
 use crate::server::AppState;
@@ -296,6 +298,77 @@ impl WorkerData for WorkerDataService {
         };
         self.read_routed(request, read).await
     }
+
+    /// One publisher's due events for the connections THIS node hosts:
+    /// walk the local registry, report back whoever is gone. This is
+    /// the receiving half of node-grouped fan-out; the publisher sent
+    /// one call for everything here instead of one per socket.
+    async fn deliver_inbox(
+        &self,
+        request: Request<InboxBatch>,
+    ) -> Result<Response<InboxReceipts>, Status> {
+        let batch = request.into_inner();
+        let mut gone = Vec::new();
+        for entry in batch.entries {
+            let Ok(events) = serde_json::from_str::<Vec<serde_json::Value>>(&entry.events_json)
+            else {
+                continue;
+            };
+            for event in events {
+                let item = actias_worker_core::connections::InboxItem::Event {
+                    topic: event["topic"].as_str().unwrap_or_default().to_owned(),
+                    from_class: event["from_class"].as_str().unwrap_or_default().to_owned(),
+                    from_name: event["from_name"].as_str().unwrap_or_default().to_owned(),
+                    data: event["data"].clone(),
+                };
+                if self
+                    .state
+                    .connections
+                    .deliver(&entry.connection, item)
+                    .is_err()
+                {
+                    gone.push(entry.connection.clone());
+                    break;
+                }
+            }
+        }
+        Ok(Response::new(InboxReceipts { gone }))
+    }
+}
+
+/// The publisher's half of node-grouped fan-out: resolve the node,
+/// send its batch in one call, hand back who it reported gone. Handed
+/// to worker-core as the stream pump's [`ConnectionForwarder`].
+pub(crate) fn connection_forwarder(
+    state: &crate::server::AppState,
+) -> actias_worker_core::streams::ConnectionForwarder {
+    let state = state.clone();
+    std::sync::Arc::new(move |node: String, deliveries| {
+        let state = state.clone();
+        Box::pin(async move {
+            let resolved = state
+                .registry
+                .clone()
+                .get_node(GetNodeRequest { node_id: node })
+                .await
+                .map_err(|e| format!("the follower's node could not be resolved: {e}"))?
+                .into_inner();
+            let mut client = peer_client(&state, &resolved.address).await?;
+            let entries = deliveries
+                .into_iter()
+                .map(|delivery| ConnectionEvents {
+                    connection: delivery.connection,
+                    events_json: serde_json::Value::Array(delivery.events).to_string(),
+                })
+                .collect();
+            let receipts = client
+                .deliver_inbox(authed(&state.internal_token, InboxBatch { entries }))
+                .await
+                .map_err(|e| e.message().to_owned())?
+                .into_inner();
+            Ok(receipts.gone)
+        })
+    })
 }
 
 #[cfg(test)]

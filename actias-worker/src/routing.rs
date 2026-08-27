@@ -361,6 +361,22 @@ impl ObjectRouting {
                 runtime.set_app_data::<Arc<actias_worker_core::connections::ConnectionRegistry>>(
                     routing.state.connections.clone(),
                 );
+                // And these to deliver the edges that live ELSEWHERE:
+                // its own name to tell local from remote, and the
+                // forwarder that sends each remote node one batched
+                // call for everything due there.
+                runtime.set_app_data(actias_worker_core::streams::LocalNode(
+                    routing
+                        .state
+                        .node_identity
+                        .read()
+                        .ok()
+                        .and_then(|guard| guard.clone())
+                        .unwrap_or_default(),
+                ));
+                runtime.set_app_data::<actias_worker_core::streams::ConnectionForwarder>(
+                    crate::data_plane::connection_forwarder(&routing.state),
+                );
 
                 let mut storage = actias_worker_core::storage::SqliteStorage::open(&file)
                     .map_err(mlua::Error::RuntimeError)?;

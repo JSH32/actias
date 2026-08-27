@@ -44,7 +44,8 @@ const CREATE_FOLLOWERS: &str = "CREATE TABLE IF NOT EXISTS __actias_followers (
         filter TEXT,
         cursor INTEGER NOT NULL DEFAULT 0,
         attempts INTEGER NOT NULL DEFAULT 0,
-        next_at INTEGER NOT NULL DEFAULT 0
+        next_at INTEGER NOT NULL DEFAULT 0,
+        node TEXT
     )";
 
 /// Creates the stream tables when absent; idempotent, called from every
@@ -57,8 +58,41 @@ pub fn ensure_tables(storage: &mut SqliteStorage) -> Result<(), String> {
     connection
         .execute(CREATE_FOLLOWERS, [])
         .map_err(|e| e.to_string())?;
+    // Publishers born before edges carried a home: the column arrives
+    // on first touch, and the duplicate-column refusal is the
+    // idempotence.
+    let _ = connection.execute("ALTER TABLE __actias_followers ADD COLUMN node TEXT", []);
     Ok(())
 }
+
+/// This runtime's node identity, set by the host so the pump can tell
+/// its own connections from another node's. Absent or empty means
+/// "treat every edge as local", which is the single-node truth.
+#[derive(Clone)]
+pub struct LocalNode(pub String);
+
+/// One remote connection's due events, shaped for the wire: the
+/// publisher batches these per node and sends each node one call.
+pub struct RemoteDelivery {
+    pub edge_id: i64,
+    pub connection: String,
+    /// Each entry is {topic, from_class, from_name, data}.
+    pub events: Vec<serde_json::Value>,
+}
+
+/// Sends one node's batch and returns the connection ids that node
+/// reported gone, so their edges can be pruned. Provided by the host;
+/// a runtime without one treats remote edges as unreachable (events
+/// missed, edges kept), which at-most-once permits.
+pub type ConnectionForwarder = std::sync::Arc<
+    dyn Fn(
+            String,
+            Vec<RemoteDelivery>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send>,
+        > + Send
+        + Sync,
+>;
 
 /// Appends one published event in the calling transaction and returns
 /// its sequence number.
@@ -100,6 +134,10 @@ pub struct Edge {
     pub cursor: i64,
     pub attempts: i64,
     pub next_at: i64,
+    /// Where the follower lives; connection edges deliver there. Empty
+    /// or absent means this node (edges from before homes were
+    /// recorded, and single-node installs).
+    pub node: Option<String>,
 }
 
 /// Records (or re-records) an accepted follow: one edge per
@@ -113,6 +151,7 @@ pub fn upsert_edge(
     connection_id: Option<&str>,
     topic: &str,
     filter: Option<&serde_json::Value>,
+    node: Option<&str>,
 ) -> Result<(), String> {
     ensure_tables(storage)?;
     let filter_text = filter.map(|value| value.to_string());
@@ -122,9 +161,9 @@ pub fn upsert_edge(
     // doc's two-devices table), so connection is part of the match.
     let updated = connection
         .execute(
-            "UPDATE __actias_followers SET filter = ?, attempts = 0, next_at = 0 \
+            "UPDATE __actias_followers SET filter = ?, attempts = 0, next_at = 0, node = ? \
              WHERE kind = ? AND class = ? AND name = ? AND topic = ? AND connection IS ?",
-            rusqlite::params![filter_text, kind, class, name, topic, connection_id],
+            rusqlite::params![filter_text, node, kind, class, name, topic, connection_id],
         )
         .map_err(|e| e.to_string())?;
     if updated == 0 {
@@ -140,9 +179,18 @@ pub fn upsert_edge(
         connection
             .execute(
                 "INSERT INTO __actias_followers \
-                     (kind, class, name, connection, topic, filter, cursor) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-                rusqlite::params![kind, class, name, connection_id, topic, filter_text, head],
+                     (kind, class, name, connection, topic, filter, cursor, node) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    kind,
+                    class,
+                    name,
+                    connection_id,
+                    topic,
+                    filter_text,
+                    head,
+                    node
+                ],
             )
             .map_err(|e| e.to_string())?;
     }
@@ -270,7 +318,8 @@ pub fn list_edges(storage: &mut SqliteStorage, topic: Option<&str>) -> Result<Ve
     let connection = storage.platform();
     let mut statement = connection
         .prepare(
-            "SELECT id, kind, class, name, connection, topic, filter, cursor, attempts, next_at \
+            "SELECT id, kind, class, name, connection, topic, filter, cursor, attempts, next_at, \
+                    node \
              FROM __actias_followers WHERE (?1 IS NULL OR topic = ?1) ORDER BY id",
         )
         .map_err(|e| e.to_string())?;
@@ -289,6 +338,7 @@ pub fn list_edges(storage: &mut SqliteStorage, topic: Option<&str>) -> Result<Ve
                 cursor: row.get(7)?,
                 attempts: row.get(8)?,
                 next_at: row.get(9)?,
+                node: row.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -531,13 +581,35 @@ pub async fn pump(
     let registry = runtime
         .app_data_ref::<std::sync::Arc<crate::connections::ConnectionRegistry>>()
         .map(|registry| registry.clone());
+    let local_node = runtime
+        .app_data_ref::<LocalNode>()
+        .map(|node| node.0.clone())
+        .unwrap_or_default();
+    let forwarder = runtime
+        .app_data_ref::<ConnectionForwarder>()
+        .map(|forwarder| forwarder.clone());
+
+    // Remote connection edges batch per node: every node with
+    // followers hears ONE call carrying everything due for it, and
+    // fans out to its own sockets. Publish cost is the number of
+    // nodes listening, never the number of listeners.
+    let mut remote: std::collections::HashMap<String, Vec<RemoteDelivery>> =
+        std::collections::HashMap::new();
 
     for edge in edges {
         if edge.cursor >= head {
             continue;
         }
         if edge.kind == "connection" {
-            deliver_connection_edge(home, &edge, registry.as_deref());
+            let elsewhere = edge
+                .node
+                .as_deref()
+                .filter(|node| !node.is_empty() && !local_node.is_empty() && *node != local_node);
+            if let Some(node) = elsewhere {
+                stage_remote_edge(home, &edge, node, &mut remote);
+            } else {
+                deliver_connection_edge(home, &edge, registry.as_deref());
+            }
             continue;
         }
         if edge.next_at > now {
@@ -608,6 +680,10 @@ pub async fn pump(
         }
     }
 
+    for (node, batch) in remote {
+        flush_remote_batch(home, forwarder.as_ref(), &node, batch).await;
+    }
+
     match home.with_storage(next_delivery_due) {
         Ok(due) => home.set_delivery_due(due),
         Err(error) => {
@@ -616,10 +692,93 @@ pub async fn pump(
     }
 }
 
+/// Reads one remote connection edge's due, filtered events into its
+/// node's batch. The cursor does not move here; the flush owns it.
+fn stage_remote_edge(
+    home: &std::sync::Arc<crate::objects::ObjectHome>,
+    edge: &Edge,
+    node: &str,
+    remote: &mut std::collections::HashMap<String, Vec<RemoteDelivery>>,
+) {
+    let Some(connection) = edge.connection.clone() else {
+        return;
+    };
+    let events = match home.with_storage(|storage| events_after(storage, &edge.topic, edge.cursor))
+    {
+        Ok(events) => events,
+        Err(error) => {
+            actias_common::tracing::warn!(%error, "stream pump could not read events");
+            return;
+        }
+    };
+    let due: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|event| filter_matches(edge.filter.as_ref(), &event.data))
+        .map(|event| {
+            serde_json::json!({
+                "topic": event.topic,
+                "from_class": event.from_class,
+                "from_name": event.from_name,
+                "data": event.data,
+            })
+        })
+        .collect();
+    remote
+        .entry(node.to_owned())
+        .or_default()
+        .push(RemoteDelivery {
+            edge_id: edge.id,
+            connection,
+            events: due,
+        });
+}
+
+/// One node's batch over the wire. At-most-once all the way: cursors
+/// advance to head whatever happens (a miss is a miss), and only an
+/// explicit "gone" from the hosting node prunes an edge. A transport
+/// failure keeps the edges for next time.
+async fn flush_remote_batch(
+    home: &std::sync::Arc<crate::objects::ObjectHome>,
+    forwarder: Option<&ConnectionForwarder>,
+    node: &str,
+    batch: Vec<RemoteDelivery>,
+) {
+    let head = home.with_storage(head_seq).unwrap_or(0);
+    let edge_of: std::collections::HashMap<String, i64> = batch
+        .iter()
+        .map(|delivery| (delivery.connection.clone(), delivery.edge_id))
+        .collect();
+    let edge_ids: Vec<i64> = batch.iter().map(|delivery| delivery.edge_id).collect();
+
+    let gone = match forwarder {
+        Some(forward) => match forward(node.to_owned(), batch).await {
+            Ok(gone) => gone,
+            Err(error) => {
+                actias_common::tracing::debug!(%error, node, "remote inbox batch missed");
+                Vec::new()
+            }
+        },
+        None => {
+            actias_common::tracing::debug!(node, "no forwarder; remote connection events missed");
+            Vec::new()
+        }
+    };
+
+    for edge_id in edge_ids {
+        let _ = home.with_storage(|storage| advance_cursor(storage, edge_id, head));
+    }
+    for connection in gone {
+        if let Some(edge_id) = edge_of.get(&connection) {
+            let _ = home.with_storage(|storage| prune_edge(storage, *edge_id));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::extensions::objects::{ObjectRouter, ObjectTarget};
     use crate::objects::{ObjectHandle, TaskOptions, spawn_object_task};
+    use super::{ConnectionForwarder, Edge, LocalNode, head_seq, list_edges};
     use crate::proto::bundle::{Bundle, File};
     use crate::proto::kv_service::kv_service_client::KvServiceClient;
     use crate::proto::script_service::{Revision, Script};
@@ -812,7 +971,7 @@ mod tests {
     /// The in-test placement: one vm per identity, all sharing one
     /// router, so follows and deliveries route for real.
     fn town_router(dir: std::path::PathBuf, flaky: bool) -> ObjectRouter {
-        town_router_with(dir, flaky, Arc::default())
+        town_router_with(dir, flaky, Arc::default(), None)
     }
 
     /// Same placement with a shared connection registry, so connection
@@ -821,6 +980,7 @@ mod tests {
         dir: std::path::PathBuf,
         flaky: bool,
         registry: Arc<crate::connections::ConnectionRegistry>,
+        fanout: Option<(String, ConnectionForwarder)>,
     ) -> ObjectRouter {
         type Registry = Arc<tokio::sync::Mutex<std::collections::HashMap<String, ObjectHandle>>>;
         let registry_map: Registry = Arc::default();
@@ -833,6 +993,7 @@ mod tests {
             let cell = router_cell.clone();
             let dir = dir.clone();
             let connections = connections.clone();
+            let fanout = fanout.clone();
             Box::pin(async move {
                 let key = format!("{}/{}", target.class, target.name);
                 let handle = {
@@ -846,6 +1007,10 @@ mod tests {
                         runtime.set_app_data::<Arc<crate::connections::ConnectionRegistry>>(
                             connections.clone(),
                         );
+                        if let Some((node, forwarder)) = fanout.clone() {
+                            runtime.set_app_data(LocalNode(node));
+                            runtime.set_app_data::<ConnectionForwarder>(forwarder);
+                        }
                         let file = dir.join(format!("{}.db", key.replace(['/', ':'], "_")));
                         let handle = spawn_object_task(
                             runtime,
@@ -1013,7 +1178,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
-        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone());
+        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone(), None);
 
         call(
             &router,
@@ -1058,6 +1223,7 @@ mod tests {
         );
         let shared = SockShared::new(
             "conn#s1".to_owned(),
+            String::new(),
             "Reader".to_owned(),
             "ada".to_owned(),
             inbox_rx,
@@ -1141,6 +1307,117 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_remote_connection_edge_batches_through_the_forwarder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // What each "node" heard: (node, [(connection, event count)]).
+        type Heard = Arc<std::sync::Mutex<Vec<(String, Vec<(String, usize)>)>>>;
+        let heard: Heard = Arc::default();
+        let forwarder: ConnectionForwarder = {
+            let heard = heard.clone();
+            Arc::new(move |node, batch| {
+                let heard = heard.clone();
+                Box::pin(async move {
+                    let shape = batch
+                        .iter()
+                        .map(|delivery| (delivery.connection.clone(), delivery.events.len()))
+                        .collect();
+                    heard.lock().expect("no panics").push((node, shape));
+                    // The second connection is gone wherever it went;
+                    // its edge must not survive the receipt.
+                    Ok(vec!["conn#gone".to_owned()])
+                })
+            })
+        };
+
+        let router = town_router_with(
+            dir.path().to_path_buf(),
+            false,
+            Arc::default(),
+            Some(("here".to_owned(), forwarder)),
+        );
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "admit",
+            vec![serde_json::json!("ada")],
+        )
+        .await
+        .expect("admitted");
+        for connection in ["conn#far", "conn#gone"] {
+            call(
+                &router,
+                "Hub",
+                "town",
+                "__follow",
+                vec![
+                    serde_json::json!("news"),
+                    serde_json::Value::Null,
+                    serde_json::json!({
+                        "class": "Reader",
+                        "name": "ada",
+                        "transport": "connection",
+                        "connection": connection,
+                        "node": "elsewhere",
+                    }),
+                ],
+            )
+            .await
+            .expect("the gate admits the member's connection");
+        }
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "post",
+            vec![serde_json::json!("sport"), serde_json::json!("goal")],
+        )
+        .await
+        .expect("posted");
+
+        // The pump runs between mailbox items; poll until the batch
+        // lands.
+        let batches = 'wait: {
+            for _ in 0..80 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let seen = heard.lock().expect("no panics").clone();
+                if !seen.is_empty() {
+                    break 'wait seen;
+                }
+            }
+            panic!("the forwarder never heard the batch");
+        };
+
+        // ONE call to the one node, both connections riding it.
+        assert_eq!(batches.len(), 1, "one node, one send: {batches:?}");
+        let (node, shape) = &batches[0];
+        assert_eq!(node, "elsewhere");
+        let mut connections: Vec<&str> = shape
+            .iter()
+            .map(|(connection, _)| connection.as_str())
+            .collect();
+        connections.sort_unstable();
+        assert_eq!(connections, vec!["conn#far", "conn#gone"]);
+        assert!(shape.iter().all(|(_, events)| *events == 1));
+
+        // The receipt pruned the gone edge and advanced the survivor.
+        let file = dir.path().join("Hub_town.db");
+        let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
+        let survivors: Vec<Edge> = list_edges(&mut storage, Some("news"))
+            .expect("edges list")
+            .into_iter()
+            .filter(|edge| edge.kind == "connection")
+            .collect();
+        assert_eq!(survivors.len(), 1, "the gone edge was pruned");
+        assert_eq!(survivors[0].connection.as_deref(), Some("conn#far"));
+        let head = head_seq(&mut storage).expect("head");
+        assert_eq!(survivors[0].cursor, head, "at-most-once advanced to head");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn the_followers_read_answers_read_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("hub.db");
@@ -1156,6 +1433,7 @@ mod tests {
                 None,
                 "news",
                 None,
+                None,
             )
             .expect("edges");
             crate::streams::upsert_edge(
@@ -1166,6 +1444,7 @@ mod tests {
                 Some("conn#7"),
                 "news",
                 Some(&serde_json::json!({ "kind": "sport" })),
+                None,
             )
             .expect("edges");
             crate::streams::append_event(
@@ -1326,7 +1605,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
-        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone());
+        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone(), None);
 
         call(
             &router,
@@ -1357,6 +1636,7 @@ mod tests {
             .expect("the upgrade was parked");
         let shared = SockShared::new(
             "conn#f1".to_owned(),
+            String::new(),
             pending.class.clone(),
             pending.name.clone(),
             inbox_rx,
@@ -1420,7 +1700,7 @@ mod tests {
     async fn connection_edges_deliver_at_most_once_and_prune() {
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
-        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone());
+        let router = town_router_with(dir.path().to_path_buf(), false, connections.clone(), None);
 
         call(
             &router,
