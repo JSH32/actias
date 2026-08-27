@@ -6,6 +6,7 @@ mod metrics;
 mod object_store;
 mod routing;
 mod server;
+mod shipper;
 mod sweeper;
 
 use std::net::SocketAddr;
@@ -135,6 +136,14 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }),
         replica_ttl: std::time::Duration::from_secs(config.replica_ttl_secs),
         peers: moka::future::Cache::new(100),
+        holders: moka::future::Cache::builder()
+            .max_capacity(200_000)
+            .time_to_live(std::time::Duration::from_secs(15))
+            .build(),
+        node_addrs: moka::future::Cache::builder()
+            .max_capacity(1_000)
+            .time_to_live(std::time::Duration::from_secs(120))
+            .build(),
         internal_token: config.internal_token,
         object_store: std::sync::Arc::new(object_store::ObjectStore::new(
             blob_cache::s3_client(
@@ -160,6 +169,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             backoff_base_ms: config.queue_backoff_base_ms,
         },
         node_identity,
+        shippers: std::sync::Arc::default(),
         registry: registry_client,
         base_domain: config.base_domain,
         connections: std::sync::Arc::default(),
@@ -238,6 +248,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::try_join!(async { http.await.map_err(anyhow::Error::from) }, async {
         data_plane.await.map_err(anyhow::Error::from)
     },)?;
+
+    // The drain flushed every request; now flush every dirty snapshot,
+    // bounded, so a deploy never leaves state only this volume holds.
+    shipper::flush_all(&state.shippers, std::time::Duration::from_secs(5)).await;
 
     // A fast drain must not outrun the goodbye: when nothing holds the
     // listeners open, main gets here in milliseconds and exiting now

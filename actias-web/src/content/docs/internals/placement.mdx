@@ -38,9 +38,11 @@ flowchart TD
 
 ## Durability
 
-Each call that wrote ships a snapshot of the object's SQLite file to
-blob storage after the call commits. The epoch fences these ships: a
-zombie ex-holder's upload loses to any newer epoch.
+Writes mark the object dirty and one background flight per object
+ships the latest snapshot to blob storage, coalescing bursts; a
+graceful stop flushes every dirty object before the process leaves.
+The epoch fences these ships: a zombie ex-holder's upload loses to
+any newer epoch.
 
 A claim restores the last shipped snapshot whenever the store's copy
 is newer than the node's own file: a sidecar records the epoch of the

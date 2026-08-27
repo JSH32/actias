@@ -53,7 +53,7 @@ pub struct NodeRegistry {
 /// What can fail inside the registry. The [`From`] impl below is the one
 /// place deciding what the wire sees; raw store detail stops at tracing.
 #[derive(thiserror::Error, Debug)]
-enum RegistryError {
+pub enum RegistryError {
     #[error("placement store query failed: {0}")]
     Store(#[from] sqlx::Error),
     #[error("'{0}' is not a uuid")]
@@ -159,8 +159,9 @@ impl NodeRegistry {
 
     /// Deletes every node past the ttl. Ageing out is physical, so the
     /// table never accumulates a graveyard, and lease expiry is the same
-    /// deletion through the cascade.
-    async fn reap(&self) -> Result<(), RegistryError> {
+    /// deletion through the cascade. Runs on its own timer, never on the
+    /// claim path.
+    pub async fn reap_expired(&self) -> Result<(), RegistryError> {
         sqlx::query("DELETE FROM nodes WHERE last_heartbeat <= $1")
             .bind(self.cutoff())
             .execute(&self.database)
@@ -175,13 +176,14 @@ impl NodeRegistry {
             Uuid::from_str(&request.node_id).map_err(|_| RegistryError::InvalidId("node_id"))?;
         let identity = claim_identity(request)?;
 
-        // A dead holder frees its leases by the same deletion that ages it
-        // out; doing it here means a claim never waits for a liveness read.
-        self.reap().await?;
-
         // The conditional claim: exactly one row per object, first insert
-        // wins, a re-claim by the current holder is a no-op success.
-        let claimed = sqlx::query(
+        // wins, a re-claim by the current holder is a no-op success. A
+        // refused claim checks the incumbent's own pulse instead of
+        // sweeping the whole table: a dead incumbent is evicted (the same
+        // cascade age-out uses) and the claim retried once, so failover
+        // stays instant without a DELETE on every claim. The full sweep
+        // runs on its own timer.
+        let mut claimed = sqlx::query(
             "INSERT INTO leases (object_id, node_id) VALUES ($1, $2)
              ON CONFLICT (object_id) DO NOTHING",
         )
@@ -189,6 +191,40 @@ impl NodeRegistry {
         .bind(node_id)
         .execute(&self.database)
         .await?;
+
+        if claimed.rows_affected() == 0 {
+            let stale: Option<Uuid> = sqlx::query_scalar(
+                "SELECT l.node_id FROM leases l
+                 LEFT JOIN nodes n ON n.id = l.node_id
+                 WHERE l.object_id = $1
+                   AND (n.id IS NULL OR n.last_heartbeat <= $2)",
+            )
+            .bind(&request.object_id)
+            .bind(self.cutoff())
+            .fetch_optional(&self.database)
+            .await?;
+            if let Some(dead) = stale {
+                sqlx::query("DELETE FROM nodes WHERE id = $1")
+                    .bind(dead)
+                    .execute(&self.database)
+                    .await?;
+                // The cascade freed the lease unless the row was already
+                // orphaned; clear it either way before retrying.
+                sqlx::query("DELETE FROM leases WHERE object_id = $1 AND node_id = $2")
+                    .bind(&request.object_id)
+                    .bind(dead)
+                    .execute(&self.database)
+                    .await?;
+                claimed = sqlx::query(
+                    "INSERT INTO leases (object_id, node_id) VALUES ($1, $2)
+                     ON CONFLICT (object_id) DO NOTHING",
+                )
+                .bind(&request.object_id)
+                .bind(node_id)
+                .execute(&self.database)
+                .await?;
+            }
+        }
 
         // The claim carries its preimage; the directory keeps it so the
         // data stays enumerable after the declaring revision is gone.
@@ -296,12 +332,13 @@ impl NodeRegistryService for NodeRegistry {
         &self,
         _request: Request<()>,
     ) -> Result<Response<ListNodesResponse>, Status> {
-        self.reap().await?;
-
-        let nodes = sqlx::query_as::<_, DbNode>("SELECT * FROM nodes ORDER BY registered")
-            .fetch_all(&self.database)
-            .await
-            .map_err(RegistryError::Store)?;
+        let nodes = sqlx::query_as::<_, DbNode>(
+            "SELECT * FROM nodes WHERE last_heartbeat > $1 ORDER BY registered",
+        )
+        .bind(self.cutoff())
+        .fetch_all(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
 
         Ok(Response::new(ListNodesResponse {
             nodes: nodes.into_iter().map(Node::from).collect(),
@@ -339,15 +376,18 @@ impl NodeRegistryService for NodeRegistry {
         let object_id = request.get_ref().object_id.clone();
 
         // A dead holder must read as unheld, exactly as a claim would
-        // treat it; leases free through the same deletion cascade.
-        self.reap().await?;
-
-        let holder: Option<Uuid> =
-            sqlx::query_scalar("SELECT node_id FROM leases WHERE object_id = $1")
-                .bind(&object_id)
-                .fetch_optional(&self.database)
-                .await
-                .map_err(RegistryError::Store)?;
+        // treat it; the liveness filter does it without a delete, and
+        // the sweep timer does the physical ageing.
+        let holder: Option<Uuid> = sqlx::query_scalar(
+            "SELECT l.node_id FROM leases l
+             JOIN nodes n ON n.id = l.node_id AND n.last_heartbeat > $2
+             WHERE l.object_id = $1",
+        )
+        .bind(&object_id)
+        .bind(self.cutoff())
+        .fetch_optional(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
         let holder = holder.ok_or(RegistryError::Unheld)?;
 
         let epoch: i64 = sqlx::query_scalar("SELECT epoch FROM object_epochs WHERE object_id = $1")

@@ -150,6 +150,54 @@ pub enum ResolveError {
     Other(String),
 }
 
+/// Why a routed call failed, typed so the transport can tell a stale
+/// home apart from a real failure without reading message text.
+pub enum RouteError {
+    /// This node neither holds the object nor may forward; the caller's
+    /// view of the home is stale and it should re-resolve.
+    WrongHome {
+        holder: String,
+    },
+    Failed(String),
+}
+
+impl From<String> for RouteError {
+    fn from(message: String) -> Self {
+        RouteError::Failed(message)
+    }
+}
+
+impl std::fmt::Display for RouteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RouteError::WrongHome { holder } => {
+                write!(f, "Object is homed on {holder}; this node cannot serve it.")
+            }
+            RouteError::Failed(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl RouteError {
+    /// The message a vm or log sees; the shape collapses deliberately.
+    pub fn into_message(self) -> String {
+        match self {
+            RouteError::WrongHome { holder } => {
+                format!("Object is homed on {holder}, but this call may not forward again.")
+            }
+            RouteError::Failed(message) => message,
+        }
+    }
+}
+
+/// Why one forward hop came back empty.
+enum ForwardError {
+    /// The home moved or died; invalidate and re-resolve once.
+    StaleHome(String),
+    /// The object answered; this is its own failure, passed through.
+    Call(String),
+}
+
 impl ObjectRouting {
     /// Routing for one prepared revision over this node's shared pieces.
     pub fn new(state: &AppState, prepared: Arc<PreparedRevision>) -> Arc<Self> {
@@ -216,6 +264,7 @@ impl ObjectRouting {
     pub async fn resolve_handle(
         self: &Arc<Self>,
         key: &ObjectKey,
+        use_cache: bool,
     ) -> Result<actias_worker_core::objects::ObjectHandle, ResolveError> {
         // The code the object runs is the owner's current revision,
         // whoever is calling; resolved before the lease so the claim can
@@ -227,13 +276,33 @@ impl ObjectRouting {
         // A non-resident object needs the lease before anything spawns;
         // a resident one already holds it (leases live as long as we do).
         if !self.state.objects.is_resident(&key.to_string()).await {
+            // The holder cache spares the placement store: a repeat of a
+            // misrouted call forwards straight from memory. A wrong entry
+            // costs one wrong-home hop, which invalidates it.
+            let object_id = key.object_id();
+            if use_cache && let Some(holder) = self.state.holders.get(&object_id).await {
+                let own = self
+                    .state
+                    .node_identity
+                    .read()
+                    .ok()
+                    .and_then(|guard| guard.clone());
+                if own.as_deref() != Some(holder.as_str()) {
+                    return Err(ResolveError::Elsewhere(holder));
+                }
+            }
             let lease = self
                 .claim_lease(key, &owner.script.id)
                 .await
                 .map_err(ResolveError::Other)?;
             if !lease.acquired {
+                self.state
+                    .holders
+                    .insert(object_id, lease.node_id.clone())
+                    .await;
                 return Err(ResolveError::Elsewhere(lease.node_id));
             }
+            self.state.holders.invalidate(&object_id).await;
         }
 
         self.resolve_local(key, owner)
@@ -421,27 +490,32 @@ impl ObjectRouting {
                     .set_size_limit(routing.state.object_db_max_bytes)
                     .map_err(mlua::Error::RuntimeError)?;
 
-                // The output gate: every call that wrote ships its snapshot
-                // before the caller hears the result. A refused (fenced) or
-                // failed ship is logged; local durability still holds and
-                // the next write retries.
+                // The output gate: a write marks the object dirty and one
+                // background flight ships the latest state, coalescing
+                // bursts, so callers stop paying an s3 round trip per
+                // write. The drain flushes every dirty object, so only a
+                // hard crash can lose the tail since the last ship; the
+                // epoch fence is unchanged.
                 let ship_store = routing.state.object_store.clone();
                 let ship_id = object_id.clone();
                 let ship_file = file.clone();
                 let epoch = lease.epoch;
-                let after_write: actias_worker_core::objects::AfterWrite = Arc::new(move || {
+                let ship_fn: crate::shipper::ShipFn = Arc::new(move || {
                     let store = ship_store.clone();
                     let object_id = ship_id.clone();
                     let file = ship_file.clone();
-                    Box::pin(async move {
-                        if let Err(error) = store.ship(&object_id, epoch, &file).await {
-                            actias_common::tracing::warn!(
-                                %error,
-                                object_id,
-                                "object snapshot did not ship"
-                            );
-                        }
-                    })
+                    Box::pin(async move { store.ship(&object_id, epoch, &file).await })
+                });
+                let ship = crate::shipper::Shipper::new(object_id.clone(), ship_fn);
+                routing
+                    .state
+                    .shippers
+                    .lock()
+                    .expect("no poisoned lock")
+                    .insert(object_id.clone(), ship.clone());
+                let after_write: actias_worker_core::objects::AfterWrite = Arc::new(move || {
+                    ship.mark_dirty();
+                    Box::pin(async {})
                 });
 
                 let alarm_sync = alarm_mirror(&routing.state, &object_id, &identity.to_string());
@@ -471,7 +545,9 @@ impl ObjectRouting {
             script: self.prepared.script.public_identifier.clone(),
             revision: self.prepared.revision_id.clone(),
         });
-        self.route_inner(target, true).await
+        self.route_inner(target, true)
+            .await
+            .map_err(RouteError::into_message)
     }
 
     /// The replica file for one object, [`None`] when nothing was ever
@@ -487,19 +563,41 @@ impl ObjectRouting {
         key: &ObjectKey,
         target: &ObjectTarget,
         chain: Vec<String>,
-    ) -> Result<serde_json::Value, String> {
-        let node = self
-            .state
-            .registry
-            .clone()
-            .get_node(actias_worker_core::proto::node_registry::GetNodeRequest {
-                node_id: holder.to_owned(),
-            })
-            .await
-            .map_err(|e| format!("The object's home could not be resolved: {e}"))?
-            .into_inner();
+    ) -> Result<serde_json::Value, ForwardError> {
+        // A node id's address never changes, so the cache spares the
+        // registry a read per forward; a gone id reads as a stale home.
+        let address = match self.state.node_addrs.get(holder).await {
+            Some(address) => address,
+            None => {
+                let node = self
+                    .state
+                    .registry
+                    .clone()
+                    .get_node(actias_worker_core::proto::node_registry::GetNodeRequest {
+                        node_id: holder.to_owned(),
+                    })
+                    .await
+                    .map_err(|e| match e.code() {
+                        tonic::Code::NotFound => ForwardError::StaleHome(format!(
+                            "The object's home is gone: {}",
+                            e.message()
+                        )),
+                        _ => ForwardError::Call(format!(
+                            "The object's home could not be resolved: {e}"
+                        )),
+                    })?
+                    .into_inner();
+                self.state
+                    .node_addrs
+                    .insert(holder.to_owned(), node.address.clone())
+                    .await;
+                node.address
+            }
+        };
 
-        let mut client = crate::data_plane::peer_client(&self.state, &node.address).await?;
+        let mut client = crate::data_plane::peer_client(&self.state, &address)
+            .await
+            .map_err(ForwardError::StaleHome)?;
         let call = actias_worker_core::proto::worker_data::ObjectCall {
             scope_id: key.scope().to_owned(),
             class: target.class.clone(),
@@ -524,14 +622,22 @@ impl ObjectRouting {
         let result = client
             .dispatch(crate::data_plane::authed(&self.state.internal_token, call))
             .await
-            .map_err(|e| format!("The object's home did not answer: {}", e.message()))?
+            .map_err(|e| {
+                ForwardError::StaleHome(format!(
+                    "The object's home did not answer: {}",
+                    e.message()
+                ))
+            })?
             .into_inner();
 
+        if result.wrong_home {
+            return Err(ForwardError::StaleHome(result.error));
+        }
         if !result.error.is_empty() {
-            return Err(result.error);
+            return Err(ForwardError::Call(result.error));
         }
         serde_json::from_str(&result.result_json)
-            .map_err(|e| format!("The object's home answered garbage: {e}"))
+            .map_err(|e| ForwardError::Call(format!("The object's home answered garbage: {e}")))
     }
 
     /// The routing body; `allow_forward` is false for calls that already
@@ -541,7 +647,7 @@ impl ObjectRouting {
         self: Arc<Self>,
         target: ObjectTarget,
         allow_forward: bool,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, RouteError> {
         let key = ObjectKey::scoped(
             &self.prepared.script.project_id,
             &self.prepared.script.id,
@@ -564,11 +670,19 @@ impl ObjectRouting {
             let file = self.state.object_data_dir.join(key.db_file_name());
 
             if self.state.objects.is_resident(&key_string).await && file.exists() {
-                if let Some(result) = read_bypass(&file, &target).await? {
+                if let Some(result) = read_bypass(&file, &target)
+                    .await
+                    .map_err(RouteError::Failed)?
+                {
                     return Ok(result);
                 }
-            } else if let Some(replica) = self.fresh_replica(&object_id).await?
-                && let Some(result) = read_bypass(&replica, &target).await?
+            } else if let Some(replica) = self
+                .fresh_replica(&object_id)
+                .await
+                .map_err(RouteError::Failed)?
+                && let Some(result) = read_bypass(&replica, &target)
+                    .await
+                    .map_err(RouteError::Failed)?
             {
                 self.state
                     .metrics
@@ -583,20 +697,46 @@ impl ObjectRouting {
         let chain = if target.chain.last().map(String::as_str) == Some(key_string.as_str()) {
             target.chain.clone()
         } else {
-            actias_worker_core::objects::extend_call_chain(&target.chain, &key_string)?
+            actias_worker_core::objects::extend_call_chain(&target.chain, &key_string)
+                .map_err(RouteError::Failed)?
         };
-        let handle = match self.resolve_handle(&key).await {
-            Ok(handle) => handle,
-            // The incumbent lives: the call belongs on its node, one hop.
-            Err(ResolveError::Elsewhere(holder)) if allow_forward => {
-                return self.forward(&holder, &key, &target, chain).await;
+        // First pass trusts the holder cache; a stale-home answer
+        // invalidates it and asks the placement store once for the truth.
+        // A call that already crossed the transport skips the cache:
+        // the receiver answers from the registry's truth, so two stale
+        // caches can never bounce a call between nodes.
+        let mut cached_pass = allow_forward;
+        let handle = loop {
+            match self.resolve_handle(&key, cached_pass).await {
+                Ok(handle) => break handle,
+                // The incumbent lives: the call belongs on its node, one hop.
+                Err(ResolveError::Elsewhere(holder)) if allow_forward => {
+                    match self.forward(&holder, &key, &target, chain.clone()).await {
+                        Ok(value) => return Ok(value),
+                        Err(ForwardError::StaleHome(reason)) if cached_pass => {
+                            actias_common::tracing::debug!(
+                                reason,
+                                holder,
+                                "stale home; re-resolving through the registry"
+                            );
+                            self.state.holders.invalidate(&key.object_id()).await;
+                            self.state.node_addrs.invalidate(&holder).await;
+                            cached_pass = false;
+                            continue;
+                        }
+                        Err(ForwardError::StaleHome(reason)) => {
+                            return Err(RouteError::Failed(reason));
+                        }
+                        Err(ForwardError::Call(error)) => {
+                            return Err(RouteError::Failed(error));
+                        }
+                    }
+                }
+                Err(ResolveError::Elsewhere(holder)) => {
+                    return Err(RouteError::WrongHome { holder });
+                }
+                Err(ResolveError::Other(error)) => return Err(RouteError::Failed(error)),
             }
-            Err(ResolveError::Elsewhere(holder)) => {
-                return Err(format!(
-                    "Object is homed on {holder}, but this call may not forward again."
-                ));
-            }
-            Err(ResolveError::Other(error)) => return Err(error),
         };
 
         handle
@@ -615,7 +755,7 @@ impl ObjectRouting {
                 }),
             )
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| RouteError::Failed(e.to_string()))
     }
 }
 

@@ -268,10 +268,19 @@ impl WorkerData for WorkerDataService {
             Ok(result) => CallResult {
                 result_json: result.to_string(),
                 error: String::new(),
+                wrong_home: false,
             },
-            Err(error) => CallResult {
+            // The typed refusal crosses the wire as its own flag, so the
+            // sender re-resolves instead of parsing message text.
+            Err(crate::routing::RouteError::WrongHome { holder }) => CallResult {
+                result_json: String::new(),
+                error: format!("Object is homed on {holder}; this node cannot serve it."),
+                wrong_home: true,
+            },
+            Err(crate::routing::RouteError::Failed(error)) => CallResult {
                 result_json: String::new(),
                 error,
+                wrong_home: false,
             },
         }))
     }

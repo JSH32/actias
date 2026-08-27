@@ -40,6 +40,76 @@ export namespace worker_data {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ReadValue>;
+        // Node-grouped connection delivery: one call carries every due
+    // stream event for every followed connection this node hosts, and
+    // the node fans out to its own sockets. The reply names the
+    // connections that are gone so the publisher prunes their edges;
+    // everything else advanced regardless (connection edges are
+    // at-most-once). Publish cost is nodes listening, never listeners.
+        deliverInbox(
+            data: InboxBatch,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<InboxReceipts>;
+        // Node-grouped delivery for DURABLE followers: the node dispatches
+    // __receive to each of its resident follower objects in order and
+    // reports how far each got. The follower&#x27;s own receive cursor
+    // makes any redelivery skip, so at-least-once stays safe to
+    // repeat.
+        deliverReceives(
+            data: ReceiveBatch,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ReceiveReceipts>;
+    }
+    // Due events for the connections one node hosts.
+    export interface InboxBatch {
+        entries?: worker_data.ConnectionEvents[];
+    }
+    export interface ConnectionEvents {
+        connection?: string;
+        // A json array of {topic, from_class, from_name, data} objects.
+        eventsJson?: string;
+    }
+    export interface InboxReceipts {
+        // Connections the node no longer holds; their edges are dead.
+        gone?: string[];
+    }
+    // Due events for the durable followers one node hosts, from one
+    // publisher. Small sets ride inline; past the cap only the range
+    // travels and the node reads the events from the nearest copy of the
+    // publisher&#x27;s log (usually its own replica).
+    export interface ReceiveBatch {
+        scopeId?: string;
+        publisherClass?: string;
+        publisherName?: string;
+        entries?: worker_data.ReceiveEntry[];
+    }
+    export interface ReceiveEntry {
+        followerClass?: string;
+        followerName?: string;
+        // Inline: a json array of {seq, topic, from_class, from_name,
+    // data}; empty when a range travels instead.
+        eventsJson?: string;
+        // The range (after, upto], meaningful when events_json is empty.
+        rangeAfter?: number;
+        rangeUpto?: number;
+        topic?: string;
+        // The edge&#x27;s filter, json-encoded; empty means unfiltered. Range
+    // reads apply it where the events materialize.
+        filterJson?: string;
+    }
+    export interface ReceiveReceipts {
+        outcomes?: worker_data.ReceiveOutcome[];
+    }
+    export interface ReceiveOutcome {
+        followerClass?: string;
+        followerName?: string;
+        // Highest seq whose handler committed; 0 when nothing landed.
+        deliveredTo?: number;
+        // True when delivery stopped early; the publisher backs the edge
+    // off exactly as a per-event failure would have.
+        failed?: boolean;
     }
     // What one object call carries: the identity and the call, never code
     // coordinates.
@@ -80,6 +150,10 @@ export namespace worker_data {
         // The call&#x27;s failure exactly as the object&#x27;s runtime produced it,
     // user-safe; empty on success.
         error?: string;
+        // Set when this node does not hold the object: the caller&#x27;s view of
+    // the home is stale, and it should re-resolve instead of retrying
+    // here. &#x60;error&#x60; still carries a message for logs.
+        wrongHome?: boolean;
     }
     // What one read asks for; ReadStats and ReadJournal share it because
     // both name an object and route the same way.

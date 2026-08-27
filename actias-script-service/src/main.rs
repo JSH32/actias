@@ -54,6 +54,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_service_status("", tonic_health::ServingStatus::Serving)
         .await;
 
+    // The age-out sweep on its own timer: several beats per ttl, so a
+    // dead node's rows go without any claim paying for the delete.
+    let sweeper = node_registry::NodeRegistry::new(pool.clone(), config.node_ttl_secs);
+    tokio::spawn(async move {
+        let period = std::time::Duration::from_secs((config.node_ttl_secs / 3).max(1) as u64);
+        loop {
+            tokio::time::sleep(period).await;
+            if let Err(error) = sweeper.reap_expired().await {
+                actias_common::tracing::warn!(%error, "node age-out sweep failed");
+            }
+        }
+    });
+
     Server::builder()
         .layer(actias_common::otel::TraceExtract)
         .add_service(health_service)

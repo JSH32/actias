@@ -13,6 +13,7 @@ order: 4
   <tbody>
     <tr><td>HTTP request</td><td>worker count, stateless</td><td>nothing</td></tr>
     <tr><td>Object write</td><td>instance count</td><td>the instance's home task</td></tr>
+    <tr><td>Object first touch</td><td>one placement-store claim</td><td>the placement store; the holder cache absorbs repeats</td></tr>
     <tr><td>Object read</td><td>worker count, via replicas</td><td>nothing</td></tr>
     <tr><td>Publish</td><td>nodes holding followers</td><td>the publisher's pump</td></tr>
     <tr><td>KV</td><td>the kv store (Postgres, or ScyllaDB at volume)</td><td>nothing</td></tr>
@@ -39,6 +40,9 @@ global counter.
   See [placement](/docs/internals/placement).
 - Scripts: pointer and blob caches keep the steady state node-local.
   See [the cluster](/docs/internals/topology).
+- Misrouted object calls: the holder cache forwards them from memory;
+  the placement store is consulted on first touch and after a home
+  moves, not per call.
 
 ## What backpressure looks like
 

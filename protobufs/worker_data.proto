@@ -140,6 +140,10 @@ message CallResult {
     // The call's failure exactly as the object's runtime produced it,
     // user-safe; empty on success.
     string error = 2;
+    // Set when this node does not hold the object: the caller's view of
+    // the home is stale, and it should re-resolve instead of retrying
+    // here. `error` still carries a message for logs.
+    bool wrong_home = 3;
 }
 
 // What one read asks for; ReadStats and ReadJournal share it because

@@ -165,7 +165,7 @@ async fn wake(state: &AppState, own_key: &str) -> Result<(), WakeError> {
         .map_err(WakeError::Other)?;
 
     ObjectRouting::new(state, owner)
-        .resolve_handle(&key)
+        .resolve_handle(&key, false)
         .await
         .map(|_| ())
         .map_err(|error| match error {

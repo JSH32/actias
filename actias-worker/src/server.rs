@@ -133,6 +133,13 @@ pub struct AppState {
     /// Channels to peer workers' data planes, by address; lazy, so a dead
     /// peer costs its caller the failure, never a held-up cache.
     pub peers: moka::future::Cache<String, Channel>,
+    /// Where a non-resident object lives, learned from refused claims;
+    /// a stale entry costs one wrong-home hop, which invalidates it.
+    /// This is what keeps the placement store off the call hot path.
+    pub holders: moka::future::Cache<String, String>,
+    /// A node id's data-plane address; ids never change address, so the
+    /// ttl only bounds how long a dead id lingers.
+    pub node_addrs: moka::future::Cache<String, String>,
     /// The cluster-internal secret every data-plane call carries.
     pub internal_token: String,
     /// Revisions whose cron events were already armed by this process;
@@ -145,6 +152,8 @@ pub struct AppState {
     /// This node's registry identity, filled in once registration lands;
     /// object claims speak as it.
     pub node_identity: Arc<std::sync::RwLock<Option<String>>>,
+    /// Every live snapshot shipper, for the drain flush.
+    pub shippers: crate::shipper::Shippers,
     /// The placement store, for object lease claims.
     pub registry: NodeRegistryServiceClient<actias_worker_core::Grpc>,
     /// Domain subdomain routing hangs off; [`None`] leaves only the path
@@ -861,7 +870,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                         actias_worker_core::extensions::objects::CRON_CLASS,
                         &event,
                     );
-                    let armed = match routing.resolve_handle(&key).await {
+                    let armed = match routing.resolve_handle(&key, false).await {
                         Err(ResolveError::Elsewhere(holder)) => {
                             Err(format!("homed on {holder}; its node arms it"))
                         }
@@ -1082,6 +1091,14 @@ pub(crate) mod test_state {
             metrics: Arc::default(),
             replica_ttl: Duration::from_secs(30),
             peers: moka::future::Cache::new(100),
+            holders: moka::future::Cache::builder()
+                .max_capacity(200_000)
+                .time_to_live(std::time::Duration::from_secs(15))
+                .build(),
+            node_addrs: moka::future::Cache::builder()
+                .max_capacity(1_000)
+                .time_to_live(std::time::Duration::from_secs(120))
+                .build(),
             internal_token: "test-internal".to_owned(),
             object_store: Arc::new(ObjectStore::new(
                 crate::blob_cache::s3_client("http://127.0.0.1:1", "unused", "unused"),
@@ -1093,6 +1110,7 @@ pub(crate) mod test_state {
             object_idle_after: Duration::from_secs(300),
             queue_policy: Default::default(),
             node_identity: Arc::default(),
+            shippers: Arc::default(),
             registry: NodeRegistryServiceClient::new(actias_worker_core::plain_grpc(
                 Channel::from_static("http://127.0.0.1:1").connect_lazy(),
             )),
