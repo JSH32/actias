@@ -46,16 +46,6 @@ services:
       timeout: 5s
       retries: 10
 
-  scylla:
-    image: scylladb/scylla
-    volumes:
-      - scylla_data:/var/lib/scylla
-    healthcheck:
-      test: [ "CMD-SHELL", "[ $$(nodetool statusgossip) = running ]" ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
   script_service:
     image: ghcr.io/jsh32/actias_script_service:latest
     restart: unless-stopped
@@ -223,7 +213,7 @@ services:
   kv_migration:
     image: ghcr.io/jsh32/actias_kv_service:latest
     depends_on:
-      scylla:
+      postgres:
         condition: service_healthy
     build:
       context: .
@@ -232,7 +222,7 @@ services:
         CRATE_NAME: actias-kv
     command: ["/app/target", "--migrate"]
     environment:
-      - SCYLLA_NODES=scylla:9042
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_kv
 
   kv_service:
     image: ghcr.io/jsh32/actias_kv_service:latest
@@ -243,13 +233,13 @@ services:
       args:
         CRATE_NAME: actias-kv
     depends_on:
-      scylla:
+      postgres:
         condition: service_healthy
       kv_migration:
         condition: service_completed_successfully
     environment:
       - PORT=3000
-      - SCYLLA_NODES=scylla:9042
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_kv
 
   actias_api_migration:
     image: ghcr.io/jsh32/actias_api_migration:latest
@@ -302,7 +292,8 @@ services:
     ports:
       - 3000:3000
     build:
-      context: ./actias-web
+      context: .
+      dockerfile: ./actias-web/Dockerfile
     depends_on:
       - actias_api
     environment:
@@ -315,7 +306,6 @@ services:
 volumes:
   objects_data:
   objects_data_2:
-  scylla_data:
   postgres_data:
   redis_data:
   minio_data:

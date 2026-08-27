@@ -1,21 +1,23 @@
 use actias_common::tracing::error;
 use tonic::{Response, Status};
 
+use std::sync::Arc;
+
 use crate::{
-    database::{Database, DatabaseError},
     proto_kv_service::{
         self, CreateNamespaceRequest, DeleteNamespaceRequest, DeletePairsRequest,
         DeleteProjectRequest, ListNamespacesRequest, ListNamespacesResponse, ListPairsRequest,
         ListPairsResponse, Namespace, PairRequest, SetPairsRequest, kv_service_server,
     },
+    store::{DatabaseError, KvStore},
 };
 
 pub struct KvService {
-    database: Database,
+    database: Arc<dyn KvStore>,
 }
 
 impl KvService {
-    pub fn new(database: Database) -> Self {
+    pub fn new(database: Arc<dyn KvStore>) -> Self {
         Self { database }
     }
 }

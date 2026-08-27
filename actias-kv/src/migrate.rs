@@ -1,17 +1,19 @@
-//! Applies the CQL migrations embedded in this binary.
+//! Applies the migrations embedded in this binary, per backend.
 //!
-//! Replaces the JVM-based cqlmigrate: the service image run with `--migrate`
-//! is the whole migration story. `bootstrap.cql` (the keyspace) runs every
-//! time and is idempotent; the numbered files run once each, recorded in
-//! `schema_migrations` after they apply. A crash between applying and
-//! recording means the file runs again on the next attempt, which is why
-//! migrations here are written to be safe to re-run (IF NOT EXISTS and
-//! friends).
+//! The service image run with `--migrate` is the whole migration story.
+//! For scylla, `bootstrap.cql` (the keyspace) runs every time and is
+//! idempotent; numbered files run once each, recorded in
+//! `schema_migrations` after they apply. The postgres path keeps the
+//! same ledger shape over its own files. A crash between applying and
+//! recording means the file runs again on the next attempt, which is
+//! why migrations here are written to be safe to re-run (IF NOT EXISTS
+//! and friends).
 
 use include_dir::{Dir, include_dir};
 use scylla::client::{session::Session, session_builder::SessionBuilder};
 
 static MIGRATIONS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
+static MIGRATIONS_POSTGRES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/migrations_postgres");
 
 /// Splits a CQL source file into executable statements.
 ///
@@ -101,6 +103,61 @@ pub async fn apply(session: &Session) -> Result<(), String> {
                  VALUES (?, toTimestamp(now()))",
                 (name.as_str(),),
             )
+            .await
+            .map_err(|e| format!("{name}: {e}"))?;
+    }
+
+    Ok(())
+}
+
+/// Applies every pending postgres migration through an existing pool,
+/// with the same run-once ledger the scylla path keeps.
+///
+/// # Errors
+/// Returns the failing file and cause as text; the caller decides
+/// whether that is fatal.
+pub async fn apply_postgres(pool: &sqlx::PgPool) -> Result<(), String> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS schema_migrations ( \
+             name text PRIMARY KEY, applied_at timestamptz)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("schema_migrations: {e}"))?;
+
+    // Lexical order is application order, which the NNNN- prefix guarantees.
+    let mut files: Vec<_> = MIGRATIONS_POSTGRES
+        .files()
+        .filter(|f| f.path().extension().is_some_and(|e| e == "sql"))
+        .collect();
+    files.sort_by_key(|f| f.path().to_path_buf());
+
+    for file in files {
+        let name = file.path().display().to_string();
+
+        let applied: Option<String> =
+            sqlx::query_scalar("SELECT name FROM schema_migrations WHERE name = $1")
+                .bind(&name)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| format!("{name}: {e}"))?;
+        if applied.is_some() {
+            continue;
+        }
+
+        let source = file
+            .contents_utf8()
+            .ok_or_else(|| format!("{name} is not utf-8"))?;
+        for statement in split_statements(source) {
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("{name}: {e}"))?;
+        }
+
+        sqlx::query("INSERT INTO schema_migrations (name, applied_at) VALUES ($1, now())")
+            .bind(&name)
+            .execute(pool)
             .await
             .map_err(|e| format!("{name}: {e}"))?;
     }

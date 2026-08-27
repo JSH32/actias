@@ -11,3 +11,5 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'actias_api')\gexec
 
 SELECT 'CREATE DATABASE actias_secret_service'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'actias_secret_service')\gexec
+SELECT 'CREATE DATABASE actias_kv'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'actias_kv')\gexec

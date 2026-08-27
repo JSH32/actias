@@ -2,13 +2,17 @@ FROM node:22-alpine AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+# Built from the repository root: the workbench imports the platform
+# definitions straight from actias-cli, so the image needs both trees.
+COPY actias-web/package.json actias-web/package-lock.json ./
 RUN  npm install --omit=dev
 
 FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY actias-web/ ./
+# Beside /app, where the ../../../actias-cli imports resolve.
+COPY actias-cli/definitions /actias-cli/definitions
 
 ENV NEXT_TELEMETRY_DISABLED 1
 ENV NODE_ENV production

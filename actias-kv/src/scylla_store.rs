@@ -1,3 +1,7 @@
+//! The scylla backend: every query addresses a single partition, so
+//! nothing needs ALLOW FILTERING and deleting a namespace is one
+//! partition tombstone.
+
 use std::{
     io::{self, Write},
     ops::ControlFlow,
@@ -11,29 +15,16 @@ use scylla::{
     response::PagingState,
     statement::prepared::PreparedStatement,
 };
-use thiserror::Error;
 use uuid::Uuid;
 
 use crate::proto_kv_service::{
     ListNamespacesResponse, ListPairsResponse, Namespace, Pair, PairRequest, ValueType,
 };
-
-#[derive(Error, Debug)]
-pub enum DatabaseError {
-    /// Boxed because the driver's error is an order of magnitude larger than
-    /// the other variants, and this enum travels through every Result here.
-    #[error("{0}")]
-    Query(Box<ExecutionError>),
-    /// A response did not carry rows in the shape its query promises.
-    #[error("{0}")]
-    Rows(String),
-    #[error("Invalid data provided: {0}")]
-    Invalid(String),
-}
+use crate::store::{DatabaseError, KvStore};
 
 impl From<ExecutionError> for DatabaseError {
     fn from(error: ExecutionError) -> Self {
-        DatabaseError::Query(Box::new(error))
+        DatabaseError::Backend(error.to_string())
     }
 }
 
@@ -47,12 +38,7 @@ fn rows_error<E: std::fmt::Display>(error: E) -> DatabaseError {
 type PairRow = (Option<i32>, Uuid, String, String, String, String);
 
 /// Data access for the pairs and namespaces tables.
-///
-/// Every query here addresses a single partition: pairs partition on
-/// (project_id, namespace) and the namespace registry partitions on
-/// project_id, so nothing needs ALLOW FILTERING and deleting a namespace is
-/// one partition tombstone.
-pub struct Database {
+pub struct ScyllaStore {
     session: Session,
 
     get_statement: PreparedStatement,
@@ -86,7 +72,7 @@ pub async fn connect(scylla_nodes: Vec<String>) -> Session {
         .expect("scylla session could not be established from SCYLLA_NODES")
 }
 
-impl Database {
+impl ScyllaStore {
     pub async fn new(session: Session) -> Self {
         let prepare = |cql: &'static str| {
             let session = &session;
@@ -156,17 +142,49 @@ impl Database {
         Uuid::from_str(project_id).map_err(|e| DatabaseError::Invalid(e.to_string()))
     }
 
+    /// Reads a project's registered namespace names into owned strings, so
+    /// callers can keep querying while iterating them.
+    async fn namespace_names(&self, project_uuid: Uuid) -> Result<Vec<String>, DatabaseError> {
+        let result = self
+            .session
+            .execute_unpaged(&self.list_namespaces_statement, (project_uuid,))
+            .await?
+            .into_rows_result()
+            .map_err(rows_error)?;
+
+        let names = result
+            .rows::<(String,)>()
+            .map_err(rows_error)?
+            .map(|row| row.map(|(name,)| name))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(rows_error)?;
+
+        Ok(names)
+    }
+
+    /// Converts a row in the shape every pair query selects into a [`Pair`].
+    fn row_into_pair(typed: PairRow) -> Result<Pair, DatabaseError> {
+        let value_type: ValueType = typed.5.try_into().map_err(DatabaseError::Invalid)?;
+
+        Ok(Pair {
+            ttl: typed.0,
+            project_id: typed.1.to_string(),
+            namespace: typed.2,
+            key: typed.3,
+            value: typed.4,
+            r#type: value_type.into(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl KvStore for ScyllaStore {
     /// Gets a pair from the database.
-    ///
-    /// # Arguments
-    /// * `project_id` - Project ID.
-    /// * `namespace` - Namespace.
-    /// * `key` - Key to get.
     ///
     /// # Errors
     /// Returns [`DatabaseError::Invalid`] when the stored type metadata does
     /// not name a [`ValueType`].
-    pub async fn get(
+    async fn get(
         &self,
         project_id: &str,
         namespace: &str,
@@ -193,7 +211,7 @@ impl Database {
     ///
     /// # Arguments
     /// * `pairs` - List of pairs.
-    pub async fn set(&self, pairs: Vec<Pair>) -> Result<(), DatabaseError> {
+    async fn set(&self, pairs: Vec<Pair>) -> Result<(), DatabaseError> {
         for pair in pairs {
             let value_type: String = pair.r#type().into();
             let project_id = Self::project_uuid(&pair.project_id)?;
@@ -229,7 +247,7 @@ impl Database {
     ///
     /// # Arguments
     /// * `pairs` - Pairs to delete, addressed by (project, namespace, key).
-    pub async fn delete(&self, pairs: Vec<PairRequest>) -> Result<(), DatabaseError> {
+    async fn delete(&self, pairs: Vec<PairRequest>) -> Result<(), DatabaseError> {
         for pair in pairs {
             let project_id = Self::project_uuid(&pair.project_id)?;
 
@@ -248,7 +266,7 @@ impl Database {
     ///
     /// Writes also register implicitly; this exists so a namespace can be
     /// created ahead of any data.
-    pub async fn create_namespace(
+    async fn create_namespace(
         &self,
         project_id: &str,
         namespace: &str,
@@ -268,7 +286,7 @@ impl Database {
     /// # Arguments
     /// * `project_id` - Project ID.
     /// * `namespace` - Namespace to delete.
-    pub async fn delete_namespace(
+    async fn delete_namespace(
         &self,
         project_id: &str,
         namespace: &str,
@@ -296,7 +314,7 @@ impl Database {
     ///
     /// # Arguments
     /// * `project_id` - Project ID.
-    pub async fn delete_project(&self, project_id: &str) -> Result<(), DatabaseError> {
+    async fn delete_project(&self, project_id: &str) -> Result<(), DatabaseError> {
         let project_uuid = Self::project_uuid(project_id)?;
 
         let namespaces = self.namespace_names(project_uuid).await?;
@@ -314,32 +332,12 @@ impl Database {
         Ok(())
     }
 
-    /// Reads a project's registered namespace names into owned strings, so
-    /// callers can keep querying while iterating them.
-    async fn namespace_names(&self, project_uuid: Uuid) -> Result<Vec<String>, DatabaseError> {
-        let result = self
-            .session
-            .execute_unpaged(&self.list_namespaces_statement, (project_uuid,))
-            .await?
-            .into_rows_result()
-            .map_err(rows_error)?;
-
-        let names = result
-            .rows::<(String,)>()
-            .map_err(rows_error)?
-            .map(|row| row.map(|(name,)| name))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(rows_error)?;
-
-        Ok(names)
-    }
-
     /// Gets a project's namespaces from the registry, with a per-partition
     /// pair count for each.
     ///
     /// # Arguments
     /// * `project_id` - Project ID.
-    pub async fn get_namespaces(
+    async fn get_namespaces(
         &self,
         project_id: &str,
     ) -> Result<ListNamespacesResponse, DatabaseError> {
@@ -380,7 +378,7 @@ impl Database {
     /// # Errors
     /// Returns [`DatabaseError::Invalid`] when the token is not one this
     /// service handed out.
-    pub async fn list(
+    async fn list(
         &self,
         project_id: &str,
         namespace: &str,
@@ -473,20 +471,6 @@ impl Database {
             pairs,
         })
     }
-
-    /// Converts a row in the shape every pair query selects into a [`Pair`].
-    fn row_into_pair(typed: PairRow) -> Result<Pair, DatabaseError> {
-        let value_type: ValueType = typed.5.try_into().map_err(DatabaseError::Invalid)?;
-
-        Ok(Pair {
-            ttl: typed.0,
-            project_id: typed.1.to_string(),
-            namespace: typed.2,
-            key: typed.3,
-            value: typed.4,
-            r#type: value_type.into(),
-        })
-    }
 }
 
 impl From<ValueType> for String {
@@ -517,7 +501,8 @@ impl TryFrom<String> for ValueType {
     }
 }
 
-/// Container-backed tests running the real schema against a real scylla.
+/// Container-backed tests: the shared conformance suite against a real
+/// scylla, plus the container plumbing only this backend needs.
 ///
 /// These live here rather than in `tests/` because this crate is a binary and
 /// has no library target for an integration test to import. One container per
@@ -525,8 +510,10 @@ impl TryFrom<String> for ValueType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::conformance;
     use scylla::errors::TranslationError;
     use scylla::policies::address_translator::{AddressTranslator, UntranslatedPeer};
+    use serial_test::serial;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use testcontainers::runners::AsyncRunner;
@@ -552,7 +539,7 @@ mod tests {
     /// Starts scylla, applies the real migrations, and connects.
     ///
     /// The container rides along because dropping it stops the database.
-    async fn database() -> (ContainerAsync<GenericImage>, Database) {
+    async fn store() -> (ContainerAsync<GenericImage>, ScyllaStore) {
         let container = GenericImage::new("scylladb/scylla", "6.2")
             .with_wait_for(WaitFor::message_on_stderr("serving"))
             .with_cmd([
@@ -613,139 +600,34 @@ mod tests {
             .await
             .expect("scylla accepts a data session");
 
-        (container, Database::new(data_session).await)
-    }
-
-    fn pair(project: Uuid, namespace: &str, key: &str, value: &str) -> Pair {
-        Pair {
-            project_id: project.to_string(),
-            namespace: namespace.to_owned(),
-            r#type: ValueType::String.into(),
-            ttl: None,
-            key: key.to_owned(),
-            value: value.to_owned(),
-        }
+        (container, ScyllaStore::new(data_session).await)
     }
 
     #[tokio::test]
+    #[serial(containers)]
     async fn pairs_round_trip_and_writes_register_their_namespace() {
-        let (_container, db) = database().await;
-        let project = Uuid::new_v4();
-
-        db.set(vec![pair(project, "cache", "greeting", "hello")])
-            .await
-            .expect("set succeeds");
-
-        let stored = db
-            .get(&project.to_string(), "cache", "greeting")
-            .await
-            .expect("get runs")
-            .expect("pair exists");
-        assert_eq!(stored.value, "hello");
-
-        // The first write into a namespace is what makes it listable.
-        let namespaces = db
-            .get_namespaces(&project.to_string())
-            .await
-            .expect("namespaces list");
-        assert_eq!(namespaces.namespaces.len(), 1);
-        assert_eq!(namespaces.namespaces[0].name, "cache");
-        assert_eq!(namespaces.namespaces[0].count, 1);
+        let (_container, db) = store().await;
+        conformance::pairs_round_trip_and_writes_register_their_namespace(&db).await;
     }
 
     #[tokio::test]
+    #[serial(containers)]
+    async fn a_ttl_write_reports_its_remaining_life() {
+        let (_container, db) = store().await;
+        conformance::a_ttl_write_reports_its_remaining_life(&db).await;
+    }
+
+    #[tokio::test]
+    #[serial(containers)]
     async fn listing_pages_one_namespace_and_stops_at_its_end() {
-        let (_container, db) = database().await;
-        let project = Uuid::new_v4();
-        let project_id = project.to_string();
-
-        db.set(vec![
-            pair(project, "a", "k1", "v1"),
-            pair(project, "a", "k2", "v2"),
-            pair(project, "a", "k3", "v3"),
-            pair(project, "b", "other", "elsewhere"),
-        ])
-        .await
-        .expect("set succeeds");
-
-        let first = db.list(&project_id, "a", 2, None).await.expect("page one");
-        assert_eq!(first.pairs.len(), 2);
-        let token = first.token.expect("a further page is advertised");
-
-        let second = db
-            .list(&project_id, "a", 2, Some(token))
-            .await
-            .expect("page two");
-        assert_eq!(second.pairs.len(), 1);
-        assert!(second.token.is_none(), "last page must not advertise more");
-
-        // Namespace b's pair stays out of namespace a's listing.
-        let mut seen: Vec<_> = first
-            .pairs
-            .into_iter()
-            .chain(second.pairs)
-            .map(|p| p.key)
-            .collect();
-        seen.sort();
-        assert_eq!(seen, vec!["k1", "k2", "k3"]);
+        let (_container, db) = store().await;
+        conformance::listing_pages_one_namespace_and_stops_at_its_end(&db).await;
     }
 
     #[tokio::test]
+    #[serial(containers)]
     async fn namespace_and_project_deletion_remove_data_and_registry() {
-        let (_container, db) = database().await;
-        let project = Uuid::new_v4();
-        let project_id = project.to_string();
-
-        // An explicitly created namespace is listable while still empty.
-        db.create_namespace(&project_id, "empty")
-            .await
-            .expect("create succeeds");
-        db.set(vec![
-            pair(project, "doomed", "k", "v"),
-            pair(project, "kept", "k", "v"),
-        ])
-        .await
-        .expect("set succeeds");
-
-        db.delete_namespace(&project_id, "doomed")
-            .await
-            .expect("namespace delete succeeds");
-
-        let names: Vec<_> = db
-            .get_namespaces(&project_id)
-            .await
-            .expect("list runs")
-            .namespaces
-            .into_iter()
-            .map(|n| (n.name, n.count))
-            .collect();
-        assert_eq!(names, vec![("empty".to_owned(), 0), ("kept".to_owned(), 1)]);
-        assert!(
-            db.get(&project_id, "doomed", "k")
-                .await
-                .expect("get runs")
-                .is_none(),
-            "pair survived its namespace"
-        );
-
-        db.delete_project(&project_id)
-            .await
-            .expect("project delete succeeds");
-
-        assert!(
-            db.get_namespaces(&project_id)
-                .await
-                .expect("list runs")
-                .namespaces
-                .is_empty(),
-            "registry survived the project delete"
-        );
-        assert!(
-            db.get(&project_id, "kept", "k")
-                .await
-                .expect("get runs")
-                .is_none(),
-            "pair survived the project delete"
-        );
+        let (_container, db) = store().await;
+        conformance::namespace_and_project_deletion_remove_data_and_registry(&db).await;
     }
 }
