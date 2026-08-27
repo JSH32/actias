@@ -131,13 +131,34 @@ pub struct ReceiveReport {
 
 /// Sends one node's durable batch; the reports drive cursor advances
 /// and failure backoff exactly as per-edge delivery would have.
+/// Why a per-node batch never reached its node.
+#[derive(Debug)]
+pub enum ForwardError {
+    /// The recorded node id no longer exists in the registry: it will
+    /// never come back (a restarted worker registers a fresh id), so
+    /// the stale home is cleared and delivery falls back to routing by
+    /// the follower's identity, which finds wherever it lives now.
+    NodeGone,
+    /// The node exists but the call failed; ordinary backoff applies.
+    Transport(String),
+}
+
+impl std::fmt::Display for ForwardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ForwardError::NodeGone => write!(f, "the follower's node is gone"),
+            ForwardError::Transport(error) => write!(f, "{error}"),
+        }
+    }
+}
+
 pub type ReceiveForwarder = std::sync::Arc<
     dyn Fn(
             String,
             PublisherIdentity,
             Vec<ReceiveDelivery>,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Vec<ReceiveReport>, String>> + Send>,
+            Box<dyn std::future::Future<Output = Result<Vec<ReceiveReport>, ForwardError>> + Send>,
         > + Send
         + Sync,
 >;
@@ -547,6 +568,22 @@ pub fn advance_cursor(storage: &mut SqliteStorage, edge_id: i64, to: i64) -> Res
 /// Failure bookkeeping: backoff read from the row (a partial batch may
 /// have reset it), and past patience the edge is dropped. Returns
 /// whether the edge survived.
+/// Forgets where these followers live: the next pump delivers them by
+/// routing the follower's identity instead of batching to a node, and
+/// a later re-follow records the fresh home.
+fn clear_edge_nodes(storage: &mut SqliteStorage, edge_ids: &[i64]) -> Result<(), String> {
+    for edge_id in edge_ids {
+        storage
+            .platform()
+            .execute(
+                "UPDATE __actias_followers SET node = NULL WHERE id = ?",
+                rusqlite::params![edge_id],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn record_failure(storage: &mut SqliteStorage, edge_id: i64) -> Result<bool, String> {
     let connection = storage.platform();
     let stored: i64 = connection
@@ -967,7 +1004,14 @@ async fn flush_receive_batch(
                 }
             }
         }
-        Err(error) => {
+        Err(ForwardError::NodeGone) => {
+            actias_common::tracing::debug!(
+                node,
+                "follower's node is gone; edges fall back to routed delivery"
+            );
+            let _ = home.with_storage(|storage| clear_edge_nodes(storage, &all_edges));
+        }
+        Err(error @ ForwardError::Transport(_)) => {
             actias_common::tracing::debug!(%error, node, "durable batch missed; backing off");
             for edge_id in all_edges {
                 let _ = home.with_storage(|storage| record_failure(storage, edge_id));
@@ -1595,6 +1639,100 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_gone_node_clears_the_stale_home_and_delivery_routes_instead() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // The recorded node no longer exists; the forwarder says so
+        // every time it is asked.
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let forwarder: ReceiveForwarder = {
+            let asked = asked.clone();
+            Arc::new(move |_node, _identity, _batch| {
+                let asked = asked.clone();
+                Box::pin(async move {
+                    asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Err(super::ForwardError::NodeGone)
+                })
+            })
+        };
+
+        let identity = PublisherIdentity {
+            scope: "p".to_owned(),
+            class: "Hub".to_owned(),
+            name: "town".to_owned(),
+        };
+        let router = town_router_with(
+            dir.path().to_path_buf(),
+            false,
+            Arc::default(),
+            None,
+            Some((identity, forwarder)),
+        );
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "admit",
+            vec![serde_json::json!("ada")],
+        )
+        .await
+        .expect("admitted");
+        call(
+            &router,
+            "Hub",
+            "town",
+            "__follow",
+            vec![
+                serde_json::json!("news"),
+                serde_json::Value::Null,
+                serde_json::json!({
+                    "class": "Reader",
+                    "name": "ada",
+                    "transport": "object",
+                    "node": "dead-node-id",
+                }),
+            ],
+        )
+        .await
+        .expect("the gate admits the member");
+
+        call(
+            &router,
+            "Hub",
+            "town",
+            "post",
+            vec![serde_json::json!("sport"), serde_json::json!("goal")],
+        )
+        .await
+        .expect("posted");
+
+        // The batch hit the gone node once, then the stale home cleared:
+        // no backoff, and the next pump routes the follower's identity,
+        // which the local router serves, advancing the cursor.
+        let mut healed = false;
+        for _ in 0..80 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let file = dir
+                .path()
+                .join(crate::identity::ObjectKey::received("p", "Hub", "town").db_file_name());
+            let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
+            let edges = list_edges(&mut storage, None).expect("edges list");
+            let Some(edge) = edges.first() else { continue };
+            if edge.node.is_none() && edge.attempts == 0 && edge.cursor > 0 {
+                healed = true;
+                break;
+            }
+        }
+        assert!(healed, "the stale home never cleared into routed delivery");
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the gone node should be asked exactly once"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_remote_durable_edge_batches_and_scores_like_per_edge_delivery() {
         let dir = tempfile::tempdir().expect("tempdir");
 
@@ -1619,7 +1757,9 @@ mod tests {
                     // First call: transport failure, so every edge in
                     // the batch backs off and nothing advances.
                     if flaky_once.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                        return Err("node unreachable".to_owned());
+                        return Err(super::ForwardError::Transport(
+                            "node unreachable".to_owned(),
+                        ));
                     }
                     Ok(batch
                         .iter()

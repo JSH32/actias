@@ -480,32 +480,47 @@ pub(crate) fn connection_forwarder(
     state: &crate::server::AppState,
 ) -> actias_worker_core::streams::ConnectionForwarder {
     let state = state.clone();
-    std::sync::Arc::new(move |node: String, deliveries| {
-        let state = state.clone();
-        Box::pin(async move {
-            let resolved = state
-                .registry
-                .clone()
-                .get_node(GetNodeRequest { node_id: node })
-                .await
-                .map_err(|e| format!("the follower's node could not be resolved: {e}"))?
-                .into_inner();
-            let mut client = peer_client(&state, &resolved.address).await?;
-            let entries = deliveries
-                .into_iter()
-                .map(|delivery| ConnectionEvents {
-                    connection: delivery.connection,
-                    events_json: serde_json::Value::Array(delivery.events).to_string(),
-                })
-                .collect();
-            let receipts = client
-                .deliver_inbox(authed(&state.internal_token, InboxBatch { entries }))
-                .await
-                .map_err(|e| e.message().to_owned())?
-                .into_inner();
-            Ok(receipts.gone)
-        })
-    })
+    std::sync::Arc::new(
+        move |node: String, deliveries: Vec<actias_worker_core::streams::RemoteDelivery>| {
+            let state = state.clone();
+            Box::pin(async move {
+                let resolved = match state
+                    .registry
+                    .clone()
+                    .get_node(GetNodeRequest { node_id: node })
+                    .await
+                {
+                    Ok(node) => node.into_inner(),
+                    // A node id never returns (a restarted worker registers
+                    // a fresh one), so every socket that lived there died
+                    // with it: prune the lot.
+                    Err(status) if status.code() == tonic::Code::NotFound => {
+                        return Ok(deliveries
+                            .into_iter()
+                            .map(|delivery| delivery.connection)
+                            .collect());
+                    }
+                    Err(e) => {
+                        return Err(format!("the follower's node could not be resolved: {e}"));
+                    }
+                };
+                let mut client = peer_client(&state, &resolved.address).await?;
+                let entries = deliveries
+                    .into_iter()
+                    .map(|delivery| ConnectionEvents {
+                        connection: delivery.connection,
+                        events_json: serde_json::Value::Array(delivery.events).to_string(),
+                    })
+                    .collect();
+                let receipts = client
+                    .deliver_inbox(authed(&state.internal_token, InboxBatch { entries }))
+                    .await
+                    .map_err(|e| e.message().to_owned())?
+                    .into_inner();
+                Ok(receipts.gone)
+            })
+        },
+    )
 }
 
 /// The publisher's half of durable node-grouped fan-out; handed to
@@ -517,14 +532,28 @@ pub(crate) fn receive_forwarder(
     std::sync::Arc::new(move |node: String, identity, deliveries| {
         let state = state.clone();
         Box::pin(async move {
-            let resolved = state
+            use actias_worker_core::streams::ForwardError;
+            let resolved = match state
                 .registry
                 .clone()
                 .get_node(GetNodeRequest { node_id: node })
                 .await
-                .map_err(|e| format!("the follower's node could not be resolved: {e}"))?
-                .into_inner();
-            let mut client = peer_client(&state, &resolved.address).await?;
+            {
+                Ok(node) => node.into_inner(),
+                // The follower rehomed when its node died; clearing the
+                // stale home upstream makes delivery route by identity.
+                Err(status) if status.code() == tonic::Code::NotFound => {
+                    return Err(ForwardError::NodeGone);
+                }
+                Err(e) => {
+                    return Err(ForwardError::Transport(format!(
+                        "the follower's node could not be resolved: {e}"
+                    )));
+                }
+            };
+            let mut client = peer_client(&state, &resolved.address)
+                .await
+                .map_err(ForwardError::Transport)?;
             let entries = deliveries
                 .into_iter()
                 .map(|delivery| ReceiveEntry {
@@ -555,7 +584,7 @@ pub(crate) fn receive_forwarder(
                     },
                 ))
                 .await
-                .map_err(|e| e.message().to_owned())?
+                .map_err(|e| ForwardError::Transport(e.message().to_owned()))?
                 .into_inner();
             Ok(receipts
                 .outcomes
