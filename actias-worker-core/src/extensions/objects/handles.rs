@@ -95,7 +95,17 @@ pub(super) fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::R
                     .await
                     .map_err(mlua::Error::RuntimeError)?;
 
-                    lua.to_value(&result)
+                    // A json null in a result is Lua NIL, never mlua's
+                    // null sentinel, for the same reason dispatch treats
+                    // arguments this way: the sentinel is truthy, so a
+                    // missing `query_one` row would arrive as userdata
+                    // and `row == nil` would silently miss it.
+                    lua.to_value_with(
+                        &result,
+                        mlua::SerializeOptions::new()
+                            .serialize_none_to_null(false)
+                            .serialize_unit_to_null(false),
+                    )
                 }
             })
         })?,

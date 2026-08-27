@@ -296,7 +296,15 @@ async fn dispatch_internal(
             };
             let event = lua.create_table()?;
             event.set("topic", topic)?;
-            event.set("data", lua.to_value(&event_json["data"])?)?;
+            event.set(
+                "data",
+                lua.to_value_with(
+                    &event_json["data"],
+                    mlua::SerializeOptions::new()
+                        .serialize_none_to_null(false)
+                        .serialize_unit_to_null(false),
+                )?,
+            )?;
             let from = make_identity(
                 lua,
                 from_class,

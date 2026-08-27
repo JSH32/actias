@@ -133,7 +133,14 @@ fn sql_surface(lua: &Lua) -> mlua::Result<Table> {
             |lua, (_this, text, params): (Table, String, Option<Table>)| {
                 let params = sql_params(lua, params)?;
                 let rows = with_storage(lua, |storage| storage.query(&text, &params))?;
-                lua.to_value(&rows)
+                // Null columns become Lua NIL, never mlua's truthy
+                // null sentinel; same rule as every call boundary.
+                lua.to_value_with(
+                    &rows,
+                    mlua::SerializeOptions::new()
+                        .serialize_none_to_null(false)
+                        .serialize_unit_to_null(false),
+                )
             },
         )?,
     )?;
@@ -145,7 +152,12 @@ fn sql_surface(lua: &Lua) -> mlua::Result<Table> {
                 let params = sql_params(lua, params)?;
                 let rows = with_storage(lua, |storage| storage.query(&text, &params))?;
                 match rows.into_iter().next() {
-                    Some(row) => lua.to_value(&row),
+                    Some(row) => lua.to_value_with(
+                        &row,
+                        mlua::SerializeOptions::new()
+                            .serialize_none_to_null(false)
+                            .serialize_unit_to_null(false),
+                    ),
                     None => Ok(mlua::Value::Nil),
                 }
             },
