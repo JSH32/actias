@@ -124,8 +124,8 @@ pub struct AppState {
     pub object_data_dir: std::path::PathBuf,
     /// Size cap per object database, bytes.
     pub object_db_max_bytes: u64,
-    /// Databases at or past this size ship WAL segments, not the file.
-    pub object_ship_whole_max_bytes: u64,
+    /// When objects ship WAL segments and when generations rotate.
+    pub ship_thresholds: crate::object_store::ShipThresholds,
     /// Per-script request counters, served at /_metrics.
     pub metrics: Arc<Metrics>,
     /// Where object snapshots ship to and restore from.
@@ -1108,7 +1108,11 @@ pub(crate) mod test_state {
             )),
             object_data_dir: std::env::temp_dir(),
             object_db_max_bytes: 64 * 1024 * 1024,
-            object_ship_whole_max_bytes: 256 * 1024,
+            ship_thresholds: crate::object_store::ShipThresholds {
+                whole_max: 256 * 1024,
+                rotate_bytes: 4096 * 1024,
+                max_segments: 64,
+            },
             armed_crons: Arc::default(),
             object_idle_after: Duration::from_secs(300),
             queue_policy: Default::default(),

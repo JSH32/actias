@@ -164,6 +164,10 @@ services:
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
       - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
+      # WAL shipping sizes: whole-file cutoff, generation rotation.
+      - OBJECT_SHIP_WHOLE_MAX_KB=${OBJECT_SHIP_WHOLE_MAX_KB:-256}
+      - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
+      - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
       # The WorkerData grpc service: object dispatch and typed reads;
       # the address the node registers is this listener's.
       - WORKER_GRPC_PORT=3100
@@ -211,6 +215,10 @@ services:
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
       - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
+      # WAL shipping sizes: whole-file cutoff, generation rotation.
+      - OBJECT_SHIP_WHOLE_MAX_KB=${OBJECT_SHIP_WHOLE_MAX_KB:-256}
+      - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
+      - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
       # The WorkerData grpc service: object dispatch and typed reads;
       # the address the node registers is this listener's.
       - WORKER_GRPC_PORT=3100

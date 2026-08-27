@@ -48,6 +48,17 @@ pub struct ShipState {
     mode: Option<Mode>,
 }
 
+/// Operator-tunable shipping sizes, one copy per node.
+#[derive(Clone, Copy)]
+pub struct ShipThresholds {
+    /// Databases at or past this size ship WAL segments, not the file.
+    pub whole_max: u64,
+    /// A WAL this large rotates the generation at the next flight.
+    pub rotate_bytes: u64,
+    /// So does this many segments, whatever their size.
+    pub max_segments: u32,
+}
+
 enum Mode {
     Whole {
         base: u64,
@@ -96,15 +107,18 @@ impl ObjectStore {
     ///
     /// Small databases ship whole; at `whole_max` bytes the flight lays
     /// a base at a checkpoint and ships committed WAL frames from then
-    /// on. Any segment-path failure falls back to a whole flight, so
-    /// shipping never regresses below today's behavior.
+    /// on, rotating the generation when the WAL or the segment count
+    /// grows past the thresholds. Any segment-path failure falls back
+    /// to a whole flight, so shipping never regresses below today's
+    /// behavior. A flight that lays a new generation sweeps old ones,
+    /// keeping the newest previous as the rollback margin.
     pub async fn ship(
         &self,
         object_id: &str,
         epoch: u64,
         file: &Path,
         state: &tokio::sync::Mutex<ShipState>,
-        whole_max: u64,
+        thresholds: ShipThresholds,
     ) -> Result<(), String> {
         if let Some(manifest) = self.manifest(object_id).await?
             && manifest.epoch > epoch
@@ -118,6 +132,9 @@ impl ObjectStore {
         let mut state = state.lock().await;
         let db_len = file.metadata().map(|m| m.len()).unwrap_or(0);
         let wal_len = wal_path(file).metadata().map(|m| m.len()).unwrap_or(0);
+        let base_before = state.mode.as_ref().map(|mode| match *mode {
+            Mode::Whole { base } | Mode::Segments { base, .. } => base,
+        });
 
         match state.mode {
             Some(Mode::Segments {
@@ -126,38 +143,52 @@ impl ObjectStore {
                 salts,
                 offset,
             }) => {
-                match self
-                    .segment_flight(object_id, epoch, file, base, segments, salts, offset)
-                    .await
-                {
-                    Ok(next) => {
-                        state.mode = Some(next);
-                        Ok(())
+                if segments >= thresholds.max_segments || wal_len >= thresholds.rotate_bytes {
+                    // Rotation: the checkpoint folds every frame, shipped
+                    // or not, into the next base; nothing can be lost to
+                    // the boundary.
+                    match self
+                        .start_generation(object_id, epoch, file, base + 1)
+                        .await
+                    {
+                        Ok(next) => state.mode = Some(next),
+                        Err(error) => {
+                            actias_common::tracing::warn!(
+                                object_id,
+                                %error,
+                                "rotation failed; shipping whole"
+                            );
+                            state.mode =
+                                Some(self.whole_flight(object_id, epoch, file, base + 1).await?);
+                        }
                     }
-                    Err(error) => {
-                        // The fallback that keeps the promise: a whole
-                        // flight ships everything the segment could not.
-                        actias_common::tracing::warn!(
-                            object_id,
-                            %error,
-                            "segment flight failed; shipping whole"
-                        );
-                        state.mode =
-                            Some(self.whole_flight(object_id, epoch, file, base + 1).await?);
-                        Ok(())
+                } else {
+                    match self
+                        .segment_flight(object_id, epoch, file, base, segments, salts, offset)
+                        .await
+                    {
+                        Ok(next) => state.mode = Some(next),
+                        Err(error) => {
+                            // The fallback that keeps the promise: a whole
+                            // flight ships everything the segment could not.
+                            actias_common::tracing::warn!(
+                                object_id,
+                                %error,
+                                "segment flight failed; shipping whole"
+                            );
+                            state.mode =
+                                Some(self.whole_flight(object_id, epoch, file, base + 1).await?);
+                        }
                     }
                 }
             }
-            _ if db_len + wal_len >= whole_max => {
+            _ if db_len + wal_len >= thresholds.whole_max => {
                 let base = match state.mode {
                     Some(Mode::Whole { base }) => base + 1,
                     _ => 0,
                 };
                 match self.start_generation(object_id, epoch, file, base).await {
-                    Ok(next) => {
-                        state.mode = Some(next);
-                        Ok(())
-                    }
+                    Ok(next) => state.mode = Some(next),
                     Err(error) => {
                         actias_common::tracing::warn!(
                             object_id,
@@ -165,7 +196,6 @@ impl ObjectStore {
                             "generation start failed; shipping whole"
                         );
                         state.mode = Some(self.whole_flight(object_id, epoch, file, base).await?);
-                        Ok(())
                     }
                 }
             }
@@ -175,9 +205,80 @@ impl ObjectStore {
                     _ => 0,
                 };
                 state.mode = Some(self.whole_flight(object_id, epoch, file, base).await?);
-                Ok(())
             }
         }
+
+        // A new generation retires old ones; failures only defer the
+        // sweep to the next rotation.
+        let base_after = state.mode.as_ref().map(|mode| match *mode {
+            Mode::Whole { base } | Mode::Segments { base, .. } => base,
+        });
+        if base_after != base_before
+            && let Some(base) = base_after
+            && let Err(error) = self.collect_garbage(object_id, (epoch, base)).await
+        {
+            actias_common::tracing::warn!(object_id, %error, "generation sweep failed");
+        }
+        Ok(())
+    }
+
+    /// Deletes everything under the object except the current
+    /// generation, the newest one before it (the rollback margin while
+    /// the current one is young), and the manifest. The legacy
+    /// `snapshot.db` counts as the oldest generation, so it ages out
+    /// the same way.
+    async fn collect_garbage(&self, object_id: &str, current: (u64, u64)) -> Result<(), String> {
+        let prefix = format!("objects/{object_id}/");
+        let mut generations: std::collections::BTreeMap<(u64, u64), Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mut token: Option<String> = None;
+        loop {
+            let page = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix)
+                .set_continuation_token(token)
+                .send()
+                .await
+                .map_err(|e| e.into_service_error().to_string())?;
+            for key in page.contents().iter().filter_map(|o| o.key()) {
+                let Some(rest) = key.strip_prefix(&prefix) else {
+                    continue;
+                };
+                if rest == "snapshot.db" {
+                    generations.entry((0, 0)).or_default().push(key.to_owned());
+                } else if let Some(generation) = rest
+                    .split_once('/')
+                    .and_then(|(dir, _)| parse_generation(dir))
+                {
+                    generations
+                        .entry(generation)
+                        .or_default()
+                        .push(key.to_owned());
+                }
+                // manifest.json and anything unrecognized stay.
+            }
+            match page.next_continuation_token() {
+                Some(next) if page.is_truncated() == Some(true) => token = Some(next.to_owned()),
+                _ => break,
+            }
+        }
+
+        generations.remove(&current);
+        if let Some(newest) = generations.keys().next_back().copied() {
+            generations.remove(&newest);
+        }
+        for key in generations.into_values().flatten() {
+            self.client
+                .delete_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .send()
+                .await
+                .map_err(|e| e.into_service_error().to_string())?;
+        }
+        Ok(())
     }
 
     /// The whole-database flight. The snapshot goes through sqlite,
@@ -457,6 +558,12 @@ impl ObjectStore {
             .into_bytes()
             .to_vec())
     }
+}
+
+/// A generation directory's name back as (epoch, base).
+fn parse_generation(dir: &str) -> Option<(u64, u64)> {
+    let (epoch, base) = dir.strip_prefix('e')?.split_once("-b")?;
+    Some((epoch.parse().ok()?, base.parse().ok()?))
 }
 
 /// The WAL beside an object file. Appended, not `with_extension`:

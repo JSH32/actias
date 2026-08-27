@@ -41,6 +41,10 @@ pub struct Config {
     /// Databases at or past this size ship WAL segments instead of the
     /// whole file, bytes.
     pub object_ship_whole_max_bytes: u64,
+    /// A WAL this large rotates the shipping generation, bytes.
+    pub object_wal_rotate_bytes: u64,
+    /// So does this many shipped segments.
+    pub object_max_segments: u32,
     /// Idle seconds before a pinned object vm hibernates.
     pub object_idle_secs: u64,
     /// Deliveries attempted before a queue message dead-letters.
@@ -99,6 +103,8 @@ impl Config {
             object_data_dir: get_env_or("OBJECT_DATA_DIR", "./objects-data".to_owned()),
             object_db_max_bytes: get_env_or::<u64>("OBJECT_DB_MAX_MB", 64) * 1024 * 1024,
             object_ship_whole_max_bytes: get_env_or::<u64>("OBJECT_SHIP_WHOLE_MAX_KB", 256) * 1024,
+            object_wal_rotate_bytes: get_env_or::<u64>("OBJECT_WAL_ROTATE_KB", 4096) * 1024,
+            object_max_segments: get_env_or("OBJECT_MAX_SEGMENTS", 64),
             object_idle_secs: get_env_or("OBJECT_IDLE_SECS", 300),
             queue_max_attempts: get_env_or("QUEUE_MAX_ATTEMPTS", 5),
             queue_backoff_base_ms: get_env_or("QUEUE_BACKOFF_BASE_MS", 2000),
