@@ -558,15 +558,22 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
     };
 
     // Only an identifier that actually resolved becomes a series: the
-    // pointer cache holds it by now if it did. Everything else (favicon
-    // probes, path spam) folds into one bucket, or unbounded label
-    // cardinality would let arbitrary urls mint prometheus series.
-    let label = if caches.pointers.contains_key(&label) {
-        label
-    } else {
-        "(unknown)".to_owned()
+    // pointer cache holds it by now if it did, and carries the project
+    // the dashboards narrow by. Everything else (favicon probes, path
+    // spam) folds into one bucket, or unbounded label cardinality would
+    // let arbitrary urls mint prometheus series.
+    let (project, label) = match caches.pointers.get(&label).await {
+        Some(script) => (script.project_id, label),
+        None => ("(unknown)".to_owned(), "(unknown)".to_owned()),
     };
-    metrics.record(&label, started.elapsed(), response.status().is_success());
+    // An error is the script failing, not the script answering: 4xx and
+    // redirects are responses, only 5xx counts against the script.
+    metrics.record(
+        &project,
+        &label,
+        started.elapsed(),
+        !response.status().is_server_error(),
+    );
     response
 }
 
@@ -1658,7 +1665,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(
-            text.contains(r#"actias_requests_total{script="cached-script"} 1"#),
+            text.contains(r#"actias_requests_total{project="project-1",script="cached-script"} 1"#),
             "{text}"
         );
         assert!(text.contains("actias_objects_resident 0"), "{text}");

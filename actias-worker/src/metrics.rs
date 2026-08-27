@@ -8,9 +8,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 /// Per-script counters; snapshots are cheap because scrapes are rare.
+/// Keyed (project, script) so dashboards can narrow to one tenant.
 #[derive(Default)]
 pub struct Metrics {
-    scripts: Mutex<HashMap<String, ScriptStats>>,
+    scripts: Mutex<HashMap<(String, String), ScriptStats>>,
     /// Reads served from a restored snapshot replica instead of the
     /// owner's mailbox; the multi-node read story in one number.
     pub replica_reads: std::sync::atomic::AtomicU64,
@@ -24,10 +25,12 @@ struct ScriptStats {
 }
 
 impl Metrics {
-    /// Notes one finished request against its script label.
-    pub fn record(&self, script: &str, elapsed: Duration, ok: bool) {
+    /// Notes one finished request against its project and script labels.
+    pub fn record(&self, project: &str, script: &str, elapsed: Duration, ok: bool) {
         let mut scripts = self.scripts.lock().expect("no poisoned lock");
-        let stats = scripts.entry(script.to_owned()).or_default();
+        let stats = scripts
+            .entry((project.to_owned(), script.to_owned()))
+            .or_default();
         stats.requests += 1;
         if !ok {
             stats.errors += 1;
@@ -42,23 +45,23 @@ impl Metrics {
 
         let mut out = String::new();
         out.push_str("# TYPE actias_requests_total counter\n");
-        for (script, stats) in &scripts {
+        for ((project, script), stats) in &scripts {
             out.push_str(&format!(
-                "actias_requests_total{{script=\"{script}\"}} {}\n",
+                "actias_requests_total{{project=\"{project}\",script=\"{script}\"}} {}\n",
                 stats.requests
             ));
         }
         out.push_str("# TYPE actias_request_errors_total counter\n");
-        for (script, stats) in &scripts {
+        for ((project, script), stats) in &scripts {
             out.push_str(&format!(
-                "actias_request_errors_total{{script=\"{script}\"}} {}\n",
+                "actias_request_errors_total{{project=\"{project}\",script=\"{script}\"}} {}\n",
                 stats.errors
             ));
         }
         out.push_str("# TYPE actias_request_duration_ms_total counter\n");
-        for (script, stats) in &scripts {
+        for ((project, script), stats) in &scripts {
             out.push_str(&format!(
-                "actias_request_duration_ms_total{{script=\"{script}\"}} {}\n",
+                "actias_request_duration_ms_total{{project=\"{project}\",script=\"{script}\"}} {}\n",
                 stats.duration_ms_total
             ));
         }
@@ -82,14 +85,18 @@ mod tests {
     #[test]
     fn recorded_requests_appear_in_the_exposition() {
         let metrics = Metrics::default();
-        metrics.record("my-script", Duration::from_millis(12), true);
-        metrics.record("my-script", Duration::from_millis(8), false);
+        metrics.record("proj-1", "my-script", Duration::from_millis(12), true);
+        metrics.record("proj-1", "my-script", Duration::from_millis(8), false);
 
         let text = metrics.render(3);
 
-        assert!(text.contains("actias_requests_total{script=\"my-script\"} 2"));
-        assert!(text.contains("actias_request_errors_total{script=\"my-script\"} 1"));
-        assert!(text.contains("actias_request_duration_ms_total{script=\"my-script\"} 20"));
+        assert!(text.contains("actias_requests_total{project=\"proj-1\",script=\"my-script\"} 2"));
+        assert!(
+            text.contains("actias_request_errors_total{project=\"proj-1\",script=\"my-script\"} 1")
+        );
+        assert!(text.contains(
+            "actias_request_duration_ms_total{project=\"proj-1\",script=\"my-script\"} 20"
+        ));
         assert!(text.contains("actias_objects_resident 3"));
     }
 }

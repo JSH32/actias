@@ -16,6 +16,20 @@
   "templating": {
     "list": [
       {
+        "name": "project",
+        "label": "Project",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(actias_requests_total{project!=\"(unknown)\"}, project)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "name": "script",
         "label": "Script",
         "type": "query",
@@ -23,7 +37,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "query": "label_values(actias_requests_total{script!=\"(unknown)\"}, script)",
+        "query": "label_values(actias_requests_total{project=\"$project\"}, script)",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,
@@ -69,7 +83,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(actias_requests_total{script=\"$script\"}[$__range]))"
+          "expr": "sum(increase(actias_requests_total{project=\"$project\",script=\"$script\"}[$__range]))"
         }
       ]
     },
@@ -127,7 +141,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(actias_request_errors_total{script=\"$script\"}[$__range])) / clamp_min(sum(increase(actias_requests_total{script=\"$script\"}[$__range])), 1)"
+          "expr": "sum(increase(actias_request_errors_total{project=\"$project\",script=\"$script\"}[$__range])) / clamp_min(sum(increase(actias_requests_total{project=\"$project\",script=\"$script\"}[$__range])), 1)"
         }
       ]
     },
@@ -168,7 +182,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(actias_request_duration_ms_total{script=\"$script\"}[$__range])) / clamp_min(sum(increase(actias_requests_total{script=\"$script\"}[$__range])), 1)"
+          "expr": "sum(increase(actias_request_duration_ms_total{project=\"$project\",script=\"$script\"}[$__range])) / clamp_min(sum(increase(actias_requests_total{project=\"$project\",script=\"$script\"}[$__range])), 1)"
         }
       ]
     },
@@ -249,7 +263,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (node) (rate(actias_requests_total{script=\"$script\"}[$__rate_interval]))",
+          "expr": "sum by (node) (rate(actias_requests_total{project=\"$project\",script=\"$script\"}[$__rate_interval]))",
           "legendFormat": "{{node}}"
         }
       ]
@@ -301,7 +315,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(actias_request_errors_total{script=\"$script\"}[$__rate_interval]))",
+          "expr": "sum(rate(actias_request_errors_total{project=\"$project\",script=\"$script\"}[$__rate_interval]))",
           "legendFormat": "errors"
         }
       ]
@@ -353,7 +367,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(actias_request_duration_ms_total{script=\"$script\"}[$__rate_interval])) / clamp_min(sum(rate(actias_requests_total{script=\"$script\"}[$__rate_interval])), 0.001)",
+          "expr": "sum(rate(actias_request_duration_ms_total{project=\"$project\",script=\"$script\"}[$__rate_interval])) / clamp_min(sum(rate(actias_requests_total{project=\"$project\",script=\"$script\"}[$__rate_interval])), 0.001)",
           "legendFormat": "avg ms"
         }
       ]
