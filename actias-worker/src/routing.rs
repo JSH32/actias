@@ -500,11 +500,20 @@ impl ObjectRouting {
                 let ship_id = object_id.clone();
                 let ship_file = file.clone();
                 let epoch = lease.epoch;
+                let ship_state = Arc::new(tokio::sync::Mutex::new(
+                    crate::object_store::ShipState::default(),
+                ));
+                let whole_max = routing.state.object_ship_whole_max_bytes;
                 let ship_fn: crate::shipper::ShipFn = Arc::new(move || {
                     let store = ship_store.clone();
                     let object_id = ship_id.clone();
                     let file = ship_file.clone();
-                    Box::pin(async move { store.ship(&object_id, epoch, &file).await })
+                    let state = ship_state.clone();
+                    Box::pin(async move {
+                        store
+                            .ship(&object_id, epoch, &file, &state, whole_max)
+                            .await
+                    })
                 });
                 let ship = crate::shipper::Shipper::new(object_id.clone(), ship_fn);
                 routing
