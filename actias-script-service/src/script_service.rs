@@ -147,11 +147,17 @@ impl ScriptService {
         class: &str,
         name: &str,
     ) -> Result<Option<Uuid>, tonic::Status> {
+        // A declaration may carry an annotation after '=' (a database's
+        // migrations directory, a publish policy); ownership reads the
+        // name alone, so the comparison strips the annotation.
         let sql = format!(
             "SELECT s.id FROM scripts s
-             JOIN revisions r ON r.id = s.current_revision
+             JOIN revisions r ON r.id = s.current_revision,
+             LATERAL jsonb_array_elements_text(
+                 r.script_config->'capabilities'->'{}'
+             ) AS held(name)
              WHERE s.project_id = $1
-               AND jsonb_exists(r.script_config->'capabilities'->'{}', $2)
+               AND split_part(held.name, '=', 1) = $2
              ORDER BY s.id LIMIT 1",
             member.member()
         );
@@ -1279,7 +1285,13 @@ mod tests {
         publish_contract(
             &harness.database,
             consumer,
-            contract(&[("events", &["queue:jobs"]), ("objects", &["Room"])]),
+            contract(&[
+                ("events", &["queue:jobs"]),
+                ("objects", &["Room"]),
+                // The annotation after '=' names the migrations
+                // directory; ownership still resolves by name alone.
+                ("databases", &["main=migrations/main"]),
+            ]),
         )
         .await;
 
@@ -1300,6 +1312,10 @@ mod tests {
 
         // A user class resolves its declarer.
         let owner = resolve("Room", "lobby").await.expect("resolves");
+        assert_eq!(owner.get_ref().script_id, consumer.to_string());
+
+        // An annotated declaration resolves by its bare name.
+        let owner = resolve("__database", "main").await.expect("resolves");
         assert_eq!(owner.get_ref().script_id, consumer.to_string());
 
         // With no consumer anywhere, a producer's declaration suffices.
