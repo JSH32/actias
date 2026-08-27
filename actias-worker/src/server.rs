@@ -509,25 +509,46 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
 
     let deadline = state.request_timeout;
     let redis = state.redis.clone();
+    let caches = state.caches.clone();
+    let script_client = state.clients.script.clone();
     let result = tokio::time::timeout(deadline, run_script(state, request)).await;
 
-    // A live session's audience is its developer: the failure joins the
-    // session's log stream, where the workbench and `actias dev` are
-    // watching, while the http response stays sanitized.
-    let session_error = |text: String| {
-        if let (Some(session), Some(redis)) = (&live_session, redis.clone()) {
-            LogPublisher::new(redis, live_log_channel(session)).publish("error", text);
+    // A failure's audience is whoever is watching: a live session's
+    // error joins the session stream, where the workbench and
+    // `actias dev` follow; a published request's joins the script's
+    // tail, where the dashboard's Logs and `actias tail` follow. Two
+    // audiences, two streams, never crossed. The http response stays
+    // sanitized either way.
+    let report_error = |text: String| {
+        let redis = redis.clone();
+        let caches = caches.clone();
+        let script_client = script_client.clone();
+        let identifier = label.clone();
+        let session = live_session.clone();
+        async move {
+            let Some(redis) = redis else { return };
+            match session {
+                Some(session) => {
+                    LogPublisher::new(redis, live_log_channel(&session)).publish("error", text);
+                }
+                None => {
+                    if let Ok(script) = resolve_script(&caches, &script_client, identifier).await {
+                        LogPublisher::new(redis, script_log_channel(&script.id))
+                            .publish("error", text);
+                    }
+                }
+            }
         }
     };
 
     let response = match result {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => {
-            session_error(format!("{error:#}"));
+            report_error(format!("{error:#}")).await;
             internal_error_response(&error)
         }
         Err(_elapsed) => {
-            session_error("Script did not respond in time.".to_owned());
+            report_error("Script did not respond in time.".to_owned()).await;
             text_response(
                 StatusCode::GATEWAY_TIMEOUT,
                 "Script did not respond in time.",
