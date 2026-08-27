@@ -2,14 +2,19 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import api, { showError } from '@/helpers/api';
-import { Button, Card, Field } from '@/ui';
+import { Button, Field } from '@/ui';
 import { toast } from '@/ui/toast';
+import { AuthShell, AuthSubmit, PasswordField } from '@/components/AuthShell';
 
 export default function Register() {
   const router = useRouter();
   const [registrationConfig, setRegistrationConfig] = React.useState<{
     inviteOnly: boolean;
   } | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [password, setPassword] = React.useState('');
+  const [confirm, setConfirm] = React.useState('');
+  const mismatch = confirm.length > 0 && password !== confirm;
 
   React.useEffect(() => {
     api.users.registrationConfig().then(setRegistrationConfig).catch(showError);
@@ -19,14 +24,6 @@ export default function Register() {
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
-      if (data.get('password') !== data.get('confirmPassword')) {
-        toast({
-          title: 'Passwords do not match',
-          message: 'Retype them and try again.',
-          color: 'red',
-        });
-        return;
-      }
 
       const body: Record<string, string> = {
         username: String(data.get('username') ?? ''),
@@ -37,6 +34,7 @@ export default function Register() {
         body.registrationCode = String(data.get('registrationCode') ?? '');
       }
 
+      setBusy(true);
       api.users
         .createUser(body as Parameters<typeof api.users.createUser>[0])
         .then(() => {
@@ -46,38 +44,70 @@ export default function Register() {
           });
           router.push('/login');
         })
-        .catch(showError);
+        .catch((error) => {
+          setBusy(false);
+          showError(error);
+        });
     },
     [router, registrationConfig],
   );
 
   return (
-    <div style={{ maxWidth: 380, margin: '48px auto' }}>
-      <h1 style={{ fontSize: 18, fontWeight: 700 }}>Register</h1>
-      <p style={{ color: 'var(--ink-2)', margin: '4px 0 12px' }}>
-        Already have an account? <Link href="/login">Log in</Link>
-      </p>
-      <Card style={{ padding: 20 }}>
-        <form onSubmit={register}>
-          <Field label="Username" name="username" required />
-          <Field label="Email" name="email" type="email" required />
-          <Field label="Password" name="password" type="password" required />
+    <AuthShell
+      title="Create your account"
+      aside={
+        <>
+          Already have one? <Link href="/login">Log in</Link>.
+        </>
+      }
+    >
+      <form onSubmit={register}>
+        <Field
+          label="Username"
+          name="username"
+          autoComplete="username"
+          required
+          autoFocus
+        />
+        <Field
+          label="Email"
+          name="email"
+          type="email"
+          autoComplete="email"
+          required
+        />
+        <PasswordField
+          label="Password"
+          name="password"
+          autoComplete="new-password"
+          onValue={setPassword}
+        />
+        <PasswordField
+          label="Confirm password"
+          name="confirmPassword"
+          autoComplete="new-password"
+          error={mismatch ? 'Passwords do not match.' : undefined}
+          onValue={setConfirm}
+        />
+        {registrationConfig?.inviteOnly && (
           <Field
-            label="Confirm password"
-            name="confirmPassword"
-            type="password"
+            label="Registration code"
+            name="registrationCode"
+            hint="It came with your invite."
+            defaultValue={
+              typeof router.query.code === 'string'
+                ? router.query.code
+                : undefined
+            }
             required
           />
-          {registrationConfig?.inviteOnly && (
-            <Field label="Registration code" name="registrationCode" required />
-          )}
-          <div style={{ marginTop: 18 }}>
-            <Button type="submit" variant="primary">
-              Register
-            </Button>
-          </div>
-        </form>
-      </Card>
-    </div>
+        )}
+        <AuthSubmit>
+          <Button type="submit" variant="primary" disabled={busy || mismatch}>
+            {busy ? 'Creating account\u2026' : 'Create account'}
+          </Button>
+        </AuthSubmit>
+      </form>
+    </AuthShell>
   );
 }

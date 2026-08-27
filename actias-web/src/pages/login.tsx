@@ -3,13 +3,15 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import api, { showError } from '@/helpers/api';
 import { useSignIn, useUser } from '@/helpers/auth';
-import { Button, Card, Field } from '@/ui';
+import { Button, Field } from '@/ui';
 import { toast } from '@/ui/toast';
+import { AuthShell, AuthSubmit, PasswordField } from '@/components/AuthShell';
 
 export default function Login() {
   const router = useRouter();
   const { data: user } = useUser();
   const signIn = useSignIn();
+  const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
     if (user) router.push('/projects');
@@ -19,6 +21,7 @@ export default function Login() {
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
+      setBusy(true);
       api.auth
         .login({
           auth: String(data.get('auth') ?? ''),
@@ -26,7 +29,7 @@ export default function Login() {
         })
         .then((res) => {
           localStorage.setItem('token', res.token);
-          api.users.me().then((me) => {
+          return api.users.me().then((me) => {
             signIn(res.token, me);
             toast({
               title: 'Logged in!',
@@ -35,28 +38,42 @@ export default function Login() {
             router.push('/projects');
           });
         })
-        .catch(showError);
+        .catch((error) => {
+          setBusy(false);
+          showError(error);
+        });
     },
     [router, signIn],
   );
 
   return (
-    <div style={{ maxWidth: 380, margin: '48px auto' }}>
-      <h1 style={{ fontSize: 18, fontWeight: 700 }}>Log in</h1>
-      <p style={{ color: 'var(--ink-2)', margin: '4px 0 12px' }}>
-        No account yet? <Link href="/register">Register</Link>
-      </p>
-      <Card style={{ padding: 20 }}>
-        <form onSubmit={login}>
-          <Field label="Username or email" name="auth" required />
-          <Field label="Password" name="password" type="password" required />
-          <div style={{ marginTop: 18 }}>
-            <Button type="submit" variant="primary">
-              Log in
-            </Button>
-          </div>
-        </form>
-      </Card>
-    </div>
+    <AuthShell
+      title="Welcome back"
+      aside={
+        <>
+          No account yet? <Link href="/register">Create one</Link>.
+        </>
+      }
+    >
+      <form onSubmit={login}>
+        <Field
+          label="Username or email"
+          name="auth"
+          autoComplete="username"
+          required
+          autoFocus
+        />
+        <PasswordField
+          label="Password"
+          name="password"
+          autoComplete="current-password"
+        />
+        <AuthSubmit>
+          <Button type="submit" variant="primary" disabled={busy}>
+            {busy ? 'Logging in\u2026' : 'Log in'}
+          </Button>
+        </AuthSubmit>
+      </form>
+    </AuthShell>
   );
 }
