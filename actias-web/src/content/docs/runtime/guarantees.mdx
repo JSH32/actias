@@ -81,11 +81,11 @@ closes it rather than growing memory on its behalf.
 ## Failure behaviour
 
 A machine leaving gracefully (deploys, scale-downs) loses nothing:
-the drain flushes every object snapshot before the process exits.
-Objects move, alarms re-arm from storage, workflow runs resume from
-their journal, queue messages redeliver, and stream subscriptions
-survive their follower rehoming. A hard crash can lose an object's
-newest writes, back to its last completed snapshot ship.
+the drain flushes every object's unshipped state before the process
+exits. Objects move, alarms re-arm from storage, workflow runs
+resume from their journal, queue messages redeliver, and stream
+subscriptions survive their follower rehoming. A hard crash can lose
+an object's newest writes, back to its last completed ship.
 
 Connections do not survive a machine going away. Clients reconnect and
 re-follow; that path runs often enough in normal operation (deploys,

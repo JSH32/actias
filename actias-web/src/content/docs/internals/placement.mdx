@@ -20,7 +20,7 @@ flowchart TD
     res -- yes --> serve[Serve from the live task]
     res -- no --> acq[Claim the lease]
     acq --> got{Acquired?}
-    got -- yes --> restore[Restore last snapshot,<br/>spawn the task, serve]
+    got -- yes --> restore[Restore shipped state,<br/>spawn the task, serve]
     got -- "no, an incumbent holds it" --> fwd[Forward one hop<br/>to the holder]
 ```
 
@@ -39,16 +39,22 @@ flowchart TD
 ## Durability
 
 Writes mark the object dirty and one background flight per object
-ships the latest snapshot to blob storage, coalescing bursts; a
-graceful stop flushes every dirty object before the process leaves.
-The epoch fences these ships: a zombie ex-holder's upload loses to
-any newer epoch.
+ships to blob storage, coalescing bursts; a graceful stop flushes
+every dirty object before the process leaves. Small objects ship as
+a whole snapshot. Past a size threshold the flight ships only the
+write-ahead log frames committed since the last one, against a base
+laid down at a checkpoint, so the cost of a ship follows the delta,
+not the database; the log folds into a fresh base when it grows. The
+epoch fences these ships either way: a zombie ex-holder's upload
+loses to any newer epoch.
 
-A claim restores the last shipped snapshot whenever the store's copy
-is newer than the node's own file: a sidecar records the epoch of the
-node's last residency, so a node returning to an object it hosted
-long ago cannot serve stale state. A failed ship is logged and
-retried by the next write; local durability holds regardless.
+A claim restores the last shipped state whenever the store's copy is
+newer than the node's own file: the base plus its shipped segments
+replayed by SQLite itself, or the snapshot directly. A sidecar
+records the epoch of the node's last residency, so a node returning
+to an object it hosted long ago cannot serve stale state. A failed
+ship is logged and retried by the next write; local durability holds
+regardless.
 
 ## Reads from anywhere
 
@@ -63,10 +69,10 @@ flowchart LR
     b -- yes --> hop[One hop to the holder]
     b -- no --> c{Fresh replica on disk?}
     c -- yes --> rep[Replica file]
-    c -- no --> pull[Restore snapshot,<br/>then the replica file]
+    c -- no --> pull[Restore shipped state,<br/>then the replica file]
 ```
 
-A **replica** is the last shipped snapshot restored beside the node's
+A **replica** is the last shipped state restored beside the node's
 own data, reused until it ages past its TTL. Reads scale with the
 number of nodes; writes serialize at the one home.
 
