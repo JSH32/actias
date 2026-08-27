@@ -1,0 +1,119 @@
+name: Release
+
+# A pushed v* tag is the release act, cut locally with `just release`.
+# The gate is the same pipeline CI runs plus the wasm drift check; the
+# images only publish when it passes.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  gate:
+    name: CI gate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('actias-api/package-lock.json', 'actias-web/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Run CI pipeline
+        run: nix develop -c just ci
+
+      # The vendored Luau wasm must match a fresh build of luau-web.
+      - name: Wasm drift check
+        run: nix develop -c just wasm-check
+
+  images:
+    name: Publish ${{ matrix.image.name }}
+    runs-on: ubuntu-24.04
+    needs: gate
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: actias_script_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-script-service"
+          - name: actias_script_service_migration
+            context: ./actias-script-service
+            dockerfile: ./actias-script-service/Dockerfile.migration
+            build-args: ""
+          - name: actias_secret_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-secret-service"
+          - name: actias_secret_service_migration
+            context: ./actias-secret-service
+            dockerfile: ./actias-secret-service/Dockerfile.migration
+            build-args: ""
+          - name: actias_kv_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-kv"
+          - name: actias_worker_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-worker"
+          - name: actias_api
+            context: .
+            dockerfile: ./docker/Dockerfile.api
+            build-args: ""
+          - name: actias_api_migration
+            context: ./actias-api
+            dockerfile: ./actias-api/Dockerfile.migration
+            build-args: ""
+          - name: actias_web
+            context: .
+            dockerfile: ./actias-web/Dockerfile
+            build-args: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          build-args: ${{ matrix.image.build-args }}
+          push: true
+          tags: |
+            ghcr.io/jsh32/${{ matrix.image.name }}:${{ github.ref_name }}
+            ghcr.io/jsh32/${{ matrix.image.name }}:latest

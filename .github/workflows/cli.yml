@@ -1,9 +1,12 @@
 name: Build CLI
 
+# Folded into the release act: the cli cross-builds when a v* tag
+# pushes, beside the images, and on demand.
 on:
   push:
-    branches:
-      - "master"
+    tags:
+      - "v*"
+  workflow_dispatch:
 
 env:
   CRATE_NAME: actias-cli

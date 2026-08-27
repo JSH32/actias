@@ -29,6 +29,22 @@ build-api:
 build-web:
     cd actias-web && npm run build
 
+# Rebuild the workbench's Luau wasm from luau-web and vendor it:
+# artifact plus the sha in the README beside it. The dev shell carries
+# the emscripten toolchain; output is byte-stable under its pin.
+wasm:
+    cd luau-web && emcmake cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release > /dev/null && cmake --build build
+    cp luau-web/build/Actias.Luau.js actias-web/public/luau/Actias.Luau.js
+    sha=$(sha256sum actias-web/public/luau/Actias.Luau.js | cut -d' ' -f1) && \
+        sed -i "s/sha256: \`[0-9a-f]*\`/sha256: \`$sha\`/" actias-web/public/luau/README.md
+    @echo "vendored: $(du -h actias-web/public/luau/Actias.Luau.js | cut -f1)"
+
+# Fail when the vendored wasm drifted from a fresh build of luau-web.
+wasm-check:
+    cd luau-web && emcmake cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release > /dev/null && cmake --build build
+    test "$(sha256sum luau-web/build/Actias.Luau.js | cut -d' ' -f1)" = "$(sha256sum actias-web/public/luau/Actias.Luau.js | cut -d' ' -f1)" || \
+        (echo "Vendored Actias.Luau.js drifted from luau-web; run 'just wasm'." && exit 1)
+
 # Run all tests. The rust suites need docker for testcontainers.
 test: test-rust test-api
 
@@ -113,3 +129,15 @@ logs service="":
 
 # Everything CI gates on.
 ci: deps lint-rust test-rust build-rust lint-api typecheck-api test-api build-api lint-web typecheck-web build-web check-generated
+
+# Cut a release: one version everywhere (workspace, api, web), one
+# commit, one tag. Pushing the tag is the release act; the release
+# workflow gates on ci and publishes every image from it.
+release version:
+    python3 -c "import re; p='Cargo.toml'; s=open(p).read(); open(p,'w').write(re.sub(r'(\[workspace\.package\][^\[]*?version = )\"[^\"]+\"', r'\g<1>\"{{version}}\"', s, count=1, flags=re.S))"
+    python3 -c "import re; [open(p,'w').write(re.sub(r'\"version\": \"[^\"]+\"', '\"version\": \"{{version}}\"', open(p).read(), count=1)) for p in ['actias-api/package.json','actias-web/package.json']]"
+    cargo update --workspace --quiet
+    git add Cargo.toml Cargo.lock actias-api/package.json actias-web/package.json
+    git commit -m "chore(release): v{{version}}"
+    git tag "v{{version}}"
+    @echo "release v{{version}} committed and tagged; push with: git push && git push origin v{{version}}"
