@@ -7,6 +7,26 @@
   position: sticky;
   top: 0;
   max-height: 100vh;
+  /* The nav scrolls, but the scrollbar only exists while pointed at:
+   * a rail this narrow reads as chrome, not content. */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.sidebar:hover {
+  scrollbar-color: var(--line) transparent;
+}
+.sidebar::-webkit-scrollbar {
+  width: 8px;
+}
+.sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 99px;
+}
+.sidebar:hover::-webkit-scrollbar-thumb {
+  background: var(--line);
 }
 
 .group {
