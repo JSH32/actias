@@ -42,9 +42,11 @@ Each call that wrote ships a snapshot of the object's SQLite file to
 blob storage after the call commits. The epoch fences these ships: a
 zombie ex-holder's upload loses to any newer epoch.
 
-A node claiming an object it has never hosted restores the last
-shipped snapshot before the first call runs. A failed ship is logged
-and retried by the next write; local durability holds regardless.
+A claim restores the last shipped snapshot whenever the store's copy
+is newer than the node's own file: a sidecar records the epoch of the
+node's last residency, so a node returning to an object it hosted
+long ago cannot serve stale state. A failed ship is logged and
+retried by the next write; local durability holds regardless.
 
 ## Reads from anywhere
 

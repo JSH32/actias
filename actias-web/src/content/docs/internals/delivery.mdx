@@ -77,6 +77,12 @@ outcome maps to a cursor advance or a backoff (500 ms doubling to
 60 s, 8 attempts, then the edge is dropped). A failed batch call backs
 off every edge in it.
 
+A recorded node that no longer exists is not a failure. Node ids
+never return, so connection edges batched to one prune outright, and
+a durable edge's stale home clears: delivery falls back to routing
+the follower's identity, which finds wherever it rehomed. A follower
+never loses its subscription to its node dying.
+
 ## Large payloads
 
 Events ride inline in a batch up to 32 KB. Past that, the batch

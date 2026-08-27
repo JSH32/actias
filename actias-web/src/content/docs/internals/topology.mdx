@@ -17,7 +17,8 @@ promises in [guarantees](/docs/runtime/guarantees).
   <tbody>
     <tr><td>worker</td><td>SQLite per object, local caches</td><td>runs scripts, hosts objects, serves HTTP and the node-to-node data plane</td></tr>
     <tr><td>script service</td><td>Postgres, Redis, blob storage</td><td>scripts and revisions, the placement store, live dev sessions</td></tr>
-    <tr><td>kv service</td><td>ScyllaDB</td><td>typed key-value pairs by project and namespace</td></tr>
+    <tr><td>kv service</td><td>Postgres by default; ScyllaDB selectable</td><td>typed key-value pairs by project and namespace</td></tr>
+    <tr><td>secret service</td><td>Postgres</td><td>envelope-encrypted secrets; workers hold no key material</td></tr>
     <tr><td>api</td><td>Postgres</td><td>public REST gateway: auth, projects, access control</td></tr>
   </tbody>
 </table>
@@ -34,6 +35,7 @@ flowchart LR
     end
     w1 --> ss[script service]
     w1 --> kv[kv service]
+    w1 --> sec[secret service]
     api[api gateway] --> ss
     api --> kv
     dash([Dashboard / CLI]) --> api

@@ -82,7 +82,8 @@ closes it rather than growing memory on its behalf.
 
 A machine going away does not lose durable state. Objects move,
 alarms re-arm from storage, workflow runs resume from their journal,
-queue messages redeliver.
+queue messages redeliver, and stream subscriptions survive their
+follower rehoming.
 
 Connections do not survive a machine going away. Clients reconnect and
 re-follow; that path runs often enough in normal operation (deploys,
