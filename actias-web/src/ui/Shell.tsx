@@ -711,7 +711,17 @@ export function Shell({ children }: React.PropsWithChildren) {
                     <span className={classes.crumbCurrent}>{crumb}</span>
                   ) : (
                     <Link
-                      href={`/${crumbs.slice(0, index + 1).join('/')}`}
+                      // A crumb's natural href is its path prefix, but
+                      // the singular prefixes are not routes: /project
+                      // and /script list nothing, so those crumbs point
+                      // at the projects index instead of a 404.
+                      href={
+                        ['/project', '/script'].includes(
+                          `/${crumbs.slice(0, index + 1).join('/')}`,
+                        )
+                          ? '/projects'
+                          : `/${crumbs.slice(0, index + 1).join('/')}`
+                      }
                       className={classes.crumbLink}
                     >
                       {crumb}
