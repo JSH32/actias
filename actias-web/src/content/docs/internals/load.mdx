@@ -1,0 +1,62 @@
+---
+title: Where load goes
+lead: What each surface costs at scale, and which part of the cluster absorbs it.
+order: 4
+---
+
+## Per surface
+
+<table>
+  <thead>
+    <tr><th>Surface</th><th>Scales with</th><th>Serializes at</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>HTTP request</td><td>worker count, stateless</td><td>nothing</td></tr>
+    <tr><td>Object write</td><td>instance count</td><td>the instance's home task</td></tr>
+    <tr><td>Object read</td><td>worker count, via replicas</td><td>nothing</td></tr>
+    <tr><td>Publish</td><td>nodes holding followers</td><td>the publisher's pump</td></tr>
+    <tr><td>KV</td><td>ScyllaDB partitions</td><td>nothing</td></tr>
+    <tr><td>Queue message</td><td>consumer instance count</td><td>the consumer's home task</td></tr>
+  </tbody>
+</table>
+
+## The unit of serialization
+
+The object instance. One task runs its calls one at a time, which is
+what makes its transactions and its event log trivial; the price is
+that one instance is bounded by one core and one file.
+
+A hot instance is therefore a modelling problem, not a tuning
+problem. Split hot state across instances: a `Channel` per room
+rather than one router object, a counter per shard rather than one
+global counter.
+
+## What one node absorbs
+
+- Followers: delivery cost is per node, so co-located followers are
+  nearly free. See [event delivery](/docs/internals/delivery).
+- Reads: replicas answer read-only calls without touching the home.
+  See [placement](/docs/internals/placement).
+- Scripts: pointer and blob caches keep the steady state node-local.
+  See [the cluster](/docs/internals/topology).
+
+## What backpressure looks like
+
+The platform sheds load at edges, not in the middle:
+
+- A connection that stops draining is closed at 256 queued items,
+  rather than buffered without bound.
+- A durable edge that keeps failing backs off and is dropped after 8
+  attempts, rather than wedging the publisher's pump.
+- A queue message that keeps failing is dead-lettered, rather than
+  retried forever.
+
+Every threshold and budget is listed with its number in
+[guarantees and limits](/docs/runtime/guarantees).
+
+## Related
+
+- [Event delivery](/docs/internals/delivery): the fan-out mechanics.
+- [Object placement](/docs/internals/placement): homes, replicas, and
+  recovery.
+- [Guarantees and limits](/docs/runtime/guarantees): the numbers.

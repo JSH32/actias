@@ -13,7 +13,7 @@ order: 8
   <tbody>
     <tr><td>Object method call</td><td>exactly once, serialized per object</td><td>nothing</td></tr>
     <tr><td>Queue message</td><td>at-least-once</td><td>handler safe to run twice</td></tr>
-    <tr><td>Object stream edge</td><td>at-least-once, in order per publisher</td><td><code>receives</code> handler safe to run twice</td></tr>
+    <tr><td>Object stream edge</td><td>at-least-once, in order per publisher; a handler that committed never re-runs for the same event</td><td><code>receives</code> handler safe to run twice</td></tr>
     <tr><td>Connection edge</td><td>at-most-once</td><td>client re-reads state on reconnect</td></tr>
     <tr><td>Workflow step</td><td>recorded once, replayed after</td><td>keep run code deterministic</td></tr>
     <tr><td>Alarm</td><td>fires once per set, survives restarts</td><td>nothing</td></tr>
@@ -23,6 +23,11 @@ order: 8
 At-least-once means a repeat is possible after a machine failure at
 the wrong moment. Make repeated work harmless: check an id, use
 `INSERT OR IGNORE`, or update conditionally on current state.
+
+Stream edges narrow the window: the follower records the event in the
+same transaction as its handler's writes, so a redelivered event is
+skipped, not re-run. Keep the handler idempotent anyway; the promise
+covers commits, not a crash mid-handler.
 
 At-most-once means loss is possible. Only connection edges promise
 this, because a tab can vanish mid-frame. Anything that must survive
