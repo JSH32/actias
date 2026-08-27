@@ -335,7 +335,7 @@ function Overview({ project }: { project: ProjectDto }) {
               className={classes.lede}
               style={{ color: 'var(--luna)', margin: 0 }}
             >
-              All quiet: no dead letters, no failed runs, nothing orphaned.
+              Nothing needs attention.
             </p>
           )}
 
