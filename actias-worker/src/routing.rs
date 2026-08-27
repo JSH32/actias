@@ -273,10 +273,35 @@ impl ObjectRouting {
                     ));
                 }
 
-                // No local file means this node has never hosted the
-                // object (or lost its volume): the last shipped snapshot
-                // is the truth, and restoring it here is rehoming.
-                if !file.exists() {
+                // The store is the truth whenever anyone else held the
+                // object since this node last did. A missing file means
+                // never hosted (or a lost volume); an EXISTING file can
+                // still be stale: this node hosted the object once, it
+                // rehomed elsewhere and wrote, and now the lease is back.
+                // The sidecar records the epoch of this node's last
+                // residency; a store manifest with a newer epoch wins.
+                let resident_epoch = read_resident_epoch(&file);
+                let manifest_epoch = match routing.state.object_store.manifest(&object_id).await {
+                    Ok(manifest) => manifest.map(|m| m.epoch),
+                    Err(error) if file.exists() => {
+                        // Store unreachable but the file is here: serving
+                        // it keeps today's availability posture; the next
+                        // claim re-checks.
+                        actias_common::tracing::warn!(
+                            object_id,
+                            %error,
+                            "snapshot manifest unreadable; serving the local file"
+                        );
+                        None
+                    }
+                    Err(error) => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "The object's snapshot could not be checked: {error}"
+                        )));
+                    }
+                };
+                if manifest_epoch.is_some_and(|shipped| shipped > resident_epoch) || !file.exists()
+                {
                     match routing.state.object_store.restore(&object_id, &file).await {
                         Ok(true) => {
                             actias_common::tracing::info!(object_id, "object restored from store")
@@ -289,6 +314,7 @@ impl ObjectRouting {
                         }
                     }
                 }
+                write_resident_epoch(&file, lease.epoch);
 
                 // A workflow instance replays the revision it STARTED
                 // with, the one deliberate exception to always-current;
@@ -653,6 +679,23 @@ fn alarm_mirror(
     })
 }
 
+/// The epoch this node last held the object under, from the sidecar
+/// beside its file; 0 when unknown, which errs toward restoring.
+fn read_resident_epoch(file: &std::path::Path) -> u64 {
+    std::fs::read_to_string(file.with_extension("epoch"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Records the residency epoch beside the file. Best effort: a lost
+/// sidecar reads as 0 next time and only costs one extra restore.
+fn write_resident_epoch(file: &std::path::Path, epoch: u64) {
+    if let Err(error) = std::fs::write(file.with_extension("epoch"), epoch.to_string()) {
+        actias_common::tracing::warn!(%error, "resident epoch sidecar write failed");
+    }
+}
+
 /// The replica file for one object, restored from the last shipped
 /// snapshot and reused until it ages past the ttl. [`None`] when nothing
 /// was ever shipped. Serves the read bypass on non-holders and the stats
@@ -712,4 +755,25 @@ async fn read_bypass(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_resident_epoch, write_resident_epoch};
+
+    #[test]
+    fn the_sidecar_round_trips_and_absence_reads_as_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("abc123.db");
+
+        assert_eq!(read_resident_epoch(&file), 0);
+
+        write_resident_epoch(&file, 7);
+        assert_eq!(read_resident_epoch(&file), 7);
+
+        // A corrupt sidecar errs toward restoring, never toward serving
+        // a possibly stale file.
+        std::fs::write(file.with_extension("epoch"), "not a number").expect("write");
+        assert_eq!(read_resident_epoch(&file), 0);
+    }
 }

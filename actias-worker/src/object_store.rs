@@ -108,7 +108,7 @@ impl ObjectStore {
         Ok(true)
     }
 
-    async fn manifest(&self, object_id: &str) -> Result<Option<Manifest>, String> {
+    pub async fn manifest(&self, object_id: &str) -> Result<Option<Manifest>, String> {
         let result = self
             .client
             .get_object()
