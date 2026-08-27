@@ -6,7 +6,7 @@ license = "AGPL-3.0-only"
 
 [dependencies]
 actias-declarations = { workspace = true }
-actias-common = { workspace = true }
+actias-common = { workspace = true, features = ["otel"] }
 blake3 = { workspace = true }
 mlua = { version = "0.11", features = [
     "luau-jit",

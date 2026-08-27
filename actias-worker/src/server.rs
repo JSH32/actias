@@ -557,6 +557,15 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
         }
     };
 
+    // Only an identifier that actually resolved becomes a series: the
+    // pointer cache holds it by now if it did. Everything else (favicon
+    // probes, path spam) folds into one bucket, or unbounded label
+    // cardinality would let arbitrary urls mint prometheus series.
+    let label = if caches.pointers.contains_key(&label) {
+        label
+    } else {
+        "(unknown)".to_owned()
+    };
     metrics.record(&label, started.elapsed(), response.status().is_success());
     response
 }

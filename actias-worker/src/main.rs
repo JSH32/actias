@@ -64,26 +64,26 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         actias_worker_core::egress::EgressPolicy::new(denied_hosts, config.egress_allow_private),
     )?;
 
-    // Every platform client carries the trace-inject interceptor; it is
-    // a no-op until otel is configured (actias_common::otel).
-    let inject: actias_worker_core::GrpcInterceptor = actias_common::otel::trace_inject;
+    // Every platform client rides the traced channel: each call gets a
+    // client span and carries its context (a no-op until otel is
+    // configured, actias_common::otel).
     let script_channel =
         tonic::transport::Endpoint::from_shared(config.script_service_uri.clone())?
             .connect()
             .await?;
-    let script_client = ScriptServiceClient::with_interceptor(script_channel.clone(), inject);
+    let script_client =
+        ScriptServiceClient::new(actias_worker_core::plain_grpc(script_channel.clone()));
     let kv_channel = tonic::transport::Endpoint::from_shared(config.kv_service_uri)?
         .connect()
         .await?;
-    let kv_client = KvServiceClient::with_interceptor(kv_channel, inject);
+    let kv_client = KvServiceClient::new(actias_worker_core::plain_grpc(kv_channel));
 
     // The registry rides in the script-service binary, so it answers on the
     // same channel. Membership is not on the request path: the loop retries
     // forever and the worker serves regardless.
     let registry_client =
-        actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient::with_interceptor(
-            script_channel,
-            inject,
+        actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient::new(
+            actias_worker_core::plain_grpc(script_channel),
         );
     let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let node_identity = std::sync::Arc::new(std::sync::RwLock::new(None));
@@ -105,8 +105,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .connect()
                 .await?;
             Some(
-                actias_worker_core::proto::secret_service::secret_service_client::SecretServiceClient::with_interceptor(
-                    channel, inject,
+                actias_worker_core::proto::secret_service::secret_service_client::SecretServiceClient::new(
+                    actias_worker_core::plain_grpc(channel),
                 ),
             )
         }

@@ -46,29 +46,78 @@ where
     ))
 }
 
-/// Grpc client interceptor: stamps the current span's context into the
-/// outgoing metadata. A plain `fn` so client types stay nameable (see
-/// the worker-core `Grpc` alias). No-op until the propagator installs.
-// The Err size is tonic's Interceptor contract, not a choice here.
-#[allow(clippy::result_large_err)]
-pub fn trace_inject(mut request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
-    let context = tracing::Span::current().context();
-    opentelemetry::global::get_text_map_propagator(|propagator| {
-        propagator.inject_context(&context, &mut MetadataInjector(request.metadata_mut()));
-    });
-    Ok(request)
+/// Steady-state chatter that never becomes a span, client or server
+/// side: the metrics scrape, liveness beats, health probes and the
+/// alarm bookkeeping, each at its own cadence forever.
+const UNTRACED: [&str; 6] = [
+    "/_metrics",
+    "/node_registry.NodeRegistryService/Heartbeat",
+    "/node_registry.NodeRegistryService/DueAlarms",
+    "/node_registry.NodeRegistryService/SetAlarm",
+    "/node_registry.NodeRegistryService/ClearAlarm",
+    "/grpc.health.v1.Health/Check",
+];
+
+/// A grpc transport channel that wraps every call in a client-kind span
+/// and injects that span's context into the outgoing headers. The
+/// client span is what lets a trace backend pair the hop with the
+/// server's span, so service graphs draw caller to callee instead of
+/// attributing everything to an anonymous user.
+#[derive(Clone)]
+pub struct TracedChannel(tonic::transport::Channel);
+
+/// Wraps a transport channel; the platform grpc clients run over this.
+pub fn traced_channel(channel: tonic::transport::Channel) -> TracedChannel {
+    TracedChannel(channel)
 }
 
-struct MetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
+struct HeaderInjector<'a>(&'a mut http::HeaderMap);
 
-impl Injector for MetadataInjector<'_> {
+impl Injector for HeaderInjector<'_> {
     fn set(&mut self, key: &str, value: String) {
         if let (Ok(key), Ok(value)) = (
-            key.parse::<tonic::metadata::MetadataKey<tonic::metadata::Ascii>>(),
-            value.parse(),
+            key.parse::<http::HeaderName>(),
+            http::HeaderValue::from_str(&value),
         ) {
             self.0.insert(key, value);
         }
+    }
+}
+
+impl<B> tower::Service<http::Request<B>> for TracedChannel
+where
+    tonic::transport::Channel: tower::Service<http::Request<B>>,
+    <tonic::transport::Channel as tower::Service<http::Request<B>>>::Future: Send + 'static,
+{
+    type Response = <tonic::transport::Channel as tower::Service<http::Request<B>>>::Response;
+    type Error = <tonic::transport::Channel as tower::Service<http::Request<B>>>::Error;
+    type Future =
+        std::pin::Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        tower::Service::poll_ready(&mut self.0, cx)
+    }
+
+    fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
+        use tracing::Instrument;
+
+        if UNTRACED.contains(&request.uri().path()) {
+            return Box::pin(tower::Service::call(&mut self.0, request));
+        }
+
+        let span = tracing::info_span!(
+            "grpc",
+            otel.name = %request.uri().path(),
+            otel.kind = "client",
+        );
+        let context = span.context();
+        opentelemetry::global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(&context, &mut HeaderInjector(request.headers_mut()));
+        });
+        Box::pin(tower::Service::call(&mut self.0, request).instrument(span))
     }
 }
 
@@ -121,16 +170,6 @@ where
     fn call(&mut self, request: http::Request<B>) -> Self::Future {
         use tracing::Instrument;
 
-        // Steady-state chatter would otherwise mint traces forever, at
-        // its own cadence: the metrics scrape, liveness beats, health
-        // probes and the alarm sweep. Real registry work (claims, node
-        // lookups) rides a request's span and stays traced.
-        const UNTRACED: [&str; 4] = [
-            "/_metrics",
-            "/node_registry.NodeRegistryService/Heartbeat",
-            "/node_registry.NodeRegistryService/DueAlarms",
-            "/grpc.health.v1.Health/Check",
-        ];
         if UNTRACED.contains(&request.uri().path()) {
             return Box::pin(self.0.call(request));
         }

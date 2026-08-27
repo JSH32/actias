@@ -116,7 +116,17 @@ pub async fn run(state: AppState, every: Duration) {
             if state.objects.is_resident(&row.own_key).await {
                 continue;
             }
-            match wake(&state, &row.own_key).await {
+            // The wake roots its own trace, named for why it ran, so the
+            // claims and dispatches it triggers read as this node's work
+            // on the service graph instead of unparented chatter.
+            let span = actias_common::tracing::info_span!(
+                "sweep wake",
+                otel.name = %format!("sweep wake {}", row.own_key),
+                otel.kind = "internal",
+            );
+            match actias_common::tracing::Instrument::instrument(wake(&state, &row.own_key), span)
+                .await
+            {
                 Ok(()) => debug!(own_key = row.own_key, "cold object woken for its due alarm"),
                 // A live incumbent means the alarm is that node's
                 // business (or the clear is still in flight): quiet skip,

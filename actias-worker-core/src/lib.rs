@@ -15,26 +15,15 @@ pub mod runtime;
 pub mod storage;
 pub mod streams;
 
-/// The interceptor shape platform grpc clients carry: a plain `fn`, so
-/// the composed client type stays nameable in signatures. The behavior
-/// (trace-context injection) lives in actias-common; this crate only
-/// names the shape.
-pub type GrpcInterceptor = fn(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status>;
-
 /// The channel every platform grpc client runs over: a transport
-/// channel behind the nameable interceptor.
-pub type Grpc =
-    tonic::service::interceptor::InterceptedService<tonic::transport::Channel, GrpcInterceptor>;
+/// channel that spans and propagates each call (a no-op until otel is
+/// configured, see actias_common::otel).
+pub type Grpc = actias_common::otel::TracedChannel;
 
-/// A channel behind a do-nothing interceptor, for tests and callers
-/// with no tracing wired.
+/// Wraps a transport channel for the platform clients; the name exists
+/// so call sites (tests included) read the same everywhere.
 pub fn plain_grpc(channel: tonic::transport::Channel) -> Grpc {
-    // The Err size is tonic's Interceptor contract.
-    #[allow(clippy::result_large_err)]
-    fn identity(request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
-        Ok(request)
-    }
-    tonic::service::interceptor::InterceptedService::new(channel, identity as GrpcInterceptor)
+    actias_common::otel::traced_channel(channel)
 }
 
 pub mod proto {
