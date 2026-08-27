@@ -1,6 +1,9 @@
 import * as React from 'react';
+import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { Button } from '@/ui';
+import { Mark } from '@/ui/Mark';
+import { Icon } from '@/ui/icons';
 import { HeroBackdrop } from '@/components/home/HeroBackdrop';
 import { Reveal } from '@/components/home/Reveal';
 import classes from './index.module.css';
@@ -67,10 +70,82 @@ const principles = [
   },
 ];
 
-export default function Landing() {
+/** The administration-plane front door self-hosted instances choose
+ * with MINIMAL_HOME=true: what this is, where the code lives, log in.
+ * No marketing, no sections, no scroll. */
+function MinimalLanding() {
+  return (
+    <div className={classes.minimal}>
+      <HeroBackdrop />
+      <div className={classes.minimalInner}>
+        <div className={`${classes.minimalLockup} ${classes.rise}`}>
+          <span className={classes.minimalMark}>
+            <Mark size={72} />
+          </span>
+          <span className={classes.minimalWords}>
+            <span className={classes.minimalWordmark}>ACTIAS</span>
+            <span className={classes.minimalTagline}>
+              A serverless platform for Luau scripts.
+            </span>
+          </span>
+        </div>
+        <div className={`${classes.minimalActions} ${classes.rise} ${classes.rise3}`}>
+          <Link href="/login">
+            <Button variant="primary">
+              <span className={classes.minimalButton}>
+                <Icon name="login" size={15} />
+                Log in
+              </span>
+            </Button>
+          </Link>
+          <Link href="/docs" className={classes.minimalQuiet}>
+            <Icon name="book" size={15} />
+            Docs
+          </Link>
+          <a
+            href="https://github.com/JSH32/actias"
+            target="_blank"
+            rel="noreferrer"
+            className={classes.minimalQuiet}
+          >
+            <Icon name="github" size={15} />
+            Source
+          </a>
+        </div>
+      </div>
+      <div className={classes.minimalStrip}>
+        <span className={classes.minimalStatus}>
+          <span className={classes.minimalDot} />
+          instance
+          <a
+            className={classes.minimalWhat}
+            href="https://github.com/JSH32/actias"
+            target="_blank"
+            rel="noreferrer"
+            title="Actias is open source."
+          >
+            ?
+          </a>
+        </span>
+        <span className={classes.minimalLicense}>AGPL-3.0</span>
+      </div>
+    </div>
+  );
+}
+
+export const getServerSideProps: GetServerSideProps<{
+  minimal: boolean;
+}> = async () => ({
+  // Read per request, so the toggle is a restart, never a rebuild.
+  props: { minimal: process.env.MINIMAL_HOME === 'true' },
+});
+
+export default function Landing({ minimal }: { minimal: boolean }) {
   // Five taps on the headline and the truth comes out.
   const [taps, setTaps] = React.useState(0);
   const webScale = taps >= 5;
+
+  if (minimal) return <MinimalLanding />;
 
   return (
     <div className={classes.page}>

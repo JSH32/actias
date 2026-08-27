@@ -291,6 +291,16 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4318}
       - OTEL_SERVICE_NAME=actias_api
       - INVITE_ONLY=${INVITE_ONLY:-false}
+      # First-run admin for self-hosted instances; all three or nothing.
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      # Outbound mail for invites; unset means links are copied instead.
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-}
       - SCRIPT_SERVICE_URL=script_service:3000
       - KV_SERVICE_URL=kv_service:3000
       - JWT_KEY=${JWT_KEY:-secret}
@@ -318,6 +328,9 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - API_URL=${API_URL:-http://localhost:3001}
+      # Swaps the marketing landing for a plain administration-plane
+      # front door on self-hosted instances.
+      - MINIMAL_HOME=${MINIMAL_HOME:-false}
       - WORKER_BASE=${WORKER_URL:-http://localhost:3002}/_IDENTIFIER_
       - WORKER_REVISION_BASE=${WORKER_URL:-http://localhost:3002}/_rev/_IDENTIFIER_/_REVISION_
 

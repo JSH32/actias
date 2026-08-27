@@ -12,6 +12,9 @@ const config: any = {
   workerRevisionBase:
     process.env.WORKER_REVISION_BASE ||
     'http://localhost:3002/_rev/_IDENTIFIER_/_REVISION_',
+  // Self-hosted instances set MINIMAL_HOME=true to swap the marketing
+  // landing for a plain administration-plane front door.
+  minimalHome: process.env.MINIMAL_HOME === 'true',
 };
 
 // Public runtime configuration, from either side. The browser reads the

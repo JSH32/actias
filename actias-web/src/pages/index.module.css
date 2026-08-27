@@ -363,3 +363,197 @@
     transform: none;
   }
 }
+
+/* The administration-plane front door: one lockup, one action, the
+ * status as chrome on a bottom strip. Minimal is a composition. */
+.minimal {
+  position: relative;
+  overflow: hidden;
+  min-height: calc(100dvh - 52px);
+  display: grid;
+  place-items: center;
+  padding: 40px 20px 84px;
+}
+
+.minimalInner {
+  position: relative;
+  width: min(640px, 100%);
+}
+
+/* The lockup: the mark spans the wordmark and the tagline, so the
+ * three read as one drawn unit instead of stacked parts. */
+.minimalLockup {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+}
+
+.minimalMark {
+  display: inline-flex;
+  filter: drop-shadow(0 0 24px rgba(163, 230, 180, 0.28));
+}
+
+.minimalMark svg path {
+  transform-origin: 12px 12px;
+  transform-box: view-box;
+  animation:
+    petalIn 0.7s cubic-bezier(0.2, 0.9, 0.3, 1) backwards,
+    breathe 7s ease-in-out 1.4s infinite;
+}
+
+.minimalMark svg path:nth-child(1) {
+  animation-delay: 0.05s, 1.4s;
+}
+
+.minimalMark svg path:nth-child(2) {
+  animation-delay: 0.14s, 2.1s;
+}
+
+.minimalMark svg path:nth-child(3) {
+  animation-delay: 0.23s, 2.8s;
+}
+
+.minimalMark svg path:nth-child(4) {
+  animation-delay: 0.32s, 3.5s;
+}
+
+@keyframes petalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.55) rotate(-10deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: none;
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.035);
+    opacity: 0.88;
+  }
+}
+
+.minimalWords {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.minimalWordmark {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  color: var(--ink-1);
+}
+
+.minimalTagline {
+  font-size: 15.5px;
+  color: var(--ink-2);
+}
+
+/* One action; the references stay quiet beside it. */
+.minimalActions {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  margin-top: 38px;
+  padding-left: 98px;
+}
+
+.minimalActions button {
+  height: 40px;
+  padding: 0 22px;
+  font-size: 13.5px;
+}
+
+.minimalButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.minimalQuiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.minimalQuiet:hover {
+  color: var(--luna);
+}
+
+/* The status strip: instance facts live in the chrome, not the copy. */
+.minimalStrip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  animation: rise 0.7s ease-out 0.5s backwards;
+}
+
+.minimalStatus {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+.minimalDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--luna);
+  box-shadow: 0 0 8px rgba(163, 230, 180, 0.5);
+}
+
+.minimalWhat {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 9px;
+  color: var(--ink-3);
+  text-decoration: none;
+}
+
+.minimalWhat:hover {
+  color: var(--luna);
+  border-color: var(--luna-edge);
+}
+
+.minimalLicense {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .minimalMark svg path {
+    animation: none;
+  }
+}

@@ -16,4 +16,19 @@ export default () => ({
     internalToken: process.env.INTERNAL_TOKEN || 'dev-internal-token',
   },
   inviteOnly: process.env.INVITE_ONLY === 'true',
+  // First-run admin for self-hosted instances; all three or nothing.
+  bootstrapAdmin: {
+    username: process.env.ADMIN_USERNAME,
+    email: process.env.ADMIN_EMAIL,
+    password: process.env.ADMIN_PASSWORD,
+  },
+  // Outbound mail, optional: SMTP_HOST unset means invites are links
+  // the admin copies instead of messages the instance sends.
+  smtp: {
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+    from: process.env.SMTP_FROM,
+  },
 });
