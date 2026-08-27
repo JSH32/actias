@@ -30,6 +30,49 @@ pub struct ScriptConfig {
     pub includes: Vec<String>,
     /// Patterns to ignore. This will be cross referenced with `includes`.
     pub ignore: Vec<String>,
+    /// Optional shell command run in the project directory before
+    /// bundling on publish: the seam for a frontend build (vite,
+    /// esbuild, anything) without the cli learning any tool. Whatever
+    /// it writes ships only if `includes` selects it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+}
+
+impl ScriptConfig {
+    /// Runs the declared build command, if any, inheriting stdio so
+    /// its output lands in the publisher's terminal; the bundle is
+    /// cut only from what it leaves behind.
+    pub fn run_build(&self) -> Result<(), String> {
+        let Some(command) = &self.build else {
+            return Ok(());
+        };
+        let directory = self
+            .project_path
+            .as_ref()
+            .ok_or("the project path is unset")?;
+        println!("🔨 Running build: {}", command.purple());
+        #[cfg(windows)]
+        let mut shell = {
+            let mut shell = std::process::Command::new("cmd");
+            shell.arg("/C");
+            shell
+        };
+        #[cfg(not(windows))]
+        let mut shell = {
+            let mut shell = std::process::Command::new("sh");
+            shell.arg("-c");
+            shell
+        };
+        let status = shell
+            .arg(command)
+            .current_dir(directory)
+            .status()
+            .map_err(|e| format!("the build command could not start: {e}"))?;
+        if !status.success() {
+            return Err(format!("the build command exited with {status}"));
+        }
+        Ok(())
+    }
 }
 
 impl From<ScriptConfig> for ScriptConfigDto {

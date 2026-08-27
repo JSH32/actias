@@ -21,6 +21,11 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
 
     let mut script_config = ScriptConfig::from_path(&script_path).map_err(Error::Script)?;
 
+    // A declared build runs first, locally, before anything touches
+    // the network: its output is part of the tree the bundle is cut
+    // from.
+    script_config.run_build().map_err(Error::Script)?;
+
     // Get or create script
     let script = match &script_config.id {
         Some(v) => client
