@@ -47,7 +47,9 @@ export class AclService {
     project: Projects,
     isWs = false,
   ): Promise<BitSet<AccessFields>> {
-    if (project.owner === user) {
+    // An instance admin outranks membership everywhere, same grant as
+    // the owner; service tokens never ride this path.
+    if (user.admin || project.owner === user) {
       // The constructor argument is a flag count, not an initial value, so
       // building the owner's full grant goes through on().
       const full = new BitField<AccessFields>();
@@ -103,7 +105,7 @@ export class AclService {
    * Get ACL list for a single user.
    */
   async getAclList(user: Users, project: Projects) {
-    if (project.owner === user) {
+    if (user.admin || project.owner === user) {
       const bitfield = new BitField();
       bitfield.on(AccessFields.FULL);
 

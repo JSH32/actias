@@ -584,16 +584,33 @@ export function Shell({ children }: React.PropsWithChildren) {
             </Link>
           ))}
           {user?.admin && (
-            <Link
-              href="/admin"
-              className={
-                router.pathname === '/admin'
-                  ? classes.navLinkActive
-                  : classes.navLink
-              }
-            >
-              Admin
-            </Link>
+            <>
+              <div className={classes.navLabel}>Admin</div>
+              {(
+                [
+                  { href: '/admin', icon: 'shield', label: 'Invites' },
+                  { href: '/admin/users', icon: 'members', label: 'Users' },
+                  {
+                    href: '/admin/projects',
+                    icon: 'projects',
+                    label: 'Projects',
+                  },
+                ] as const
+              ).map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={
+                    router.pathname === item.href
+                      ? classes.navLinkActive
+                      : classes.navLink
+                  }
+                >
+                  <Icon name={item.icon} />
+                  <span>{item.label}</span>
+                </Link>
+              ))}
+            </>
           )}
         </nav>
         <div className={classes.user}>

@@ -611,3 +611,56 @@
   outline: none;
   border-color: var(--luna);
 }
+
+/* The brand hover: the wings flutter once, petal by petal, and settle
+ * the moment the pointer leaves. */
+.brand svg path {
+  transform-origin: 12px 12px;
+  transform-box: view-box;
+}
+
+.brand:hover svg path:nth-child(1) {
+  animation: flutterUpLeft 0.55s ease-out;
+}
+
+.brand:hover svg path:nth-child(2) {
+  animation: flutterUpRight 0.55s ease-out 0.07s;
+}
+
+.brand:hover svg path:nth-child(3) {
+  animation: flutterDownLeft 0.55s ease-out 0.14s;
+}
+
+.brand:hover svg path:nth-child(4) {
+  animation: flutterDownRight 0.55s ease-out 0.21s;
+}
+
+@keyframes flutterUpLeft {
+  40% {
+    transform: translate(-1.2px, -1.2px) rotate(-7deg);
+  }
+}
+
+@keyframes flutterUpRight {
+  40% {
+    transform: translate(1.2px, -1.2px) rotate(7deg);
+  }
+}
+
+@keyframes flutterDownLeft {
+  40% {
+    transform: translate(-1.2px, 1.2px) rotate(7deg);
+  }
+}
+
+@keyframes flutterDownRight {
+  40% {
+    transform: translate(1.2px, 1.2px) rotate(-7deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand:hover svg path {
+    animation: none;
+  }
+}
