@@ -71,11 +71,14 @@ dependencies = [
  "prost 0.13.5",
  "prost-build",
  "scylla",
+ "serial_test",
+ "sqlx 0.7.2",
  "testcontainers",
  "thiserror 1.0.69",
  "tokio",
  "tonic 0.13.0",
  "tonic-build",
+ "tonic-health",
  "uuid",
 ]
 
@@ -100,6 +103,7 @@ dependencies = [
  "tokio",
  "tonic 0.13.0",
  "tonic-build",
+ "tonic-health",
  "uuid",
 ]
 
@@ -118,6 +122,7 @@ dependencies = [
  "tokio",
  "tonic 0.13.0",
  "tonic-build",
+ "tonic-health",
  "zeroize",
 ]
 
@@ -142,6 +147,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic 0.13.0",
+ "tonic-health",
  "tower",
  "uuid",
 ]
@@ -151,6 +157,7 @@ name = "actias-worker-core"
 version = "0.1.0"
 dependencies = [
  "actias-common",
+ "actias-declarations",
  "argon2",
  "axum",
  "blake3",
@@ -5224,6 +5231,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "serial_test"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "699f4197115b8a7e7ff19c9a315a4bd6fffec26cc4626ef45ecaea389e081c6d"
+dependencies = [
+ "futures-executor",
+ "futures-util",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "serial_test_derive",
+]
+
+[[package]]
+name = "serial_test_derive"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94e153fc76e1c6a068703d6d29c508a0b15c061c4b7e43da59cc097bc342673c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6189,6 +6221,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -6299,6 +6332,18 @@ dependencies = [
  "prost-types 0.13.5",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tonic-health"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb87334d340313fefa513b6e60794d44a86d5f039b523229c99c323e4e19ca4b"
+dependencies = [
+ "prost 0.13.5",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.13.0",
 ]
 
 [[package]]

@@ -22,6 +22,9 @@ use std::{
 use mlua::Lua;
 use serde::{Deserialize, Serialize};
 
+mod class_spec;
+pub use class_spec::{ClassSpec, RESERVED_METHODS, TopicPolicy, callable_method};
+
 /// Longest a top-level evaluation may run; declarations are cheap, so
 /// anything hitting this is a runaway loop.
 const EXTRACTION_TIME_LIMIT: Duration = Duration::from_secs(1);
@@ -260,80 +263,24 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 .push(class.clone());
             let table_recorded = object_recorded.clone();
             lua.create_function(move |lua, body: mlua::Table| {
-                // The class table is data at declaration time: its
-                // `publishes` key is the topic contract, array entries
-                // gate-hooked, keyed entries carrying a built-in policy.
-                if let Ok(publishes) = body.get::<mlua::Table>("publishes") {
-                    let mut recorded = table_recorded.lock().expect("no other holder");
-                    let mut index = 1;
-                    while let Ok(entry) = publishes.get::<mlua::Value>(index) {
-                        if entry.is_nil() {
-                            break;
-                        }
-                        if let Some(topic) = entry.as_string().and_then(|s| s.to_str().ok()) {
-                            recorded.publishes.push(format!("{class}:{}", &*topic));
-                        }
-                        index += 1;
-                    }
-                    for pair in publishes.pairs::<mlua::Value, mlua::Value>() {
-                        let Ok((key, value)) = pair else { continue };
-                        let (Some(topic), Some(policy)) = (
-                            key.as_string()
-                                .and_then(|s| s.to_str().ok().map(|s| s.to_string())),
-                            value
-                                .as_string()
-                                .and_then(|s| s.to_str().ok().map(|s| s.to_string())),
-                        ) else {
-                            continue;
-                        };
-                        recorded.publishes.push(format!("{class}:{topic}={policy}"));
-                    }
+                // One reader for the class body: the same parse the
+                // worker's registry runs, so the stored contract and
+                // the enforcing runtime agree by construction.
+                let spec = class_spec::ClassSpec::parse(&class, &body)?;
+                let mut recorded = table_recorded.lock().expect("no other holder");
+                for declared in &spec.declared_publishes {
+                    recorded.publishes.push(format!("{class}:{declared}"));
                 }
-                if let Ok(dir) = body.get::<String>("migrations") {
-                    let mut recorded = table_recorded.lock().expect("no other holder");
+                if let Some(dir) = &spec.migrations {
                     recorded
                         .objects
                         .retain(|entry| entry.split('=').next().unwrap_or(entry) != class);
                     recorded.objects.push(format!("{class}={dir}"));
                 }
-                // The receive funnel died in the sixteenth revision;
-                // refusing the old spelling here makes it a check
-                // error, not a silently dead hook.
-                if let Ok(hooks) = body.get::<mlua::Table>("hooks")
-                    && hooks.contains_key("receive").unwrap_or(false)
-                {
-                    return Err(mlua::Error::RuntimeError(format!(
-                        "'{class}' declares hooks.receive, which no longer exists: \
-                         declare receives = {{ [\"Source:topic\"] = handler }} instead."
-                    )));
+                for stream in &spec.receives {
+                    recorded.receives.push(format!("{class}<-{stream}"));
                 }
-                // `receives` keys name the streams this class consumes,
-                // "Source:topic", one typed handler per stream.
-                if let Ok(receives) = body.get::<mlua::Table>("receives") {
-                    let mut recorded = table_recorded.lock().expect("no other holder");
-                    for pair in receives.pairs::<mlua::Value, mlua::Value>() {
-                        let Ok((key, value)) = pair else { continue };
-                        let Some(stream) = key
-                            .as_string()
-                            .and_then(|s| s.to_str().ok().map(|s| s.to_string()))
-                        else {
-                            return Err(mlua::Error::RuntimeError(format!(
-                                "'{class}': receives keys are \"Source:topic\" strings."
-                            )));
-                        };
-                        if stream.split(':').filter(|part| !part.is_empty()).count() != 2 {
-                            return Err(mlua::Error::RuntimeError(format!(
-                                "'{class}': receives key '{stream}' is not \"Source:topic\"."
-                            )));
-                        }
-                        if !value.is_function() {
-                            return Err(mlua::Error::RuntimeError(format!(
-                                "'{class}': receives['{stream}'] must be a handler function."
-                            )));
-                        }
-                        recorded.receives.push(format!("{class}<-{stream}"));
-                    }
-                }
+                drop(recorded);
                 stub(lua)
             })
         })?,
@@ -361,15 +308,18 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 lua.create_function(move |_, (this, body): (mlua::Table, mlua::Table)| {
                     if let Ok(dir) = body.get::<String>("migrations") {
                         let mut recorded = body_recorded.lock().expect("no other holder");
-                        recorded.databases.retain(|entry| {
-                            entry.split('=').next().unwrap_or(entry) != name
-                        });
+                        recorded
+                            .databases
+                            .retain(|entry| entry.split('=').next().unwrap_or(entry) != name);
                         recorded.databases.push(format!("{name}={dir}"));
                     }
                     Ok(this)
                 })?,
             )?;
-            meta.set("__index", lua.create_function(|lua, _: (mlua::Table, mlua::Value)| stub(lua))?)?;
+            meta.set(
+                "__index",
+                lua.create_function(|lua, _: (mlua::Table, mlua::Value)| stub(lua))?,
+            )?;
             handle.set_metatable(Some(meta))?;
             Ok(handle)
         })?,
@@ -668,7 +618,10 @@ mod tests {
             "main.lua",
         )
         .expect_err("the funnel spelling must refuse");
-        assert!(error.contains("hooks.receive"), "names the spelling: {error}");
+        assert!(
+            error.contains("hooks.receive"),
+            "names the spelling: {error}"
+        );
     }
 
     #[test]

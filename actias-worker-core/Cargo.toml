@@ -1,9 +1,10 @@
 [package]
 name = "actias-worker-core"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 
 [dependencies]
+actias-declarations = { workspace = true }
 actias-common = { workspace = true }
 blake3 = { workspace = true }
 mlua = { version = "0.11", features = [

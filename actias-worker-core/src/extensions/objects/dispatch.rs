@@ -76,16 +76,10 @@ pub type RouterFuture =
     std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>>;
 pub type ObjectRouter = Arc<dyn Fn(ObjectTarget) -> RouterFuture + Send + Sync>;
 
-/// Names only the platform may invoke on an object: the hooks (called
-/// as `__`-prefixed internal methods) and their public spellings, which
-/// handles refuse outright so a `__`-method arriving at `__dispatch` is
-/// provably platform-originated.
-pub const RESERVED_METHODS: [&str; 6] = ["init", "alarm", "receive", "receives", "follow", "hooks"];
-
-/// Whether a method name may travel through a handle.
-pub(super) fn callable_method(method: &str) -> bool {
-    !method.starts_with('_') && !RESERVED_METHODS.contains(&method)
-}
+/// The reserved-name gate lives with the shared class reader, so
+/// handles, dispatch and extraction refuse identically.
+pub use actias_declarations::RESERVED_METHODS;
+pub(super) use actias_declarations::callable_method;
 
 /// Resolves a platform hook on a class: the `hooks` table is the home;
 /// flat `init`/`alarm` remain the deprecated long form.
