@@ -34,6 +34,25 @@
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
+  /* The rail scrolls, but the scrollbar only exists while pointed at. */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.rail:hover {
+  scrollbar-color: var(--line) transparent;
+}
+.rail::-webkit-scrollbar {
+  width: 8px;
+}
+.rail::-webkit-scrollbar-track {
+  background: transparent;
+}
+.rail::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 99px;
+}
+.rail:hover::-webkit-scrollbar-thumb {
+  background: var(--line);
 }
 
 .railHead {
@@ -113,6 +132,77 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A collapsible group head in the rail: an object class, toggled
+ * rather than navigated. Styled as a group label, not an item, so the
+ * class/instance hierarchy reads at a glance. */
+.railTwirl {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 0 14px;
+  height: 26px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: 500 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-3);
+  text-align: left;
+}
+.railTwirl:hover {
+  color: var(--ink-1);
+}
+
+/* An instance under its class twirl: indented, chevron-free; the only
+ * chevrons in the tree belong to the collapsible class heads. */
+.railInstance {
+  composes: railItem;
+  padding-left: 27px;
+}
+.railInstanceActive {
+  composes: railInstance;
+  border-left-color: var(--luna);
+  background: var(--night-1);
+  font-weight: 500;
+  color: var(--ink-1);
+}
+
+/* The children of a selected source hang off a guide line, so the
+ * containment reads without a second chevron. */
+.railChildren {
+  margin-left: 21px;
+  border-left: 1px solid var(--line-soft);
+}
+.railChildrenDeep {
+  composes: railChildren;
+  margin-left: 33px;
+}
+.railChevron {
+  flex-shrink: 0;
+  color: var(--ink-3);
+  transition: transform 120ms ease;
+}
+.railChevronOpen {
+  composes: railChevron;
+  transform: rotate(90deg);
+}
+
+/* A child under its source: a table nested below the database or
+ * instance that owns it. */
+.railNested {
+  composes: railItem;
+  padding-left: 11px;
+  height: 26px;
+}
+.railNestedActive {
+  composes: railNested;
+  border-left-color: var(--luna);
+  background: var(--night-1);
+  color: var(--ink-1);
 }
 .railMeta {
   font: 400 10px var(--mono);

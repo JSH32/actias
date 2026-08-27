@@ -84,8 +84,60 @@ function PublicChrome({ children }: React.PropsWithChildren) {
  * this a class is per-user shaped, looked up by name, never browsed. */
 const INLINE_INSTANCE_LIMIT = 10;
 
+/** The rail tree's twirl arrow; open points down. */
+function RailChevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      className={open ? classes.railChevronOpen : classes.railChevron}
+      width="9"
+      height="9"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M9 6l6 6l-6 6" />
+    </svg>
+  );
+}
+
+/** The tables of the rail's selected source, nested under it. */
+function RailTables({
+  tables,
+  hrefFor,
+  activeTable,
+}: {
+  tables: TableInfoDto[];
+  hrefFor: (table: string) => string;
+  activeTable: string | null;
+}) {
+  return (
+    <>
+      {tables.map((table: TableInfoDto) => (
+        <Link
+          key={table.name}
+          href={hrefFor(table.name)}
+          className={
+            activeTable === table.name
+              ? classes.railNestedActive
+              : classes.railNested
+          }
+        >
+          <span className={classes.railName}>{table.name}</span>
+          <span className={classes.railMeta}>{table.rows}</span>
+        </Link>
+      ))}
+    </>
+  );
+}
+
 /**
- * One object class in the SOURCES rail. Instances always BROWSE: the
+ * One object class in the SOURCES rail: a collapsible group of
+ * instances. The class holding the selection opens itself; the rest
+ * stay folded until asked. Expanded instances always BROWSE: the
  * first page lists immediately whatever the class size, and on large
  * classes the filter input narrows the page rather than gating it, so
  * finding an instance never starts from a blank box.
@@ -95,56 +147,87 @@ function RailObjectClass({
   klass,
   count,
   railObj,
+  tables,
+  tableHrefFor,
+  activeTable,
 }: {
   projectId: string;
   klass: string;
   count: number;
   railObj: string | null;
+  tables: TableInfoDto[];
+  tableHrefFor: (table: string) => string;
+  activeTable: string | null;
 }) {
+  const holdsSelection = railObj?.startsWith(`${klass}/`) ?? false;
+  const [open, setOpen] = React.useState(holdsSelection);
+  React.useEffect(() => {
+    if (holdsSelection) setOpen(true);
+  }, [holdsSelection]);
   const [term, setTerm] = React.useState('');
   const small = count <= INLINE_INSTANCE_LIMIT;
   const { data } = useQuery({
     queryKey: ['object-instances', projectId, klass, term],
     queryFn: () =>
       api.objects.listObjects(projectId, klass, term, 0, INLINE_INSTANCE_LIMIT),
+    enabled: open,
   });
   const matches = data?.items ?? [];
   const beyond = (data?.total ?? 0) - matches.length;
 
   return (
     <div>
-      <div className={classes.railSectionHead}>
+      <button
+        className={classes.railTwirl}
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <RailChevron open={open} />
         <span className={classes.railName}>{klass}</span>
         <span className={classes.railMeta}>{count}</span>
-      </div>
-      {!small && (
-        <input
-          className={classes.railFind}
-          placeholder={`Narrow ${count} by name`}
-          value={term}
-          onChange={(event) => setTerm(event.target.value)}
-        />
-      )}
-      {matches.map((instance: ObjectInstanceDto) => (
-        <Link
-          key={`${instance.class}/${instance.name}`}
-          href={`/project/${projectId}/databases?obj=${encodeURIComponent(
-            `${instance.class}/${instance.name}`,
-          )}`}
-          className={
-            railObj === `${instance.class}/${instance.name}`
-              ? classes.railItemActive
-              : classes.railItem
-          }
-          title={`class ${instance.class}, runs ${instance.declaredBy}`}
-        >
-          <span className={classes.railName}>{instance.name}</span>
-        </Link>
-      ))}
-      {!small && beyond > 0 && (
-        <p className={classes.railNote}>
-          {beyond} more{term ? ' match; keep typing.' : '; type to narrow.'}
-        </p>
+      </button>
+      {open && (
+        <>
+          {!small && (
+            <input
+              className={classes.railFind}
+              placeholder={`Filter ${count} instances`}
+              value={term}
+              onChange={(event) => setTerm(event.target.value)}
+            />
+          )}
+          {matches.map((instance: ObjectInstanceDto) => {
+            const key = `${instance.class}/${instance.name}`;
+            const selected = railObj === key;
+            return (
+              <React.Fragment key={key}>
+                <Link
+                  href={`/project/${projectId}/databases?obj=${encodeURIComponent(
+                    key,
+                  )}`}
+                  className={
+                    selected ? classes.railInstanceActive : classes.railInstance
+                  }
+                  title={`class ${instance.class}, runs ${instance.declaredBy}`}
+                >
+                  <span className={classes.railName}>{instance.name}</span>
+                </Link>
+                {selected && tables.length > 0 && (
+                  <div className={classes.railChildrenDeep}>
+                    <RailTables
+                      tables={tables}
+                      hrefFor={tableHrefFor}
+                      activeTable={activeTable}
+                    />
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
+          {!small && beyond > 0 && (
+            <p className={classes.railNote}>+{beyond} more</p>
+          )}
+        </>
       )}
     </div>
   );
@@ -284,6 +367,12 @@ export function Shell({ children }: React.PropsWithChildren) {
   const railSourceParam = railObj
     ? `obj=${encodeURIComponent(railObj)}`
     : `db=${encodeURIComponent(railDb ?? '')}`;
+  const railTableHref = (table: string) =>
+    `/project/${projectId}/databases?${railSourceParam}&table=${encodeURIComponent(
+      table,
+    )}`;
+  const railActiveTable =
+    typeof router.query.table === 'string' ? router.query.table : null;
 
   // The editor is its own full-viewport page (design 09): no sidebar, no
   // topbar, the page owns the screen. Checked after every hook so client
@@ -553,24 +642,35 @@ export function Shell({ children }: React.PropsWithChildren) {
               <Icon name="databases" size={13} />
               SQL DATABASES
             </div>
-            {(navDatabases ?? []).map((database: ResourceInstanceDto) => (
-              <Link
-                key={database.name}
-                href={`/project/${projectId}/databases?db=${encodeURIComponent(
-                  database.name,
-                )}`}
-                className={
-                  database.name === railDb && !railObj
-                    ? classes.railItemActive
-                    : classes.railItem
-                }
-              >
-                <span className={classes.railName}>{database.name}</span>
-                {database.orphaned && (
-                  <span className={classes.railMeta}>orphan</span>
-                )}
-              </Link>
-            ))}
+            {(navDatabases ?? []).map((database: ResourceInstanceDto) => {
+              const selected = database.name === railDb && !railObj;
+              return (
+                <React.Fragment key={database.name}>
+                  <Link
+                    href={`/project/${projectId}/databases?db=${encodeURIComponent(
+                      database.name,
+                    )}`}
+                    className={
+                      selected ? classes.railItemActive : classes.railItem
+                    }
+                  >
+                    <span className={classes.railName}>{database.name}</span>
+                    {database.orphaned && (
+                      <span className={classes.railMeta}>orphan</span>
+                    )}
+                  </Link>
+                  {selected && (railOverview?.tables?.length ?? 0) > 0 && (
+                    <div className={classes.railChildren}>
+                      <RailTables
+                        tables={railOverview?.tables ?? []}
+                        hrefFor={railTableHref}
+                        activeTable={railActiveTable}
+                      />
+                    </div>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </div>
           {(objectCounts?.length ?? 0) > 0 && (
             <div className={classes.railSection}>
@@ -579,8 +679,8 @@ export function Shell({ children }: React.PropsWithChildren) {
                 OBJECT INSTANCES
               </div>
               <p className={classes.railNote}>
-                Each durable object owns a private SQLite file. Reading one
-                places you on its node.
+                Each durable object owns a private SQLite file, one per instance
+                of its class. Reading one places you on its node.
               </p>
               {(objectCounts ?? []).map((row: ClassCountDto) => (
                 <RailObjectClass
@@ -589,31 +689,10 @@ export function Shell({ children }: React.PropsWithChildren) {
                   klass={row.class}
                   count={row.count}
                   railObj={railObj}
+                  tables={railOverview?.tables ?? []}
+                  tableHrefFor={railTableHref}
+                  activeTable={railActiveTable}
                 />
-              ))}
-            </div>
-          )}
-          {(railOverview?.tables?.length ?? 0) > 0 && (
-            <div className={classes.railSection}>
-              <div className={classes.railSectionHead}>
-                TABLES ·{' '}
-                {railObj ? railObj.split('/').slice(1).join('/') : railDb}
-              </div>
-              {(railOverview?.tables ?? []).map((table: TableInfoDto) => (
-                <Link
-                  key={table.name}
-                  href={`/project/${projectId}/databases?${railSourceParam}&table=${encodeURIComponent(
-                    table.name,
-                  )}`}
-                  className={
-                    router.query.table === table.name
-                      ? classes.railItemActive
-                      : classes.railItem
-                  }
-                >
-                  <span className={classes.railName}>{table.name}</span>
-                  <span className={classes.railMeta}>{table.rows}</span>
-                </Link>
               ))}
             </div>
           )}
