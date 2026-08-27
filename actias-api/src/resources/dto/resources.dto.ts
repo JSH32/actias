@@ -170,8 +170,7 @@ export class FollowerEdgeDto {
   @ApiProperty({
     required: false,
     nullable: true,
-    description:
-      'Undelivered events behind the log head; durable edges only.',
+    description: 'Undelivered events behind the log head; durable edges only.',
   })
   lag: number | null;
 

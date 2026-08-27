@@ -46,10 +46,7 @@ fn create(database: &str, name: &str, directory: &str) -> Result<()> {
     println!("📝 {}", file.display().to_string().purple());
     println!(
         "   Applied once declared: {}",
-        format!(
-            "database \"{database}\" {{ migrations = \"migrations/{database}\" }}"
-        )
-        .dimmed()
+        format!("database \"{database}\" {{ migrations = \"migrations/{database}\" }}").dimmed()
     );
     Ok(())
 }
