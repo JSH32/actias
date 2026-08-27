@@ -1,6 +1,21 @@
 {
   "openapi": "3.0.0",
   "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "Service and database liveness.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "health"
+        ]
+      }
+    },
     "/api/script/{id}/revisions": {
       "get": {
         "operationId": "revisionList",
@@ -2513,6 +2528,54 @@
         ]
       }
     },
+    "/api/project/{project}/objects/{class}/{name}/followers": {
+      "get": {
+        "operationId": "objectFollowers",
+        "summary": "",
+        "description": "The edges other things hold on this object: who follows it, on\nwhich topic, with what filter, and how far behind the publisher's\nevent log each durable edge sits. Runtime state, never contract.",
+        "parameters": [
+          {
+            "name": "project",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "class",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FollowersDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "objects"
+        ]
+      }
+    },
     "/api/project/{project}/objects/{class}/{name}/query": {
       "post": {
         "operationId": "objectQuery",
@@ -3690,18 +3753,21 @@
           "count"
         ]
       },
+      "PairType": {
+        "type": "string",
+        "enum": [
+          "STRING",
+          "NUMBER",
+          "INTEGER",
+          "BOOLEAN",
+          "JSON"
+        ]
+      },
       "PairDto": {
         "type": "object",
         "properties": {
           "type": {
-            "type": "number",
-            "enum": [
-              0,
-              1,
-              2,
-              3,
-              4
-            ]
+            "$ref": "#/components/schemas/PairType"
           },
           "projectId": {
             "type": "string"
@@ -4147,6 +4213,78 @@
         "required": [
           "class",
           "count"
+        ]
+      },
+      "FollowerEdgeDto": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "'object' (durable) or 'connection'."
+          },
+          "follower": {
+            "type": "string",
+            "description": "The follower's identity, 'Class/name'."
+          },
+          "connection": {
+            "type": "string",
+            "nullable": true,
+            "description": "Connection edges only: the endpoint connection id."
+          },
+          "topic": {
+            "type": "string",
+            "description": "The topic this edge listens on."
+          },
+          "filter": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true,
+            "description": "Equality filter on event data fields, when set."
+          },
+          "cursor": {
+            "type": "number",
+            "description": "Last event sequence this edge passed."
+          },
+          "lag": {
+            "type": "number",
+            "nullable": true,
+            "description": "Undelivered events behind the log head; durable edges only."
+          },
+          "attempts": {
+            "type": "number",
+            "description": "Consecutive failed deliveries so far."
+          },
+          "nextAt": {
+            "type": "number",
+            "description": "When delivery retries next (unix ms); 0 when not due."
+          }
+        },
+        "required": [
+          "kind",
+          "follower",
+          "topic",
+          "cursor",
+          "attempts",
+          "nextAt"
+        ]
+      },
+      "FollowersDto": {
+        "type": "object",
+        "properties": {
+          "head": {
+            "type": "number",
+            "description": "Newest event sequence in the publisher's log."
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FollowerEdgeDto"
+            }
+          }
+        },
+        "required": [
+          "head",
+          "edges"
         ]
       },
       "WorkflowDefinitionDto": {

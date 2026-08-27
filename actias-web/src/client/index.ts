@@ -74,6 +74,7 @@ export { AclService } from './services/AclService';
 export { AdminService } from './services/AdminService';
 export { AuthService } from './services/AuthService';
 export { DatabasesService } from './services/DatabasesService';
+export { HealthService } from './services/HealthService';
 export { KvService } from './services/KvService';
 export { ObjectsService } from './services/ObjectsService';
 export { ProjectService } from './services/ProjectService';

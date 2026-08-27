@@ -9,6 +9,7 @@ import { AclService } from './services/AclService';
 import { AdminService } from './services/AdminService';
 import { AuthService } from './services/AuthService';
 import { DatabasesService } from './services/DatabasesService';
+import { HealthService } from './services/HealthService';
 import { KvService } from './services/KvService';
 import { ObjectsService } from './services/ObjectsService';
 import { ProjectService } from './services/ProjectService';
@@ -28,6 +29,7 @@ export class ActiasClient {
     public readonly admin: AdminService;
     public readonly auth: AuthService;
     public readonly databases: DatabasesService;
+    public readonly health: HealthService;
     public readonly kv: KvService;
     public readonly objects: ObjectsService;
     public readonly project: ProjectService;
@@ -58,6 +60,7 @@ export class ActiasClient {
         this.admin = new AdminService(this.request);
         this.auth = new AuthService(this.request);
         this.databases = new DatabasesService(this.request);
+        this.health = new HealthService(this.request);
         this.kv = new KvService(this.request);
         this.objects = new ObjectsService(this.request);
         this.project = new ProjectService(this.request);
