@@ -16,18 +16,32 @@ PROJECT=actias-smoke
 export OBJECT_SWEEP_SECS=3
 export NODE_TTL_SECS=10
 export OBJECT_REPLICA_TTL_SECS=2
-export OBJECT_REPLICA_TTL_SECS=2
-API=http://127.0.0.1:3001/api
-WORKER=http://127.0.0.1:3002
-WORKER2=http://127.0.0.1:3003
+# The smoke stack publishes on its own port range so it can run beside a
+# live dev stack; the compose file reads the same variables.
+PORT_BASE="${SMOKE_PORT_BASE:-13000}"
+export ACTIAS_WEB_PORT=$PORT_BASE
+export ACTIAS_API_PORT=$((PORT_BASE + 1))
+export ACTIAS_WORKER_PORT=$((PORT_BASE + 2))
+export ACTIAS_WORKER2_PORT=$((PORT_BASE + 3))
+export ACTIAS_WORKER_DATA_PORT=$((PORT_BASE + 102))
+export ACTIAS_WORKER2_DATA_PORT=$((PORT_BASE + 103))
+WEB=http://127.0.0.1:$ACTIAS_WEB_PORT
+API=http://127.0.0.1:$ACTIAS_API_PORT/api
+WORKER=http://127.0.0.1:$ACTIAS_WORKER_PORT
+WORKER2=http://127.0.0.1:$ACTIAS_WORKER2_PORT
 FAILED=1
 
 compose() { docker compose -p "$PROJECT" "$@"; }
 
 cleanup() {
     if [ "$FAILED" = 1 ]; then
-        echo "== last service logs"
-        compose logs --tail 25 actias_api worker_service kv_service script_service 2>/dev/null || true
+        # The full logs go to a file for post-mortems; the terminal gets
+        # only the lines that carry a verdict, because debug noise from
+        # h2 and the aws sdk buries errors in any bounded tail.
+        FULL_LOG="${SMOKE_LOG_FILE:-$(pwd)/smoke-logs.txt}"
+        compose logs --no-color > "$FULL_LOG" 2>/dev/null || true
+        echo "== error lines from all services (full logs: $FULL_LOG)"
+        grep -aiE " error |panicked|error handling request" "$FULL_LOG" | tail -40 || true
         [ -f "${DEV_LOG:-}" ] && { echo "== actias dev log"; cat "$DEV_LOG"; }
     fi
     [ -n "${DEV_PID:-}" ] && kill "$DEV_PID" 2>/dev/null || true
@@ -54,7 +68,7 @@ echo "== web pages render"
 # Server-side rendering runs the react tree, so a crash in the state layer
 # turns these into 500s.
 for page in / /login /projects /settings /download /script/shell /project/shell; do
-    curl -sf "http://127.0.0.1:3000$page" -o /dev/null \
+    curl -sf "$WEB$page" -o /dev/null \
         || { echo "web page $page did not render"; exit 1; }
 done
 
@@ -86,7 +100,7 @@ cargo build -p actias-cli --quiet
 DEVDIR=$(mktemp -d)
 export XDG_CONFIG_HOME="$DEVDIR/config"
 mkdir -p "$XDG_CONFIG_HOME/actias-cli" "$DEVDIR/published" "$DEVDIR/project"
-printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$TOKEN" \
+printf '{"apiUrl":"http://127.0.0.1:%s","token":"%s"}' "$ACTIAS_API_PORT" "$TOKEN" \
     > "$XDG_CONFIG_HOME/actias-cli/settings.json"
 
 cat > "$DEVDIR/published/script.json" <<EOF
@@ -98,8 +112,10 @@ local token = secret "smoke-token"
 
 -- A durable object: one pinned vm owns this state, every request routes
 -- its call through the same mailbox.
--- The sql product face: durable rows behind one declaration.
-local db = database "main"
+-- The sql product face: durable rows behind one declaration. The
+-- migrations body is what puts the ladder into the contract; without
+-- it the tables below never exist and every request fails.
+local db = database "main" { migrations = "migrations/main" }
 
 local Hits = object "Hits" {
     bump = function(state)
@@ -211,14 +227,18 @@ echo "revision declares kv: $DECLARED"
 
 echo "== requesting the script through the worker"
 BODY=""
+STATUS=000
 for _ in $(seq 1 30); do
-    if BODY=$(curl -sf "$WORKER/$IDENT/") && [ -n "$BODY" ]; then
+    STATUS=$(curl -s -o /tmp/smoke-body.$$ -w '%{http_code}' "$WORKER/$IDENT/") || STATUS=000
+    BODY=$(cat /tmp/smoke-body.$$ 2>/dev/null || true)
+    if [ "$STATUS" = 200 ] && [ -n "$BODY" ]; then
         break
     fi
     sleep 2
 done
+rm -f /tmp/smoke-body.$$
 
-echo "worker responded: $BODY"
+echo "worker responded ($STATUS): $BODY"
 echo "$BODY" | jq -e '.ok == true and .visited == true' >/dev/null \
     || { echo "response did not round-trip through kv"; exit 1; }
 echo "$BODY" | jq -e '.secret == "hunter2-from-secrets"' >/dev/null \
@@ -237,7 +257,7 @@ OBJ_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConf
 [ "$OBJ_DECLARED" = "Hits" ] \
     || { echo "the object class was not in the stored contract (got '$OBJ_DECLARED')"; exit 1; }
 DB_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.databases[0]')
-[ "$DB_DECLARED" = "main" ] \
+[ "$DB_DECLARED" = "main=migrations/main" ] \
     || { echo "the database was not in the stored contract (got '$DB_DECLARED')"; exit 1; }
 D1=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
 D2=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
@@ -475,7 +495,7 @@ OLD_REV=$(curl -sf "$API/script/$SCRIPT_ID" -H "$AUTH" | jq -r .currentRevisionI
 cat > "$DEVDIR/published/main.lua" <<'LUA'
 local ns = kv "smoke"
 local token = secret "smoke-token"
-local db = database "main"
+local db = database "main" { migrations = "migrations/main" }
 
 local Hits = object "Hits" {
     bump = function(state)
@@ -576,7 +596,7 @@ SVC_ID=$(echo "$TOKEN_JSON" | jq -r .id)
 # the machine token instead of the user session.
 MACHINE_CONFIG="$DEVDIR/machine-config"
 mkdir -p "$MACHINE_CONFIG/actias-cli"
-printf '{"apiUrl":"http://127.0.0.1:3001","token":"%s"}' "$SVC_TOKEN" \
+printf '{"apiUrl":"http://127.0.0.1:%s","token":"%s"}' "$ACTIAS_API_PORT" "$SVC_TOKEN" \
     > "$MACHINE_CONFIG/actias-cli/settings.json"
 
 XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias-cli" publish "$DEVDIR/published" \
@@ -692,7 +712,7 @@ DEV_PID=""
 echo "== websocket tail authenticates via query token (browser path)"
 # Browsers cannot set upgrade headers; the dashboard's live tail rides a
 # ?token= query instead. Prove the whole handshake: ready, tail, tailing.
-WS_URL="ws://127.0.0.1:3001/liveScript?token=$TOKEN" SID="$SCRIPT_ID" \
+WS_URL="ws://127.0.0.1:$ACTIAS_API_PORT/liveScript?token=$TOKEN" SID="$SCRIPT_ID" \
 NODE_PATH="$REPO/actias-api/node_modules" node -e '
 const WebSocket = require("ws");
 const ws = new WebSocket(process.env.WS_URL);
@@ -710,11 +730,12 @@ setTimeout(() => process.exit(1), 10000);
 echo "browser tail handshake completed"
 
 echo "== playground protocol round-trips (browser live session)"
-# The playground page speaks exactly this: start a session with a base64
-# bundle over the query-token socket, then the live url serves it.
-curl -sf "http://127.0.0.1:3000/script/shell/playground" -o /dev/null \
-    || { echo "the playground page did not render"; exit 1; }
-PLAY_SESSION=$(WS_URL="ws://127.0.0.1:3001/liveScript?token=$TOKEN" SID="$SCRIPT_ID" \
+# The workbench page speaks exactly this: start a session with a base64
+# bundle over the query-token socket, then the live url serves it. The
+# old standalone playground page folded into the workbench.
+curl -sf "$WEB/script/shell/workbench" -o /dev/null \
+    || { echo "the workbench page did not render"; exit 1; }
+PLAY_SESSION=$(WS_URL="ws://127.0.0.1:$ACTIAS_API_PORT/liveScript?token=$TOKEN" SID="$SCRIPT_ID" \
 NODE_PATH="$REPO/actias-api/node_modules" node -e '
 const WebSocket = require("ws");
 const ws = new WebSocket(process.env.WS_URL);
@@ -742,8 +763,11 @@ PLAY_BODY=$(curl -sf "$WORKER/_live/$IDENT/$PLAY_SESSION/")
 echo "playground session served: $PLAY_BODY"
 
 echo "== regenerating clients against the live api (drift coverage)"
-( cd actias-web && npm run generateClient >/dev/null 2>&1 )
-curl -sf "$API/docs/openapi.json" -o actias-cli/src/actias-api.json
+# Both artifacts regenerate against THIS stack's api, not whatever sits
+# on the default port; the spec pipes through jq because that is the
+# checked-in snapshot's canonical formatting.
+( cd actias-web && OPENAPI_URL="$API/docs/openapi.json" npm run generateClient >/dev/null 2>&1 )
+curl -sf "$API/docs/openapi.json" | jq . > actias-cli/src/actias-api.json
 
 if ! git diff --quiet -- actias-web/src/client actias-cli/src/actias-api.json; then
     echo "generated clients are out of date with the api:"

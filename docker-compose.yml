@@ -161,8 +161,8 @@ services:
     volumes:
       - objects_data:/data/objects
     ports:
-      - 3002:3000
-      - 3102:3100
+      - "${ACTIAS_WORKER_PORT:-3002}:3000"
+      - "${ACTIAS_WORKER_DATA_PORT:-3102}:3100"
 
   # A second node: same image, its own object volume. Two nodes is what
   # makes leases, forwarding and failover observable locally.
@@ -205,8 +205,8 @@ services:
     volumes:
       - objects_data_2:/data/objects
     ports:
-      - 3003:3000
-      - 3103:3100
+      - "${ACTIAS_WORKER2_PORT:-3003}:3000"
+      - "${ACTIAS_WORKER2_DATA_PORT:-3103}:3100"
 
   # The service image is its own migrator, so the schema can never drift from
   # the binary that applies it.
@@ -256,7 +256,7 @@ services:
     image: ghcr.io/jsh32/actias_api:latest
     restart: unless-stopped
     ports:
-      - 3001:3000
+      - "${ACTIAS_API_PORT:-3001}:3000"
     build:
       context: .
       dockerfile: ./docker/Dockerfile.api
@@ -290,7 +290,7 @@ services:
     image: ghcr.io/jsh32/actias_web:latest
     restart: unless-stopped
     ports:
-      - 3000:3000
+      - "${ACTIAS_WEB_PORT:-3000}:3000"
     build:
       context: .
       dockerfile: ./actias-web/Dockerfile
