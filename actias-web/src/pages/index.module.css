@@ -340,3 +340,26 @@
   }
 
 }
+
+/* The web scale confession, five headline taps deep. */
+.webScale {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  margin: -32px 0 44px;
+  max-width: 480px;
+  cursor: pointer;
+  animation: webScaleIn 400ms ease-out;
+}
+
+@keyframes webScaleIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

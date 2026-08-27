@@ -1,3 +1,4 @@
+import * as React from 'react';
 import Link from 'next/link';
 import { Button } from '@/ui';
 import { HeroBackdrop } from '@/components/home/HeroBackdrop';
@@ -67,13 +68,22 @@ const principles = [
 ];
 
 export default function Landing() {
+  // Five taps on the headline and the truth comes out.
+  const [taps, setTaps] = React.useState(0);
+  const webScale = taps >= 5;
+
   return (
     <div className={classes.page}>
       <HeroBackdrop />
 
       <section className={classes.hero}>
         <div className={`${classes.brandRow} ${classes.rise}`}>
-          <h1 className={classes.title}>Write a script. Get a backend.</h1>
+          <h1
+            className={classes.title}
+            onClick={() => setTaps((count) => count + 1)}
+          >
+            Write a script. Get a backend.
+          </h1>
         </div>
 
         <p className={`${classes.lead} ${classes.rise} ${classes.rise2}`}>
@@ -99,6 +109,13 @@ export default function Landing() {
             Surfaces change without notice.
           </span>
         </p>
+
+        {webScale && (
+          <p className={classes.webScale} onClick={() => setTaps(0)}>
+            Actias is web scale. Shards are the secret ingredient in the web
+            scale sauce. You just turn it on and it scales right up.
+          </p>
+        )}
 
         <div className={classes.sample}>
           <div className={classes.code}>
