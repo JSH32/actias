@@ -14,6 +14,7 @@ pub mod platform;
 pub mod runtime;
 pub mod storage;
 pub mod streams;
+pub mod wal;
 
 /// The channel every platform grpc client runs over: a transport
 /// channel that spans and propagates each call (a no-op until otel is
