@@ -122,6 +122,12 @@ const EVENT_RING: i64 = 300;
 /// Longest payload prefix a journal row or message listing carries.
 const PREVIEW_CHARS: usize = 120;
 
+/// Longest payload a delivered event retains in the journal, so the
+/// inspector can read what was delivered after the message row is
+/// gone. Generous for real messages, a cap for pathological ones: the
+/// ring holds EVENT_RING of these inside the queue's own file.
+const DELIVERED_PAYLOAD_CHARS: usize = 32 * 1024;
+
 fn preview(payload: &str) -> String {
     payload.chars().take(PREVIEW_CHARS).collect()
 }
@@ -326,7 +332,17 @@ async fn deliver(
                     record_event(
                         connection,
                         "delivered",
-                        &serde_json::json!({ "id": message.id, "attempt": attempt }),
+                        &serde_json::json!({
+                            "id": message.id,
+                            "attempt": attempt,
+                            "payload": message
+                                .payload
+                                .chars()
+                                .take(DELIVERED_PAYLOAD_CHARS)
+                                .collect::<String>(),
+                            "payload_truncated":
+                                message.payload.chars().count() > DELIVERED_PAYLOAD_CHARS,
+                        }),
                     )?;
                 }
                 Err(error) if attempt >= policy.max_attempts => {

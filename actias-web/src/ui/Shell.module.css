@@ -287,6 +287,9 @@
   height: 32px;
   padding: 0 14px;
   border-left: 2px solid transparent;
+  /* Balances the accent seat, so a folded icon centers on the same
+   * axis as the brand mark and the identity chips. */
+  border-right: 2px solid transparent;
   color: var(--ink-2);
   font-size: 13px;
   transition: height 160ms ease;
@@ -320,6 +323,7 @@
 .initials {
   width: 26px;
   height: 26px;
+  transition: width 160ms ease, height 160ms ease;
   flex-shrink: 0;
   border-radius: var(--r2);
   background: var(--viola-tint);
@@ -352,6 +356,7 @@
 .logout {
   width: 24px;
   height: 24px;
+  transition: width 160ms ease, height 160ms ease;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -493,6 +498,7 @@
 .switcherBadge {
   width: 20px;
   height: 20px;
+  transition: width 160ms ease, height 160ms ease;
   flex-shrink: 0;
   display: grid;
   place-items: center;
@@ -745,14 +751,30 @@
 .sidebarNarrow .userText {
   display: none;
 }
+/* The identity chips scale with the icons: project badge, initials
+ * and logout all sit as like-sized squares in the folded rail. */
+.sidebarNarrow .switcherBadge {
+  width: 30px;
+  height: 30px;
+  font-size: 12px;
+}
+.sidebarNarrow .initials {
+  width: 30px;
+  height: 30px;
+  font-size: 12px;
+}
 .sidebarNarrow .logout {
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   margin: 0;
   padding: 0;
   display: grid;
   place-items: center;
   border-radius: var(--r2);
+}
+.sidebarNarrow .logout svg {
+  width: 16px;
+  height: 16px;
 }
 .sidebarNarrow .collapseButton {
   justify-content: center;

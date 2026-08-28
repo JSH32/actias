@@ -58,6 +58,8 @@ interface JournalInfo {
   id: number;
   producer?: string;
   preview?: string;
+  /** What was delivered, retained by newer journals (capped worker-side). */
+  payload?: string;
   size?: number;
   enqueuedMs?: number;
   attempts: { label: string; at: number; error?: string }[];
@@ -111,6 +113,11 @@ function collectJournal(events: QueueEventDto[]): {
       const entry = current(id);
       entry.deliveredAt = event.at;
       entry.deliveredAttempt = Number(detail.attempt ?? 1);
+      // Newer journals retain what was delivered (capped worker-side);
+      // older rows lack it and fall back to the enqueue preview.
+      if (typeof detail.payload === 'string') {
+        entry.payload = detail.payload;
+      }
       entry.attempts.push({
         label: `attempt ${detail.attempt} delivered`,
         at: event.at,
@@ -256,6 +263,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
         state: 'delivered',
         attempts: info.deliveredAttempt ?? 1,
         preview: info.preview ?? '',
+        payload: info.payload,
         size: info.size,
         enqueuedMs: info.enqueuedMs ?? info.deliveredAt,
         producer: info.producer,
