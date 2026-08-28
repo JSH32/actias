@@ -133,6 +133,29 @@ pub fn handle(directory: &str) -> Result<()> {
         })
         .unwrap_or_default();
 
+    // A queue and its handler only work as a pair: a declared queue
+    // with no `on "queue:name"` accepts sends and never delivers them,
+    // and a handler for an undeclared queue can never be sent to.
+    for queue in &declared.queues {
+        let handler = format!("queue:{queue}");
+        if !declared.events.contains(&handler) {
+            flow_errors.push(format!(
+                "queue \"{queue}\" is declared, but nothing handles it; \
+                 sends would sit undelivered. Add on \"{handler}\"."
+            ));
+        }
+    }
+    for event in &declared.events {
+        if let Some(queue) = event.strip_prefix("queue:")
+            && !declared.queues.iter().any(|declared| declared == queue)
+        {
+            flow_errors.push(format!(
+                "on \"{event}\" handles a queue this project never declares; \
+                 nothing can send to it. Add queue \"{queue}\"."
+            ));
+        }
+    }
+
     for entry in &migrations {
         let Some((name, dir)) = entry.split_once('=') else {
             continue;
@@ -162,7 +185,7 @@ pub fn handle(directory: &str) -> Result<()> {
             println!("❌ {}", error.red());
         }
         return Err(Error::Script(format!(
-            "{} contract error(s) in follows, receives, publishes or migrations.",
+            "{} contract error(s) in follows, receives, publishes, queues or migrations.",
             flow_errors.len()
         )));
     }
