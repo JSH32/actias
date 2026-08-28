@@ -638,8 +638,6 @@ export function Shell({ children }: React.PropsWithChildren) {
               ))}
             </>
           )}
-        </nav>
-        <div className={classes.collapseRow}>
           <button
             className={classes.collapseButton}
             onClick={toggleCollapsed}
@@ -661,7 +659,7 @@ export function Shell({ children }: React.PropsWithChildren) {
             </svg>
             <span>Collapse</span>
           </button>
-        </div>
+        </nav>
         <div className={classes.user}>
           {user ? (
             <>
