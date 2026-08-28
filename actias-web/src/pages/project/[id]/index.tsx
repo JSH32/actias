@@ -364,8 +364,10 @@ function Overview({ project }: { project: ProjectDto }) {
           )}
 
           {/* The ledger: one row, one cell per resource kind, hairlines
-              between. It never wraps; a genuinely narrow window scrolls
-              it inside the card, the same posture as every wide table. */}
+              between. The cells split the width evenly and their text
+              wraps when a cell gets tight, so the row fits any window
+              the shell produces; the scroll survives only as the
+              phone-width last resort. */}
           <div className={classes.card}>
             <div style={{ display: 'flex', overflowX: 'auto' }}>
               {holdings.map((row, index) => (
@@ -373,9 +375,9 @@ function Overview({ project }: { project: ProjectDto }) {
                   key={row.href + row.noun}
                   href={`${base}/${row.href}`}
                   style={{
-                    flex: '1 0 auto',
-                    minWidth: 132,
-                    padding: '12px 16px 11px',
+                    flex: '1 1 0',
+                    minWidth: 96,
+                    padding: '12px 14px 11px',
                     display: 'flex',
                     flexDirection: 'column',
                     gap: 4,
@@ -384,7 +386,7 @@ function Overview({ project }: { project: ProjectDto }) {
                     borderLeft: index > 0 ? '1px solid var(--line)' : 'none',
                   }}
                 >
-                  <span style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: 12.5 }}>
                     <span
                       style={{
                         font: '650 16px var(--mono)',
@@ -398,7 +400,7 @@ function Overview({ project }: { project: ProjectDto }) {
                   </span>
                   <span
                     className={classes.cellDim}
-                    style={{ whiteSpace: 'nowrap' }}
+                    style={{ whiteSpace: 'normal' }}
                   >
                     {row.fact ?? ' '}
                   </span>
