@@ -162,6 +162,7 @@ services:
       # One SQLite file per durable object; the volume IS their persistence.
       - OBJECT_DATA_DIR=/data/objects
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
+      - CONNECTION_HIBERNATE_SECS=${CONNECTION_HIBERNATE_SECS:-300}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
       - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
       # WAL shipping sizes: whole-file cutoff, generation rotation.
@@ -213,6 +214,7 @@ services:
       - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
       - OBJECT_DATA_DIR=/data/objects
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
+      - CONNECTION_HIBERNATE_SECS=${CONNECTION_HIBERNATE_SECS:-300}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
       - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
       # WAL shipping sizes: whole-file cutoff, generation rotation.

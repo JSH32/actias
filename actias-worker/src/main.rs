@@ -178,6 +178,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             backoff_base_ms: config.queue_backoff_base_ms,
         },
         node_identity,
+        connection_gauges: std::sync::Arc::default(),
+        connection_hibernate_after: (config.connection_hibernate_secs > 0)
+            .then(|| std::time::Duration::from_secs(config.connection_hibernate_secs)),
         shippers: std::sync::Arc::default(),
         registry: registry_client,
         base_domain: config.base_domain,

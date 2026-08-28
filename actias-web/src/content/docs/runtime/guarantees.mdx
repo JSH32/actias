@@ -79,6 +79,10 @@ The connection inbox is not a buffer to fill. A connection whose
 handlers cannot keep up has chosen to fall behind, and the platform
 closes it rather than growing memory on its behalf.
 
+An idle connection hibernates: its vm drops after the idle threshold
+and rebuilds on the next frame or delivery, with `conn.state` intact.
+The socket never notices; only the memory does.
+
 ## Failure behaviour
 
 A machine leaving gracefully (deploys, scale-downs) loses nothing:

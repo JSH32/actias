@@ -47,6 +47,8 @@ pub struct Config {
     pub object_max_segments: u32,
     /// Idle seconds before a pinned object vm hibernates.
     pub object_idle_secs: u64,
+    /// Idle seconds before a connection's vm hibernates; 0 never does.
+    pub connection_hibernate_secs: u64,
     /// Deliveries attempted before a queue message dead-letters.
     pub queue_max_attempts: i64,
     /// First queue retry delay in milliseconds; doubles per attempt.
@@ -106,6 +108,7 @@ impl Config {
             object_wal_rotate_bytes: get_env_or::<u64>("OBJECT_WAL_ROTATE_KB", 4096) * 1024,
             object_max_segments: get_env_or("OBJECT_MAX_SEGMENTS", 64),
             object_idle_secs: get_env_or("OBJECT_IDLE_SECS", 300),
+            connection_hibernate_secs: get_env_or("CONNECTION_HIBERNATE_SECS", 300),
             queue_max_attempts: get_env_or("QUEUE_MAX_ATTEMPTS", 5),
             queue_backoff_base_ms: get_env_or("QUEUE_BACKOFF_BASE_MS", 2000),
             object_sweep_secs: get_env_or("OBJECT_SWEEP_SECS", 30),

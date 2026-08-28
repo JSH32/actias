@@ -126,6 +126,27 @@ Put durability one hop back. The account object follows what must not
 be missed; the connection follows the account for live updates. On
 reconnect the client reads the object's state and continues.
 
+## Warm, hibernated, gone
+
+A connection's vm is rebuildable, so an idle one does not keep it:
+
+<table>
+  <thead>
+    <tr><th>State</th><th>Holds</th><th>Cost</th><th>Leaves it</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>warm</td><td>a vm and everything below</td><td>a vm</td><td>idle past the threshold drops the vm</td></tr>
+    <tr><td>hibernated</td><td>the socket, the inbox, <code>conn.state</code>, the follows</td><td>about a file descriptor</td><td>any frame or delivery rebuilds the vm</td></tr>
+    <tr><td>gone</td><td>nothing</td><td>zero</td><td>is the end</td></tr>
+  </tbody>
+</table>
+
+Hibernation is invisible from both ends of the wire: the socket stays
+open, deliveries land in the inbox and wake the handlers, and
+`conn.state` is exactly what the last handler left. It is a memory
+economy, not durability; a node dying still drops its sockets, and
+reconnect-with-catch-up is still the recovery story.
+
 ## Backpressure and limits
 
 Handlers for one connection run one at a time, in arrival order, each

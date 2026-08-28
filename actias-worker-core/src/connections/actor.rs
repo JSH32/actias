@@ -2,10 +2,12 @@
 //!
 //! [`ConnectionTask`] owns everything one connection holds for its
 //! life: the inbox receiver, the wire and edge state in
-//! [`SockShared`], the declared program's class name, and the
-//! `conn.state` blob. The vm is the ONE droppable part: built from
-//! the factory when a handler needs it, dropped never in this
-//! increment (warm-only; hibernation is the recorded next step).
+//! [`SockShared`], the declared program's spec, and the `conn.state`
+//! blob. The vm is the ONE droppable part: built from the factory
+//! when a handler needs it, dropped again after `hibernate_after` of
+//! silence. Hibernated, the connection costs about a file
+//! descriptor; any inbox item rebuilds the vm, and the blob and the
+//! follows never noticed.
 //!
 //! Ordering per connection is the actor itself, the discipline object
 //! mailboxes provide: handlers for one connection never run
@@ -14,8 +16,12 @@
 //! could never arm per item.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::time::Duration;
 
 use mlua::LuaSerdeExt;
+
+use actias_declarations::ConnectionSpec;
 
 use crate::connections::{InboxItem, InboxReceiver, OutboundFrame};
 use crate::extensions::sockets::{ConnectionRegistry, SockShared, conn_surface, event_value};
@@ -34,27 +40,49 @@ pub type VmFactory = Arc<
         + Sync,
 >;
 
+/// What the node's connections cost right now, in plain atomics so no
+/// metrics type crosses the guest-neutral boundary; the worker renders
+/// them in its own exposition. `warm` counts tasks holding a vm,
+/// `hibernated` counts tasks alive without one after a drop; a
+/// connection that never ran a handler counts in neither.
+#[derive(Default)]
+pub struct ConnectionGauges {
+    pub warm: AtomicI64,
+    pub hibernated: AtomicI64,
+    pub wakes: AtomicU64,
+    pub wake_ms_total: AtomicU64,
+}
+
 /// One live connection's actor: pulls the inbox, drives the declared
-/// handlers, keeps `conn.state` across invocations.
+/// handlers, keeps `conn.state` across invocations and across
+/// hibernation.
 pub struct ConnectionTask {
     inbox: InboxReceiver,
     shared: Arc<SockShared>,
     /// The declared connection class the upgrade named.
-    spec: String,
+    spec: Arc<ConnectionSpec>,
     /// The json blob behind `conn.state`, seeded at upgrade and
     /// written back after every handler return.
     state: serde_json::Value,
     vm: Option<ActiasRuntime>,
     factory: VmFactory,
+    /// Silence long enough to drop the vm; [`None`] never drops.
+    hibernate_after: Option<Duration>,
+    /// Whether the vm was dropped by the idle timeout (the next build
+    /// is a wake, not a birth).
+    hibernated: bool,
+    gauges: Arc<ConnectionGauges>,
 }
 
 impl ConnectionTask {
     pub fn new(
         inbox: InboxReceiver,
         shared: Arc<SockShared>,
-        spec: String,
+        spec: Arc<ConnectionSpec>,
         seed: serde_json::Value,
         factory: VmFactory,
+        hibernate_after: Option<Duration>,
+        gauges: Arc<ConnectionGauges>,
     ) -> Self {
         Self {
             inbox,
@@ -63,6 +91,9 @@ impl ConnectionTask {
             state: seed,
             vm: None,
             factory,
+            hibernate_after,
+            hibernated: false,
+            gauges,
         }
     }
 
@@ -77,14 +108,35 @@ impl ConnectionTask {
         let closed = self.invoke("close", None).await;
         self.shared.sever_follows().await;
         let _ = self.shared.send_close().await;
+        if self.vm.is_some() {
+            self.gauges.warm.fetch_sub(1, Ordering::Relaxed);
+        } else if self.hibernated {
+            self.gauges.hibernated.fetch_sub(1, Ordering::Relaxed);
+        }
         outcome.and(closed)
     }
 
     async fn serve(&mut self) -> Result<(), String> {
         self.invoke("open", None).await?;
         loop {
-            let Some(item) = self.inbox.next().await else {
-                return Ok(());
+            let next = match self.hibernate_after {
+                None => Ok(self.inbox.next().await),
+                Some(after) => tokio::time::timeout(after, self.inbox.next()).await,
+            };
+            let item = match next {
+                // Silence past the threshold: the vm goes, the fd,
+                // the inbox, the blob and the follows stay. A vm that
+                // was never built (or already went) counts nothing.
+                Err(_elapsed) => {
+                    if self.vm.take().is_some() {
+                        self.hibernated = true;
+                        self.gauges.warm.fetch_sub(1, Ordering::Relaxed);
+                        self.gauges.hibernated.fetch_add(1, Ordering::Relaxed);
+                    }
+                    continue;
+                }
+                Ok(None) => return Ok(()),
+                Ok(Some(item)) => item,
             };
             match item {
                 InboxItem::Closed => return Ok(()),
@@ -111,21 +163,36 @@ impl ConnectionTask {
     }
 
     /// Runs one declared handler with a fresh conn surface over the
-    /// current state blob; an undeclared handler ignores the item.
+    /// current state blob. An undeclared handler ignores the item
+    /// BEFORE any vm exists, so a Closed at a hibernated connection
+    /// with no close handler never pays a wake.
     async fn invoke(
         &mut self,
         handler: &str,
         argument: Option<ArgumentJson>,
     ) -> Result<(), String> {
+        if !self.spec.handlers.iter().any(|declared| declared == handler) {
+            return Ok(());
+        }
         if self.vm.is_none() {
+            let started = std::time::Instant::now();
             self.vm = Some((self.factory)().await?);
+            self.gauges.warm.fetch_add(1, Ordering::Relaxed);
+            if self.hibernated {
+                self.hibernated = false;
+                self.gauges.hibernated.fetch_sub(1, Ordering::Relaxed);
+                self.gauges.wakes.fetch_add(1, Ordering::Relaxed);
+                self.gauges
+                    .wake_ms_total
+                    .fetch_add(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+            }
         }
         let vm = self.vm.as_ref().expect("ensured above");
 
-        let Some(class_table) = ConnectionRegistry::of(vm).class_table(&self.spec) else {
+        let Some(class_table) = ConnectionRegistry::of(vm).class_table(&self.spec.name) else {
             return Err(format!(
                 "The revision does not declare connection '{}'.",
-                self.spec
+                self.spec.name
             ));
         };
         let function: mlua::Value = class_table.get(handler).map_err(|e| e.to_string())?;

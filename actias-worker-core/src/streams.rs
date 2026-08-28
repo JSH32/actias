@@ -1191,6 +1191,15 @@ mod tests {
             end,
         }
 
+        -- Session state that must outlive the vm: the hibernation
+        -- tests count frames across a drop.
+        local Sticky = connection "Sticky" {
+            frame = function(conn, data)
+                conn.state.n = (conn.state.n or 0) + 1
+                conn:send({ kind = "count", n = conn.state.n })
+            end,
+        }
+
         local Echo = connection "Echo" {
             open = function(conn)
                 conn:follow(Hub("town"), "news")
@@ -1221,6 +1230,9 @@ mod tests {
             -- an identity minted from an instance handle.
             if request.upgrade and request.wants_forward then
                 return request:upgrade(Forwarder, Reader("ada"))
+            end
+            if request.upgrade and request.wants_sticky then
+                return request:upgrade(Sticky, Reader("ada"))
             end
             if request.upgrade then
                 return request:upgrade(Echo, Reader("ada"))
@@ -1543,7 +1555,7 @@ mod tests {
             ("Reader", "ada"),
             "the identity travels from the handle"
         );
-        assert_eq!(pending.spec, "Echo", "the declared class travels by name");
+        assert_eq!(pending.spec.name, "Echo", "the declared class travels whole");
         drop(runtime);
 
         let shared = SockShared::new(
@@ -1560,6 +1572,8 @@ mod tests {
             pending.spec,
             pending.seed,
             test_vm_factory(router.clone()),
+            Some(std::time::Duration::from_secs(60)),
+            Arc::default(),
         );
         let drive = tokio::spawn(task.run());
 
@@ -2253,6 +2267,8 @@ mod tests {
             pending.spec,
             pending.seed,
             test_vm_factory(router.clone()),
+            Some(std::time::Duration::from_secs(60)),
+            Arc::default(),
         );
         let drive = tokio::spawn(task.run());
 
@@ -2304,6 +2320,152 @@ mod tests {
             .await
             .expect("drive joins")
             .expect("the connection ran cleanly");
+    }
+
+    /// The bridge for the hibernation tests: an upgraded Sticky task
+    /// over a hand-built transport, plus the gauges to watch.
+    async fn sticky_task(
+        hibernate_after: std::time::Duration,
+    ) -> (
+        crate::connections::InboxSender,
+        tokio::sync::mpsc::Receiver<crate::connections::OutboundFrame>,
+        Arc<crate::connections::actor::ConnectionGauges>,
+        tokio::task::JoinHandle<Result<(), String>>,
+        tempfile::TempDir,
+    ) {
+        use crate::connections::actor::ConnectionTask;
+        use crate::extensions::sockets::{PendingUpgrade, SockShared};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let router = town_router(dir.path().to_path_buf(), false);
+
+        let (inbox_tx, inbox_rx) = crate::connections::inbox();
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel(16);
+
+        let runtime = vm(SOURCE, false).await;
+        runtime.set_app_data::<ObjectRouter>(router.clone());
+        let request = runtime.create_table().expect("request table");
+        request.set("wants_sticky", true).expect("flag");
+        crate::extensions::sockets::arm_request(&runtime, &request).expect("arms");
+        let listener = runtime.listener("fetch").expect("registered");
+        let _: mlua::Value = listener
+            .call_async(mlua::Value::Table(request))
+            .await
+            .expect("the handler upgrades");
+        let pending = runtime
+            .remove_app_data::<PendingUpgrade>()
+            .expect("the upgrade was parked");
+        drop(runtime);
+
+        let shared = SockShared::new(
+            "conn#h1".to_owned(),
+            String::new(),
+            pending.class.clone(),
+            pending.name.clone(),
+            out_tx,
+            router.clone(),
+        );
+        let gauges: Arc<crate::connections::actor::ConnectionGauges> = Arc::default();
+        let task = ConnectionTask::new(
+            inbox_rx,
+            shared,
+            pending.spec,
+            pending.seed,
+            test_vm_factory(router),
+            Some(hibernate_after),
+            gauges.clone(),
+        );
+        (inbox_tx, out_rx, gauges, tokio::spawn(task.run()), dir)
+    }
+
+    /// Polls a gauge pair until it matches or the deadline passes.
+    async fn wait_gauges(
+        gauges: &crate::connections::actor::ConnectionGauges,
+        warm: i64,
+        hibernated: i64,
+    ) {
+        use std::sync::atomic::Ordering;
+        for _ in 0..80 {
+            if gauges.warm.load(Ordering::Relaxed) == warm
+                && gauges.hibernated.load(Ordering::Relaxed) == hibernated
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!(
+            "gauges never reached warm={warm} hibernated={hibernated}; at warm={} hibernated={}",
+            gauges.warm.load(Ordering::Relaxed),
+            gauges.hibernated.load(Ordering::Relaxed)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_idle_connection_drops_its_vm_and_a_delivery_revives_it() {
+        use crate::connections::{InboxItem, OutboundFrame};
+        use std::sync::atomic::Ordering;
+
+        let (inbox_tx, mut out_rx, gauges, drive, _dir) =
+            sticky_task(std::time::Duration::from_millis(150)).await;
+
+        inbox_tx
+            .push(InboxItem::Frame(serde_json::json!({})))
+            .expect("frame lands");
+        let first = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the count answers")
+            .expect("outbound open");
+        assert_eq!(first, OutboundFrame::Json(serde_json::json!({ "kind": "count", "n": 1 })));
+        wait_gauges(&gauges, 1, 0).await;
+
+        // Silence past the threshold: the vm falls, the task stays.
+        wait_gauges(&gauges, 0, 1).await;
+
+        // The next frame is the wake; the blob survived the vm.
+        inbox_tx
+            .push(InboxItem::Frame(serde_json::json!({})))
+            .expect("frame lands");
+        let second = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the count answers")
+            .expect("outbound open");
+        assert_eq!(second, OutboundFrame::Json(serde_json::json!({ "kind": "count", "n": 2 })));
+        assert_eq!(gauges.wakes.load(Ordering::Relaxed), 1, "one wake, counted");
+        wait_gauges(&gauges, 1, 0).await;
+
+        inbox_tx.push(InboxItem::Closed).expect("close lands");
+        drive
+            .await
+            .expect("drive joins")
+            .expect("the connection ran cleanly");
+        wait_gauges(&gauges, 0, 0).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_close_without_a_close_handler_never_wakes_a_hibernated_vm() {
+        use crate::connections::InboxItem;
+        use std::sync::atomic::Ordering;
+
+        let (inbox_tx, mut out_rx, gauges, drive, _dir) =
+            sticky_task(std::time::Duration::from_millis(150)).await;
+
+        inbox_tx
+            .push(InboxItem::Frame(serde_json::json!({})))
+            .expect("frame lands");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the count answers");
+        wait_gauges(&gauges, 0, 1).await;
+
+        // Sticky declares no close handler, so ending the wire must
+        // not pay a vm build to discover there is nothing to run.
+        inbox_tx.push(InboxItem::Closed).expect("close lands");
+        drive
+            .await
+            .expect("drive joins")
+            .expect("the connection ran cleanly");
+        assert_eq!(gauges.wakes.load(Ordering::Relaxed), 0, "no wake for an undeclared handler");
+        wait_gauges(&gauges, 0, 0).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -155,8 +155,10 @@ impl LuaExtension for ConnectionExtension {
 /// it up after the fetch handler returns. Plain data on purpose:
 /// nothing here pins the request vm.
 pub struct PendingUpgrade {
-    /// The declared connection class that will run the wire.
-    pub spec: String,
+    /// The declared connection class that will run the wire. The whole
+    /// spec travels (not just the name) so the actor can answer "is
+    /// this handler even declared" without building a vm to ask.
+    pub spec: Arc<ConnectionSpec>,
     /// The initial `conn.state`, json the moment it leaves the vm.
     pub seed: serde_json::Value,
     /// The identity the connection speaks AS, minted after auth.
@@ -186,7 +188,7 @@ pub fn arm_request(lua: &Lua, request: &Table) -> mlua::Result<()> {
                             .to_owned(),
                     ));
                 }
-                let spec: String = program
+                let spec_name: String = program
                     .as_table()
                     .and_then(|handle| handle.get("__connection").ok())
                     .ok_or_else(|| {
@@ -196,11 +198,11 @@ pub fn arm_request(lua: &Lua, request: &Table) -> mlua::Result<()> {
                                 .to_owned(),
                         )
                     })?;
-                if ConnectionRegistry::of(lua).spec(&spec).is_none() {
+                let Some(spec) = ConnectionRegistry::of(lua).spec(&spec_name) else {
                     return Err(mlua::Error::RuntimeError(format!(
-                        "Connection '{spec}' is not declared in this script."
+                        "Connection '{spec_name}' is not declared in this script."
                     )));
-                }
+                };
 
                 // The seed is optional and sits between the class and
                 // the identity: two args means no seed.

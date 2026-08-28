@@ -168,6 +168,11 @@ pub struct AppState {
     /// stream pump delivers connection edges through it, and a missing
     /// id is the prune signal.
     pub connections: Arc<actias_worker_core::connections::ConnectionRegistry>,
+    /// Warm/hibernated counts and wake costs, updated by every
+    /// connection actor and rendered at scrape time.
+    pub connection_gauges: Arc<actias_worker_core::connections::actor::ConnectionGauges>,
+    /// Silence before a connection's vm drops; [`None`] never drops.
+    pub connection_hibernate_after: Option<std::time::Duration>,
 }
 
 /// Holds the in-flight gauge up for exactly one request's lifetime;
@@ -462,7 +467,9 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
 /// The prometheus exposition; gauges are measured at scrape time.
 async fn metrics_handler(State(state): State<AppState>) -> Response {
     let resident = state.objects.resident_count().await;
-    let mut response = Response::new(Body::from(state.metrics.render(resident)));
+    let mut response = Response::new(Body::from(
+        state.metrics.render(resident, &state.connection_gauges),
+    ));
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/plain; version=0.0.4"),
@@ -964,8 +971,19 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             .and_then(|guard| guard.clone())
             .unwrap_or_default();
         let factory = vm_factory(state.clone(), prepared, logs);
+        let hibernate_after = state.connection_hibernate_after;
+        let gauges = state.connection_gauges.clone();
         return Ok(websocket.on_upgrade(move |socket| {
-            drive_socket(socket, factory, pending, registry, connection_router, node)
+            drive_socket(
+                socket,
+                factory,
+                pending,
+                registry,
+                connection_router,
+                node,
+                hibernate_after,
+                gauges,
+            )
         }));
     }
 
@@ -1015,6 +1033,8 @@ async fn drive_socket(
     registry: Arc<actias_worker_core::connections::ConnectionRegistry>,
     router: ObjectRouter,
     node: String,
+    hibernate_after: Option<std::time::Duration>,
+    gauges: Arc<actias_worker_core::connections::actor::ConnectionGauges>,
 ) {
     use actias_worker_core::connections::actor::ConnectionTask;
     use actias_worker_core::connections::{InboxItem, OutboundFrame, inbox};
@@ -1077,7 +1097,15 @@ async fn drive_socket(
         }
     };
 
-    let task = ConnectionTask::new(inbox_rx, shared, pending.spec, pending.seed, factory);
+    let task = ConnectionTask::new(
+        inbox_rx,
+        shared,
+        pending.spec,
+        pending.seed,
+        factory,
+        hibernate_after,
+        gauges,
+    );
     let (_, outcome) = tokio::join!(wire, task.run());
     if let Err(error) = outcome {
         actias_common::tracing::debug!(%error, connection_id, "connection ended with an error");
@@ -1136,6 +1164,8 @@ pub(crate) mod test_state {
                 .time_to_live(std::time::Duration::from_secs(120))
                 .build(),
             internal_token: "test-internal".to_owned(),
+            connection_gauges: Arc::default(),
+            connection_hibernate_after: Some(Duration::from_secs(300)),
             object_store: Arc::new(ObjectStore::new(
                 crate::blob_cache::s3_client("http://127.0.0.1:1", "unused", "unused"),
                 "unused".to_owned(),
