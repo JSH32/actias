@@ -642,50 +642,121 @@
   border-color: var(--luna);
 }
 
-/* The brand hover: the wings flutter once, petal by petal, and settle
- * the moment the pointer leaves. */
+/* The brand hover: one wingbeat. The forewings drive down and overshoot
+ * on the recovery, the hindwings follow 70ms behind at half the
+ * amplitude, and the body never moves. The lag is the whole of it: wings
+ * beating in rigid unison read as a graphic spinning, wings that trail
+ * read as mass moving through air, and a still body is what the eye
+ * measures the movement against.
+ *
+ * Parts are named by `data-wing` rather than counted by position, so
+ * reordering the paths or swapping the drawing cannot silently animate
+ * the wrong piece. That is exactly how the retired petal flutter
+ * outlived the drawing it was built for. Pivots are the wing roots, not
+ * the mark's centre; antennae exist only on the alternative mark. */
 .brand svg path {
-  transform-origin: 12px 12px;
   transform-box: view-box;
 }
 
-.brand:hover svg path:nth-child(1) {
-  animation: flutterUpLeft 0.55s ease-out;
+.brand svg [data-wing='fore-l'] {
+  transform-origin: 11.2px 12.4px;
 }
 
-.brand:hover svg path:nth-child(2) {
-  animation: flutterUpRight 0.55s ease-out 0.07s;
+.brand svg [data-wing='fore-r'] {
+  transform-origin: 12.8px 12.4px;
 }
 
-.brand:hover svg path:nth-child(3) {
-  animation: flutterDownLeft 0.55s ease-out 0.14s;
+.brand svg [data-wing='hind-l'] {
+  transform-origin: 11.3px 13.4px;
 }
 
-.brand:hover svg path:nth-child(4) {
-  animation: flutterDownRight 0.55s ease-out 0.21s;
+.brand svg [data-wing='hind-r'] {
+  transform-origin: 12.7px 13.4px;
 }
 
-@keyframes flutterUpLeft {
-  40% {
-    transform: translate(-1.2px, -1.2px) rotate(-7deg);
+.brand svg [data-wing='ant-l'] {
+  transform-origin: 11.4px 3.2px;
+}
+
+.brand svg [data-wing='ant-r'] {
+  transform-origin: 12.6px 3.2px;
+}
+
+.brand:hover svg [data-wing='fore-l'] {
+  animation: beatLeft 0.66s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.brand:hover svg [data-wing='fore-r'] {
+  animation: beatRight 0.66s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.brand:hover svg [data-wing='hind-l'] {
+  animation: swayLeft 0.72s cubic-bezier(0.4, 0, 0.2, 1) 0.07s;
+}
+
+.brand:hover svg [data-wing='hind-r'] {
+  animation: swayRight 0.72s cubic-bezier(0.4, 0, 0.2, 1) 0.07s;
+}
+
+.brand:hover svg [data-wing='ant-l'] {
+  animation: whipLeft 0.78s cubic-bezier(0.4, 0, 0.2, 1) 0.11s;
+}
+
+.brand:hover svg [data-wing='ant-r'] {
+  animation: whipRight 0.78s cubic-bezier(0.4, 0, 0.2, 1) 0.11s;
+}
+
+@keyframes beatLeft {
+  34% {
+    transform: rotate(25deg);
+  }
+  68% {
+    transform: rotate(-7deg);
   }
 }
 
-@keyframes flutterUpRight {
-  40% {
-    transform: translate(1.2px, -1.2px) rotate(7deg);
+@keyframes beatRight {
+  34% {
+    transform: rotate(-25deg);
+  }
+  68% {
+    transform: rotate(7deg);
   }
 }
 
-@keyframes flutterDownLeft {
+@keyframes swayLeft {
   40% {
-    transform: translate(-1.2px, 1.2px) rotate(7deg);
+    transform: rotate(11deg);
+  }
+  76% {
+    transform: rotate(-4deg);
   }
 }
 
-@keyframes flutterDownRight {
+@keyframes swayRight {
   40% {
-    transform: translate(1.2px, 1.2px) rotate(-7deg);
+    transform: rotate(-11deg);
+  }
+  76% {
+    transform: rotate(4deg);
+  }
+}
+
+@keyframes whipLeft {
+  38% {
+    transform: rotate(15deg);
+  }
+  72% {
+    transform: rotate(-6deg);
+  }
+}
+
+@keyframes whipRight {
+  38% {
+    transform: rotate(-15deg);
+  }
+  72% {
+    transform: rotate(6deg);
   }
 }
 
