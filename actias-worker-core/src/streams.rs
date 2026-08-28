@@ -1178,6 +1178,33 @@ mod tests {
             end,
         }
 
+        -- The one-stream socket, written out as declared handlers: the
+        -- app decides the wire shape (no stdlib forwarder exists).
+        local Forwarder = connection "Forwarder" {
+            open = function(conn)
+                conn:follow(Hub("town"), "news")
+            end,
+            event = function(conn, event)
+                conn:send({ topic = event.topic,
+                            from = event.from.id,
+                            kind = event.data.kind })
+            end,
+        }
+
+        local Echo = connection "Echo" {
+            open = function(conn)
+                conn:follow(Hub("town"), "news")
+            end,
+            event = function(conn, event)
+                conn:send({ kind = "event", topic = event.topic,
+                            from = event.from.id })
+            end,
+            frame = function(conn, data)
+                conn:send({ kind = "frame", echo = data.hello })
+                conn:close()
+            end,
+        }
+
         on "fetch" (function(request)
             -- The live landmine's exact shape: a fetch handler
             -- pcall-guarding cross-object calls; both arms must work.
@@ -1190,36 +1217,13 @@ mod tests {
                 end)
                 return { ok = ok, value = value, bad = bad, why = tostring(why) }
             end
-            -- The upgrade shape production uses: the program is a
-            -- boot-compiled closure handed to request:upgrade, and the
-            -- identity is minted from an instance handle.
+            -- The upgrade shape production uses: a declared class and
+            -- an identity minted from an instance handle.
             if request.upgrade and request.wants_forward then
-                -- The one-stream socket, written out: the app decides
-                -- the wire shape (no stdlib forwarder exists).
-                return request:upgrade(function(sock)
-                    sock:follow(Hub("town"), "news")
-                    sock:each(function(item)
-                        if item.kind == "event" then
-                            sock:send({ topic = item.event.topic,
-                                        from = item.event.from.id,
-                                        kind = item.event.data.kind })
-                        end
-                    end)
-                end, Reader("ada"))
+                return request:upgrade(Forwarder, Reader("ada"))
             end
             if request.upgrade then
-                return request:upgrade(function(sock)
-                    sock:follow(Hub("town"), "news")
-                    sock:each(function(item)
-                        if item.kind == "event" then
-                            sock:send({ kind = "event", topic = item.event.topic,
-                                        from = item.event.from.id })
-                        elseif item.kind == "frame" then
-                            sock:send({ kind = "frame", echo = item.data.hello })
-                            return true
-                        end
-                    end)
-                end, Reader("ada"))
+                return request:upgrade(Echo, Reader("ada"))
             end
             return { body = "ok" }
         end)
@@ -1469,10 +1473,24 @@ mod tests {
         );
     }
 
+    /// A test's vm factory: fresh vms of SOURCE, each wired to the
+    /// same router, exactly what the worker's factory does.
+    fn test_vm_factory(router: ObjectRouter) -> crate::connections::actor::VmFactory {
+        Arc::new(move || {
+            let router = router.clone();
+            Box::pin(async move {
+                let runtime = vm(SOURCE, false).await;
+                runtime.set_app_data::<ObjectRouter>(router);
+                Ok(runtime)
+            })
+        })
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_connection_program_follows_pulls_and_sends() {
         use crate::connections::OutboundFrame;
-        use crate::extensions::sockets::{PendingUpgrade, SockShared, run_connection};
+        use crate::connections::actor::ConnectionTask;
+        use crate::extensions::sockets::{PendingUpgrade, SockShared};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
@@ -1500,9 +1518,9 @@ mod tests {
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<OutboundFrame>(16);
         connections.register("conn#s1", inbox_tx.clone());
 
-        // A fresh vm from the same bundle plays the surviving request
-        // vm, and the upgrade rides the script's own fetch handler:
-        // arm the request, run the listener, take the parked pending.
+        // The upgrade rides the script's own fetch handler in a request
+        // vm that DIES after the response: arm the request, run the
+        // listener, take the parked pending, drop the vm.
         let runtime = vm(SOURCE, false).await;
         runtime.set_app_data::<ObjectRouter>(router.clone());
         let request = runtime.create_table().expect("request table");
@@ -1525,17 +1543,25 @@ mod tests {
             ("Reader", "ada"),
             "the identity travels from the handle"
         );
+        assert_eq!(pending.spec, "Echo", "the declared class travels by name");
+        drop(runtime);
+
         let shared = SockShared::new(
             "conn#s1".to_owned(),
             String::new(),
             "Reader".to_owned(),
             "ada".to_owned(),
-            inbox_rx,
             out_tx,
             router.clone(),
         );
-
-        let drive = tokio::spawn(async move { run_connection(&runtime, pending, shared).await });
+        let task = ConnectionTask::new(
+            inbox_rx,
+            shared,
+            pending.spec,
+            pending.seed,
+            test_vm_factory(router.clone()),
+        );
+        let drive = tokio::spawn(task.run());
 
         // The program's follow lands as an edge, then a publish flows
         // wire-ward through the pump, the inbox and the program.
@@ -1591,23 +1617,27 @@ mod tests {
             OutboundFrame::Json(serde_json::json!({ "kind": "frame", "echo": "world" }))
         );
 
-        // The program returned: polite unfollow severs the edge and the
-        // bridge is told to close the wire.
-        drive
-            .await
-            .expect("drive joins")
-            .expect("the program ran cleanly");
+        // The frame handler asked to close: the bridge is told, the
+        // wire (played by this test) reports Closed back, and the actor
+        // severs the edge on its way out.
         let closing = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
             .await
             .expect("the close reaches the wire side")
             .expect("outbound open");
         assert_eq!(closing, OutboundFrame::Close);
+        inbox_tx
+            .push(crate::connections::InboxItem::Closed)
+            .expect("close lands");
+        drive
+            .await
+            .expect("drive joins")
+            .expect("the connection ran cleanly");
         let after = call(&router, "Hub", "town", "audience", vec![])
             .await
             .expect("audience answers")
             .as_i64()
             .unwrap_or(-1);
-        assert_eq!(after, 0, "run_connection unfollowed on the way out");
+        assert_eq!(after, 0, "the actor unfollowed on the way out");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2167,7 +2197,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_one_stream_program_pushes_shaped_frames() {
         use crate::connections::OutboundFrame;
-        use crate::extensions::sockets::{PendingUpgrade, SockShared, run_connection};
+        use crate::connections::actor::ConnectionTask;
+        use crate::extensions::sockets::{PendingUpgrade, SockShared};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let connections: Arc<crate::connections::ConnectionRegistry> = Arc::default();
@@ -2206,16 +2237,24 @@ mod tests {
         let pending = runtime
             .remove_app_data::<PendingUpgrade>()
             .expect("the upgrade was parked");
+        drop(runtime);
+
         let shared = SockShared::new(
             "conn#f1".to_owned(),
             String::new(),
             pending.class.clone(),
             pending.name.clone(),
-            inbox_rx,
             out_tx,
             router.clone(),
         );
-        let drive = tokio::spawn(async move { run_connection(&runtime, pending, shared).await });
+        let task = ConnectionTask::new(
+            inbox_rx,
+            shared,
+            pending.spec,
+            pending.seed,
+            test_vm_factory(router.clone()),
+        );
+        let drive = tokio::spawn(task.run());
 
         let mut audience = -1;
         for _ in 0..80 {
@@ -2257,15 +2296,14 @@ mod tests {
         );
         assert_eq!(frame["kind"], "sport");
 
-        // Closing the wire ends the loop: Closed drains, the program
-        // returns, edges sever.
+        // Closing the wire ends the actor: Closed drains, edges sever.
         inbox_tx
             .push(crate::connections::InboxItem::Closed)
             .expect("close lands");
         drive
             .await
             .expect("drive joins")
-            .expect("the program ran cleanly");
+            .expect("the connection ran cleanly");
     }
 
     #[tokio::test(flavor = "multi_thread")]

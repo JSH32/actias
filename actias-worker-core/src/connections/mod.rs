@@ -1,30 +1,34 @@
 //! Connections as followers: the transport-neutral primitives every
-//! socket rides, the inbox and the registry.
+//! socket rides, the inbox and the registry, plus the actor that
+//! drives a declared program over them.
 //!
 //! # The model
 //!
 //! A websocket upgrade happens INSIDE fetch: the handler authenticates
-//! like any request, then returns `request:upgrade(fn, identity)`. The
-//! request's vm does not die; `fn` becomes the connection's program,
-//! alive as long as the connection. The connection SPEAKS AS the
-//! minted identity; `transport = "connection"` decides only the edge
-//! kind. The server owns the control loop and there is NO platform
-//! wire protocol in either direction: the wire carries only frames the
-//! app defines, and no stdlib connection program exists (one was
-//! retracted in review precisely because it would have made the
-//! platform's event envelope a de-facto wire format).
+//! like any request, then returns `request:upgrade(Class, seed?,
+//! identity)` naming a declared connection class. The request's vm is
+//! released like any response; the class's handlers run in
+//! [`actor::ConnectionTask`], one invocation per inbox item. The
+//! connection SPEAKS AS the minted identity; `transport =
+//! "connection"` decides only the edge kind. There is NO platform wire
+//! protocol in either direction: the wire carries only frames the app
+//! defines, and no stdlib connection program exists (one was retracted
+//! in review precisely because it would have made the platform's event
+//! envelope a de-facto wire format).
 //!
 //! One bounded inbox per connection merges both producers, edge
-//! deliveries and the client's own frames; a program that stops
-//! pulling fills it, and past the bound the connection closes rather
-//! than buffering unboundedly. The registry maps node-local connection
-//! ids to inbox senders; a missing id reports Gone, which is a pump's
-//! signal to prune the edge (deliver-or-prune, at-most-once,
-//! expected-stale after failover). Nothing here adds transport: local
-//! delivery is a registry push. Still open: cross-node connection
-//! delivery (the edge would record its terminating node and ride the
-//! worker dispatch channel; an unroutable node is Gone) and a bounded
-//! per-wake budget for connection programs.
+//! deliveries and the client's own frames; a connection whose handlers
+//! cannot keep up fills it, and past the bound the connection closes
+//! rather than buffering unboundedly. The registry maps node-local
+//! connection ids to inbox senders; a missing id reports Gone, which
+//! is a pump's signal to prune the edge (deliver-or-prune,
+//! at-most-once, expected-stale after failover). Nothing here adds
+//! transport: local delivery is a registry push. Still open:
+//! cross-node connection delivery (the edge would record its
+//! terminating node and ride the worker dispatch channel; an
+//! unroutable node is Gone).
+
+pub mod actor;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -34,8 +38,8 @@ use std::sync::Mutex;
 /// chosen to fall behind, and connection edges promise at-most-once.
 const INBOX_BOUND: usize = 256;
 
-/// What `sock:each()` yields, merged from both producers: edge
-/// deliveries and the client's own frames.
+/// What the actor pulls, merged from both producers: edge deliveries
+/// and the client's own frames.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InboxItem {
     /// A delivered edge event: topic, publishing instance, data.

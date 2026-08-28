@@ -917,10 +917,10 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     }
 
     let lua = ActiasRuntime::new(
-        prepared,
+        prepared.clone(),
         kv_client,
         state.egress.clone(),
-        logs,
+        logs.clone(),
         state.secret_client.clone(),
         Some(10),
     )
@@ -941,9 +941,11 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
 
     let value: mlua::Value = listener.call_async(request_value).await?;
 
-    // The handler upgraded: the response is the handshake, and the vm
-    // DOES NOT DIE; it moves into the connection task as the program's
-    // vm, alive for the connection's life.
+    // The handler upgraded: the response is the handshake and the
+    // request vm is RELEASED like any other response. The pending
+    // carries a class name and a json seed, and the actor rebuilds a
+    // vm of this same revision from the factory when a handler needs
+    // one.
     if let Some(pending) =
         lua.remove_app_data::<actias_worker_core::extensions::sockets::PendingUpgrade>()
     {
@@ -961,8 +963,9 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             .ok()
             .and_then(|guard| guard.clone())
             .unwrap_or_default();
+        let factory = vm_factory(state.clone(), prepared, logs);
         return Ok(websocket.on_upgrade(move |socket| {
-            drive_socket(socket, lua, pending, registry, connection_router, node)
+            drive_socket(socket, factory, pending, registry, connection_router, node)
         }));
     }
 
@@ -971,22 +974,51 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     lua_response_into_response(lua_response)
 }
 
-/// The bridge between one live websocket and its connection program:
-/// client frames feed the same inbox edge deliveries use, program sends
-/// feed the wire, and the program runs to completion in the request vm
-/// it inherited. When either side ends, edges sever (politely by
-/// run_connection, or by the pump's deliver-or-prune for whatever that
-/// missed) and the registry forgets the id.
+/// Builds vms of one revision for a connection's actor: the same
+/// construction the request path uses, minus the request.
+fn vm_factory(
+    state: AppState,
+    prepared: Arc<PreparedRevision>,
+    logs: Option<LogPublisher>,
+) -> actias_worker_core::connections::actor::VmFactory {
+    Arc::new(move || {
+        let state = state.clone();
+        let prepared = prepared.clone();
+        let logs = logs.clone();
+        Box::pin(async move {
+            let lua = ActiasRuntime::new(
+                prepared.clone(),
+                state.clients.kv.clone(),
+                state.egress.clone(),
+                logs,
+                state.secret_client.clone(),
+                Some(10),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            lua.set_app_data::<ObjectRouter>(ObjectRouting::new(&state, prepared).as_router());
+            Ok(lua)
+        })
+    })
+}
+
+/// The bridge between one live websocket and its connection actor:
+/// client frames feed the same inbox edge deliveries use, handler
+/// sends feed the wire, and the actor drives the declared handlers in
+/// vms it builds from the factory. When either side ends, edges sever
+/// (politely by the actor, or by the pump's deliver-or-prune for
+/// whatever that missed) and the registry forgets the id.
 async fn drive_socket(
     mut socket: axum::extract::ws::WebSocket,
-    lua: ActiasRuntime,
+    factory: actias_worker_core::connections::actor::VmFactory,
     pending: actias_worker_core::extensions::sockets::PendingUpgrade,
     registry: Arc<actias_worker_core::connections::ConnectionRegistry>,
     router: ObjectRouter,
     node: String,
 ) {
+    use actias_worker_core::connections::actor::ConnectionTask;
     use actias_worker_core::connections::{InboxItem, OutboundFrame, inbox};
-    use actias_worker_core::extensions::sockets::{SockShared, run_connection};
+    use actias_worker_core::extensions::sockets::SockShared;
     use axum::extract::ws::Message;
 
     let connection_id = format!("conn#{}", uuid::Uuid::new_v4().simple());
@@ -999,7 +1031,6 @@ async fn drive_socket(
         node,
         pending.class.clone(),
         pending.name.clone(),
-        inbox_rx,
         out_tx,
         router,
     );
@@ -1046,10 +1077,10 @@ async fn drive_socket(
         }
     };
 
-    let program = run_connection(&lua, pending, shared);
-    let (_, outcome) = tokio::join!(wire, program);
+    let task = ConnectionTask::new(inbox_rx, shared, pending.spec, pending.seed, factory);
+    let (_, outcome) = tokio::join!(wire, task.run());
     if let Err(error) = outcome {
-        actias_common::tracing::debug!(%error, connection_id, "connection program ended with an error");
+        actias_common::tracing::debug!(%error, connection_id, "connection ended with an error");
     }
     registry.unregister(&connection_id);
 }
@@ -1315,16 +1346,15 @@ mod tests {
         };
         let source = br#"
             local U = object "U" {}
+            local Echo = connection "Echo" {
+                frame = function(conn, data)
+                    conn:send({ echo = data.hello })
+                    conn:close()
+                end,
+            }
             on "fetch" (function(request)
                 if request.upgrade then
-                    return request:upgrade(function(sock)
-                        sock:each(function(item)
-                            if item.kind == "frame" then
-                                sock:send({ echo = item.data.hello })
-                                return true
-                            end
-                        end)
-                    end, U("solo"))
+                    return request:upgrade(Echo, U("solo"))
                 end
                 return { body = "no ws" }
             end)

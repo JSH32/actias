@@ -8,19 +8,6 @@ type Uri = {
     tostring: (self: Uri) -> string,
 }
 
--- The sock value connection programs receive from request:upgrade.
--- `each` takes a handler because Luau cannot resume a yield inside a
--- generic-for iterator; `recv` is the manual-while primitive.
-type SocketItem = { kind: string, event: StreamEvent?, data: any }
-type Socket = {
-    each: (self: Socket, handler: (SocketItem) -> boolean?) -> (),
-    recv: (self: Socket) -> SocketItem?,
-    send: (self: Socket, data: any) -> boolean,
-    follow: (self: Socket, target: any, topic: string, filter: any?) -> boolean,
-    unfollow: (self: Socket, target: any, topic: string) -> boolean,
-    close: (self: Socket) -> boolean,
-}
-
 -- The conn surface a declared connection's handlers receive: the wire
 -- verbs plus the identity it speaks as and its json-serializable
 -- session scratchpad.
@@ -48,8 +35,10 @@ declare connection: (class: string) -> (body: ConnectionBody) -> ConnectionClass
 
 -- An incoming request. `upgrade` is typed present (not optional):
 -- calling through an optional field leaves the old solver unable to
--- pick the function type, so the program's sock parameter would stay
--- untyped; non-upgradable requests refuse at runtime either way.
+-- pick the function type; non-upgradable requests refuse at runtime
+-- either way. The seed becomes the connection's initial conn.state
+-- and sits between the class and the identity; two arguments means no
+-- seed.
 type HttpRequest = {
     uri: string,
     method: string?,
@@ -59,7 +48,7 @@ type HttpRequest = {
     context_uri: string?,
     path: string?,
     query: { [string]: string }?,
-    upgrade: (self: HttpRequest, program: (Socket) -> (), identity: any) -> any,
+    upgrade: (self: HttpRequest, program: ConnectionClass, seed_or_identity: any, identity: any?) -> any,
 }
 
 -- What make_request sends; outgoing requests carry no upgrade.
