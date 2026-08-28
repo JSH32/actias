@@ -17,13 +17,49 @@ import {
   DocsHint,
   Drawer,
   DrawerSection,
-  Fact,
   FilterTabs,
   StatePill,
   copyText,
   formatBytes,
 } from '@/components/inspector';
 import classes from '../../../components/inspector.module.css';
+
+/** A declared sqlite type folded to its affinity family, for color. */
+function typeFamily(declared?: string | null): 'number' | 'text' | 'blob' {
+  const type = (declared ?? '').toUpperCase();
+  if (/INT|REAL|FLOA|DOUB|NUM|DEC|BOOL/.test(type)) return 'number';
+  if (type.includes('BLOB')) return 'blob';
+  return 'text';
+}
+
+/** The color a type family wears, echoing the platform's kind colors;
+ * text is the common case and stays quiet. */
+const FAMILY_COLOR: Record<string, string | undefined> = {
+  number: 'var(--kind-kv)',
+  blob: 'var(--viola)',
+  text: undefined,
+};
+
+/** A tiny outlined chip naming a column's declared type. */
+function TypeChip({ declared }: { declared?: string | null }) {
+  if (!declared) return null;
+  const color = FAMILY_COLOR[typeFamily(declared)] ?? 'var(--ink-3)';
+  return (
+    <span
+      style={{
+        font: '400 9px/1 var(--mono)',
+        letterSpacing: 0,
+        textTransform: 'none',
+        color,
+        border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+        borderRadius: 4,
+        padding: '2px 5px',
+      }}
+    >
+      {declared.toLowerCase()}
+    </span>
+  );
+}
 
 const PAGE_SIZE = 50;
 
@@ -390,7 +426,14 @@ function Databases({
                         <span key={name} className={classes.columnHead}>
                           {name}
                           {column?.type ? (
-                            <span className={classes.columnType}>
+                            <span
+                              className={classes.columnType}
+                              style={{
+                                color:
+                                  FAMILY_COLOR[typeFamily(column.type)] ??
+                                  'var(--ink-3)',
+                              }}
+                            >
                               {column.type}
                             </span>
                           ) : null}
@@ -411,11 +454,34 @@ function Databases({
                         )
                       }
                     >
-                      {columnNames.map((name) => (
-                        <span key={name} className={classes.cellDim}>
-                          {row[name] == null ? 'NULL' : String(row[name])}
-                        </span>
-                      ))}
+                      {columnNames.map((name) => {
+                        const cell = row[name];
+                        if (cell == null) {
+                          return (
+                            <span
+                              key={name}
+                              className={classes.cellDim}
+                              style={{ fontStyle: 'italic', opacity: 0.55 }}
+                            >
+                              NULL
+                            </span>
+                          );
+                        }
+                        const numeric = typeof cell === 'number';
+                        return (
+                          <span
+                            key={name}
+                            className={
+                              numeric ? classes.cellMono : classes.cellDim
+                            }
+                            style={
+                              numeric ? { color: 'var(--kind-kv)' } : undefined
+                            }
+                          >
+                            {String(cell)}
+                          </span>
+                        );
+                      })}
                     </button>
                   ))}
                 </div>
@@ -466,6 +532,15 @@ function Databases({
                 {columnNames.map((name) => {
                   const column = columns.find((entry) => entry.name === name);
                   const cell = inspectedRow[name];
+                  const head = (
+                    <span
+                      className={classes.sectionLabel}
+                      style={{ display: 'flex', alignItems: 'center', gap: 7 }}
+                    >
+                      {name}
+                      <TypeChip declared={column?.type} />
+                    </span>
+                  );
                   const parsed = ((): unknown => {
                     if (typeof cell !== 'string') return undefined;
                     const lead = cell.trimStart()[0];
@@ -476,24 +551,40 @@ function Databases({
                       return undefined;
                     }
                   })();
-                  if (parsed !== undefined) {
-                    return (
-                      <div key={name} className={classes.jsonCell}>
-                        <span className={classes.sectionLabel}>
-                          {`${name}${column?.type ? ` (${column.type})` : ''}`}
-                        </span>
-                        <JsonValue value={parsed} defaultDepth={1} />
-                      </div>
-                    );
-                  }
                   return (
-                    <Fact
-                      key={name}
-                      label={`${name}${
-                        column?.type ? ` (${column.type})` : ''
-                      }`}
-                      value={cell == null ? 'NULL' : String(cell)}
-                    />
+                    <div key={name} className={classes.jsonCell}>
+                      {head}
+                      {parsed !== undefined ? (
+                        <JsonValue value={parsed} defaultDepth={1} />
+                      ) : cell == null || cell === '' ? (
+                        <span
+                          className={classes.cellDim}
+                          style={{ fontStyle: 'italic', opacity: 0.55 }}
+                        >
+                          {cell == null ? 'NULL' : 'empty string'}
+                        </span>
+                      ) : (
+                        <button
+                          title="Copy value"
+                          onClick={() => copyText(String(cell))}
+                          style={{
+                            font: '400 12px/1.5 var(--mono)',
+                            color:
+                              typeof cell === 'number'
+                                ? 'var(--kind-kv)'
+                                : 'var(--ink-1)',
+                            background: 'transparent',
+                            border: 0,
+                            padding: 0,
+                            cursor: 'copy',
+                            textAlign: 'left',
+                            overflowWrap: 'anywhere',
+                          }}
+                        >
+                          {String(cell)}
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </DrawerSection>
@@ -671,13 +762,26 @@ function Databases({
                     }}
                   >
                     <span className={classes.cellMono}>{column.name}</span>
-                    <span className={classes.cellDim}>
-                      {column.type || '—'}
+                    <span>
+                      <TypeChip declared={column.type} />
+                      {!column.type && (
+                        <span className={classes.cellDim}>any</span>
+                      )}
                     </span>
-                    <span className={classes.cellDim}>
-                      {column.notNull ? 'NOT NULL' : 'NULL'}
+                    <span
+                      className={classes.cellDim}
+                      style={
+                        column.notNull
+                          ? undefined
+                          : { fontStyle: 'italic', opacity: 0.55 }
+                      }
+                    >
+                      {column.notNull ? 'NOT NULL' : 'nullable'}
                     </span>
-                    <span className={classes.cellDim}>
+                    <span
+                      className={classes.cellDim}
+                      style={{ color: 'var(--warn)' }}
+                    >
                       {column.primaryKey ? 'PK' : ''}
                     </span>
                   </div>

@@ -90,6 +90,14 @@
   color: var(--ink-3);
   flex-shrink: 0;
 }
+/* Each source section's icon wears its kind color, the same coding the
+ * rest of the console uses for databases and objects. */
+.railKindDb svg {
+  color: var(--kind-db);
+}
+.railKindObj svg {
+  color: var(--kind-obj);
+}
 
 .railNote {
   margin: 0;
@@ -122,7 +130,7 @@
 .railItemActive {
   composes: railItem;
   border-left-color: var(--luna);
-  background: var(--night-1);
+  background: var(--luna-tint);
   font-weight: 500;
   color: var(--ink-1);
 }
@@ -166,7 +174,7 @@
 .railInstanceActive {
   composes: railInstance;
   border-left-color: var(--luna);
-  background: var(--night-1);
+  background: var(--luna-tint);
   font-weight: 500;
   color: var(--ink-1);
 }

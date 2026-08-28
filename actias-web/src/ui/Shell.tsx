@@ -655,7 +655,7 @@ export function Shell({ children }: React.PropsWithChildren) {
         <div className={classes.rail}>
           <div className={classes.railHead}>SOURCES</div>
           <div className={classes.railSection}>
-            <div className={classes.railSectionHead}>
+            <div className={`${classes.railSectionHead} ${classes.railKindDb}`}>
               <Icon name="databases" size={13} />
               SQL DATABASES
             </div>
@@ -691,7 +691,9 @@ export function Shell({ children }: React.PropsWithChildren) {
           </div>
           {(objectCounts?.length ?? 0) > 0 && (
             <div className={classes.railSection}>
-              <div className={classes.railSectionHead}>
+              <div
+                className={`${classes.railSectionHead} ${classes.railKindObj}`}
+              >
                 <Icon name="kv" size={13} />
                 OBJECT INSTANCES
               </div>
