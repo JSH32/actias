@@ -607,7 +607,9 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
 }
 
 /** A queue payload is text on the wire. Explore it when it parses as
- * json, show it verbatim when it does not. */
+ * json; a truncated json preview (the journal keeps only the head of a
+ * delivered payload) still tints token by token; anything else shows
+ * verbatim. */
 function PayloadView({ text }: { text: string }) {
   const parsed = React.useMemo(() => {
     try {
@@ -617,8 +619,25 @@ function PayloadView({ text }: { text: string }) {
     }
   }, [text]);
 
-  if (!parsed.ok) return <pre className={classes.pre}>{text}</pre>;
-  return <JsonValue value={parsed.value} defaultDepth={2} />;
+  if (parsed.ok) return <JsonValue value={parsed.value} defaultDepth={2} />;
+  if (looksLikeJson(text)) {
+    return (
+      <pre className={classes.pre}>
+        <JsonInline text={text} wrap />
+        <span
+          style={{
+            display: 'block',
+            marginTop: 6,
+            font: '400 10px var(--mono)',
+            color: 'var(--ink-3)',
+          }}
+        >
+          preview: the journal keeps only the head of a delivered payload
+        </span>
+      </pre>
+    );
+  }
+  return <pre className={classes.pre}>{text}</pre>;
 }
 
 export default function QueuesPage() {

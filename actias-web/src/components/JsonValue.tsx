@@ -220,7 +220,7 @@ type InlinePart = {
 
 /** Inline token tinting for json-looking TEXT: a lexer, not a parser,
  * so a truncated preview still colors up to the cut. */
-export function JsonInline({ text }: { text: string }) {
+export function JsonInline({ text, wrap }: { text: string; wrap?: boolean }) {
   const parts = React.useMemo(() => {
     const out: InlinePart[] = [];
     const pattern =
@@ -252,7 +252,12 @@ export function JsonInline({ text }: { text: string }) {
     plain: undefined,
   };
   return (
-    <span className={classes.inline}>
+    <span
+      className={classes.inline}
+      style={
+        wrap ? { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } : undefined
+      }
+    >
       {parts.map((part, index) => (
         <span key={index} className={classFor[part.kind]}>
           {part.text}
