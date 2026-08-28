@@ -64,18 +64,10 @@ jobs:
             context: .
             dockerfile: ./docker/Dockerfile.rust
             build-args: "CRATE_NAME=actias-script-service"
-          - name: actias_script_service_migration
-            context: ./actias-script-service
-            dockerfile: ./actias-script-service/Dockerfile.migration
-            build-args: ""
           - name: actias_secret_service
             context: .
             dockerfile: ./docker/Dockerfile.rust
             build-args: "CRATE_NAME=actias-secret-service"
-          - name: actias_secret_service_migration
-            context: ./actias-secret-service
-            dockerfile: ./actias-secret-service/Dockerfile.migration
-            build-args: ""
           - name: actias_kv_service
             context: .
             dockerfile: ./docker/Dockerfile.rust
@@ -87,10 +79,6 @@ jobs:
           - name: actias_api
             context: .
             dockerfile: ./docker/Dockerfile.api
-            build-args: ""
-          - name: actias_api_migration
-            context: ./actias-api
-            dockerfile: ./actias-api/Dockerfile.migration
             build-args: ""
           - name: actias_web
             context: .

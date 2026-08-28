@@ -2,6 +2,8 @@ pub mod classes;
 pub mod config;
 pub mod logging;
 pub mod naming;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 #[cfg(feature = "otel")]
 pub mod otel;
 pub use thiserror;

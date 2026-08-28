@@ -31,6 +31,22 @@ pub mod proto_node_registry {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_tracing().unwrap();
 
+    // The same image is both the service and its migrator, so a
+    // deployment never carries a second artifact that can drift from
+    // the schema it applies: these are the migrations compiled into
+    // THIS binary. It reads DATABASE_URL and nothing else, ahead of
+    // the service's own config, so applying a schema never requires
+    // the credentials serving traffic does.
+    if std::env::args().any(|arg| arg == "--migrate") {
+        let url: String = actias_common::config::get_env("DATABASE_URL");
+        info!("Applying script service migrations");
+        actias_common::postgres::ensure_database(&url).await?;
+        let pool = PgPoolOptions::new().connect(&url).await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        info!("Migrations applied");
+        return Ok(());
+    }
+
     let config = Config::new();
     let addr = format!("0.0.0.0:{}", config.port).parse().unwrap();
 

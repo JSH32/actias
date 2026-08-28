@@ -31,6 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Applying kv migrations");
         match config.backend {
             Backend::Postgres(url) => {
+                actias_common::postgres::ensure_database(&url).await?;
                 let pool = postgres_store::connect(&url).await;
                 migrate::apply_postgres(&pool).await?;
             }

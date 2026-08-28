@@ -76,14 +76,21 @@ services:
       # Node liveness ttl; leases live exactly this long past a heartbeat.
       - NODE_TTL_SECS=${NODE_TTL_SECS:-45}
 
+  # The service image IS the migrator: same artifact, same compiled-in
+  # schema, one flag apart. It also creates its own database when the
+  # server has none, so a volume that predates the service needs no
+  # hand-run CREATE.
   script_service_migration:
-    image: ghcr.io/jsh32/actias_script_service_migration:latest
+    image: ghcr.io/jsh32/actias_script_service:latest
     depends_on:
       postgres:
         condition: service_healthy
     build:
-      context: ./actias-script-service
-      dockerfile: ./Dockerfile.migration
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-script-service
+    command: ["/app/target", "--migrate"]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_script_service
 
@@ -111,13 +118,16 @@ services:
       - SECRET_MASTER_KEY_ID=${SECRET_MASTER_KEY_ID:-kek-1}
 
   secret_service_migration:
-    image: ghcr.io/jsh32/actias_secret_service_migration:latest
+    image: ghcr.io/jsh32/actias_secret_service:latest
     depends_on:
       postgres:
         condition: service_healthy
     build:
-      context: ./actias-secret-service
-      dockerfile: ./Dockerfile.migration
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-secret-service
+    command: ["/app/target", "--migrate"]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_secret_service
 
@@ -267,13 +277,14 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_kv
 
   actias_api_migration:
-    image: ghcr.io/jsh32/actias_api_migration:latest
+    image: ghcr.io/jsh32/actias_api:latest
     depends_on:
       postgres:
         condition: service_healthy
     build:
-      context: ./actias-api
-      dockerfile: ./Dockerfile.migration
+      context: .
+      dockerfile: ./docker/Dockerfile.api
+    command: ["npx", "mikro-orm", "migration:up"]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
 
