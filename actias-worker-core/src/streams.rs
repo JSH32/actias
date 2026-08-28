@@ -1093,7 +1093,7 @@ mod tests {
                         "SELECT 1 FROM members WHERE user = ?", { follower.name }) ~= nil
                 end,
             },
-            admit = function(state, user)
+            enroll = function(state, user)
                 state.sql:exec("INSERT OR IGNORE INTO members VALUES (?)", { user })
             end,
             post = function(state, kind, text)
@@ -1446,7 +1446,7 @@ mod tests {
             .call(
                 "__dispatch",
                 serde_json::json!({
-                    "class": "Hub", "name": "town", "method": "admit",
+                    "class": "Hub", "name": "town", "method": "enroll",
                     "args": ["ada"], "chain": [],
                 }),
             )
@@ -1486,7 +1486,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await
@@ -1676,7 +1676,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await
@@ -1800,7 +1800,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await
@@ -1900,7 +1900,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await
@@ -2181,7 +2181,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await
@@ -2282,7 +2282,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await
@@ -2417,7 +2417,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await
@@ -2485,7 +2485,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await
@@ -2494,7 +2494,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("bob")],
         )
         .await
@@ -2563,7 +2563,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("flaky")],
         )
         .await
@@ -2602,7 +2602,7 @@ mod tests {
             &router,
             "Hub",
             "town",
-            "admit",
+            "enroll",
             vec![serde_json::json!("ada")],
         )
         .await

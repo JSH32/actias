@@ -23,6 +23,7 @@ use mlua::Lua;
 use serde::{Deserialize, Serialize};
 
 mod class_spec;
+pub mod duration;
 pub use class_spec::{ClassSpec, RESERVED_METHODS, TopicPolicy, callable_method};
 
 /// Longest a top-level evaluation may run; declarations are cheap, so
@@ -74,6 +75,10 @@ pub struct Declarations {
     /// dynamically chosen topics are invisible here.
     #[serde(default)]
     pub follow_sites: Vec<String>,
+    /// Class lifecycle declarations: "Class:expire=30d" for a declared
+    /// lifespan, "Class:admit" for a creation gate.
+    #[serde(default)]
+    pub lifecycle: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -279,6 +284,12 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 }
                 for stream in &spec.receives {
                     recorded.receives.push(format!("{class}<-{stream}"));
+                }
+                if let Some(raw) = &spec.expire_raw {
+                    recorded.lifecycle.push(format!("{class}:expire={raw}"));
+                }
+                if spec.admits {
+                    recorded.lifecycle.push(format!("{class}:admit"));
                 }
                 drop(recorded);
                 stub(lua)
@@ -679,6 +690,26 @@ mod tests {
         assert_eq!(declarations.objects, vec!["Room"]);
         assert_eq!(declarations.databases, vec!["main"]);
         assert_eq!(declarations.queues, vec!["gpu"]);
+    }
+
+    #[test]
+    fn lifecycle_declarations_are_recorded() {
+        let declarations = extract(
+            files(&[(
+                "main.lua",
+                r#"object "Session" {
+                    expire = "30d",
+                    admit = function(name) return #name > 3 end,
+                }
+                on "fetch" (function() end)"#,
+            )]),
+            "main.lua",
+        )
+        .expect("extraction succeeds");
+        assert_eq!(
+            declarations.lifecycle,
+            vec!["Session:expire=30d".to_owned(), "Session:admit".to_owned()]
+        );
     }
 
     #[test]

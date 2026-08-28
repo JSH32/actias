@@ -12,7 +12,9 @@ use mlua::Table;
 /// as `__`-prefixed internal methods) and their public spellings, which
 /// handles refuse outright so a `__`-method arriving at dispatch is
 /// provably platform-originated.
-pub const RESERVED_METHODS: [&str; 6] = ["init", "alarm", "receive", "receives", "follow", "hooks"];
+pub const RESERVED_METHODS: [&str; 7] = [
+    "init", "alarm", "receive", "receives", "follow", "hooks", "admit",
+];
 
 /// Whether a method name may travel through a handle.
 pub fn callable_method(method: &str) -> bool {
@@ -51,6 +53,13 @@ pub struct ClassSpec {
     /// Consumed streams, "Source:topic", in declaration order.
     pub receives: Vec<String>,
     pub migrations: Option<String>,
+    /// The declared lifespan, exactly as written ("30d"); what the
+    /// contract records.
+    pub expire_raw: Option<String>,
+    /// The lifespan in seconds, what the claim stamps; absent = never.
+    pub expire_secs: Option<u64>,
+    /// Whether the class gates creation with an `admit` function.
+    pub admits: bool,
 }
 
 impl ClassSpec {
@@ -144,6 +153,40 @@ impl ClassSpec {
             }
         }
 
+        // The lifecycle declarations (docs/OBJECT-LIFECYCLE.md): a
+        // lifespan must be a duration of at least a second, a gate must
+        // be a function, and both refuse here so check and the runtime
+        // refuse identically.
+        let expire = body.get::<mlua::Value>("expire")?;
+        let (expire_raw, expire_secs) = match &expire {
+            mlua::Value::Nil => (None, None),
+            mlua::Value::String(raw) => {
+                let raw = raw.to_str()?.to_string();
+                let ms = crate::duration::parse_duration_ms(&raw)
+                    .map_err(|why| mlua::Error::RuntimeError(format!("'{name}' expire: {why}")))?;
+                if ms < 1000 {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "'{name}' expire: '{raw}' is under a second; a lifespan                          that short is a bug, not a policy."
+                    )));
+                }
+                (Some(raw), Some((ms / 1000) as u64))
+            }
+            _ => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "'{name}' expire must be a duration string like \"30d\"."
+                )));
+            }
+        };
+        let admits = match body.get::<mlua::Value>("admit")? {
+            mlua::Value::Nil => false,
+            mlua::Value::Function(_) => true,
+            _ => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "'{name}' admit must be a function taking the instance name."
+                )));
+            }
+        };
+
         Ok(ClassSpec {
             name: name.to_owned(),
             methods,
@@ -151,6 +194,9 @@ impl ClassSpec {
             declared_publishes,
             receives,
             migrations: body.get::<String>("migrations").ok(),
+            expire_raw,
+            expire_secs,
+            admits,
         })
     }
 
@@ -210,6 +256,44 @@ mod tests {
             spec.declared_publishes
                 .contains(&"odd=sideways".to_string())
         );
+    }
+
+    #[test]
+    fn a_lifespan_and_a_gate_parse_and_refuse_identically() {
+        let lua = Lua::new();
+        let body: Table = lua
+            .load(
+                r#"{
+                    expire = "30d",
+                    admit = function(name) return #name > 3 end,
+                    close = function(state) end,
+                }"#,
+            )
+            .eval()
+            .expect("body evaluates");
+        let spec = ClassSpec::parse("Session", &body).expect("parses");
+        assert_eq!(spec.expire_raw.as_deref(), Some("30d"));
+        assert_eq!(spec.expire_secs, Some(30 * 86400));
+        assert!(spec.admits);
+        assert!(
+            !spec.methods.contains("admit"),
+            "the gate is platform-invoked, never routable"
+        );
+        assert!(spec.methods.contains("close"));
+
+        for (bad, named) in [
+            (r#"{ expire = "yesterday" }"#, "expire"),
+            (r#"{ expire = 30 }"#, "duration string"),
+            (r#"{ expire = "200ms" }"#, "under a second"),
+            (r#"{ admit = "please" }"#, "admit must be a function"),
+        ] {
+            let body: Table = lua.load(bad).eval().expect("evaluates");
+            let refused = ClassSpec::parse("Session", &body).expect_err("must refuse");
+            assert!(
+                refused.to_string().contains(named),
+                "{bad} should name '{named}': {refused}"
+            );
+        }
     }
 
     #[test]

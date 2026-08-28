@@ -58,6 +58,12 @@ pub fn handle(directory: &str) -> Result<()> {
             declared.workflows.join(", ").purple()
         );
     }
+    if !declared.lifecycle.is_empty() {
+        println!(
+            "\u{23f3} Lifecycle: {}",
+            declared.lifecycle.join(", ").purple()
+        );
+    }
     if !declared.publishes.is_empty() {
         println!("📡 Publishes: {}", declared.publishes.join(", ").purple());
     }

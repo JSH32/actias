@@ -44,6 +44,12 @@ type ObjectState = {
 type ClassBody = {
     publishes: { [number | string]: string }?,
     migrations: string?,
+    -- A name this returns false for never comes to exist: no lease, no
+    -- row, no file. Runs once per fresh identity, never on access.
+    admit: ((name: string) -> boolean)?,
+    -- An instance untouched this long is deleted by the platform; touch
+    -- refreshes. A pending alarm blocks expiry.
+    expire: string?,
     receives: { [string]: (state: ObjectState, event: StreamEvent) -> () }?,
     hooks: {
         init: ((state: ObjectState) -> ())?,
