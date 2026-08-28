@@ -173,8 +173,15 @@ function LongString({ value }: { value: string }) {
   }
   const kb = new Blob([value]).size / 1024;
   return (
-    <span className={classes.string}>
-      &quot;{value.slice(0, 120)}
+    <span
+      className={classes.string}
+      style={{
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'anywhere',
+        minWidth: 0,
+      }}
+    >
+      &quot;{value.slice(0, 56)}
       <span className={classes.summary}>&hellip;</span>&quot;
       <button
         type="button"

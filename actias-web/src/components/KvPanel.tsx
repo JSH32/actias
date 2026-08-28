@@ -4,7 +4,7 @@
  * a value drawer that writes through. The copy is the contract: editing a
  * value here changes what production reads on the next request.
  */
-import { JsonInline, looksLikeJson } from '@/components/JsonValue';
+import { JsonInline, JsonValue, looksLikeJson } from '@/components/JsonValue';
 import * as React from 'react';
 import { useRouter } from 'next/router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -73,6 +73,9 @@ export default function KvPanel({
   const [selectedKey, setSelectedKey] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState<string | null>(null);
   const [raw, setRaw] = React.useState(false);
+  // A json pair opens as an explorable tree, like sql's json cells;
+  // editing is one step away and gets the textarea back.
+  const [exploring, setExploring] = React.useState(true);
 
   const { data: namespaces } = useQuery({
     queryKey: ['namespaces', project.id],
@@ -159,6 +162,15 @@ export default function KvPanel({
   const currentType = current ? typeName(current) : 'string';
   const editorValue = draft ?? current?.value ?? '';
   const dirty = current != null && draft != null && draft !== current.value;
+  const explorable = React.useMemo(() => {
+    if (currentType !== 'json') return null;
+    try {
+      return { value: JSON.parse(editorValue) as unknown };
+    } catch {
+      return null;
+    }
+  }, [currentType, editorValue]);
+  React.useEffect(() => setExploring(true), [selectedKey]);
   const prettyToggleable = currentType === 'json';
   const displayValue = React.useMemo(() => {
     if (!prettyToggleable || raw) return editorValue;
@@ -449,14 +461,32 @@ export default function KvPanel({
                 title="Value"
                 onClose={() => selectPair(current.key)}
                 actions={
-                  prettyToggleable && (
+                  prettyToggleable &&
+                  (exploring && explorable ? (
                     <button
                       className={classes.smallButton}
-                      onClick={() => setRaw((value) => !value)}
+                      onClick={() => setExploring(false)}
                     >
-                      {raw ? 'json' : 'raw'}
+                      edit
                     </button>
-                  )
+                  ) : (
+                    <>
+                      {explorable && (
+                        <button
+                          className={classes.smallButton}
+                          onClick={() => setExploring(true)}
+                        >
+                          explore
+                        </button>
+                      )}
+                      <button
+                        className={classes.smallButton}
+                        onClick={() => setRaw((value) => !value)}
+                      >
+                        {raw ? 'json' : 'raw'}
+                      </button>
+                    </>
+                  ))
                 }
               >
                 <DrawerSection label="Key">
@@ -495,7 +525,11 @@ export default function KvPanel({
 
                 <DrawerSection
                   label={
-                    prettyToggleable && !raw ? 'Value (json)' : 'Value (raw)'
+                    exploring && explorable
+                      ? 'Value'
+                      : prettyToggleable && !raw
+                      ? 'Value (json)'
+                      : 'Value (raw)'
                   }
                   aside={
                     dirty ? (
@@ -503,15 +537,23 @@ export default function KvPanel({
                     ) : null
                   }
                 >
-                  <textarea
-                    className={classes.valueArea}
-                    value={displayValue}
-                    readOnly={!write}
-                    spellCheck={false}
-                    onChange={(event) => setDraft(event.target.value)}
-                  />
-                  {parseError && (
-                    <span className={classes.attemptError}>{parseError}</span>
+                  {exploring && explorable ? (
+                    <JsonValue value={explorable.value} defaultDepth={2} />
+                  ) : (
+                    <>
+                      <textarea
+                        className={classes.valueArea}
+                        value={displayValue}
+                        readOnly={!write}
+                        spellCheck={false}
+                        onChange={(event) => setDraft(event.target.value)}
+                      />
+                      {parseError && (
+                        <span className={classes.attemptError}>
+                          {parseError}
+                        </span>
+                      )}
+                    </>
                   )}
                 </DrawerSection>
 
