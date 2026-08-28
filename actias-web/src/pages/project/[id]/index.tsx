@@ -181,55 +181,77 @@ function Overview({ project }: { project: ProjectDto }) {
     }
   }
 
-  const tiles = [
+  const orphanedDatabases = (databases ?? []).filter(
+    (database: { orphaned?: boolean }) => database.orphaned,
+  ).length;
+  const pairTotal = (namespaces ?? []).reduce(
+    (sum: number, namespace: { count?: number }) =>
+      sum + (namespace.count ?? 0),
+    0,
+  );
+
+  // The sidebar already names every section; repeating it here would be
+  // a second nav. What the overview adds is the numbers: how many of
+  // each thing, and one live fact about it. A quiet strip carries that.
+  const holdings: {
+    noun: string;
+    value?: number;
+    fact?: string;
+    href: string;
+  }[] = [
     {
-      label: 'Scripts',
+      noun: `script${scripts?.length === 1 ? '' : 's'}`,
       value: scripts?.length,
-      sub: scripts
-        ? `${serving} serving · ${(scripts?.length ?? 0) - serving} unpublished`
+      fact: scripts
+        ? `${serving} serving${
+            (scripts?.length ?? 0) - serving > 0
+              ? `, ${(scripts?.length ?? 0) - serving} unpublished`
+              : ''
+          }`
         : undefined,
       href: 'scripts',
     },
     {
-      label: 'Workflows',
+      noun: `workflow${definitions?.length === 1 ? '' : 's'}`,
       value: definitions?.length,
-      sub:
+      fact:
         runGroups != null
           ? `${activeRuns} active run${activeRuns === 1 ? '' : 's'}`
           : undefined,
       href: 'workflows',
     },
     {
-      label: 'Queues',
+      noun: `queue${queues?.length === 1 ? '' : 's'}`,
       value: queues?.length,
-      sub: queues ? `${depthTotal} queued now` : undefined,
+      fact: queues ? `${depthTotal} queued now` : undefined,
       href: 'queues',
     },
     {
-      label: 'Databases',
+      noun: `database${databases?.length === 1 ? '' : 's'}`,
       value: databases?.length,
-      sub: 'single-writer, replica reads',
+      fact: orphanedDatabases > 0 ? `${orphanedDatabases} orphaned` : undefined,
       href: 'databases',
     },
     {
-      label: 'Objects',
+      noun: `object class${objectCounts?.length === 1 ? '' : 'es'}`,
       value: objectCounts?.length,
-      sub:
+      fact:
         objectCounts != null
           ? `${objectInstances} instance${objectInstances === 1 ? '' : 's'}`
           : undefined,
       href: 'databases',
     },
     {
-      label: 'KV namespaces',
+      noun: `kv namespace${namespaces?.length === 1 ? '' : 's'}`,
       value: namespaces?.length,
-      sub: 'shared by every script here',
+      fact: namespaces
+        ? `${pairTotal} pair${pairTotal === 1 ? '' : 's'}`
+        : undefined,
       href: 'kv',
     },
     {
-      label: 'Members',
+      noun: `member${members?.length === 1 ? '' : 's'}`,
       value: members?.length,
-      sub: 'the access list governs it all',
       href: 'members',
     },
   ];
@@ -339,28 +361,48 @@ function Overview({ project }: { project: ProjectDto }) {
             </p>
           )}
 
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-              gap: 12,
-            }}
-          >
-            {tiles.map((tile) => (
-              <Link
-                key={tile.label}
-                href={`${base}/${tile.href}`}
-                className={classes.overviewCard}
-              >
-                <span className={classes.overviewLabel}>{tile.label}</span>
-                <span className={classes.overviewValue}>
-                  {tile.value ?? '–'}
-                </span>
-                {tile.sub && (
-                  <span className={classes.overviewSub}>{tile.sub}</span>
-                )}
-              </Link>
-            ))}
+          {/* The ledger: one row, one cell per resource kind, hairlines
+              between. It never wraps; a genuinely narrow window scrolls
+              it inside the card, the same posture as every wide table. */}
+          <div className={classes.card}>
+            <div style={{ display: 'flex', overflowX: 'auto' }}>
+              {holdings.map((row, index) => (
+                <Link
+                  key={row.href + row.noun}
+                  href={`${base}/${row.href}`}
+                  style={{
+                    flex: '1 0 auto',
+                    minWidth: 132,
+                    padding: '12px 16px 11px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                    textDecoration: 'none',
+                    color: 'inherit',
+                    borderLeft: index > 0 ? '1px solid var(--line)' : 'none',
+                  }}
+                >
+                  <span style={{ fontSize: 12.5, whiteSpace: 'nowrap' }}>
+                    <span
+                      style={{
+                        font: '650 16px var(--mono)',
+                        color: row.value ? 'var(--ink-1)' : 'var(--ink-3)',
+                        marginRight: 7,
+                      }}
+                    >
+                      {row.value ?? '\u2013'}
+                    </span>
+                    {row.noun}
+                  </span>
+                  <span
+                    className={classes.cellDim}
+                    style={{ whiteSpace: 'nowrap' }}
+                  >
+                    {row.fact ?? ' '}
+                  </span>
+                </Link>
+              ))}
+            </div>
           </div>
 
           <div
