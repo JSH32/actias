@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useRouter } from 'next/router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { showError } from '@/helpers/api';
 import {
   ColumnInfoDto,
@@ -22,7 +22,18 @@ import {
   copyText,
   formatBytes,
 } from '@/components/inspector';
+import { toast } from '@/ui/toast';
 import classes from '../../../components/inspector.module.css';
+
+/** "in 3m" / "now" from a unix-ms deadline; lifetimes look forward,
+ * which timeAgo does not. */
+function dueIn(ms: number): string {
+  const left = ms - Date.now();
+  if (left <= 0) return 'now';
+  if (left < 3_600_000) return `in ${Math.max(1, Math.round(left / 60_000))}m`;
+  if (left < 86_400_000) return `in ${Math.round(left / 3_600_000)}h`;
+  return `in ${Math.round(left / 86_400_000)}d`;
+}
 
 /** A declared sqlite type folded to its affinity family, for color. */
 function typeFamily(declared?: string | null): 'number' | 'text' | 'blob' {
@@ -159,6 +170,17 @@ function Databases({
           (database: ResourceInstanceDto) => database.name === selectedDb,
         ) ?? (databases ?? [])[0]
       : undefined;
+  const queryClient = useQueryClient();
+
+  // The directory row itself, lifetime included; what the header's
+  // status and facts render.
+  const instanceRow: ObjectInstanceDto | undefined = (
+    objectMatch?.items ?? []
+  ).find(
+    (entry: ObjectInstanceDto) =>
+      entry.class === selectedObj?.class && entry.name === selectedObj?.name,
+  );
+
   // The object source, enriched with whose code it runs.
   const objectSource = selectedObj
     ? {
@@ -313,6 +335,41 @@ function Databases({
                     : 'var(--kind-db)'
                 }
               />
+              {objectSource && instanceRow && (
+                <StatePill
+                  state={
+                    instanceRow.deletedAtMs > 0
+                      ? 'deleting'
+                      : instanceRow.nodeId
+                      ? 'resident'
+                      : 'cold'
+                  }
+                  color={
+                    instanceRow.deletedAtMs > 0
+                      ? 'var(--err)'
+                      : instanceRow.nodeId
+                      ? 'var(--luna)'
+                      : 'var(--ink-3)'
+                  }
+                />
+              )}
+              {objectSource && instanceRow && instanceRow.expireAtMs > 0 && (
+                <span
+                  className={classes.metaChip}
+                  title="Touch renews the lease and the lifespan."
+                >
+                  expires {dueIn(instanceRow.expireAtMs)}
+                </span>
+              )}
+              {objectSource && instanceRow && instanceRow.alarmDueMs > 0 && (
+                <span
+                  className={classes.metaChip}
+                  title="A pending alarm blocks expiry."
+                  style={{ color: 'var(--warn)' }}
+                >
+                  alarm due
+                </span>
+              )}
               <span className={classes.metaChip}>
                 {formatBytes(overview?.sizeBytes)}
               </span>
@@ -341,6 +398,40 @@ function Databases({
             </p>
           </div>
           <div className={classes.pageActions}>
+            {objectSource && instanceRow && !instanceRow.deletedAtMs && (
+              <button
+                className={classes.dangerButton}
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      `Delete ${objectSource.class} "${objectSource.name}"? ` +
+                        'Storage, snapshot and edges are reclaimed; the name ' +
+                        'may be recreated later and starts fresh. There is no undo.',
+                    )
+                  ) {
+                    return;
+                  }
+                  api.objects
+                    .deleteObject(
+                      project.id,
+                      objectSource.class,
+                      objectSource.name,
+                    )
+                    .then(() => {
+                      toast({
+                        title: 'Deleting',
+                        message: 'The janitor finishes it within a sweep.',
+                      });
+                      queryClient.invalidateQueries({
+                        queryKey: ['object-instance', project.id],
+                      });
+                    })
+                    .catch(showError);
+                }}
+              >
+                Delete
+              </button>
+            )}
             <button
               className={classes.ghostButton}
               onClick={() => setTab('query')}

@@ -24,6 +24,7 @@ export type { CreateScriptDto } from './models/CreateScriptDto';
 export type { CreateServiceTokenDto } from './models/CreateServiceTokenDto';
 export type { CreateUserDto } from './models/CreateUserDto';
 export type { DatabaseOverviewDto } from './models/DatabaseOverviewDto';
+export type { DeleteOutcomeDto } from './models/DeleteOutcomeDto';
 export { FileDto } from './models/FileDto';
 export type { FollowerEdgeDto } from './models/FollowerEdgeDto';
 export type { FollowersDto } from './models/FollowersDto';

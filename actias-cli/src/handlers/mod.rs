@@ -2,6 +2,7 @@ pub mod aliases;
 pub mod check;
 pub mod dev;
 pub mod init;
+pub mod objects;
 pub mod projects;
 pub mod publish;
 pub mod revisions;

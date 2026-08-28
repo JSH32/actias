@@ -110,6 +110,37 @@ export class ObjectInstanceDto {
     description: 'Public identifier of the script whose code it runs.',
   })
   declaredBy: string;
+
+  @ApiProperty({ description: 'Unix ms of the first claim.' })
+  createdMs: number;
+
+  @ApiProperty({
+    description: 'When the platform deletes it if untouched; 0 = never.',
+  })
+  expireAtMs: number;
+
+  @ApiProperty({
+    description:
+      'Tombstone time; nonzero is a deletion in progress the janitor is finishing.',
+  })
+  deletedAtMs: number;
+
+  @ApiProperty({ description: "The pending alarm's due time; 0 = none." })
+  alarmDueMs: number;
+
+  @ApiProperty({
+    description: 'The lease holder; empty = cold, next touch revives.',
+  })
+  nodeId: string;
+}
+
+/** What a deletion request settled. */
+export class DeleteOutcomeDto {
+  @ApiProperty({
+    description:
+      'Rows tombstoned by this request; the janitor finishes each one.',
+  })
+  deleting: number;
 }
 
 /** One page of a class's instances, with how many match in all. */

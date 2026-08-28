@@ -3,6 +3,7 @@
 /* eslint-disable */
 import type { ClassCountDto } from '../models/ClassCountDto';
 import type { DatabaseOverviewDto } from '../models/DatabaseOverviewDto';
+import type { DeleteOutcomeDto } from '../models/DeleteOutcomeDto';
 import type { FollowersDto } from '../models/FollowersDto';
 import type { ObjectPageDto } from '../models/ObjectPageDto';
 import type { SqlQueryDto } from '../models/SqlQueryDto';
@@ -45,6 +46,54 @@ export class ObjectsService {
                 'prefix': prefix,
                 'page': page,
                 'pageSize': pageSize,
+            },
+        });
+    }
+
+    /**
+     * Deletion is forget: storage, snapshot and edges are reclaimed,
+     * the name may be recreated later and starts fresh, and there is no
+     * undo. This tombstones; the janitor finishes within a sweep.
+     * @param project
+     * @param _class
+     * @param name
+     * @returns DeleteOutcomeDto
+     * @throws ApiError
+     */
+    public deleteObject(
+        project: string,
+        _class: string,
+        name: string,
+    ): CancelablePromise<DeleteOutcomeDto> {
+        return this.httpRequest.request({
+            method: 'DELETE',
+            url: '/api/project/{project}/objects/{class}/{name}',
+            path: {
+                'project': project,
+                'class': _class,
+                'name': name,
+            },
+        });
+    }
+
+    /**
+     * Every instance of one class, for dev cleanup; pages through the
+     * directory and tombstones each row.
+     * @param project
+     * @param _class
+     * @returns DeleteOutcomeDto
+     * @throws ApiError
+     */
+    public deleteClass(
+        project: string,
+        _class: string,
+    ): CancelablePromise<DeleteOutcomeDto> {
+        return this.httpRequest.request({
+            method: 'DELETE',
+            url: '/api/project/{project}/objects/{class}',
+            path: {
+                'project': project,
+                'class': _class,
             },
         });
     }

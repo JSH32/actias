@@ -701,8 +701,26 @@ impl NodeRegistryService for NodeRegistry {
 
         // The commit point, one transaction: tombstone plus epoch bump.
         // The sweep's guard re-checks its predicate here, so a claim
-        // that refreshed the row between query and tombstone wins.
+        // that refreshed the row between query and tombstone wins. An
+        // empty hash reads from the row: external callers name the
+        // identity, only workers hash.
         let mut tx = self.database.begin().await.map_err(RegistryError::Store)?;
+        let object_id = if request.object_id.is_empty() {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT object_id FROM object_instances
+                 WHERE scope_id = $1 AND class = $2 AND name = $3",
+            )
+            .bind(scope_id)
+            .bind(&request.class)
+            .bind(&request.name)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(RegistryError::Store)?
+            .flatten()
+            .unwrap_or_default()
+        } else {
+            request.object_id.clone()
+        };
         let tombstoned = sqlx::query(
             "UPDATE object_instances SET deleted_at = now()
              WHERE scope_id = $1 AND class = $2 AND name = $3
@@ -716,7 +734,7 @@ impl NodeRegistryService for NodeRegistry {
         .bind(&request.class)
         .bind(&request.name)
         .bind(request.only_if_expired)
-        .bind(&request.object_id)
+        .bind(&object_id)
         .execute(&mut *tx)
         .await
         .map_err(RegistryError::Store)?
@@ -733,17 +751,23 @@ impl NodeRegistryService for NodeRegistry {
 
         // Everything after the tombstone happens under a newer epoch
         // than any pre-deletion holder ever held; the row itself is
-        // kept forever so recreation keeps losing to nothing.
-        let epoch: i64 = sqlx::query_scalar(
-            "INSERT INTO object_epochs (object_id) VALUES ($1)
-             ON CONFLICT (object_id)
-             DO UPDATE SET epoch = object_epochs.epoch + 1
-             RETURNING epoch",
-        )
-        .bind(&request.object_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(RegistryError::Store)?;
+        // kept forever so recreation keeps losing to nothing. A row
+        // from before the hash column (never re-touched) has no hash
+        // to bump; the janitor computes it and the marker still wins.
+        let epoch: i64 = if object_id.is_empty() {
+            1
+        } else {
+            sqlx::query_scalar(
+                "INSERT INTO object_epochs (object_id) VALUES ($1)
+                 ON CONFLICT (object_id)
+                 DO UPDATE SET epoch = object_epochs.epoch + 1
+                 RETURNING epoch",
+            )
+            .bind(&object_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(RegistryError::Store)?
+        };
         tx.commit().await.map_err(RegistryError::Store)?;
 
         Ok(Response::new(DeleteInstanceResponse {

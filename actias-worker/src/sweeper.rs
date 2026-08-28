@@ -89,8 +89,11 @@ async fn mirror_local_alarms(state: &AppState) {
 }
 
 /// How long a tombstone may sit before the janitor takes it over; long
-/// enough for the deleting node's own sequence to finish first.
-const JANITOR_GRACE_MS: i64 = 60_000;
+/// enough for the deleting node's own sequence to finish first, and
+/// short enough that an api-initiated deletion (which has no deleting
+/// node) settles within a tick or two. Every step is idempotent, so an
+/// overlap costs nothing.
+const JANITOR_GRACE_MS: i64 = 10_000;
 
 /// Runs forever; spawn it and forget it.
 pub async fn run(state: AppState, every: Duration) {

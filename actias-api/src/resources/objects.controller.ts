@@ -2,6 +2,7 @@ import {
   BadGatewayException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -18,6 +19,7 @@ import { ResourcesService, clampPageSize } from './resources.service';
 import {
   ClassCountDto,
   DatabaseOverviewDto,
+  DeleteOutcomeDto,
   FollowerEdgeDto,
   FollowersDto,
   ObjectPageDto,
@@ -82,9 +84,99 @@ export class ObjectsController {
           class: instance.class,
           name: instance.name,
           declaredBy: identifiers.get(instance.scriptId) ?? '',
+          createdMs: Number(instance.createdMs ?? 0),
+          expireAtMs: Number(instance.expireAtMs ?? 0),
+          deletedAtMs: Number(instance.deletedAtMs ?? 0),
+          alarmDueMs: Number(instance.alarmDueMs ?? 0),
+          nodeId: instance.nodeId ?? '',
         })),
       total: Number(directory.total ?? 0),
     };
+  }
+
+  /** Deletion is forget: storage, snapshot and edges are reclaimed,
+   * the name may be recreated later and starts fresh, and there is no
+   * undo. This tombstones; the janitor finishes within a sweep. */
+  @Delete(':class/:name')
+  @AclByProject(AccessFields.DATABASE_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  @ApiParam({ name: 'class', type: 'string' })
+  @ApiParam({ name: 'name', type: 'string' })
+  async deleteObject(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+    @Param('name') name: string,
+  ): Promise<DeleteOutcomeDto> {
+    if (className.startsWith('__')) {
+      throw new BadGatewayException('Platform classes are not deletable.');
+    }
+    const outcome = await lastValueFrom(
+      this.resources.registry
+        .deleteInstance({
+          scopeId: project.id,
+          class: className,
+          name,
+          objectId: '',
+          onlyIfExpired: false,
+        })
+        .pipe(toHttpException()),
+    );
+    return { deleting: outcome.tombstoned ? 1 : 0 };
+  }
+
+  /** Every instance of one class, for dev cleanup; pages through the
+   * directory and tombstones each row. */
+  @Delete(':class')
+  @AclByProject(AccessFields.DATABASE_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  @ApiParam({ name: 'class', type: 'string' })
+  async deleteClass(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+  ): Promise<DeleteOutcomeDto> {
+    if (className.startsWith('__')) {
+      throw new BadGatewayException('Platform classes are not deletable.');
+    }
+    let deleting = 0;
+    loop: for (;;) {
+      const page = await lastValueFrom(
+        this.resources.registry
+          .listInstances({
+            projectIds: [project.id],
+            class: className,
+            namePrefix: '',
+            pageSize: 200,
+            page: 0,
+          })
+          .pipe(toHttpException()),
+      );
+      const live = (page.instances || []).filter(
+        (instance) => !Number(instance.deletedAtMs ?? 0),
+      );
+      if (live.length === 0) {
+        break loop;
+      }
+      for (const instance of live) {
+        const outcome = await lastValueFrom(
+          this.resources.registry
+            .deleteInstance({
+              scopeId: project.id,
+              class: className,
+              name: instance.name,
+              objectId: '',
+              onlyIfExpired: false,
+            })
+            .pipe(toHttpException()),
+        );
+        if (outcome.tombstoned) {
+          deleting += 1;
+        }
+      }
+      if ((page.instances || []).length < 200) {
+        break loop;
+      }
+    }
+    return { deleting };
   }
 
   /** How many instances each user class holds: what the rail renders

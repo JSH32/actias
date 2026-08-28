@@ -188,7 +188,8 @@ message DeleteInstanceRequest {
     string class = 2;
     string name = 3;
     // blake3 of the identity, hex: the epoch and alarm key. The worker
-    // computes it; the registry never hashes.
+    // computes it; the registry never hashes, and an empty value reads
+    // the hash from the directory row (external deletion's path).
     string object_id = 4;
     // The expiry sweep's guard: tombstone only if still past due with
     // no pending alarm, so a claim that refreshed the row between the

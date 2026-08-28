@@ -84,6 +84,13 @@ pub enum Commands {
         /// Directory of project
         directory: String,
     },
+    /// 🧩 Manage a project's durable object instances
+    Object {
+        /// Project the instances belong to.
+        project: String,
+        #[clap(subcommand)]
+        sub: ObjectOperations,
+    },
     /// 🗄️ Manage a project's sql databases
     Sql {
         /// Database name as declared in code (`database "name"`).
@@ -96,6 +103,21 @@ pub enum Commands {
         /// Directory of project; defaults to the current one.
         directory: Option<String>,
     },
+}
+
+#[derive(Parser, Debug)]
+pub enum ObjectOperations {
+    /// 📑 List instances with their status and lifetime.
+    List {
+        /// Only this class.
+        #[clap(long)]
+        class: Option<String>,
+        page: Option<i64>,
+    },
+    /// 🗑️ Forget one instance; the name may be recreated and starts fresh.
+    Delete { class: String, name: String },
+    /// 🗑️ Forget every instance of a class (dev cleanup).
+    DeleteClass { class: String },
 }
 
 #[derive(Parser, Debug)]
