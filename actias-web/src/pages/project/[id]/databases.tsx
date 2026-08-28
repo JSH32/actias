@@ -404,6 +404,14 @@ function Databases({
                       ? 'var(--luna)'
                       : 'var(--ink-3)'
                   }
+                  title={
+                    instanceRow.deletedAtMs > 0
+                      ? 'Tombstoned; the janitor reclaims storage within a sweep.'
+                      : instanceRow.nodeId
+                      ? 'Resident: live on a node right now, handling calls from memory.'
+                      : 'Cold: only its file exists. The next call, delivery or alarm wakes it; sleeping is free.'
+                  }
+                  href="/docs/runtime/objects#resident-and-cold"
                 />
               )}
               {objectSource && instanceRow && instanceRow.expireAtMs > 0 && (
@@ -536,17 +544,9 @@ function Databases({
                 : []),
             ]}
           />
-        </div>
-      </div>
-
-      {tab === 'state' && objectSource && (
-        <div
-          className={statePair ? classes.split : classes.splitSolo}
-          style={{ '--drawer': '400px' } as React.CSSProperties}
-        >
-          <div className={classes.browseRegion}>
+          {tab === 'state' && objectSource && (
             <div className={classes.filterRow}>
-              <div className={classes.search}>
+              <div className={classes.search} style={{ marginBottom: 0 }}>
                 <svg
                   width="13"
                   height="13"
@@ -562,7 +562,7 @@ function Databases({
                 </svg>
                 <input
                   className={classes.searchInput}
-                  style={{ width: 260 }}
+                  style={{ width: 220 }}
                   value={statePrefix}
                   onChange={(event) => setStatePrefix(event.target.value)}
                   placeholder="key prefix, e.g. session:"
@@ -572,6 +572,16 @@ function Databases({
                 {shownPairs.length} shown
               </span>
             </div>
+          )}
+        </div>
+      </div>
+
+      {tab === 'state' && objectSource && (
+        <div
+          className={statePair ? classes.split : classes.splitSolo}
+          style={{ '--drawer': '400px' } as React.CSSProperties}
+        >
+          <div className={classes.browseRegion}>
             <div className={classes.tableScroll}>
               {statePairs.length === 0 ? (
                 <div className={classes.emptyRows}>

@@ -143,6 +143,24 @@ The platform decides which machine hosts each object and moves it when
 a machine goes away. Calls to the same object always reach the same
 one; a call to a sleeping object wakes it first.
 
+### Resident and cold
+
+At any moment an instance is in one of two states, and the console's
+object header names which:
+
+- **Resident**: the instance lives on a node right now. Calls reach it
+  in memory, and the node holds its lease.
+- **Cold**: only its storage exists. No machine holds it, it costs
+  nothing, and the next call, delivery or due alarm wakes it, on
+  whichever node the platform picks.
+
+Cold is the normal state, not a degraded one: sleeping objects are
+files, so millions of idle instances are fine. Waking is transparent
+to callers beyond the wake itself. For a class that declares a
+lifespan (`expire`), the clock measures how long the instance goes
+untouched; an instance that outlives it is deleted, cold or not, with
+a pending alarm postponing the sweep.
+
 ### Gotchas
 
 - A single very busy object is a bottleneck, because it runs one call

@@ -39,27 +39,44 @@ export function StatCard({
 }
 
 /** A state pill in the design's grammar; `outline` drops the fill (kv
- * type pills). */
+ * type pills). `title` explains the state on hover; `href` makes the
+ * pill click through, the docs being the usual destination. */
 export function StatePill({
   state,
   color,
   outline,
   pulse,
+  title,
+  href,
 }: {
   state: string;
   color?: string;
   outline?: boolean;
   pulse?: boolean;
+  title?: string;
+  href?: string;
 }) {
   const pill = color ?? STATE_COLORS[state] ?? 'var(--ink-2)';
-  return (
+  const body = (
     <span
       className={outline ? classes.pillOutline : classes.pill}
       style={{ '--pill': pill } as React.CSSProperties}
+      title={title}
     >
       <span className={pulse ? classes.pillPulse : classes.pillDot} />
       {state}
     </span>
+  );
+  if (!href) return body;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      style={{ textDecoration: 'none' }}
+    >
+      {body}
+    </a>
   );
 }
 
