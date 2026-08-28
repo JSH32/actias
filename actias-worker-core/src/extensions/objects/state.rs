@@ -167,6 +167,159 @@ fn sql_surface(lua: &Lua) -> mlua::Result<Table> {
     Ok(sql)
 }
 
+/// One Lua value as the store's typed pair, kv's encoding exactly:
+/// raw text for strings, printed numbers and booleans, json for
+/// tables. [`None`] means delete, mirroring kv's nil-deletes.
+fn store_encode(lua: &Lua, value: mlua::Value) -> mlua::Result<Option<(&'static str, String)>> {
+    Ok(Some(match value {
+        mlua::Value::Nil => return Ok(None),
+        mlua::Value::Boolean(b) => ("boolean", b.to_string()),
+        mlua::Value::Integer(i) => ("integer", i.to_string()),
+        mlua::Value::Number(n) => ("number", n.to_string()),
+        mlua::Value::String(s) => ("string", s.to_str()?.to_owned()),
+        table @ mlua::Value::Table(_) => {
+            let json: serde_json::Value = lua.from_value(table)?;
+            ("json", json.to_string())
+        }
+        other => {
+            return Err(mlua::Error::RuntimeError(format!(
+                "Values of type {} cannot be stored; pass strings, numbers,                  booleans, tables or nil.",
+                other.type_name()
+            )));
+        }
+    }))
+}
+
+/// One stored pair back as the Lua value its type describes. A row
+/// disagreeing with its own type is corrupt storage, reported rather
+/// than allowed to abort the call.
+fn store_decode(lua: &Lua, kind: &str, value: &str) -> mlua::Result<mlua::Value> {
+    let mismatch = |expected: &str| {
+        mlua::Error::RuntimeError(format!("Stored value is not a valid {expected}."))
+    };
+    Ok(match kind {
+        "string" => mlua::Value::String(lua.create_string(value)?),
+        "integer" => mlua::Value::Integer(value.parse().map_err(|_| mismatch("integer"))?),
+        "number" => mlua::Value::Number(value.parse().map_err(|_| mismatch("number"))?),
+        "boolean" => mlua::Value::Boolean(value.parse().map_err(|_| mismatch("boolean"))?),
+        _ => lua.to_value(
+            &serde_json::from_str::<serde_json::Value>(value).map_err(|_| mismatch("json"))?,
+        )?,
+    })
+}
+
+/// The store's home, shared by every verb.
+fn store_home(lua: &Lua) -> mlua::Result<Arc<crate::objects::ObjectHome>> {
+    lua.app_data_ref::<Arc<crate::objects::ObjectHome>>()
+        .map(|home| home.clone())
+        .filter(|home| home.has_storage())
+        .ok_or_else(|| mlua::Error::RuntimeError("state.store needs object storage.".to_owned()))
+}
+
+/// The key-value face over the object's own file: kv's verbs, the
+/// call's own transaction, the reserved table as the representation
+/// (docs/OBJECT-STATE.md).
+fn store_surface(lua: &Lua) -> mlua::Result<Table> {
+    use crate::platform::state_store;
+
+    let store = lua.create_table()?;
+    store.set(
+        "get",
+        lua.create_function(|lua, (_this, key): (Table, String)| {
+            let home = store_home(lua)?;
+            let pair = home
+                .with_storage(|storage| state_store::get(storage, &key))
+                .map_err(mlua::Error::RuntimeError)?;
+            match pair {
+                Some(pair) => store_decode(lua, &pair.kind, &pair.value),
+                None => Ok(mlua::Value::Nil),
+            }
+        })?,
+    )?;
+    store.set(
+        "set",
+        lua.create_function(|lua, (_this, key, value): (Table, String, mlua::Value)| {
+            let home = store_home(lua)?;
+            match store_encode(lua, value)? {
+                Some((kind, text)) => home
+                    .with_storage(|storage| state_store::set(storage, &key, kind, &text))
+                    .map_err(mlua::Error::RuntimeError),
+                None => home
+                    .with_storage(|storage| state_store::delete(storage, &key))
+                    .map_err(mlua::Error::RuntimeError),
+            }
+        })?,
+    )?;
+    store.set(
+        "delete",
+        lua.create_function(|lua, (_this, key): (Table, String)| {
+            let home = store_home(lua)?;
+            home.with_storage(|storage| state_store::delete(storage, &key))
+                .map_err(mlua::Error::RuntimeError)
+        })?,
+    )?;
+    store.set(
+        "set_batch",
+        lua.create_function(|lua, (_this, values): (Table, Table)| {
+            let home = store_home(lua)?;
+            for pair in values.pairs::<String, mlua::Value>() {
+                let (key, value) = pair?;
+                match store_encode(lua, value)? {
+                    Some((kind, text)) => home
+                        .with_storage(|storage| state_store::set(storage, &key, kind, &text))
+                        .map_err(mlua::Error::RuntimeError)?,
+                    None => home
+                        .with_storage(|storage| state_store::delete(storage, &key))
+                        .map_err(mlua::Error::RuntimeError)?,
+                }
+            }
+            Ok(())
+        })?,
+    )?;
+    store.set(
+        "list",
+        lua.create_function(|lua, (_this, options): (Table, Option<Table>)| {
+            let home = store_home(lua)?;
+            let (prefix, limit, cursor) = match &options {
+                Some(table) => (
+                    table.get::<Option<String>>("prefix")?.unwrap_or_default(),
+                    table
+                        .get::<Option<i64>>("limit")?
+                        .unwrap_or(state_store::LIST_DEFAULT_LIMIT),
+                    table.get::<Option<String>>("cursor")?,
+                ),
+                None => (String::new(), state_store::LIST_DEFAULT_LIMIT, None),
+            };
+            if !(1..=state_store::LIST_MAX_LIMIT).contains(&limit) {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "list limit must be between 1 and {}.",
+                    state_store::LIST_MAX_LIMIT
+                )));
+            }
+            let (pairs, next) = home
+                .with_storage(|storage| {
+                    state_store::list(storage, &prefix, limit, cursor.as_deref())
+                })
+                .map_err(mlua::Error::RuntimeError)?;
+
+            let entries = lua.create_table()?;
+            for (index, pair) in pairs.iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("key", pair.key.clone())?;
+                entry.set("value", store_decode(lua, &pair.kind, &pair.value)?)?;
+                entries.set(index + 1, entry)?;
+            }
+            let page = lua.create_table()?;
+            page.set("entries", entries)?;
+            if let Some(cursor) = next {
+                page.set("cursor", cursor)?;
+            }
+            Ok(mlua::Value::Table(page))
+        })?,
+    )?;
+    Ok(store)
+}
+
 /// Builds (or reuses) the object's state table: plain keys are in-memory
 /// and live as long as the pinned vm; `state.sql` is the durable half;
 /// the stream verbs ride here beside `set_alarm`.
@@ -180,6 +333,7 @@ pub(super) fn object_state(lua: &Lua) -> mlua::Result<(Table, bool)> {
         .is_some_and(|home| home.has_storage());
     if stored {
         state.set("sql", sql_surface(lua)?)?;
+        state.set("store", store_surface(lua)?)?;
     }
     state.set("now", lua.create_function(|_, ()| Ok(unix_now_ms()))?)?;
     state.set("set_alarm", lua.create_function(set_alarm)?)?;

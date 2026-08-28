@@ -14,6 +14,7 @@
 pub mod cron;
 pub mod database;
 pub mod queue;
+pub mod state_store;
 pub mod time;
 pub mod workflow;
 

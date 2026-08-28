@@ -23,9 +23,32 @@ type Follower = {
 -- indexer too: `state:method(...)` dispatches them directly (no
 -- mailbox, so no self-call cycle), which is how sibling behavior is
 -- reached from hooks and other methods.
+-- One page of the store, ascending by key; a page without a cursor is
+-- the last, and the cursor feeds the next list call.
+type StorePage = {
+    entries: { { key: string, value: any } },
+    cursor: string?,
+}
+
+-- The key-value face over the object's own storage: same file and same
+-- transaction as sql, no migrations needed. Values are json-serializable
+-- and capped at 64 KB each; past that, the state wants a table.
+type Store = {
+    get: (self: Store, key: string) -> any,
+    set: (self: Store, key: string, value: any) -> (),
+    delete: (self: Store, key: string) -> (),
+    -- A table of key -> value; a nil value deletes.
+    set_batch: (self: Store, values: { [string]: any }) -> (),
+    list: (
+        self: Store,
+        options: { prefix: string?, limit: number?, cursor: string? }?
+    ) -> StorePage,
+}
+
 type ObjectState = {
     name: string,
     sql: Sql,
+    store: Store,
     now: () -> number,
     set_alarm: (self: ObjectState, duration: string | number) -> (),
     -- Forget this object once the current call commits and answers:

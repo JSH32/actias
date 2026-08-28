@@ -951,6 +951,77 @@ mod tests {
         assert!(refused.is_err(), "a destroyed object refuses: {refused:?}");
     }
 
+    /// The store face and sql ride one transaction: a method touching
+    /// both commits once, and a class with no migrations pays nothing
+    /// to keep small state.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_store_face_rides_the_calls_own_transaction() {
+        let source = r#"
+            local Counter = object "Counter" {
+                hit = function(state)
+                    local n = (state.store:get("count") or 0) + 1
+                    state.store:set("count", n)
+                    state.store:set("meta", { phase = "open", by = state.name })
+                    state.sql:exec("CREATE TABLE IF NOT EXISTS log (n INTEGER)")
+                    state.sql:exec("INSERT INTO log VALUES (?)", { n })
+                    return n
+                end,
+                peek = function(state)
+                    local page = state.store:list()
+                    local rows = state.sql:query_one("SELECT count(*) AS c FROM log").c
+                    return {
+                        count = state.store:get("count"),
+                        meta = state.store:get("meta"),
+                        keys = #page.entries,
+                        rows = rows,
+                    }
+                end,
+            }
+            on "fetch" (function() return { body = "ok" } end)
+        "#;
+        let runtime = runtime_with(source).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let handle = spawn_object_task(
+            runtime,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("counter.db"))
+                        .expect("opens"),
+                ),
+                ..Default::default()
+            },
+        );
+
+        let dispatch = |method: &str| {
+            serde_json::json!({
+                "class": "Counter", "name": "a", "method": method,
+                "args": [], "chain": [],
+            })
+        };
+        handle
+            .call("__dispatch", dispatch("hit"))
+            .await
+            .expect("hits");
+        let n = handle
+            .call("__dispatch", dispatch("hit"))
+            .await
+            .expect("hits");
+        assert_eq!(n, serde_json::json!(2));
+
+        let peek = handle
+            .call("__dispatch", dispatch("peek"))
+            .await
+            .expect("peeks");
+        assert_eq!(peek["count"], serde_json::json!(2));
+        assert_eq!(peek["meta"]["phase"], serde_json::json!("open"));
+        assert_eq!(peek["keys"], serde_json::json!(2));
+        assert_eq!(
+            peek["rows"],
+            serde_json::json!(2),
+            "one transaction, both faces"
+        );
+    }
+
     /// A class whose schema comes from migration files applies them at
     /// the instance's first touch, before init, and init then seeds. A
     /// class without the key keeps init-owns-schema.
