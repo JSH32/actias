@@ -78,6 +78,12 @@ service NodeRegistryService {
     // Instances past their declared lifespan with no pending alarm; the
     // expiry sweep's batch, arbitrated again inside DeleteInstance.
     rpc DueExpiries(DueExpiriesRequest) returns (DueExpiriesResponse);
+
+    // Unwinds a claim whose admission gate refused: lease and directory
+    // row go, and the epoch row goes ONLY if this claim minted it, so a
+    // hammered junk name leaves nothing while any identity that ever
+    // lived keeps its fence.
+    rpc RollbackAdmission(PurgeInstanceRequest) returns (google.protobuf.Empty);
 }
 
 message ListInstancesRequest {
@@ -223,6 +229,9 @@ message Lease {
     // Monotonic per-object claim counter; fences storage shipping, so a
     // zombie ex-owner's uploads lose to any newer epoch.
     uint64 epoch = 4;
+    // True when this claim created the directory row: a fresh identity,
+    // the only kind an admission gate examines.
+    bool fresh = 5;
 }
 
 message ReleaseLeaseRequest {

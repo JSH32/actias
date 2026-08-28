@@ -129,6 +129,15 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<DueExpiriesResponse>;
+        // Unwinds a claim whose admission gate refused: lease and directory
+    // row go, and the epoch row goes ONLY if this claim minted it, so a
+    // hammered junk name leaves nothing while any identity that ever
+    // lived keeps its fence.
+        rollbackAdmission(
+            data: PurgeInstanceRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
     }
     export interface ListInstancesRequest {
         projectIds?: string[];
@@ -259,6 +268,9 @@ export namespace node_registry {
         // Monotonic per-object claim counter; fences storage shipping, so a
     // zombie ex-owner&#x27;s uploads lose to any newer epoch.
         epoch?: number;
+        // True when this claim created the directory row: a fresh identity,
+    // the only kind an admission gate examines.
+        fresh?: boolean;
     }
     export interface ReleaseLeaseRequest {
         objectId?: string;

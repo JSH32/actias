@@ -281,6 +281,13 @@ impl ObjectRouting {
 
         // A non-resident object needs the lease before anything spawns;
         // a resident one already holds it (leases live as long as we do).
+        // A cached refusal answers before anything claims: a junk name
+        // must not recreate the directory row the rollback just removed.
+        if let Some(refusal) = self.state.admit_refusals.get(&key.object_id()).await {
+            return Err(ResolveError::Other(refusal));
+        }
+
+        let mut fresh = false;
         if !self.state.objects.is_resident(&key.to_string()).await {
             // The holder cache spares the placement store: a repeat of a
             // misrouted call forwards straight from memory. A wrong entry
@@ -309,9 +316,13 @@ impl ObjectRouting {
                 return Err(ResolveError::Elsewhere(lease.node_id));
             }
             self.state.holders.invalidate(&object_id).await;
+            // This claim is the one that can create the identity; the
+            // factory's re-claim always finds the row it made. Freshness
+            // travels, or the admission gate would never see it.
+            fresh = lease.fresh;
         }
 
-        self.resolve_local(key, owner)
+        self.resolve_local(key, owner, fresh)
             .await
             .map_err(ResolveError::Other)
     }
@@ -322,6 +333,7 @@ impl ObjectRouting {
         self: &Arc<Self>,
         key: &ObjectKey,
         owner: Arc<PreparedRevision>,
+        first_claim_fresh: bool,
     ) -> Result<actias_worker_core::objects::ObjectHandle, String> {
         let routing = self.clone();
         // The hash is the object's platform-wide id: the lease key in the
@@ -335,6 +347,13 @@ impl ObjectRouting {
         self.state
             .objects
             .get_or_spawn(&key.to_string(), &marker, || async move {
+                // A recently refused name answers from the cache: junk
+                // identities cost one vm build per pointer ttl, not one
+                // per call.
+                if let Some(refusal) = routing.state.admit_refusals.get(&object_id).await {
+                    return Err(mlua::Error::RuntimeError(refusal));
+                }
+
                 // One claim per residency, before anything is built: an
                 // object only ever lives where its lease is held, which is
                 // what makes a second node refusing to serve it correct.
@@ -452,6 +471,59 @@ impl ObjectRouting {
                     )
                     .await?
                 };
+                // The admission gate, fresh identities only: existing
+                // instances never re-run it, so it gates creation, not
+                // access. A refusal rolls the claim back through the
+                // deletion verbs and caches on the pointer ttl. It runs
+                // here because it needs the built vm, and before the
+                // storage open, so a refused name never owns a file.
+                if (lease.fresh || first_claim_fresh) && owner.gates_admission(identity.class()) {
+                    let verdict = actias_worker_core::extensions::objects::admit(
+                        &runtime,
+                        identity.class(),
+                        identity.name(),
+                    )
+                    .await;
+                    let admitted = matches!(verdict, Ok(Some(true)) | Ok(None));
+                    if !admitted {
+                        let refusal = match verdict {
+                            Err(error) => error,
+                            _ => format!(
+                                "Class '{}' did not admit '{}'.",
+                                identity.class(),
+                                identity.name()
+                            ),
+                        };
+                        let rollback = routing
+                            .state
+                            .registry
+                            .clone()
+                            .rollback_admission(
+                                actias_worker_core::proto::node_registry::PurgeInstanceRequest {
+                                    scope_id: identity.scope().to_owned(),
+                                    class: identity.class().to_owned(),
+                                    name: identity.name().to_owned(),
+                                    object_id: object_id.clone(),
+                                },
+                            )
+                            .await
+                            .map_err(|e| e.to_string());
+                        if let Err(error) = rollback {
+                            actias_common::tracing::warn!(
+                                object_id,
+                                %error,
+                                "admission rollback incomplete; the janitor finishes it"
+                            );
+                        }
+                        routing
+                            .state
+                            .admit_refusals
+                            .insert(object_id.clone(), refusal.clone())
+                            .await;
+                        return Err(mlua::Error::RuntimeError(refusal));
+                    }
+                }
+
                 // The pinned vm routes its own outbound calls too; the
                 // chain it hands them is what makes cycles refusable. Its
                 // routing context matches the code it runs.

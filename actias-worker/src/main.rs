@@ -168,6 +168,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             rotate_bytes: config.object_wal_rotate_bytes,
             max_segments: config.object_max_segments,
         },
+        admit_refusals: moka::future::Cache::builder()
+            .max_capacity(100_000)
+            .time_to_live(std::time::Duration::from_secs(config.pointer_ttl_secs))
+            .build(),
         object_idle_after: std::time::Duration::from_secs(config.object_idle_secs),
         queue_policy: actias_worker_core::platform::queue::QueuePolicy {
             max_attempts: config.queue_max_attempts,

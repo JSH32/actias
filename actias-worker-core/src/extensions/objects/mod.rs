@@ -41,6 +41,27 @@ pub use dispatch::{
 };
 pub(crate) use products::workflow_definition_handle;
 
+/// Runs the class's admission gate for a fresh identity: [`Some`] with
+/// the gate's verdict, [`None`] when the class declares none. The gate
+/// takes only the name; it runs before storage exists.
+///
+/// # Errors
+/// Returns the gate's own error text; a throwing gate refuses.
+pub async fn admit(lua: &mlua::Lua, class: &str, name: &str) -> Result<Option<bool>, String> {
+    let Some(table) = registry::ClassRegistry::of(lua).class_table(class) else {
+        return Ok(None);
+    };
+    let gate: mlua::Value = table.get("admit").map_err(|e| e.to_string())?;
+    let mlua::Value::Function(gate) = gate else {
+        return Ok(None);
+    };
+    let verdict: bool = gate
+        .call_async(name.to_owned())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(verdict))
+}
+
 use handles::class_handle;
 
 pub struct ObjectExtension;

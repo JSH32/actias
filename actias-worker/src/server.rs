@@ -126,6 +126,9 @@ pub struct AppState {
     pub object_db_max_bytes: u64,
     /// When objects ship WAL segments and when generations rotate.
     pub ship_thresholds: crate::object_store::ShipThresholds,
+    /// Names an admission gate refused, with the refusal; junk
+    /// identities answer from here for a pointer ttl.
+    pub admit_refusals: moka::future::Cache<String, String>,
     /// Per-script request counters, served at /_metrics.
     pub metrics: Arc<Metrics>,
     /// Where object snapshots ship to and restore from.
@@ -1113,6 +1116,10 @@ pub(crate) mod test_state {
                 rotate_bytes: 4096 * 1024,
                 max_segments: 64,
             },
+            admit_refusals: moka::future::Cache::builder()
+                .max_capacity(100_000)
+                .time_to_live(std::time::Duration::from_secs(5))
+                .build(),
             armed_crons: Arc::default(),
             object_idle_after: Duration::from_secs(300),
             queue_policy: Default::default(),

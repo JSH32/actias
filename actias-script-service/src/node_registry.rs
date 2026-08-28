@@ -254,8 +254,12 @@ impl NodeRegistry {
         // changes apply on next touch, 0 clears) and backfills the hash
         // on rows from before the lifetime migration; the creator is
         // kept from the first claim only.
+        let mut fresh = false;
         if let Some((scope_id, script_id)) = identity {
-            sqlx::query(
+            // xmax = 0 marks a row this statement inserted rather than
+            // updated: whether the identity is fresh, which is the only
+            // kind an admission gate examines.
+            fresh = sqlx::query_scalar(
                 "INSERT INTO object_instances
                      (scope_id, class, name, script_id, object_id,
                       created_by, expire_at)
@@ -266,7 +270,8 @@ impl NodeRegistry {
                  ON CONFLICT (scope_id, class, name) DO UPDATE
                  SET object_id = COALESCE(object_instances.object_id,
                                           EXCLUDED.object_id),
-                     expire_at = EXCLUDED.expire_at",
+                     expire_at = EXCLUDED.expire_at
+                 RETURNING (xmax = 0)",
             )
             .bind(scope_id)
             .bind(&request.class)
@@ -275,7 +280,7 @@ impl NodeRegistry {
             .bind(&request.object_id)
             .bind(&request.created_by)
             .bind(request.expire_secs.min(i64::MAX as u64) as f64)
-            .execute(&self.database)
+            .fetch_one(&self.database)
             .await?;
         }
 
@@ -312,6 +317,7 @@ impl NodeRegistry {
             node_id: holder.to_string(),
             acquired,
             epoch: epoch.max(1) as u64,
+            fresh,
         })
     }
 }
@@ -438,9 +444,10 @@ impl NodeRegistryService for NodeRegistry {
             object_id,
             node_id: holder.to_string(),
             // A lookup never claims; the flag answers "did I get it", and
-            // the asker did not ask.
+            // the asker did not ask. Same for freshness.
             acquired: false,
             epoch: epoch.max(1) as u64,
+            fresh: false,
         }))
     }
 
@@ -776,6 +783,44 @@ impl NodeRegistryService for NodeRegistry {
         .execute(&self.database)
         .await
         .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(()))
+    }
+
+    async fn rollback_admission(
+        &self,
+        request: Request<PurgeInstanceRequest>,
+    ) -> Result<Response<()>, Status> {
+        let request = request.get_ref();
+        let scope_id =
+            Uuid::from_str(&request.scope_id).map_err(|_| RegistryError::InvalidId("scope_id"))?;
+
+        // One transaction, mirroring the claim it unwinds. The epoch
+        // guard is what keeps the fence invariant: epoch 1 means this
+        // claim minted the row and nothing ever shipped under it; a
+        // refused recreation (epoch bumped past 1) keeps its fence.
+        let mut tx = self.database.begin().await.map_err(RegistryError::Store)?;
+        sqlx::query("DELETE FROM leases WHERE object_id = $1")
+            .bind(&request.object_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(RegistryError::Store)?;
+        sqlx::query(
+            "DELETE FROM object_instances
+             WHERE scope_id = $1 AND class = $2 AND name = $3",
+        )
+        .bind(scope_id)
+        .bind(&request.class)
+        .bind(&request.name)
+        .execute(&mut *tx)
+        .await
+        .map_err(RegistryError::Store)?;
+        sqlx::query("DELETE FROM object_epochs WHERE object_id = $1 AND epoch = 1")
+            .bind(&request.object_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(RegistryError::Store)?;
+        tx.commit().await.map_err(RegistryError::Store)?;
 
         Ok(Response::new(()))
     }
@@ -1502,7 +1547,7 @@ mod tests {
         let recreated = registry
             .acquire_lease(Request::new(AcquireLeaseRequest {
                 object_id: "hash-doomed".to_owned(),
-                node_id: node,
+                node_id: node.clone(),
                 scope_id: project.to_string(),
                 class: "Session".to_owned(),
                 name: "doomed".to_owned(),
@@ -1517,5 +1562,54 @@ mod tests {
             recreated.epoch > deleted.epoch,
             "a fresh life starts above every old fence"
         );
+
+        // An admission rollback on a NEVER-lived name leaves nothing,
+        // epoch row included; on a name that lived, the fence stays.
+        let junk = registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: "hash-junk".to_owned(),
+                node_id: node.clone(),
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "junk".to_owned(),
+                script_id: script.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("junk claims")
+            .into_inner();
+        assert!(junk.fresh && junk.epoch == 1);
+        registry
+            .rollback_admission(Request::new(PurgeInstanceRequest {
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "junk".to_owned(),
+                object_id: "hash-junk".to_owned(),
+            }))
+            .await
+            .expect("rollback answers");
+        let junk_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM object_epochs WHERE object_id = 'hash-junk'")
+                .fetch_one(&_database)
+                .await
+                .expect("count reads");
+        assert_eq!(junk_rows, 0, "a refused fresh name leaves no epoch row");
+
+        registry
+            .rollback_admission(Request::new(PurgeInstanceRequest {
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "doomed".to_owned(),
+                object_id: "hash-doomed".to_owned(),
+            }))
+            .await
+            .expect("rollback answers");
+        let lived_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM object_epochs WHERE object_id = 'hash-doomed'",
+        )
+        .fetch_one(&_database)
+        .await
+        .expect("count reads");
+        assert_eq!(lived_rows, 1, "a name that lived keeps its fence");
     }
 }
