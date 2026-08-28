@@ -238,7 +238,7 @@ impl secret_proto::secret_service_server::SecretService for FakeSecrets {
 /// as [`serve_fake_kv`].
 async fn serve_fake_secrets(
     values: HashMap<String, String>,
-) -> Result<SecretServiceClient<tonic::transport::Channel>, String> {
+) -> Result<SecretServiceClient<actias_worker_core::Grpc>, String> {
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
         .map_err(|e| e.to_string())?;
@@ -254,16 +254,19 @@ async fn serve_fake_secrets(
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
     );
 
-    SecretServiceClient::connect(format!("http://{address}"))
+    let channel = tonic::transport::Channel::from_shared(format!("http://{address}"))
+        .map_err(|e| e.to_string())?
+        .connect()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(SecretServiceClient::new(actias_worker_core::plain_grpc(
+        channel,
+    )))
 }
 
 /// Serves one fake store on a loopback port and hands back a connected
 /// client; the server task dies with the process.
-async fn serve_fake_kv(
-    store: FakeKv,
-) -> Result<KvServiceClient<tonic::transport::Channel>, String> {
+async fn serve_fake_kv(store: FakeKv) -> Result<KvServiceClient<actias_worker_core::Grpc>, String> {
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
         .map_err(|e| e.to_string())?;
@@ -275,9 +278,14 @@ async fn serve_fake_kv(
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
     );
 
-    KvServiceClient::connect(format!("http://{address}"))
+    let channel = tonic::transport::Channel::from_shared(format!("http://{address}"))
+        .map_err(|e| e.to_string())?
+        .connect()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(KvServiceClient::new(actias_worker_core::plain_grpc(
+        channel,
+    )))
 }
 
 /// Builds the prepared revision the runtime executes: the project's bundle
@@ -386,8 +394,8 @@ struct WorkflowHost {
 fn install_workflow_testing(
     runtime: &ActiasRuntime,
     prepared: Arc<PreparedRevision>,
-    client: KvServiceClient<tonic::transport::Channel>,
-    secret_client: SecretServiceClient<tonic::transport::Channel>,
+    client: KvServiceClient<actias_worker_core::Grpc>,
+    secret_client: SecretServiceClient<actias_worker_core::Grpc>,
 ) -> Result<(), String> {
     use actias_worker_core::platform::workflow::WfShared;
     use mlua::LuaSerdeExt;
