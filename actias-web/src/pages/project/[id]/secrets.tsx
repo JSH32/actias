@@ -120,8 +120,10 @@ function Secrets({ project, write }: { project: ProjectDto; write: boolean }) {
       <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
         <div
           style={{
-            maxWidth: 1280,
-            padding: '22px 20px',
+            maxWidth: 1440,
+            width: '100%',
+            margin: '0 auto',
+            padding: '22px 24px',
             display: 'flex',
             flexDirection: 'column',
             gap: 16,
