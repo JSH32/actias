@@ -12,12 +12,13 @@ import { ApiBearerAuth, ApiParam, ApiTags } from '@nestjs/swagger';
 import { CreateProjectDto } from './dto/requests.dto';
 import { ProjectService } from './project.service';
 import { ProjectDto } from './dto/project.dto';
-import { AclGuard } from './acl/acl.guard';
+import { AclByProject, AclGuard, AclMember } from './acl/acl.guard';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { Users } from 'src/entities/Users';
 import { User } from 'src/auth/user.decorator';
 import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
+import { AccessFields } from './acl/accessFields';
 import {
   ApiOkResponsePaginated,
   PaginatedResponseDto,
@@ -69,6 +70,7 @@ export class ProjectController {
    * Get a project by its ID.
    */
   @Get(':project')
+  @AclMember()
   @ApiParam({
     name: 'project',
     schema: { type: 'string' },
@@ -83,7 +85,10 @@ export class ProjectController {
   /**
    * Delete a project by its ID.
    */
+  // Destroying a project takes every grant in it, which in practice
+  // means the owner (who bypasses) or a member trusted with all of it.
   @Delete(':project')
+  @AclByProject(AccessFields.FULL)
   @ApiParam({
     name: 'project',
     schema: { type: 'string' },

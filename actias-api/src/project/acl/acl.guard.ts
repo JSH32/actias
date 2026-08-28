@@ -17,6 +17,17 @@ import { requireUuid } from 'src/util/entitydecorator';
 export const AclByProject = (bitfield: number) =>
   SetMetadata('acl', { bitfield });
 
+/**
+ * Membership alone, without naming a permission: for routes that
+ * describe the project itself rather than one of its resources. A
+ * member holding any grant passes, a stranger does not.
+ *
+ * The distinction has to exist because a route with no acl metadata is
+ * open to every authenticated caller, so "anyone in this project" had
+ * no spelling and got written as nothing at all.
+ */
+export const AclMember = () => SetMetadata('acl', { bitfield: 0 });
+
 export const AclByFinder = (
   bitfield: number,
   projectFinder:
@@ -45,7 +56,9 @@ export class AclGuard implements CanActivate {
 
     const ExceptionClass = isWs ? WsException : ForbiddenException;
 
-    if (aclData?.bitfield) {
+    // Presence of the metadata is what arms the check; a zero bitfield
+    // still demands membership (see AclMember).
+    if (aclData) {
       // Should be provided by AuthGuard
       const user = request['user'] as Users;
 
@@ -82,7 +95,7 @@ export class AclGuard implements CanActivate {
         project,
       );
 
-      if (!access.test(aclData.bitfield)) {
+      if (aclData.bitfield && !access.test(aclData.bitfield)) {
         throw new ExceptionClass({
           message: 'You do not have enough permissions to perform this action',
         });
