@@ -422,7 +422,7 @@ function SecretDetail({
             >
               set by {author}
               {rotations > 0 &&
-                ` · ${rotations} rotation${rotations === 1 ? '' : 's'}`}
+                `, ${rotations} rotation${rotations === 1 ? '' : 's'}`}
             </span>
           </div>
           <span
@@ -499,7 +499,7 @@ function SecretDetail({
                     color: 'var(--ink-3)',
                   }}
                 >
-                  {secret.declaredByRevision?.slice(0, 8)} · current revision
+                  {secret.declaredByRevision?.slice(0, 8)} (current revision)
                 </span>
               </div>
               <span
@@ -553,7 +553,9 @@ function SecretDetail({
                   >
                     {row.version === 1 ? 'created' : 'rotated'}
                     {row.deletedMs > 0 && (
-                      <span style={{ color: 'var(--ink-3)' }}> · deleted</span>
+                      <span style={{ color: 'var(--ink-3)', marginLeft: 8 }}>
+                        deleted
+                      </span>
                     )}
                   </span>
                   <span

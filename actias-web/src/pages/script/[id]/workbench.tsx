@@ -928,8 +928,10 @@ function Workbench() {
             <>
               <div className={classes.diffBar}>
                 <span className={classes.diffLabel}>
-                  diff · {diffRevision} <ArrowRight size={11} /> working tree ·{' '}
-                  {activePath}
+                  diff {diffRevision} <ArrowRight size={11} /> working tree
+                  <span style={{ color: 'var(--ink-3)', marginLeft: 10 }}>
+                    {activePath}
+                  </span>
                 </span>
                 <button
                   className={classes.diffClose}

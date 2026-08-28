@@ -486,7 +486,7 @@ export default function KvPanel({
 
                 <DrawerSection
                   label={
-                    prettyToggleable && !raw ? 'Value · json' : 'Value · raw'
+                    prettyToggleable && !raw ? 'Value (json)' : 'Value (raw)'
                   }
                   aside={
                     dirty ? (

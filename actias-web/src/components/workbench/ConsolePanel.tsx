@@ -151,7 +151,7 @@ export function ConsolePanel({
                   {entry.status == null ? (
                     <Ellipsis size={12} />
                   ) : (
-                    `${entry.status || 'error'} · ${entry.timeMs}ms`
+                    `${entry.status || 'error'}  ${entry.timeMs}ms`
                   )}
                 </span>
               </button>

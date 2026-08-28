@@ -87,7 +87,7 @@ export default function DocPage({
 }: Props) {
   return (
     <>
-      <NextSeo title={`${meta.title} · Actias docs`} description={meta.lead} />
+      <NextSeo title={`${meta.title} - Actias docs`} description={meta.lead} />
       <div className={classes.frame}>
         <DocSidebar nav={nav} index={index} active={meta.slug} />
 

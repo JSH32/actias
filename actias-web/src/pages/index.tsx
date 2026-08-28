@@ -89,7 +89,9 @@ function MinimalLanding() {
             </span>
           </span>
         </div>
-        <div className={`${classes.minimalActions} ${classes.rise} ${classes.rise3}`}>
+        <div
+          className={`${classes.minimalActions} ${classes.rise} ${classes.rise3}`}
+        >
           <Link href="/login">
             <Button variant="primary">
               <span className={classes.minimalButton}>
@@ -311,8 +313,13 @@ export default function Landing({ minimal }: { minimal: boolean }) {
                 <Button>Source on GitHub</Button>
               </a>
             </div>
-            <span className={classes.meta}>
-              open source · self-hosted · early
+            <span
+              className={classes.meta}
+              style={{ display: 'inline-flex', gap: 18 }}
+            >
+              <span>open source</span>
+              <span>self-hosted</span>
+              <span>early</span>
             </span>
           </div>
         </Reveal>

@@ -27,7 +27,7 @@ function counts(problem: { errors: number; lints: number }) {
     problem.lints && `${problem.lints} lint${problem.lints === 1 ? '' : 's'}`,
   ]
     .filter(Boolean)
-    .join(' · ');
+    .join(', ');
 }
 
 export function StatusBar({
@@ -94,7 +94,10 @@ export function StatusBar({
                     className={classes.menuItem}
                     onSelect={() => onJump(path, problem.line, problem.column)}
                   >
-                    {path} · {counts(problem)}
+                    {path}
+                    <span style={{ color: 'var(--ink-3)', marginLeft: 8 }}>
+                      {counts(problem)}
+                    </span>
                   </Dropdown.Item>
                 ))}
               </Dropdown.Content>

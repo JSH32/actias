@@ -74,7 +74,7 @@ function granted(entry: AclListDto): string[] {
   );
 }
 
-/** The grant list in words, "script read+write \u00b7 kv read"; the
+/** The grant list in words, "script read+write, kv read"; the
  * precise toggles live in the member panel. */
 function accessWords(bits: string[], groups: [string, string[]][]): string {
   const parts: string[] = [];
@@ -87,7 +87,7 @@ function accessWords(bits: string[], groups: [string, string[]][]): string {
     if (verbs.length)
       parts.push(`${resource.toLowerCase()} ${verbs.join('+')}`);
   }
-  return parts.length ? parts.join(' \u00b7 ') : 'no access';
+  return parts.length ? parts.join(', ') : 'no access';
 }
 
 function sameBits(a: string[], b: string[]): boolean {

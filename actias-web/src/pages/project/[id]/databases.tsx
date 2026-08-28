@@ -264,7 +264,7 @@ function Databases({
               <StatePill
                 state={
                   objectSource
-                    ? `object · ${objectSource.class}`
+                    ? `${objectSource.class} object`
                     : active?.orphaned
                     ? 'orphaned'
                     : 'project database'
@@ -430,7 +430,9 @@ function Databases({
                         pageStart + browsedRows.length,
                         rowCount,
                       )} of ${rowCount.toLocaleString('en-US')} rows`}{' '}
-                  · click a row to inspect every cell in full
+                  <span style={{ marginLeft: 10 }}>
+                    click a row to inspect every cell in full
+                  </span>
                 </span>
                 <span className={classes.pagerButtons}>
                   <button
@@ -478,7 +480,7 @@ function Databases({
                     return (
                       <div key={name} className={classes.jsonCell}>
                         <span className={classes.sectionLabel}>
-                          {`${name}${column?.type ? ` · ${column.type}` : ''}`}
+                          {`${name}${column?.type ? ` (${column.type})` : ''}`}
                         </span>
                         <JsonValue value={parsed} defaultDepth={1} />
                       </div>
@@ -488,7 +490,7 @@ function Databases({
                     <Fact
                       key={name}
                       label={`${name}${
-                        column?.type ? ` · ${column.type}` : ''
+                        column?.type ? ` (${column.type})` : ''
                       }`}
                       value={cell == null ? 'NULL' : String(cell)}
                     />
@@ -519,7 +521,7 @@ function Databases({
               <span>
                 ⌘↵ to run
                 {consoleRows
-                  ? ` · ${consoleRows.length} rows · ${consoleMs}ms`
+                  ? `: ${consoleRows.length} rows in ${consoleMs}ms`
                   : ''}
               </span>
             </div>

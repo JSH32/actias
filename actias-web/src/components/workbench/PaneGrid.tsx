@@ -203,7 +203,7 @@ export function PaneGrid({
           <span style={{ color: 'var(--ink-1)' }}>
             {leaf.active.split('/').pop()}
           </span>
-          <span>· read-only reference, not part of your bundle</span>
+          <span>read-only reference, not part of your bundle</span>
         </div>
       ) : (
         <div className={classes.breadcrumbRow}>

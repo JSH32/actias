@@ -289,7 +289,7 @@ const Script = () => {
               <div className={classes.cardHead}>
                 <span className={classes.cardTitle}>Capability contract</span>
                 <span className={classes.cardMeta}>
-                  derived at publish{shortRev ? ` · revision ${shortRev}` : ''}
+                  derived at publish{shortRev ? `, revision ${shortRev}` : ''}
                 </span>
               </div>
               <div className={classes.cardBody}>

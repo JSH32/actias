@@ -120,8 +120,16 @@ export function RunnerPanel({
                     onSelect={() => applyShot(shot)}
                   >
                     {shot.method} {shot.path}
-                    {shot.headers.length > 0 && ' · h'}
-                    {shot.body && ' · body'}
+                    {(shot.headers.length > 0 || shot.body) && (
+                      <span style={{ color: 'var(--ink-3)', marginLeft: 8 }}>
+                        {[
+                          shot.headers.length > 0 ? 'headers' : null,
+                          shot.body ? 'body' : null,
+                        ]
+                          .filter(Boolean)
+                          .join(', ')}
+                      </span>
+                    )}
                   </Dropdown.Item>
                 ))}
               </Dropdown.Content>
@@ -235,9 +243,16 @@ export function RunnerPanel({
               }}
             >
               {answer.status || 'error'}
-            </span>{' '}
-            · {answer.timeMs}ms · {new Blob([answer.body ?? '']).size}B
-            {answer.contentType && ` · ${answer.contentType.split(';')[0]}`}
+            </span>
+            <span style={{ marginLeft: 10 }}>{answer.timeMs}ms</span>
+            <span style={{ marginLeft: 10 }}>
+              {new Blob([answer.body ?? '']).size}B
+            </span>
+            {answer.contentType && (
+              <span style={{ marginLeft: 10 }}>
+                {answer.contentType.split(';')[0]}
+              </span>
+            )}
           </div>
           {answer.headers && Object.keys(answer.headers).length > 0 && (
             <details className={classes.answerHeaders}>

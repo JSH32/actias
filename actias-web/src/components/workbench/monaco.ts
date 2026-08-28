@@ -550,7 +550,7 @@ export function registerLuauProviders(monaco: MonacoApi) {
           label: column,
           kind: kinds.Field,
           insertText: column,
-          detail: `column · ${focus.table}`,
+          detail: `column of ${focus.table}`,
           range,
         }));
       }
@@ -560,7 +560,7 @@ export function registerLuauProviders(monaco: MonacoApi) {
       label: entry.table,
       kind: kinds.Class,
       insertText: entry.table,
-      detail: `table · ${entry.columns.length} column${
+      detail: `table, ${entry.columns.length} column${
         entry.columns.length === 1 ? '' : 's'
       }`,
       sortText: focus.kind === 'tables' ? `0${entry.table}` : `1${entry.table}`,
@@ -574,7 +574,7 @@ export function registerLuauProviders(monaco: MonacoApi) {
               label: column,
               kind: kinds.Field,
               insertText: column,
-              detail: `column · ${entry.table}`,
+              detail: `column of ${entry.table}`,
               sortText: `1${column}`,
               range,
             })),

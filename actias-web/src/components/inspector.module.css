@@ -1121,7 +1121,7 @@
 }
 
 /* Six bars in read/write pairs, resource order matching the legend. */
-/* The roster's access column in words: "script read+write · kv read".
+/* The roster's access column in words: "script read+write, kv read".
  * The precise bits live in the member panel; a row carries the words. */
 .accessWords {
   font: 400 11px var(--mono);
