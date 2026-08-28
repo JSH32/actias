@@ -65,6 +65,7 @@
     "@nestjs/swagger": "^6.1.4",
     "@nestjs/websockets": "^9.0.0",
     "@opentelemetry/auto-instrumentations-node": "^0.79.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.221.0",
     "@opentelemetry/sdk-node": "^0.221.0",
     "@types/nodemailer": "^8.0.1",
     "@types/ws": "^8.5.8",
