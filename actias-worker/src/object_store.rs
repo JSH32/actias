@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 /// What the store remembers about one object's shipped state.
 ///
 /// Version 1 manifests (`{epoch, shipped_at}` beside a `snapshot.db`)
-/// still read; everything shipped now is version 2, where the state
+/// still read; everything ships as version 2, where the state
 /// lives under a generation directory `e{epoch}-b{base}` as a `base.db`
 /// plus zero or more `wal-{n:05}.seg` slices of one live WAL.
 #[derive(Serialize, Deserialize)]
@@ -84,7 +84,8 @@ impl ObjectStore {
         Self { client, bucket }
     }
 
-    /// Version 1's whole-database key, read-only now.
+    /// Version 1's whole-database key; restore reads it, nothing
+    /// writes it.
     fn snapshot_key(object_id: &str) -> String {
         format!("objects/{object_id}/snapshot.db")
     }

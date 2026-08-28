@@ -603,7 +603,7 @@ async fn guarded_dispatch(
         // No checkpoint here: synchronous=FULL already fsynced the WAL
         // frame at commit, which is the durability the old per-write
         // TRUNCATE bought, minus folding the log on every call. The
-        // shipper owns checkpoints now (docs/WAL-SHIPPING.md).
+        // shipper owns checkpoints (docs/WAL-SHIPPING.md).
 
         // The output gate: a call that wrote does not answer until the
         // write has also left the building.
