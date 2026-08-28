@@ -50,6 +50,17 @@ export class CapabilitiesDto {
    * for built-in policies ("self").
    */
   publishes: string[];
+
+  /**
+   * Class lifecycle declarations: "Class:expire=30d" for a declared
+   * lifespan, "Class:admit" for a creation gate.
+   */
+  lifecycle: string[];
+
+  /**
+   * Connection classes declared with `connection "Class" { ... }`.
+   */
+  connections: string[];
 }
 
 export class ScriptConfigDto {
@@ -109,6 +120,8 @@ export class RevisionFullDto {
         workflows: config.capabilities.workflows ?? [],
         workflowSteps: config.capabilities.workflowSteps ?? [],
         publishes: config.capabilities.publishes ?? [],
+        lifecycle: config.capabilities.lifecycle ?? [],
+        connections: config.capabilities.connections ?? [],
       },
     };
     this.bundle =

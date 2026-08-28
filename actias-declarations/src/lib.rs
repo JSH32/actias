@@ -23,8 +23,10 @@ use mlua::Lua;
 use serde::{Deserialize, Serialize};
 
 mod class_spec;
+mod connection_spec;
 pub mod duration;
 pub use class_spec::{ClassSpec, RESERVED_METHODS, TopicPolicy, callable_method};
+pub use connection_spec::{CONNECTION_HANDLERS, ConnectionSpec};
 
 /// Longest a top-level evaluation may run; declarations are cheap, so
 /// anything hitting this is a runaway loop.
@@ -79,6 +81,9 @@ pub struct Declarations {
     /// lifespan, "Class:admit" for a creation gate.
     #[serde(default)]
     pub lifecycle: Vec<String>,
+    /// Connection classes declared with `connection "Class" { ... }`.
+    #[serde(default)]
+    pub connections: Vec<String>,
 }
 
 /// Ambient globals a script may touch at its top level; each becomes an
@@ -299,6 +304,26 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
 
     lua.globals()
         .set("objects", lua.create_function(|lua, _: String| stub(lua))?)?;
+
+    // `connection "Class" { handlers }` is curried like `object`: the
+    // name records the class, the body is parsed by the same reader the
+    // runtime registry runs, and the handle stub comes back for the
+    // upgrade call to hold.
+    let connection_recorded = recorded.clone();
+    lua.globals().set(
+        "connection",
+        lua.create_function(move |lua, class: String| {
+            connection_recorded
+                .lock()
+                .expect("no other holder")
+                .connections
+                .push(class.clone());
+            lua.create_function(move |lua, body: mlua::Table| {
+                connection_spec::ConnectionSpec::parse(&class, &body)?;
+                stub(lua)
+            })
+        })?,
+    )?;
 
     let database_recorded = recorded.clone();
     lua.globals().set(
@@ -710,6 +735,33 @@ mod tests {
             declarations.lifecycle,
             vec!["Session:expire=30d".to_owned(), "Session:admit".to_owned()]
         );
+    }
+
+    #[test]
+    fn connection_declarations_are_recorded_and_bad_bodies_refuse() {
+        let declarations = extract(
+            files(&[(
+                "main.lua",
+                r#"connection "Session" {
+                    open = function(conn) end,
+                    frame = function(conn, data) end,
+                }
+                on "fetch" (function() end)"#,
+            )]),
+            "main.lua",
+        )
+        .expect("extraction succeeds");
+        assert_eq!(declarations.connections, vec!["Session"]);
+
+        let refused = extract(
+            files(&[(
+                "main.lua",
+                r#"connection "Session" { bid = function() end }"#,
+            )]),
+            "main.lua",
+        )
+        .expect_err("a method-bearing body must refuse");
+        assert!(refused.contains("not a connection handler"), "{refused}");
     }
 
     #[test]

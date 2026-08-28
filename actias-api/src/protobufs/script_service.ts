@@ -58,6 +58,8 @@ export namespace script_service {
         // Class lifecycle declarations: &quot;Class:expire&#x3D;30d&quot; for a declared
     // lifespan, &quot;Class:admit&quot; for a creation gate.
         lifecycle?: string[];
+        // Connection classes declared with &#x60;connection &quot;Class&quot; { ... }&#x60;.
+        connections?: string[];
     }
     export interface ScriptConfig {
         id?: string;

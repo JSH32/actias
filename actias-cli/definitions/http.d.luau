@@ -21,6 +21,31 @@ type Socket = {
     close: (self: Socket) -> boolean,
 }
 
+-- The conn surface a declared connection's handlers receive: the wire
+-- verbs plus the identity it speaks as and its json-serializable
+-- session scratchpad.
+type Conn = {
+    send: (self: Conn, data: any) -> boolean,
+    follow: (self: Conn, target: any, topic: string, filter: any?) -> boolean,
+    unfollow: (self: Conn, target: any, topic: string) -> boolean,
+    close: (self: Conn) -> boolean,
+    state: { [string]: any },
+    name: string,
+    class: string,
+}
+
+-- A declared connection program: handlers for the wire's stimuli.
+-- Nothing calls a connection, so a body declares handlers, not methods.
+type ConnectionBody = {
+    open: ((conn: Conn) -> ())?,
+    frame: ((conn: Conn, data: any) -> ())?,
+    event: ((conn: Conn, event: StreamEvent) -> ())?,
+    close: ((conn: Conn, reason: any?) -> ())?,
+}
+type ConnectionClass = { __connection: string }
+
+declare connection: (class: string) -> (body: ConnectionBody) -> ConnectionClass
+
 -- An incoming request. `upgrade` is typed present (not optional):
 -- calling through an optional field leaves the old solver unable to
 -- pick the function type, so the program's sock parameter would stay

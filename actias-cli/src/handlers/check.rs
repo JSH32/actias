@@ -52,6 +52,12 @@ pub fn handle(directory: &str) -> Result<()> {
             declared.queues.join(", ").purple()
         );
     }
+    if !declared.connections.is_empty() {
+        println!(
+            "\u{1f50c} Declares connections: {}",
+            declared.connections.join(", ").purple()
+        );
+    }
     if !declared.workflows.is_empty() {
         println!(
             "🧭 Declares workflows: {}",

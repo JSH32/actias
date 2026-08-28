@@ -32,12 +32,119 @@
 //! platform (where a per-wake budget naturally arms) and
 //! `sock:recv()` is the awaitable primitive for manual `while` loops.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use mlua::{Lua, LuaSerdeExt, Table};
 
+use actias_declarations::ConnectionSpec;
+
 use crate::connections::{InboxItem, InboxReceiver, OutboundFrame};
 use crate::extensions::objects::{ObjectRouter, ObjectTarget};
+use crate::runtime::ActiasRuntime;
+use crate::runtime::extension::{ExtensionInfo, LuaExtension};
+
+/// Registry key of the connection-class-name-to-body table in this vm;
+/// the registry view below is the only door.
+const CONNECTION_CLASSES_KEY: &str = "connection_classes";
+
+/// The vm's connection specs by class name, app data beside the lua
+/// registry, the same split as the object class registry.
+struct ConnectionSpecs(HashMap<String, Arc<ConnectionSpec>>);
+
+/// The vm's connection-class registry: declared bodies under their
+/// names (the handlers' home) and the typed specs beside them.
+pub struct ConnectionRegistry<'lua> {
+    lua: &'lua Lua,
+}
+
+impl<'lua> ConnectionRegistry<'lua> {
+    /// The registry of the vm behind `lua`.
+    pub fn of(lua: &'lua Lua) -> Self {
+        Self { lua }
+    }
+
+    /// Installs the empty class table at extension boot.
+    fn install(&self) -> mlua::Result<()> {
+        let classes = self.lua.create_table()?;
+        self.lua
+            .set_named_registry_value(CONNECTION_CLASSES_KEY, classes)
+    }
+
+    /// Declares a connection class: the body table becomes reachable
+    /// under its name and its spec is recorded, together.
+    fn declare(&self, spec: ConnectionSpec, body: &Table) -> mlua::Result<()> {
+        let classes: Table = self.lua.named_registry_value(CONNECTION_CLASSES_KEY)?;
+        classes.set(spec.name.as_str(), body)?;
+        if self.lua.app_data_ref::<ConnectionSpecs>().is_none() {
+            self.lua.set_app_data(ConnectionSpecs(HashMap::new()));
+        }
+        if let Some(mut specs) = self.lua.app_data_mut::<ConnectionSpecs>() {
+            specs.0.insert(spec.name.clone(), Arc::new(spec));
+        }
+        Ok(())
+    }
+
+    /// The spec a declaration stored, or [`None`] for a class this vm
+    /// never declared.
+    pub fn spec(&self, class: &str) -> Option<Arc<ConnectionSpec>> {
+        self.lua
+            .app_data_ref::<ConnectionSpecs>()
+            .and_then(|specs| specs.0.get(class).cloned())
+    }
+
+    /// One class's body table, the home of its handlers; [`None`] for a
+    /// class this vm never declared.
+    pub fn class_table(&self, class: &str) -> Option<Table> {
+        self.lua
+            .named_registry_value::<Table>(CONNECTION_CLASSES_KEY)
+            .ok()?
+            .get(class)
+            .ok()
+    }
+}
+
+pub struct ConnectionExtension;
+
+impl LuaExtension for ConnectionExtension {
+    fn extension_info(&self) -> ExtensionInfo<'_> {
+        ExtensionInfo {
+            name: "connection",
+            description: "Declared connection programs",
+            default: true,
+        }
+    }
+
+    fn create_extension(&self, lua: &Lua) -> mlua::Result<mlua::Value> {
+        ConnectionRegistry::of(lua).install()?;
+
+        // `connection "Class" { handlers }`, curried like `object`: the
+        // name is checked and recorded, the table becomes the class
+        // body in this vm, and the handle is what an upgrade call takes.
+        let declaration = lua.create_function(|lua, class: String| {
+            ActiasRuntime::assert_declaration_phase(lua, "connection")?;
+            if class.starts_with("__") {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Class name '{class}' is reserved for the platform."
+                )));
+            }
+            ActiasRuntime::record_connection_declaration(lua, &class);
+
+            lua.create_function(move |lua, body: Table| {
+                // One parse normalizes the body and carries the
+                // validation, so the stored contract and this enforcing
+                // runtime agree by construction.
+                let spec = ConnectionSpec::parse(&class, &body)?;
+                ConnectionRegistry::of(lua).declare(spec, &body)?;
+                let handle = lua.create_table()?;
+                handle.set("__connection", class.clone())?;
+                Ok(handle)
+            })
+        })?;
+
+        Ok(mlua::Value::Function(declaration))
+    }
+}
 
 /// A requested upgrade, parked in app data until the HTTP layer picks
 /// it up after the fetch handler returns.

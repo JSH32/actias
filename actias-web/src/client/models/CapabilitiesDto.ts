@@ -40,5 +40,14 @@ export type CapabilitiesDto = {
      * for built-in policies ("self").
      */
     publishes: Array<string>;
+    /**
+     * Class lifecycle declarations: "Class:expire=30d" for a declared
+     * lifespan, "Class:admit" for a creation gate.
+     */
+    lifecycle: Array<string>;
+    /**
+     * Connection classes declared with `connection "Class" { ... }`.
+     */
+    connections: Array<string>;
 };
 

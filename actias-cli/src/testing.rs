@@ -337,6 +337,7 @@ fn prepare(config: &ScriptConfig) -> Result<Arc<PreparedRevision>, String> {
                 workflow_steps: declared.workflow_steps,
                 publishes: declared.publishes,
                 lifecycle: declared.lifecycle,
+                connections: declared.connections.clone(),
             }),
         }),
         ..Default::default()

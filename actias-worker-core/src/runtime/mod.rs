@@ -116,6 +116,8 @@ pub struct Declarations {
     /// Class lifecycle declarations, "Class:expire=30d" and
     /// "Class:admit".
     pub lifecycle: Vec<String>,
+    /// Classes handed to `connection "Class"`.
+    pub connections: Vec<String>,
 }
 
 /// The capability contract a revision was published with.
@@ -139,6 +141,10 @@ pub struct Contract {
     /// Lifecycle entries as declared, "Class:expire=30d" and
     /// "Class:admit".
     lifecycle: Vec<String>,
+    /// Connection classes the code declared; recorded for the console
+    /// and check, not yet enforced at declaration (the workflow rule).
+    #[allow(dead_code)]
+    connections: HashSet<String>,
 }
 
 /// Which contract list a declaration checks against.
@@ -227,6 +233,7 @@ impl PreparedRevision {
                     .collect(),
                 events: capabilities.events,
                 lifecycle: capabilities.lifecycle,
+                connections: capabilities.connections.into_iter().collect(),
             });
 
         Ok(Self {
@@ -496,6 +503,14 @@ impl ActiasRuntime {
     pub fn record_object_declaration(lua: &Lua, class: &str) {
         if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
             declarations.objects.push(class.to_owned());
+        }
+    }
+
+    /// Notes a `connection "Class"` declaration for
+    /// [`Self::declarations`].
+    pub fn record_connection_declaration(lua: &Lua, class: &str) {
+        if let Some(mut declarations) = lua.app_data_mut::<Declarations>() {
+            declarations.connections.push(class.to_owned());
         }
     }
 
@@ -838,6 +853,7 @@ impl ActiasRuntime {
                     &JwtExtension,
                     &CryptoExtension,
                     &crate::extensions::objects::ObjectExtension,
+                    &crate::extensions::sockets::ConnectionExtension,
                 ])?;
             }
             // Workflow code keeps json and log; every effect surface is
@@ -869,6 +885,7 @@ impl ActiasRuntime {
                     },
                     &crate::extensions::log::LogExtension { publisher: logs },
                     &crate::extensions::objects::ObjectExtension,
+                    &crate::extensions::sockets::ConnectionExtension,
                     &ForbiddenExtension { name: "http" },
                     &ForbiddenExtension { name: "jwt" },
                     &ForbiddenExtension { name: "crypto" },
@@ -1496,6 +1513,39 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_connection_declaration_registers_and_bad_bodies_refuse() {
+        let lua = runtime_running(
+            r#"
+            local Session = connection "Session" {
+                open = function(conn) end,
+                frame = function(conn, data) end,
+            }
+            on "fetch" (function(request) return { body = "ok" } end)
+            "#,
+        )
+        .await
+        .expect("entry point runs");
+
+        assert_eq!(lua.declarations().connections, vec!["Session"]);
+        let registry = crate::extensions::sockets::ConnectionRegistry::of(&lua);
+        let spec = registry.spec("Session").expect("the spec is registered");
+        assert_eq!(spec.handlers, vec!["open", "frame"]);
+        registry
+            .class_table("Session")
+            .expect("the body table is reachable");
+
+        let Err(refused) =
+            runtime_running(r#"connection "Session" { bid = function() end }"#).await
+        else {
+            panic!("a method-bearing body must refuse")
+        };
+        assert!(
+            refused.to_string().contains("not a connection handler"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn declarations_inside_a_handler_error_at_request_time() {
         // Minting a capability per request would make the code inextractable
         // as a manifest, so it must fail loudly, not work quietly.
@@ -1541,6 +1591,7 @@ mod tests {
                     workflow_steps: vec![],
                     publishes: vec![],
                     lifecycle: vec![],
+                    connections: vec![],
                 }),
                 ..Default::default()
             }),

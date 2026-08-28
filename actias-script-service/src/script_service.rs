@@ -302,6 +302,7 @@ impl ScriptService {
             workflow_steps: derived.workflow_steps,
             publishes: derived.publishes,
             lifecycle: derived.lifecycle,
+            connections: derived.connections,
         });
 
         // Identity is project-scoped, so single-owner declarations must be
@@ -1632,6 +1633,7 @@ mod tests {
                     workflow_steps: vec![],
                     publishes: vec![],
                     lifecycle: vec![],
+                    connections: vec![],
                 }),
             }),
             bundle: Some(Bundle {

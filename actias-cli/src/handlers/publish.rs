@@ -68,6 +68,18 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
             declared.queues.join(", ").purple()
         );
     }
+    if !declared.connections.is_empty() {
+        println!(
+            "\u{1f50c} Declares connections: {}",
+            declared.connections.join(", ").purple()
+        );
+    }
+    if !declared.lifecycle.is_empty() {
+        println!(
+            "\u{23f3} Lifecycle: {}",
+            declared.lifecycle.join(", ").purple()
+        );
+    }
 
     let mut config_dto: ScriptConfigDto = script_config.clone().into();
     config_dto.capabilities = Some(CapabilitiesDto {
@@ -80,6 +92,8 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         workflows: declared.workflows,
         workflow_steps: declared.workflow_steps,
         publishes: declared.publishes,
+        lifecycle: declared.lifecycle,
+        connections: declared.connections,
     });
 
     let mut bundle = script_config.to_bundle().map_err(Error::Script)?;

@@ -61,6 +61,8 @@ message Capabilities {
     // Class lifecycle declarations: "Class:expire=30d" for a declared
     // lifespan, "Class:admit" for a creation gate.
     repeated string lifecycle = 10;
+    // Connection classes declared with `connection "Class" { ... }`.
+    repeated string connections = 11;
 }
 
 message ScriptConfig {
