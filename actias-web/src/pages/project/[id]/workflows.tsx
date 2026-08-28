@@ -264,7 +264,7 @@ function foldHistory(
           state: 'done',
           attempts: Number(data.attempt ?? 1),
           note: `attempt ${String(data.attempt ?? 1)} failed${
-            isFinal ? ' · retries exhausted' : ''
+            isFinal ? ', retries exhausted' : ''
           }`,
           error: String(data.error ?? ''),
           time: agoShort(entry.at),
@@ -930,7 +930,7 @@ function Workflows({
               {filter
                 ? `${visible.length} of ${
                     (runs ?? []).length
-                  } runs · click the tile again to clear`
+                  } runs. Click the tile again to clear.`
                 : `${(runs ?? []).length} runs`}
             </span>
           </div>
@@ -1005,12 +1005,14 @@ function Workflows({
             ))}
             {!visible.length && (
               <div className={classes.emptyRows}>
-                No runs{filter ? ' in this state' : ' yet'}.{' '}
+                No runs{filter ? ' in this state' : ' yet'}. Any script can
+                start one: declare{' '}
+                <code>local runs = workflows &quot;{active.name}&quot;</code> at
+                the top level, then{' '}
                 <code>
-                  workflows &quot;{active.name}&quot;:start(input, {'{'} id{' '}
-                  {'}'})
-                </code>{' '}
-                starts one from any script.
+                  runs:start(input, {'{'} id = &quot;…&quot; {'}'})
+                </code>
+                .
               </div>
             )}
           </div>
