@@ -1,82 +1,113 @@
 ---
-title: sock
-lead: The value a connection program receives.
+title: connection
+lead: Declared connection classes, their handlers, and the conn value.
 order: 8
 ---
+
+## Declare a class
+
+```lua
+local Session = connection "Session" {
+    open = function(conn) end,
+    frame = function(conn, data) end,
+    event = function(conn, event) end,
+    close = function(conn, reason) end,
+}
+```
+
+Each handler is optional; a key outside these four refuses at
+declaration. Nothing calls a connection, so there are no methods:
+handlers run when the wire or an edge delivers.
+
+<table>
+  <thead>
+    <tr><th>Handler</th><th>Runs</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>open(conn)</code></td><td>once, before any item; the follow calls usually live here</td></tr>
+    <tr><td><code>frame(conn, data)</code></td><td>per json frame the client sent</td></tr>
+    <tr><td><code>event(conn, event)</code></td><td>per delivered edge event</td></tr>
+    <tr><td><code>close(conn, reason)</code></td><td>after the wire ends, either side; edges sever after it returns</td></tr>
+  </tbody>
+</table>
+
+Handlers for one connection run one at a time, in arrival order, each
+under the per-call budget.
 
 ## Upgrading
 
 ```lua
 if request.upgrade and request.path == "/ws" then
-    return request:upgrade(function(sock)
-        -- connection program
-    end, User(name))
+    return request:upgrade(Session, { room = "lobby" }, User(name))
 end
 ```
 
-`request:upgrade(program, identity)` returns the value your fetch
-handler should return. The identity is an object handle; the
-connection speaks as it for the rest of its life.
+`request:upgrade(Class, seed?, identity)` returns the value your
+fetch handler should return. The seed becomes the initial
+`conn.state`; the identity is an object handle the connection speaks
+as for the rest of its life. Two arguments means no seed.
 
-## Methods
+## conn
 
 <table>
   <thead>
-    <tr><th>Method</th><th>Does</th></tr>
+    <tr><th>Field</th><th>Meaning</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>each(handler)</code></td><td>runs the handler per item until close; return true to stop</td></tr>
-    <tr><td><code>recv()</code></td><td>one item, or nil once closed</td></tr>
-    <tr><td><code>send(value)</code></td><td>writes one json frame</td></tr>
-    <tr><td><code>follow(target, topic, filter?)</code></td><td>makes a connection edge</td></tr>
-    <tr><td><code>unfollow(target, topic)</code></td><td>removes it</td></tr>
-    <tr><td><code>close()</code></td><td>ends the connection</td></tr>
+    <tr><td><code>conn.state</code></td><td>json-serializable session table, seeded at upgrade, kept across handlers, 64 KB cap</td></tr>
+    <tr><td><code>conn.name</code></td><td>the identity's instance name</td></tr>
+    <tr><td><code>conn.class</code></td><td>the identity's class</td></tr>
+    <tr><td><code>conn:send(value)</code></td><td>writes one json frame</td></tr>
+    <tr><td><code>conn:follow(target, topic, filter?)</code></td><td>makes a connection edge</td></tr>
+    <tr><td><code>conn:unfollow(target, topic)</code></td><td>removes it</td></tr>
+    <tr><td><code>conn:close()</code></td><td>ends the connection</td></tr>
   </tbody>
 </table>
 
-## Items
-
-`each` and `recv` yield items of two kinds:
-
-```lua
--- a delivered stream event
-{ kind = "event", event = { topic = "...", from = { id, class, name }, data = {...} } }
-
--- a json frame from the client
-{ kind = "frame", data = {...} }
-```
-
-Both arrive on the same inbox.
+The event a handler receives is shaped
+`{ topic = "...", from = { id, class, name }, data = {...} }`.
 
 ## Example
 
 ```lua
-return request:upgrade(function(sock)
-    sock:follow(Account(user), "events")
-    local watching = nil
+local Watcher = connection "Watcher" {
+    open = function(conn)
+        conn:follow(Account(conn.name), "events")
+    end,
 
-    sock:each(function(item)
-        if item.kind == "event" then
-            sock:send({ topic = item.event.topic, data = item.event.data })
-        elseif item.kind == "frame" and item.data.op == "watch" then
-            if watching then sock:unfollow(Auction(watching), "bid") end
-            watching = item.data.id
-            sock:follow(Auction(watching), "bid")
+    event = function(conn, event)
+        conn:send({ topic = event.topic, data = event.data })
+    end,
+
+    frame = function(conn, data)
+        if data.op == "watch" then
+            if conn.state.watching then
+                conn:unfollow(Auction(conn.state.watching), "bid")
+            end
+            conn.state.watching = data.id
+            conn:follow(Auction(data.id), "bid")
         end
-    end)
-end, Account(user))
+    end,
+}
+
+on "fetch" (function(request)
+    if request.upgrade then
+        return request:upgrade(Watcher, nil, Account(authed(request)))
+    end
+end)
 ```
 
 ### Gotchas
 
-- Iterate with `each`, not a generic for. Luau cannot resume a yield
-  inside an iterator, so `for item in sock:each()` fails at runtime.
+- Locals in the fetch handler do not reach the handlers; a session's
+  context travels through the seed into `conn.state`.
+- `conn.state` dies with the connection on purpose. Anything that must
+  survive belongs on an object one hop back.
 - Connection edges are at-most-once and die with the connection.
-  Anything that must survive belongs on an object one hop back.
-- The inbox holds 256 items. A program that stops consuming closes the
-  connection rather than buffering.
+- The inbox holds 256 items. A connection whose handlers cannot keep
+  up closes rather than buffering.
 - There is no platform wire protocol. The frames on the wire are the
-  ones your program sends and interprets, so follow targets come from
+  ones your handlers send and interpret, so follow targets come from
   your code, never from a string the client sent.
 
 ## Related

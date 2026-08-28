@@ -137,6 +137,41 @@ whichever machine holds the object next re-arms it from storage.
 Use alarms for deadlines an entity owns. Do not sweep a table looking
 for overdue rows.
 
+## Lifecycle
+
+An instance exists from its first call until something ends it, and
+three declarations shape that span:
+
+```lua
+local Session = object "Session" {
+    expire = "30d",
+    admit = function(name)
+        return #name > 3
+    end,
+
+    close = function(state)
+        state:destroy()
+    end,
+}
+```
+
+- **`expire`** declares a lifespan measured in idleness: an instance
+  untouched for that long is deleted by the platform. Any call renews
+  the clock, and a pending alarm postpones the sweep, so a busy or
+  scheduled object never expires under you.
+- **`admit`** gates creation, not access: it runs once when a NAME
+  would first come to exist, with only the name, before any storage
+  does. A refused name leaves nothing behind and may be retried.
+- **`state:destroy()`** ends the instance from inside a method. The
+  current call still returns its value; then storage, snapshot and
+  edges are reclaimed. Calls arriving afterwards refuse while the
+  deletion finishes.
+
+Deletion is forget, never a ban: a deleted or expired name may be
+created again later and starts completely fresh. There is no undo.
+The console's object header shows a lifespanned instance's deadline
+and offers the same deletion.
+
 ## Placement
 
 The platform decides which machine hosts each object and moves it when

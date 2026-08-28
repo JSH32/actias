@@ -71,11 +71,12 @@ of them.
     <tr><td>Stream edge attempts</td><td>8, first retry 500ms, doubling to 60s</td><td>the edge is dropped</td></tr>
     <tr><td>Stream delivery</td><td>10 seconds per attempt</td><td>counts as a failed attempt</td></tr>
     <tr><td>Connection inbox</td><td>256 items</td><td>the connection is closed</td></tr>
+    <tr><td>conn.state</td><td>64 KB serialized</td><td>the connection is closed; a bigger session belongs in an object</td></tr>
   </tbody>
 </table>
 
-The connection inbox is not a buffer to fill. A program that stops
-pulling from its socket has chosen to fall behind, and the platform
+The connection inbox is not a buffer to fill. A connection whose
+handlers cannot keep up has chosen to fall behind, and the platform
 closes it rather than growing memory on its behalf.
 
 ## Failure behaviour

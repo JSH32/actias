@@ -1,8 +1,41 @@
 ---
 title: Websockets
-lead: A fetch handler can upgrade a request into a connection that runs your own loop.
+lead: A fetch handler upgrades a request into a declared connection whose handlers run per item.
 order: 7
 ---
+
+## Declaring a connection
+
+A connection's program is a top-level declaration, the same shape as
+an object class: named handlers for the wire's stimuli.
+
+```lua
+local Session = connection "Session" {
+    -- Runs once per connection, before any item. conn.state was
+    -- seeded by the upgrade call.
+    open = function(conn)
+        conn:follow(Room(conn.state.room), "message")
+    end,
+
+    -- A json frame the client sent up the wire.
+    frame = function(conn, data)
+        Room(conn.state.room):post(conn.name, data.text)
+    end,
+
+    -- A delivered edge event.
+    event = function(conn, event)
+        conn:send({ event = "message", text = event.data.text })
+    end,
+
+    -- The wire ended, either side. Edges are severed by the platform
+    -- after this returns; cleanup here is app-level courtesy.
+    close = function(conn, reason) end,
+}
+```
+
+Nothing calls a connection, so a body declares handlers, not methods;
+a key outside `open`, `frame`, `event` and `close` refuses at
+declaration, and `actias check` verifies the shapes.
 
 ## Upgrading
 
@@ -17,17 +50,7 @@ on "fetch" (function(request)
             return { status_code = 401, body = "log in first" }
         end
 
-        return request:upgrade(function(sock)
-            sock:follow(Room("lobby"), "message")
-            sock:each(function(item)
-                if item.kind == "event" then
-                    sock:send({
-                        event = "message",
-                        text = item.event.data.text,
-                    })
-                end
-            end)
-        end, User(user))
+        return request:upgrade(Session, { room = "lobby" }, User(user))
     end
 
     -- ordinary routes
@@ -35,64 +58,53 @@ end)
 ```
 
 `request.upgrade` is present only when the request is a real
-handshake. `request:upgrade(program, identity)` takes the connection
-program and the identity the connection speaks as.
+handshake. `request:upgrade(Class, seed?, identity)` names the
+declared connection class, optionally seeds `conn.state`, and fixes
+the identity the connection speaks as. The request ends like any
+other; whatever the handler computed travels only through the seed.
 
-The request environment does not die at the response. It becomes the
-connection's environment and lives as long as the connection, so the
-program is a closure over whatever the handler already computed.
+## conn.state
+
+A json-serializable table, alive exactly as long as the connection:
+seeded at upgrade, visible to every handler, written back after each
+one returns. It caps at 64 KB serialized; a session worth more
+belongs in an object.
+
+It is not durable storage. A connection dying with its node loses it,
+which is correct: the connection identity and its follows die too,
+and the client's reconnect path re-reads real state from objects.
 
 ## Identity
 
-The second argument is an object handle: `User(name)`,
+The identity argument is an object handle: `User(name)`,
 `Account(name)`. The connection speaks as that identity, and a
 [stream gate](/docs/runtime/streams) sees it shaped like any follower.
 
 Mint it after authenticating. It is fixed for the life of the
 connection and cannot be changed by anything the client sends.
 
-## The loop
-
-`sock:each(handler)` runs the handler for each item until the
-connection closes. Returning `true` stops the loop.
-
-Items are one of two kinds:
-
-```lua
-sock:each(function(item)
-    if item.kind == "event" then
-        -- a delivered stream event: item.event.topic, .from, .data
-    elseif item.kind == "frame" then
-        -- a json frame the client sent: item.data
-    end
-end)
-```
-
-Both arrive on the same inbox, so there is no select machinery.
-`sock:recv()` is the same source as a single awaited item if you want
-to write the loop yourself.
-
 ## Sending
 
-`sock:send(value)` writes one JSON frame. There is no platform wire
-protocol: the frames on the wire are the ones your program sends.
+`conn:send(value)` writes one JSON frame. There is no platform wire
+protocol: the frames on the wire are the ones your handlers send.
 
-To let clients change subscriptions, define a frame for it and handle
-it in the loop:
+To let clients change subscriptions, define a frame for it:
 
 ```lua
-sock:each(function(item)
-    if item.kind == "frame" and item.data.op == "watch" then
-        if watching then sock:unfollow(Auction(watching), "bid") end
-        watching = item.data.id
-        sock:follow(Auction(watching), "bid")
+frame = function(conn, data)
+    if data.op == "watch" then
+        if conn.state.watching then
+            conn:unfollow(Auction(conn.state.watching), "bid")
+        end
+        conn.state.watching = data.id
+        conn:follow(Auction(data.id), "bid")
     end
-end)
+end,
 ```
 
 ## Connection edges
 
-`sock:follow` makes an edge like `state:follow` does, with different
+`conn:follow` makes an edge like `state:follow` does, with different
 promises:
 
 <table>
@@ -116,11 +128,12 @@ reconnect the client reads the object's state and continues.
 
 ## Backpressure and limits
 
-Each connection has an inbox of 256 items. A program that stops
-consuming fills it, and the connection closes rather than buffering
-without limit.
+Handlers for one connection run one at a time, in arrival order, each
+as one platform call under the call budget. Each connection has an
+inbox of 256 items; a connection whose handlers cannot keep up fills
+it, and the connection closes rather than buffering without limit.
 
-Returning from the program, throwing, or the peer disconnecting all end
+A handler throwing, `conn:close()`, or the peer disconnecting all end
 the connection and remove the edges it made.
 
 ### Gotchas
@@ -133,9 +146,12 @@ the connection and remove the edges it made.
   re-read state rather than resume.
 - The identity is fixed at upgrade. Nothing the client sends later can
   change what the connection speaks as.
+- Locals captured in the fetch handler do not reach the handlers;
+  anything a session needs travels through the seed into `conn.state`.
 
 ## Related
 
 - [Streams](/docs/runtime/streams): the publisher side and who may
   follow.
-- [sock reference](/docs/reference/sockets): every method.
+- [connection reference](/docs/reference/sockets): every handler and
+  verb.
