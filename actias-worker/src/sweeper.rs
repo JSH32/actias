@@ -18,7 +18,10 @@ use std::time::Duration;
 use actias_common::tracing::{debug, warn};
 use actias_worker_core::extensions::objects::unix_now_ms;
 use actias_worker_core::identity::ObjectKey;
-use actias_worker_core::proto::node_registry::{DueAlarmsRequest, SetAlarmRequest};
+use actias_worker_core::proto::node_registry::{
+    DeleteInstanceRequest, DueAlarmsRequest, DueExpiriesRequest, PurgeInstanceRequest,
+    SetAlarmRequest,
+};
 use actias_worker_core::storage::SqliteStorage;
 
 use crate::routing::{ObjectRouting, owner_prepared};
@@ -85,9 +88,14 @@ async fn mirror_local_alarms(state: &AppState) {
     }
 }
 
+/// How long a tombstone may sit before the janitor takes it over; long
+/// enough for the deleting node's own sequence to finish first.
+const JANITOR_GRACE_MS: i64 = 60_000;
+
 /// Runs forever; spawn it and forget it.
 pub async fn run(state: AppState, every: Duration) {
     mirror_local_alarms(&state).await;
+    sweep_deleted_files(&state).await;
 
     loop {
         tokio::time::sleep(every).await;
@@ -140,6 +148,172 @@ pub async fn run(state: AppState, every: Duration) {
                     warn!(%error, own_key = row.own_key, "cold object could not be woken")
                 }
             }
+        }
+
+        expiry_pass(&state).await;
+        janitor_pass(&state).await;
+    }
+}
+
+/// Deletes instances past their declared lifespan. The registry's guard
+/// arbitrates: the tombstone re-checks the predicate, so a claim that
+/// refreshed the row between the query and here wins and this pass
+/// simply skips it.
+async fn expiry_pass(state: &AppState) {
+    let due = state
+        .registry
+        .clone()
+        .due_expiries(DueExpiriesRequest {
+            now_ms: unix_now_ms(),
+            limit: SWEEP_BATCH,
+        })
+        .await;
+    let rows = match due {
+        Ok(response) => response.into_inner().rows,
+        Err(error) => {
+            debug!(%error, "expiry sweep query failed");
+            return;
+        }
+    };
+
+    for row in rows {
+        let key = ObjectKey::received(&row.scope_id, &row.class, &row.name);
+        let deleted = state
+            .registry
+            .clone()
+            .delete_instance(DeleteInstanceRequest {
+                scope_id: row.scope_id.clone(),
+                class: row.class.clone(),
+                name: row.name.clone(),
+                object_id: key.object_id(),
+                only_if_expired: true,
+            })
+            .await;
+        match deleted {
+            Ok(response) => {
+                let response = response.into_inner();
+                if !response.tombstoned {
+                    continue;
+                }
+                if let Err(error) = finish_deletion(state, &key, response.epoch).await {
+                    // The tombstone committed; the janitor finishes.
+                    warn!(%error, own_key = %key, "expiry cleanup incomplete");
+                } else {
+                    debug!(own_key = %key, "expired instance deleted");
+                }
+            }
+            Err(error) => warn!(%error, own_key = %key, "expiry tombstone failed"),
+        }
+    }
+}
+
+/// Retries deletions whose cleanup never finished: the tombstone is the
+/// commit point, everything after is retryable, and this is the retry.
+async fn janitor_pass(state: &AppState) {
+    let unfinished = state
+        .registry
+        .clone()
+        .unfinished_deletions(DueExpiriesRequest {
+            now_ms: unix_now_ms() - JANITOR_GRACE_MS,
+            limit: SWEEP_BATCH,
+        })
+        .await;
+    let rows = match unfinished {
+        Ok(response) => response.into_inner().rows,
+        Err(error) => {
+            debug!(%error, "janitor query failed");
+            return;
+        }
+    };
+
+    for row in rows {
+        let key = ObjectKey::received(&row.scope_id, &row.class, &row.name);
+        if let Err(error) = finish_deletion(state, &key, row.epoch).await {
+            warn!(%error, own_key = %key, "janitor retry failed");
+        } else {
+            debug!(own_key = %key, "unfinished deletion drained");
+        }
+    }
+}
+
+/// The retryable tail of the deletion sequence: marker, local residue,
+/// purge. Files on other nodes heal through the marker at their next
+/// touch or their node's boot sweep.
+async fn finish_deletion(state: &AppState, key: &ObjectKey, epoch: u64) -> Result<(), String> {
+    let object_id = key.object_id();
+    state.object_store.mark_deleted(&object_id, epoch).await?;
+
+    // A live residency anywhere ends through the platform's own verb,
+    // sent straight at the lease holder; the marker heals whatever this
+    // misses.
+    if let Ok(owner) = owner_prepared(state, key).await
+        && let Err(error) = ObjectRouting::new(state, owner).end_residency(key).await
+    {
+        debug!(%error, own_key = %key, "residency did not end; the marker heals it");
+    }
+
+    state.objects.evict(&key.to_string()).await;
+    state
+        .shippers
+        .lock()
+        .expect("no poisoned lock")
+        .remove(&object_id);
+    state.holders.invalidate(&object_id).await;
+    remove_object_files(&state.object_data_dir.join(key.db_file_name())).await;
+
+    state
+        .registry
+        .clone()
+        .purge_instance(PurgeInstanceRequest {
+            scope_id: key.scope().to_owned(),
+            class: key.class().to_owned(),
+            name: key.name().to_owned(),
+            object_id,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Unlinks one object's local residue: the database, its wal and shm,
+/// and the residency sidecar. Best effort throughout.
+async fn remove_object_files(file: &Path) {
+    let _ = tokio::fs::remove_file(file).await;
+    for suffix in ["-wal", "-shm"] {
+        let mut side = file.as_os_str().to_owned();
+        side.push(suffix);
+        let _ = tokio::fs::remove_file(PathBuf::from(side)).await;
+    }
+    let _ = tokio::fs::remove_file(file.with_extension("epoch")).await;
+}
+
+/// The boot half of file cleanup: a node that was dead while a deletion
+/// ran still holds the file. The store remembers the deletion (the
+/// marker manifest), so one manifest read per local file at boot is the
+/// whole question.
+async fn sweep_deleted_files(state: &AppState) {
+    let Ok(entries) = std::fs::read_dir(&state.object_data_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("db") {
+            continue;
+        }
+        let Some(object_id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // Object files are named by the identity hash; anything else in
+        // the directory is not ours to judge.
+        if object_id.len() != 64 || !object_id.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        match state.object_store.manifest(object_id).await {
+            Ok(Some(manifest)) if manifest.deleted => {
+                remove_object_files(&path).await;
+                debug!(object_id, "deleted object's file swept at boot");
+            }
+            _ => {}
         }
     }
 }

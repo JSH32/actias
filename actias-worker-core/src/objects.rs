@@ -104,6 +104,15 @@ pub type DestroyFn = Arc<
     dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
 >;
 
+/// Restates the holder's claim, refreshing the declared lifespan: a
+/// busy object never ends its residency, so without this the expiry
+/// sweep would read a hot object as abandoned. Fire-and-forget and
+/// throttled by the task; the host supplies the re-claim.
+pub type KeepClaimed = Arc<dyn Fn() + Send + Sync>;
+
+/// How often a warm object with a lifespan restates its claim.
+const RESIDENCY_REFRESH_MS: i64 = 10 * 60 * 1000;
+
 /// Mirrors this object's armed alarm into an external registry:
 /// `Some(due_ms)` on arm, [`None`] on clear. One closure per object with
 /// the identity baked in, so nothing guest- or identity-shaped leaks in
@@ -140,6 +149,8 @@ pub struct ObjectHome {
     /// Set by `state:destroy()`; the task reads it after the call's
     /// commit and answer, so destruction is the last thing that runs.
     destroy_requested: std::sync::atomic::AtomicBool,
+    /// When the claim was last restated; the residency refresh throttle.
+    claim_refreshed_ms: std::sync::atomic::AtomicI64,
 }
 
 impl ObjectHome {
@@ -161,7 +172,30 @@ impl ObjectHome {
             delivery_due: std::sync::Mutex::new(None),
             publisher: std::sync::Mutex::new(None),
             destroy_requested: std::sync::atomic::AtomicBool::new(false),
+            claim_refreshed_ms: std::sync::atomic::AtomicI64::new(
+                crate::extensions::objects::unix_now_ms(),
+            ),
         }
+    }
+
+    /// Whether the residency refresh is due; advancing the throttle and
+    /// answering in one step, so at most one refresh fires per window.
+    fn take_refresh_due(&self) -> bool {
+        let now = crate::extensions::objects::unix_now_ms();
+        let last = self
+            .claim_refreshed_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if now - last < RESIDENCY_REFRESH_MS {
+            return false;
+        }
+        self.claim_refreshed_ms
+            .compare_exchange(
+                last,
+                now,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
     }
 
     /// `state:destroy()`: forget this object once the current call has
@@ -369,6 +403,9 @@ pub struct TaskOptions {
     /// [`None`] ends the task without platform cleanup (tests, embedded
     /// runs).
     pub destroy: Option<DestroyFn>,
+    /// Restates the claim for a class with a declared lifespan; [`None`]
+    /// for classes that never expire.
+    pub keep_claimed: Option<KeepClaimed>,
 }
 
 pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> ObjectHandle {
@@ -382,6 +419,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         alarm_sync,
         queue,
         destroy,
+        keep_claimed,
     } = options;
 
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
@@ -490,6 +528,11 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                             )
                             .await;
                         }
+                        if let Some(keep) = keep_claimed.as_ref()
+                            && home.take_refresh_due()
+                        {
+                            keep();
+                        }
                         if home.destroy_requested() {
                             destroy_teardown(&mut receiver, destroy.as_ref()).await;
                             break;
@@ -539,6 +582,14 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
             // A caller that stopped waiting is its own problem; the state
             // change it asked for has already happened either way.
             let _ = call.reply.send(result);
+
+            // A busy object is not abandoned: restating the claim keeps
+            // its lifespan measuring idleness, not residency age.
+            if let Some(keep) = keep_claimed.as_ref()
+                && home.take_refresh_due()
+            {
+                keep();
+            }
 
             if home.destroy_requested() {
                 destroy_teardown(&mut receiver, destroy.as_ref()).await;
@@ -622,6 +673,14 @@ async fn guarded_dispatch(
     call_budget: Option<u64>,
     after_write: Option<&AfterWrite>,
 ) -> Result<serde_json::Value, ObjectError> {
+    // The platform's own end-of-life verb: handles refuse every "__"
+    // spelling, so its arrival here is provably platform-originated.
+    // The answer goes out first; the task tears down after it.
+    if payload.get("method").and_then(|m| m.as_str()) == Some("__destroy") {
+        home.request_destroy();
+        return Ok(serde_json::Value::Null);
+    }
+
     let has_storage = home.has_storage();
 
     if has_storage && let Err(error) = home.with_storage(|storage| storage.begin()) {
@@ -794,6 +853,16 @@ impl ObjectHost {
     /// callers finish. The next access builds a fresh vm.
     pub async fn evict(&self, id: &str) {
         self.tasks.lock().await.remove(id);
+    }
+
+    /// The live task's handle when one exists; never spawns.
+    pub async fn handle_if_resident(&self, id: &str) -> Option<ObjectHandle> {
+        self.tasks
+            .lock()
+            .await
+            .get(id)
+            .filter(|(_, handle)| !handle.sender.is_closed())
+            .map(|(_, handle)| handle.clone())
     }
 }
 

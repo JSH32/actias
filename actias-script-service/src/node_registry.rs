@@ -13,11 +13,12 @@ use uuid::Uuid;
 
 use crate::proto_node_registry::{
     AcquireLeaseRequest, AlarmRow, ClassCount, ClearAlarmRequest, CountInstancesRequest,
-    CountInstancesResponse, DeleteInstanceRequest, DeleteInstanceResponse, DeregisterRequest,
-    DueAlarmsRequest, DueAlarmsResponse, DueExpiriesRequest, DueExpiriesResponse, ExpiryRow,
-    GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListInstancesRequest,
-    ListInstancesResponse, ListNodesResponse, Node, NodeRegistration, ObjectInstance,
-    PurgeInstanceRequest, RegisterNodeRequest, ReleaseLeaseRequest, SetAlarmRequest,
+    CountInstancesResponse, DeleteInstanceRequest, DeleteInstanceResponse, DeletionRow,
+    DeregisterRequest, DueAlarmsRequest, DueAlarmsResponse, DueExpiriesRequest,
+    DueExpiriesResponse, ExpiryRow, GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease,
+    ListInstancesRequest, ListInstancesResponse, ListNodesResponse, Node, NodeRegistration,
+    ObjectInstance, PurgeInstanceRequest, RegisterNodeRequest, ReleaseLeaseRequest,
+    SetAlarmRequest, UnfinishedDeletionsResponse,
     node_registry_service_server::NodeRegistryService,
 };
 
@@ -785,6 +786,43 @@ impl NodeRegistryService for NodeRegistry {
         .map_err(RegistryError::Store)?;
 
         Ok(Response::new(()))
+    }
+
+    async fn unfinished_deletions(
+        &self,
+        request: Request<DueExpiriesRequest>,
+    ) -> Result<Response<UnfinishedDeletionsResponse>, Status> {
+        let request = request.get_ref();
+        let limit = i64::from(request.limit.clamp(1, 1024));
+
+        // Rows the tombstone committed but the purge never removed; the
+        // epoch join carries what the marker manifest must say.
+        let rows: Vec<(Uuid, String, String, i64)> = sqlx::query_as(
+            "SELECT i.scope_id, i.class, i.name, COALESCE(e.epoch, 1)
+             FROM object_instances i
+             LEFT JOIN object_epochs e ON e.object_id = i.object_id
+             WHERE i.deleted_at IS NOT NULL
+               AND i.deleted_at <= to_timestamp($1 / 1000.0)
+             ORDER BY i.deleted_at
+             LIMIT $2",
+        )
+        .bind(request.now_ms)
+        .bind(limit)
+        .fetch_all(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(UnfinishedDeletionsResponse {
+            rows: rows
+                .into_iter()
+                .map(|(scope_id, class, name, epoch)| DeletionRow {
+                    scope_id: scope_id.to_string(),
+                    class,
+                    name,
+                    epoch: epoch.max(1) as u64,
+                })
+                .collect(),
+        }))
     }
 
     async fn rollback_admission(

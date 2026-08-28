@@ -79,6 +79,12 @@ service NodeRegistryService {
     // expiry sweep's batch, arbitrated again inside DeleteInstance.
     rpc DueExpiries(DueExpiriesRequest) returns (DueExpiriesResponse);
 
+    // Tombstoned rows whose cleanup did not finish (a crash between
+    // the tombstone and the purge); the janitor retries them from the
+    // tombstone. now_ms is a grace cutoff: only rows tombstoned before
+    // it answer, so an in-flight deletion is not raced.
+    rpc UnfinishedDeletions(DueExpiriesRequest) returns (UnfinishedDeletionsResponse);
+
     // Unwinds a claim whose admission gate refused: lease and directory
     // row go, and the epoch row goes ONLY if this claim minted it, so a
     // hammered junk name leaves nothing while any identity that ever
@@ -218,6 +224,19 @@ message ExpiryRow {
 
 message DueExpiriesResponse {
     repeated ExpiryRow rows = 1;
+}
+
+message DeletionRow {
+    string scope_id = 1;
+    string class = 2;
+    string name = 3;
+    // The epoch the tombstone bumped to; what the marker manifest
+    // carries.
+    uint64 epoch = 4;
+}
+
+message UnfinishedDeletionsResponse {
+    repeated DeletionRow rows = 1;
 }
 
 message Lease {

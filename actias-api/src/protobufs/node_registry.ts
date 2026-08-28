@@ -129,6 +129,15 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<DueExpiriesResponse>;
+        // Tombstoned rows whose cleanup did not finish (a crash between
+    // the tombstone and the purge); the janitor retries them from the
+    // tombstone. now_ms is a grace cutoff: only rows tombstoned before
+    // it answer, so an in-flight deletion is not raced.
+        unfinishedDeletions(
+            data: DueExpiriesRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<UnfinishedDeletionsResponse>;
         // Unwinds a claim whose admission gate refused: lease and directory
     // row go, and the epoch row goes ONLY if this claim minted it, so a
     // hammered junk name leaves nothing while any identity that ever
@@ -258,6 +267,17 @@ export namespace node_registry {
     }
     export interface DueExpiriesResponse {
         rows?: node_registry.ExpiryRow[];
+    }
+    export interface DeletionRow {
+        scopeId?: string;
+        class?: string;
+        name?: string;
+        // The epoch the tombstone bumped to; what the marker manifest
+    // carries.
+        epoch?: number;
+    }
+    export interface UnfinishedDeletionsResponse {
+        rows?: node_registry.DeletionRow[];
     }
     export interface Lease {
         objectId?: string;

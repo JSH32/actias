@@ -637,10 +637,15 @@ impl ObjectRouting {
                             .await
                             .map_err(|e| e.to_string())?
                             .into_inner();
-                        state
-                            .object_store
-                            .mark_deleted(&object_id, deleted.epoch)
-                            .await?;
+                        // Already tombstoned means another deleter (the
+                        // sweep, an external delete) wrote the marker;
+                        // this run only clears residue and purges.
+                        if deleted.tombstoned {
+                            state
+                                .object_store
+                                .mark_deleted(&object_id, deleted.epoch)
+                                .await?;
+                        }
 
                         let _ = tokio::fs::remove_file(&file).await;
                         let mut wal = file.as_os_str().to_owned();
@@ -674,6 +679,29 @@ impl ObjectRouting {
                     })
                 });
 
+                // Only classes with a lifespan restate their claim; the
+                // re-claim is the same verb a revival runs, so the stamp
+                // and the policy stay one code path.
+                let keep_claimed = owner.expire_secs_for(identity.class()).map(|_| {
+                    let keep_routing = routing.clone();
+                    let keep_key = identity.clone();
+                    let keep_owner = owner.clone();
+                    let closure: actias_worker_core::objects::KeepClaimed = Arc::new(move || {
+                        let routing = keep_routing.clone();
+                        let key = keep_key.clone();
+                        let owner = keep_owner.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = routing.claim_lease(&key, &owner).await {
+                                actias_common::tracing::debug!(
+                                    %error,
+                                    "residency refresh claim failed"
+                                );
+                            }
+                        });
+                    });
+                    closure
+                });
+
                 Ok((
                     runtime,
                     actias_worker_core::objects::TaskOptions {
@@ -684,6 +712,7 @@ impl ObjectRouting {
                         alarm_sync: Some(alarm_sync),
                         queue: routing.state.queue_policy.clone(),
                         destroy: Some(destroy),
+                        keep_claimed,
                     },
                 ))
             })
@@ -712,6 +741,73 @@ impl ObjectRouting {
     }
 
     /// One hop to the lease holder's data plane; its answer is the answer.
+    /// Ends a live residency wherever it is, straight at the lease
+    /// holder: the identity is tombstoned by the time this runs, so the
+    /// claim path would refuse instead of forwarding. Cold (unheld)
+    /// needs nothing. Best effort; the marker heals whatever this
+    /// misses.
+    pub async fn end_residency(&self, key: &ObjectKey) -> Result<(), String> {
+        let lease = match self
+            .state
+            .registry
+            .clone()
+            .get_lease(actias_worker_core::proto::node_registry::GetLeaseRequest {
+                object_id: key.object_id(),
+            })
+            .await
+        {
+            Ok(lease) => lease.into_inner(),
+            Err(status) if status.code() == tonic::Code::NotFound => return Ok(()),
+            Err(status) => return Err(status.to_string()),
+        };
+
+        let target = ObjectTarget {
+            class: key.class().to_owned(),
+            name: key.name().to_owned(),
+            method: "__destroy".to_owned(),
+            arguments: Vec::new(),
+            chain: Vec::new(),
+            caller: None,
+        };
+        let own = self
+            .state
+            .node_identity
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if own.as_deref() == Some(lease.node_id.as_str()) {
+            let Some(handle) = self
+                .state
+                .objects
+                .handle_if_resident(&key.to_string())
+                .await
+            else {
+                return Ok(());
+            };
+            handle
+                .call(
+                    "__dispatch",
+                    serde_json::json!({
+                        "class": target.class,
+                        "name": target.name,
+                        "method": "__destroy",
+                        "args": [],
+                        "chain": [],
+                    }),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        } else {
+            self.forward(&lease.node_id, key, &target, Vec::new())
+                .await
+                .map(|_| ())
+                .map_err(|error| match error {
+                    ForwardError::StaleHome(text) | ForwardError::Call(text) => text,
+                })
+        }
+    }
+
     async fn forward(
         &self,
         holder: &str,
