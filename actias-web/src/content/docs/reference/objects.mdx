@@ -58,6 +58,7 @@ Arguments and return values must be JSON-representable.
   </thead>
   <tbody>
     <tr><td><code>state.sql</code></td><td>this instance's private database</td></tr>
+    <tr><td><code>state.store</code></td><td>key-value face on the same storage</td></tr>
     <tr><td><code>state.name</code></td><td>instance name</td></tr>
     <tr><td><code>state.now()</code></td><td>platform clock, milliseconds</td></tr>
     <tr><td><code>state:set_alarm(duration)</code></td><td>schedule the <code>alarm</code> hook</td></tr>
@@ -72,6 +73,46 @@ Arguments and return values must be JSON-representable.
 
 `state.sql` takes the same `exec` / `query` / `query_one` as a
 [database](/docs/reference/database), minus the read variants.
+
+## state.store
+
+The key-value face on the same file, for state too small to deserve a
+table. No `migrations` key, no declaration at all:
+
+```lua
+local Counter = object "Counter" {
+    hit = function(state)
+        local n = (state.store:get("count") or 0) + 1
+        state.store:set("count", n)
+        return n
+    end,
+}
+```
+
+The verbs are [kv](/docs/reference/kv)'s, page shape included:
+
+<table>
+  <thead>
+    <tr><th>Method</th><th>Returns</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>get(key)</code></td><td>the value, or nil</td></tr>
+    <tr><td><code>set(key, value)</code></td><td>nothing; a nil value is a delete</td></tr>
+    <tr><td><code>set_batch(table)</code></td><td>nothing; writes every pair, deletes the nil ones</td></tr>
+    <tr><td><code>delete(key)</code></td><td>nothing</td></tr>
+    <tr><td><code>list(options?)</code></td><td>one page: <code>{'{ entries, cursor }'}</code></td></tr>
+  </tbody>
+</table>
+
+- One transaction. A call that touches `state.store` and `state.sql`
+  commits once; the two faces are one file and can never disagree.
+- Values are JSON-representable and at most 65,536 bytes each as
+  stored text. Past that, the state wants a table in `state.sql`.
+- `list` takes `{ prefix?, limit?, cursor? }`; entries are
+  `{ key, value }` in ascending key order, `limit` defaults to 100
+  and caps at 1000, and a page without a `cursor` is the last.
+- The pairs live in a reserved table that SQL cannot see, from
+  methods and the console alike. Listing them is what `list` is for.
 
 ## Hooks
 
@@ -128,7 +169,7 @@ The identity a `follow` hook receives:
   `receives` or `hooks`, and a name starting with `_` is not callable
   through a handle either.
 - Scratch keys on `state` look durable and are not. Anything needed
-  after the object sleeps goes in `state.sql`.
+  after the object sleeps goes in `state.store` or `state.sql`.
 - `state.sql` has no `read` variants. An object's storage has no
   replica to read from.
 

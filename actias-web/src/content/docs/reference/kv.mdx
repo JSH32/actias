@@ -39,7 +39,7 @@ ns:list({ limit = 100 })                -- one page, ascending by key
 ## Listing
 
 One page per call, in ascending key order. `entries` is an array of
-`{'{ key, value }'}`; `cursor` names where the next page starts, and a
+`{ key, value }`; `cursor` names where the next page starts, and a
 page without one is the last. `limit` defaults to 100, capped at 1000.
 
 ```lua
@@ -97,3 +97,6 @@ end)
 
 - [Where data goes](/docs/runtime/storage) compares kv with databases
   and objects.
+- [state.store](/docs/reference/objects#statestore) is the same
+  surface on a durable object's own storage: kv for state one object
+  owns.

@@ -54,6 +54,7 @@ can cross machines.
   </thead>
   <tbody>
     <tr><td><code>state.sql</code></td><td>this instance's private database</td></tr>
+    <tr><td><code>state.store</code></td><td>key-value face on the same storage</td></tr>
     <tr><td><code>state.name</code></td><td>the instance name</td></tr>
     <tr><td><code>state.now()</code></td><td>platform clock, milliseconds</td></tr>
     <tr><td><code>state:set_alarm(duration)</code></td><td>schedule the <code>alarm</code> hook</td></tr>
@@ -62,6 +63,27 @@ can cross machines.
 </table>
 
 Streams add more verbs to `state`; see [Streams](/docs/runtime/streams).
+
+## Small state
+
+A counter, a phase, a timestamp: state that small does not deserve a
+migrations directory. `state.store` holds it with nothing declared:
+
+```lua
+local Counter = object "Counter" {
+    hit = function(state)
+        local n = (state.store:get("count") or 0) + 1
+        state.store:set("count", n)
+        return n
+    end,
+}
+```
+
+It takes [kv](/docs/reference/kv)'s verbs (`get`, `set`, `delete`,
+`set_batch`, `list`) over the object's own storage, so a call that
+touches both faces commits once. Values cap at 64 KB each; state past
+that, or state worth querying, wants a table in `state.sql`. The
+[object reference](/docs/reference/objects) has the exact shapes.
 
 ## Schema
 
@@ -128,7 +150,7 @@ one; a call to a sleeping object wakes it first.
   bigger one.
 - Sleeping objects are files, so millions of idle instances are fine.
 - Scratch keys on `state` look durable and are not. Anything you need
-  after the object sleeps goes in `state.sql`.
+  after the object sleeps goes in `state.store` or `state.sql`.
 
 ## Related
 
