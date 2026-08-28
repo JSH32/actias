@@ -4,6 +4,7 @@
  * a value drawer that writes through. The copy is the contract: editing a
  * value here changes what production reads on the next request.
  */
+import { JsonInline, looksLikeJson } from '@/components/JsonValue';
 import * as React from 'react';
 import { useRouter } from 'next/router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -428,7 +429,15 @@ export default function KvPanel({
                       >
                         {ttlLabel(pair.ttl)}
                       </span>
-                      <span className={classes.cellDim}>{pair.value}</span>
+                      <span className={classes.cellDim}>
+                        {looksLikeJson(pair.value) ? (
+                          // Sliced before the lexer: a cell shows at most a
+                          // line, so a megabyte value never gets tokenized.
+                          <JsonInline text={pair.value.slice(0, 400)} />
+                        ) : (
+                          pair.value
+                        )}
+                      </span>
                     </button>
                   ))}
                 </div>

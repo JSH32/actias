@@ -146,3 +146,24 @@
   font-size: 12px;
   color: var(--syn-default);
 }
+
+/* The fold control on a long string: quiet until wanted. */
+.foldToggle {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0 0 0 8px;
+  cursor: pointer;
+  font: 400 10px var(--mono);
+  color: var(--ink-3);
+  text-decoration: underline dotted;
+}
+.foldToggle:hover {
+  color: var(--ink-1);
+}
+
+/* Inline token tinting for previews: one line, clipped by the cell. */
+.inline {
+  font-family: var(--mono);
+  white-space: nowrap;
+}

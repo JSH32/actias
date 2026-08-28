@@ -149,12 +149,51 @@ function Node({
   );
 }
 
+/** Past this length a string is a blob, not a value to read. */
+const LONG_STRING = 280;
+
+/** A long string folds to its head and its size; the tail arrives on
+ * demand. A kv value or queue payload smuggling a base64 blob stays a
+ * one-line fact instead of a wall. */
+function LongString({ value }: { value: string }) {
+  const [open, setOpen] = React.useState(false);
+  if (open) {
+    return (
+      <span className={classes.string} style={{ whiteSpace: 'pre-wrap' }}>
+        &quot;{value}&quot;
+        <button
+          type="button"
+          className={classes.foldToggle}
+          onClick={() => setOpen(false)}
+        >
+          fold
+        </button>
+      </span>
+    );
+  }
+  const kb = new Blob([value]).size / 1024;
+  return (
+    <span className={classes.string}>
+      &quot;{value.slice(0, 120)}
+      <span className={classes.summary}>&hellip;</span>&quot;
+      <button
+        type="button"
+        className={classes.foldToggle}
+        onClick={() => setOpen(true)}
+      >
+        {kb >= 1 ? `${kb.toFixed(1)} KB` : `${value.length} chars`}, show all
+      </button>
+    </span>
+  );
+}
+
 function Scalar({ value }: { value: Json }) {
   if (value === null || value === undefined) {
     return <span className={classes.null}>null</span>;
   }
   switch (typeof value) {
     case 'string':
+      if (value.length > LONG_STRING) return <LongString value={value} />;
       return <span className={classes.string}>&quot;{value}&quot;</span>;
     case 'number':
       return <span className={classes.number}>{String(value)}</span>;
@@ -163,6 +202,64 @@ function Scalar({ value }: { value: Json }) {
     default:
       return <span>{String(value)}</span>;
   }
+}
+
+/** The lexeme classes a tolerant scan hands back, keyed to the same
+ * syntax tokens the tree uses. */
+type InlinePart = {
+  text: string;
+  kind: 'key' | 'string' | 'number' | 'word' | 'punct' | 'plain';
+};
+
+/** Inline token tinting for json-looking TEXT: a lexer, not a parser,
+ * so a truncated preview still colors up to the cut. */
+export function JsonInline({ text }: { text: string }) {
+  const parts = React.useMemo(() => {
+    const out: InlinePart[] = [];
+    const pattern =
+      /("(?:[^"\\]|\\.)*"?)(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|(\btrue\b|\bfalse\b|\bnull\b)|([{}[\],:])|([^"{}[\],:\d]+)/g;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match[1] !== undefined) {
+        out.push({ text: match[1], kind: match[2] ? 'key' : 'string' });
+        if (match[2]) out.push({ text: match[2], kind: 'punct' });
+      } else if (match[3] !== undefined) {
+        out.push({ text: match[3], kind: 'number' });
+      } else if (match[4] !== undefined) {
+        out.push({ text: match[4], kind: 'word' });
+      } else if (match[5] !== undefined) {
+        out.push({ text: match[5], kind: 'punct' });
+      } else {
+        out.push({ text: match[6] ?? '', kind: 'plain' });
+      }
+    }
+    return out;
+  }, [text]);
+
+  const classFor: Record<InlinePart['kind'], string | undefined> = {
+    key: classes.key,
+    string: classes.string,
+    number: classes.number,
+    word: classes.boolean,
+    punct: classes.punct,
+    plain: undefined,
+  };
+  return (
+    <span className={classes.inline}>
+      {parts.map((part, index) => (
+        <span key={index} className={classFor[part.kind]}>
+          {part.text}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Whether text is worth handing to [`JsonInline`]: it reads as the
+ * start of a json container, parsed or not. */
+export function looksLikeJson(text: string) {
+  const lead = text.trimStart()[0];
+  return lead === '{' || lead === '[';
 }
 
 /**

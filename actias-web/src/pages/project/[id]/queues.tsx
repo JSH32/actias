@@ -9,7 +9,7 @@ import {
   ResourceInstanceDto,
 } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
-import { JsonValue } from '@/components/JsonValue';
+import { JsonInline, JsonValue, looksLikeJson } from '@/components/JsonValue';
 import { EmptyState } from '@/ui';
 import {
   CopyButton,
@@ -481,7 +481,13 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
                   >
                     {row.attempts}/{row.maxAttempts ?? 5}
                   </span>
-                  <span className={classes.cellDim}>{row.preview}</span>
+                  <span className={classes.cellDim}>
+                    {looksLikeJson(row.preview) ? (
+                      <JsonInline text={row.preview} />
+                    ) : (
+                      row.preview
+                    )}
+                  </span>
                   <span
                     className={classes.cellRight}
                     title={new Date(row.enqueuedMs).toISOString()}
