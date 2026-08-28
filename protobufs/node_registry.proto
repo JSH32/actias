@@ -65,6 +65,19 @@ service NodeRegistryService {
     // one indexed query any live node can serve. Rows deliberately
     // outlive their holder's death; waking is claiming.
     rpc DueAlarms(DueAlarmsRequest) returns (DueAlarmsResponse);
+
+    // Tombstone an instance and bump its epoch in one transaction: the
+    // deletion commit point. Everything after it is retryable cleanup
+    // under a newer epoch than any pre-deletion holder ever held.
+    rpc DeleteInstance(DeleteInstanceRequest) returns (DeleteInstanceResponse);
+
+    // Finish a deletion: release the lease and drop the directory row.
+    // Idempotent, so the janitor can retry it from the tombstone.
+    rpc PurgeInstance(PurgeInstanceRequest) returns (google.protobuf.Empty);
+
+    // Instances past their declared lifespan with no pending alarm; the
+    // expiry sweep's batch, arbitrated again inside DeleteInstance.
+    rpc DueExpiries(DueExpiriesRequest) returns (DueExpiriesResponse);
 }
 
 message ListInstancesRequest {
@@ -105,6 +118,19 @@ message ObjectInstance {
     string script_id = 4;
     // Unix milliseconds of the first claim.
     int64 created_ms = 5;
+    // When the platform deletes it if untouched; 0 = never.
+    int64 expire_at_ms = 6;
+    // Tombstone time; 0 = live. A nonzero row is a deletion in
+    // progress: visible so the console can say "deleting", refused by
+    // claims, drained by the janitor.
+    int64 deleted_at_ms = 7;
+    // The pending alarm's due time; 0 = none. An alarm blocks expiry.
+    int64 alarm_due_ms = 8;
+    // The lease holder; empty = cold (next touch revives).
+    string node_id = 9;
+    // Own-key of the creating object when the first claim originated
+    // inside another object's call; empty otherwise. Cascade data.
+    string created_by = 10;
 }
 
 message ListInstancesResponse {
@@ -134,6 +160,58 @@ message AcquireLeaseRequest {
     // The owner script whose code the object runs; directory metadata,
     // never part of the identity.
     string script_id = 6;
+    // The class's declared lifespan: expire_at is stamped now + this on
+    // every claim, so touch refreshes and policy changes apply on the
+    // next touch. 0 = the class never expires.
+    uint64 expire_secs = 7;
+    // Own-key of the creating object when this first claim originates
+    // inside another object's call; empty otherwise. Kept from the
+    // FIRST claim only.
+    string created_by = 8;
+}
+
+message DeleteInstanceRequest {
+    // The identity preimage names the directory row.
+    string scope_id = 1;
+    string class = 2;
+    string name = 3;
+    // blake3 of the identity, hex: the epoch and alarm key. The worker
+    // computes it; the registry never hashes.
+    string object_id = 4;
+    // The expiry sweep's guard: tombstone only if still past due with
+    // no pending alarm, so a claim that refreshed the row between the
+    // sweep's query and this call wins. External deletion passes false.
+    bool only_if_expired = 5;
+}
+
+message DeleteInstanceResponse {
+    // False when the guard refused; nothing changed.
+    bool tombstoned = 1;
+    // The bumped epoch fencing everything after the tombstone.
+    uint64 epoch = 2;
+}
+
+message PurgeInstanceRequest {
+    string scope_id = 1;
+    string class = 2;
+    string name = 3;
+    string object_id = 4;
+}
+
+message DueExpiriesRequest {
+    int64 now_ms = 1;
+    // Batch bound; the server clamps unreasonable values.
+    uint32 limit = 2;
+}
+
+message ExpiryRow {
+    string scope_id = 1;
+    string class = 2;
+    string name = 3;
+}
+
+message DueExpiriesResponse {
+    repeated ExpiryRow rows = 1;
 }
 
 message Lease {

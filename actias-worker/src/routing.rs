@@ -243,6 +243,10 @@ impl ObjectRouting {
                 class: key.class().to_owned(),
                 name: key.name().to_owned(),
                 script_id: owner_script_id.to_owned(),
+                // Filled once the class spec carries a lifespan (OL.2)
+                // and dispatch stamps the creating object (cascade).
+                expire_secs: 0,
+                created_by: String::new(),
             })
             .await
             .map_err(|e| e.to_string())?

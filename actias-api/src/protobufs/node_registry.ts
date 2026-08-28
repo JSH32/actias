@@ -107,6 +107,28 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<DueAlarmsResponse>;
+        // Tombstone an instance and bump its epoch in one transaction: the
+    // deletion commit point. Everything after it is retryable cleanup
+    // under a newer epoch than any pre-deletion holder ever held.
+        deleteInstance(
+            data: DeleteInstanceRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<DeleteInstanceResponse>;
+        // Finish a deletion: release the lease and drop the directory row.
+    // Idempotent, so the janitor can retry it from the tombstone.
+        purgeInstance(
+            data: PurgeInstanceRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
+        // Instances past their declared lifespan with no pending alarm; the
+    // expiry sweep&#x27;s batch, arbitrated again inside DeleteInstance.
+        dueExpiries(
+            data: DueExpiriesRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<DueExpiriesResponse>;
     }
     export interface ListInstancesRequest {
         projectIds?: string[];
@@ -142,6 +164,19 @@ export namespace node_registry {
         scriptId?: string;
         // Unix milliseconds of the first claim.
         createdMs?: number;
+        // When the platform deletes it if untouched; 0 &#x3D; never.
+        expireAtMs?: number;
+        // Tombstone time; 0 &#x3D; live. A nonzero row is a deletion in
+    // progress: visible so the console can say &quot;deleting&quot;, refused by
+    // claims, drained by the janitor.
+        deletedAtMs?: number;
+        // The pending alarm&#x27;s due time; 0 &#x3D; none. An alarm blocks expiry.
+        alarmDueMs?: number;
+        // The lease holder; empty &#x3D; cold (next touch revives).
+        nodeId?: string;
+        // Own-key of the creating object when the first claim originated
+    // inside another object&#x27;s call; empty otherwise. Cascade data.
+        createdBy?: string;
     }
     export interface ListInstancesResponse {
         instances?: node_registry.ObjectInstance[];
@@ -168,6 +203,52 @@ export namespace node_registry {
         // The owner script whose code the object runs; directory metadata,
     // never part of the identity.
         scriptId?: string;
+        // The class&#x27;s declared lifespan: expire_at is stamped now + this on
+    // every claim, so touch refreshes and policy changes apply on the
+    // next touch. 0 &#x3D; the class never expires.
+        expireSecs?: number;
+        // Own-key of the creating object when this first claim originates
+    // inside another object&#x27;s call; empty otherwise. Kept from the
+    // FIRST claim only.
+        createdBy?: string;
+    }
+    export interface DeleteInstanceRequest {
+        // The identity preimage names the directory row.
+        scopeId?: string;
+        class?: string;
+        name?: string;
+        // blake3 of the identity, hex: the epoch and alarm key. The worker
+    // computes it; the registry never hashes.
+        objectId?: string;
+        // The expiry sweep&#x27;s guard: tombstone only if still past due with
+    // no pending alarm, so a claim that refreshed the row between the
+    // sweep&#x27;s query and this call wins. External deletion passes false.
+        onlyIfExpired?: boolean;
+    }
+    export interface DeleteInstanceResponse {
+        // False when the guard refused; nothing changed.
+        tombstoned?: boolean;
+        // The bumped epoch fencing everything after the tombstone.
+        epoch?: number;
+    }
+    export interface PurgeInstanceRequest {
+        scopeId?: string;
+        class?: string;
+        name?: string;
+        objectId?: string;
+    }
+    export interface DueExpiriesRequest {
+        nowMs?: number;
+        // Batch bound; the server clamps unreasonable values.
+        limit?: number;
+    }
+    export interface ExpiryRow {
+        scopeId?: string;
+        class?: string;
+        name?: string;
+    }
+    export interface DueExpiriesResponse {
+        rows?: node_registry.ExpiryRow[];
     }
     export interface Lease {
         objectId?: string;

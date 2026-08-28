@@ -13,10 +13,11 @@ use uuid::Uuid;
 
 use crate::proto_node_registry::{
     AcquireLeaseRequest, AlarmRow, ClassCount, ClearAlarmRequest, CountInstancesRequest,
-    CountInstancesResponse, DeregisterRequest, DueAlarmsRequest, DueAlarmsResponse,
+    CountInstancesResponse, DeleteInstanceRequest, DeleteInstanceResponse, DeregisterRequest,
+    DueAlarmsRequest, DueAlarmsResponse, DueExpiriesRequest, DueExpiriesResponse, ExpiryRow,
     GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease, ListInstancesRequest,
     ListInstancesResponse, ListNodesResponse, Node, NodeRegistration, ObjectInstance,
-    RegisterNodeRequest, ReleaseLeaseRequest, SetAlarmRequest,
+    PurgeInstanceRequest, RegisterNodeRequest, ReleaseLeaseRequest, SetAlarmRequest,
     node_registry_service_server::NodeRegistryService,
 };
 
@@ -68,6 +69,8 @@ pub enum RegistryError {
     Unheld,
     #[error("claim raced a cascade")]
     ClaimRaced,
+    #[error("the object is being deleted")]
+    Deleting,
 }
 
 impl From<RegistryError> for Status {
@@ -89,6 +92,7 @@ impl From<RegistryError> for Status {
             RegistryError::NoSuchNode => Status::not_found("No live node with that id."),
             RegistryError::Unheld => Status::not_found("Nobody holds that object."),
             // The caller simply claims again.
+            RegistryError::Deleting => Status::failed_precondition("The object is being deleted."),
             RegistryError::ClaimRaced => {
                 Status::aborted("The lease was freed mid-claim; try again.")
             }
@@ -176,6 +180,24 @@ impl NodeRegistry {
             Uuid::from_str(&request.node_id).map_err(|_| RegistryError::InvalidId("node_id"))?;
         let identity = claim_identity(request)?;
 
+        // A tombstoned identity refuses claims until the janitor finishes:
+        // deletion in progress is not a home. Recreation becomes legal the
+        // moment the directory row is purged.
+        if let Some((scope_id, _)) = identity {
+            let deleting: Option<bool> = sqlx::query_scalar(
+                "SELECT deleted_at IS NOT NULL FROM object_instances
+                 WHERE scope_id = $1 AND class = $2 AND name = $3",
+            )
+            .bind(scope_id)
+            .bind(&request.class)
+            .bind(&request.name)
+            .fetch_optional(&self.database)
+            .await?;
+            if deleting == Some(true) {
+                return Err(RegistryError::Deleting);
+            }
+        }
+
         // The conditional claim: exactly one row per object, first insert
         // wins, a re-claim by the current holder is a no-op success. A
         // refused claim checks the incumbent's own pulse instead of
@@ -228,16 +250,31 @@ impl NodeRegistry {
 
         // The claim carries its preimage; the directory keeps it so the
         // data stays enumerable after the declaring revision is gone.
+        // Every claim restates the lifetime (touch refreshes, policy
+        // changes apply on next touch, 0 clears) and backfills the hash
+        // on rows from before the lifetime migration; the creator is
+        // kept from the first claim only.
         if let Some((scope_id, script_id)) = identity {
             sqlx::query(
-                "INSERT INTO object_instances (scope_id, class, name, script_id)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (scope_id, class, name) DO NOTHING",
+                "INSERT INTO object_instances
+                     (scope_id, class, name, script_id, object_id,
+                      created_by, expire_at)
+                 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''),
+                         CASE WHEN $7 > 0
+                              THEN now() + make_interval(secs => $7)
+                              ELSE NULL END)
+                 ON CONFLICT (scope_id, class, name) DO UPDATE
+                 SET object_id = COALESCE(object_instances.object_id,
+                                          EXCLUDED.object_id),
+                     expire_at = EXCLUDED.expire_at",
             )
             .bind(scope_id)
             .bind(&request.class)
             .bind(&request.name)
             .bind(script_id)
+            .bind(&request.object_id)
+            .bind(&request.created_by)
+            .bind(request.expire_secs.min(i64::MAX as u64) as f64)
             .execute(&self.database)
             .await?;
         }
@@ -540,16 +577,37 @@ impl NodeRegistryService for NodeRegistry {
         .map_err(RegistryError::Store)?;
 
         // Cron rows scope to their script, so a project listing never
-        // matches them: only resource identities surface here.
-        let rows: Vec<(Uuid, String, String, Uuid, i64)> = sqlx::query_as(
-            "SELECT scope_id, class, name, script_id,
-                    (EXTRACT(EPOCH FROM created) * 1000)::BIGINT
-             FROM object_instances
-             WHERE scope_id = ANY($1)
-               AND ($2 = '' OR class = $2)
-               AND name LIKE $3
-             ORDER BY class, name
-             LIMIT $4 OFFSET $5",
+        // matches them: only resource identities surface here. The
+        // lifetime join rides the hash column; rows from before the
+        // lifetime migration read as cold and alarmless, which they are.
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            Uuid,
+            String,
+            String,
+            Uuid,
+            i64,
+            i64,
+            i64,
+            i64,
+            String,
+            String,
+        )> = sqlx::query_as(
+            "SELECT i.scope_id, i.class, i.name, i.script_id,
+                        (EXTRACT(EPOCH FROM i.created) * 1000)::BIGINT,
+                        COALESCE((EXTRACT(EPOCH FROM i.expire_at) * 1000)::BIGINT, 0),
+                        COALESCE((EXTRACT(EPOCH FROM i.deleted_at) * 1000)::BIGINT, 0),
+                        COALESCE(a.due_ms, 0),
+                        COALESCE(l.node_id::text, ''),
+                        COALESCE(i.created_by, '')
+                 FROM object_instances i
+                 LEFT JOIN object_alarms a ON a.object_id = i.object_id
+                 LEFT JOIN leases l ON l.object_id = i.object_id
+                 WHERE i.scope_id = ANY($1)
+                   AND ($2 = '' OR i.class = $2)
+                   AND i.name LIKE $3
+                 ORDER BY i.class, i.name
+                 LIMIT $4 OFFSET $5",
         )
         .bind(&project_ids)
         .bind(&class_filter)
@@ -564,12 +622,28 @@ impl NodeRegistryService for NodeRegistry {
             instances: rows
                 .into_iter()
                 .map(
-                    |(scope_id, class, name, script_id, created_ms)| ObjectInstance {
+                    |(
+                        scope_id,
+                        class,
+                        name,
+                        script_id,
+                        created_ms,
+                        expire_at_ms,
+                        deleted_at_ms,
+                        alarm_due_ms,
+                        node_id,
+                        created_by,
+                    )| ObjectInstance {
                         scope_id: scope_id.to_string(),
                         class,
                         name,
                         script_id: script_id.to_string(),
                         created_ms,
+                        expire_at_ms,
+                        deleted_at_ms,
+                        alarm_due_ms,
+                        node_id,
+                        created_by,
                     },
                 )
                 .collect(),
@@ -604,6 +678,142 @@ impl NodeRegistryService for NodeRegistry {
                 .map(|(class, count)| ClassCount {
                     class,
                     count: count.max(0) as u64,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn delete_instance(
+        &self,
+        request: Request<DeleteInstanceRequest>,
+    ) -> Result<Response<DeleteInstanceResponse>, Status> {
+        let request = request.get_ref();
+        let scope_id =
+            Uuid::from_str(&request.scope_id).map_err(|_| RegistryError::InvalidId("scope_id"))?;
+
+        // The commit point, one transaction: tombstone plus epoch bump.
+        // The sweep's guard re-checks its predicate here, so a claim
+        // that refreshed the row between query and tombstone wins.
+        let mut tx = self.database.begin().await.map_err(RegistryError::Store)?;
+        let tombstoned = sqlx::query(
+            "UPDATE object_instances SET deleted_at = now()
+             WHERE scope_id = $1 AND class = $2 AND name = $3
+               AND deleted_at IS NULL
+               AND ($4 = false
+                    OR (expire_at IS NOT NULL AND expire_at <= now()
+                        AND NOT EXISTS (SELECT 1 FROM object_alarms a
+                                        WHERE a.object_id = $5)))",
+        )
+        .bind(scope_id)
+        .bind(&request.class)
+        .bind(&request.name)
+        .bind(request.only_if_expired)
+        .bind(&request.object_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(RegistryError::Store)?
+        .rows_affected()
+            == 1;
+
+        if !tombstoned {
+            tx.rollback().await.map_err(RegistryError::Store)?;
+            return Ok(Response::new(DeleteInstanceResponse {
+                tombstoned: false,
+                epoch: 0,
+            }));
+        }
+
+        // Everything after the tombstone happens under a newer epoch
+        // than any pre-deletion holder ever held; the row itself is
+        // kept forever so recreation keeps losing to nothing.
+        let epoch: i64 = sqlx::query_scalar(
+            "INSERT INTO object_epochs (object_id) VALUES ($1)
+             ON CONFLICT (object_id)
+             DO UPDATE SET epoch = object_epochs.epoch + 1
+             RETURNING epoch",
+        )
+        .bind(&request.object_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(RegistryError::Store)?;
+        tx.commit().await.map_err(RegistryError::Store)?;
+
+        Ok(Response::new(DeleteInstanceResponse {
+            tombstoned: true,
+            epoch: epoch.max(1) as u64,
+        }))
+    }
+
+    async fn purge_instance(
+        &self,
+        request: Request<PurgeInstanceRequest>,
+    ) -> Result<Response<()>, Status> {
+        let request = request.get_ref();
+        let scope_id =
+            Uuid::from_str(&request.scope_id).map_err(|_| RegistryError::InvalidId("scope_id"))?;
+
+        // The end of the sequence, idempotent so the janitor can retry
+        // it: the lease goes, then the directory row leaves the listing.
+        // Alarms go too; a deleted object has no future obligations.
+        sqlx::query("DELETE FROM leases WHERE object_id = $1")
+            .bind(&request.object_id)
+            .execute(&self.database)
+            .await
+            .map_err(RegistryError::Store)?;
+        sqlx::query("DELETE FROM object_alarms WHERE object_id = $1")
+            .bind(&request.object_id)
+            .execute(&self.database)
+            .await
+            .map_err(RegistryError::Store)?;
+        sqlx::query(
+            "DELETE FROM object_instances
+             WHERE scope_id = $1 AND class = $2 AND name = $3
+               AND deleted_at IS NOT NULL",
+        )
+        .bind(scope_id)
+        .bind(&request.class)
+        .bind(&request.name)
+        .execute(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(()))
+    }
+
+    async fn due_expiries(
+        &self,
+        request: Request<DueExpiriesRequest>,
+    ) -> Result<Response<DueExpiriesResponse>, Status> {
+        let request = request.get_ref();
+        let limit = i64::from(request.limit.clamp(1, 1024));
+
+        // Past due, not tombstoned, and not waiting: an alarm means the
+        // instance has a future, and futures block expiry.
+        let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+            "SELECT i.scope_id, i.class, i.name
+             FROM object_instances i
+             LEFT JOIN object_alarms a ON a.object_id = i.object_id
+             WHERE i.expire_at IS NOT NULL
+               AND i.expire_at <= to_timestamp($1 / 1000.0)
+               AND i.deleted_at IS NULL
+               AND i.object_id IS NOT NULL
+               AND a.object_id IS NULL
+             ORDER BY i.expire_at
+             LIMIT $2",
+        )
+        .bind(request.now_ms)
+        .bind(limit)
+        .fetch_all(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(DueExpiriesResponse {
+            rows: rows
+                .into_iter()
+                .map(|(scope_id, class, name)| ExpiryRow {
+                    scope_id: scope_id.to_string(),
+                    class,
+                    name,
                 })
                 .collect(),
         }))
@@ -709,7 +919,10 @@ mod tests {
         assert_eq!(nodes[0].address, "live:3000");
         assert_eq!(nodes[0].load, 7);
 
-        // Ageing out is deletion, not filtering: the row is gone.
+        // The listing filtered the dead node out; the reap timer's verb
+        // makes the ageing physical, so the table never accumulates a
+        // graveyard between ticks.
+        registry.reap_expired().await.expect("the reap runs");
         let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM nodes")
             .fetch_one(&database)
             .await
@@ -751,6 +964,7 @@ mod tests {
             class: "__queue".to_owned(),
             name: name.to_owned(),
             script_id: script.to_string(),
+            ..Default::default()
         };
         registry
             .acquire_lease(Request::new(claim("jobs", script)))
@@ -1149,5 +1363,159 @@ mod tests {
             .expect("claim answers")
             .into_inner();
         assert!(won.acquired);
+    }
+
+    #[tokio::test]
+    async fn the_lifecycle_round_trips_through_the_directory() {
+        let (registry, _database, _guard) = registry(45).await;
+        let node = register(&registry, "holder:3000").await;
+        let project = Uuid::new_v4();
+        let script = Uuid::new_v4();
+
+        // A claim with a lifespan stamps expiry and the hash.
+        let lease = registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: "hash-doomed".to_owned(),
+                node_id: node.clone(),
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "doomed".to_owned(),
+                script_id: script.to_string(),
+                expire_secs: 1,
+                created_by: String::new(),
+            }))
+            .await
+            .expect("claim answers")
+            .into_inner();
+        assert!(lease.acquired);
+        let first_epoch = lease.epoch;
+
+        // Not due yet; then past due, one row; an alarm blocks it again.
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_millis() as i64
+        };
+        let due = |at: i64| DueExpiriesRequest {
+            now_ms: at,
+            limit: 16,
+        };
+        let before = registry
+            .due_expiries(Request::new(due(now())))
+            .await
+            .expect("due answers")
+            .into_inner();
+        assert!(before.rows.is_empty(), "not due yet: {before:?}");
+
+        let later = now() + 2_000;
+        let past = registry
+            .due_expiries(Request::new(due(later)))
+            .await
+            .expect("due answers")
+            .into_inner();
+        assert_eq!(past.rows.len(), 1);
+        assert_eq!(past.rows[0].name, "doomed");
+
+        registry
+            .set_alarm(Request::new(SetAlarmRequest {
+                object_id: "hash-doomed".to_owned(),
+                own_key: "Session/doomed".to_owned(),
+                due_ms: later + 60_000,
+            }))
+            .await
+            .expect("alarm sets");
+        let blocked = registry
+            .due_expiries(Request::new(due(later)))
+            .await
+            .expect("due answers")
+            .into_inner();
+        assert!(blocked.rows.is_empty(), "an alarm blocks expiry");
+
+        // The sweep's guarded tombstone refuses while the alarm stands;
+        // an external (unguarded) delete does not.
+        let refused = registry
+            .delete_instance(Request::new(DeleteInstanceRequest {
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "doomed".to_owned(),
+                object_id: "hash-doomed".to_owned(),
+                only_if_expired: true,
+            }))
+            .await
+            .expect("delete answers")
+            .into_inner();
+        assert!(!refused.tombstoned);
+
+        let deleted = registry
+            .delete_instance(Request::new(DeleteInstanceRequest {
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "doomed".to_owned(),
+                object_id: "hash-doomed".to_owned(),
+                only_if_expired: false,
+            }))
+            .await
+            .expect("delete answers")
+            .into_inner();
+        assert!(deleted.tombstoned);
+        assert!(deleted.epoch > first_epoch, "the tombstone bumps the fence");
+
+        // Tombstoned: claims refuse, the listing shows the state, and a
+        // second tombstone is a no-op.
+        let refused_claim = registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: "hash-doomed".to_owned(),
+                node_id: node.clone(),
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "doomed".to_owned(),
+                script_id: script.to_string(),
+                ..Default::default()
+            }))
+            .await;
+        assert!(refused_claim.is_err(), "a deleting identity is not a home");
+
+        let listed = registry
+            .list_instances(Request::new(ListInstancesRequest {
+                project_ids: vec![project.to_string()],
+                ..Default::default()
+            }))
+            .await
+            .expect("list answers")
+            .into_inner();
+        assert_eq!(listed.instances.len(), 1);
+        assert!(listed.instances[0].deleted_at_ms > 0);
+
+        // Purge ends it: the row leaves, the alarm goes, recreation is
+        // legal and lands above the bumped epoch.
+        registry
+            .purge_instance(Request::new(PurgeInstanceRequest {
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "doomed".to_owned(),
+                object_id: "hash-doomed".to_owned(),
+            }))
+            .await
+            .expect("purge answers");
+
+        let recreated = registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: "hash-doomed".to_owned(),
+                node_id: node,
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "doomed".to_owned(),
+                script_id: script.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("recreation claims")
+            .into_inner();
+        assert!(recreated.acquired);
+        assert!(
+            recreated.epoch > deleted.epoch,
+            "a fresh life starts above every old fence"
+        );
     }
 }
