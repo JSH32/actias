@@ -7,8 +7,6 @@ import {
 } from '@mikro-orm/core';
 import { ActiasBaseEntity } from './BaseEntity';
 import { Access } from './Access';
-import { BitField } from 'easy-bits';
-import { AccessFields } from '../project/acl/accessFields';
 import { Users } from './Users';
 
 /**
@@ -27,16 +25,6 @@ export class Projects extends ActiasBaseEntity {
    */
   @ManyToOne({ onDelete: 'cascade' })
   owner!: Users;
-
-  /**
-   * Default permission bitfield when adding members.
-   */
-  @Property({
-    default: Number(
-      new BitField().on(AccessFields.SCRIPT_RESOURCE).serialize(),
-    ),
-  })
-  defaultPermissions!: number;
 
   @OneToMany(() => Access, (access) => access.project, {
     orphanRemoval: true,

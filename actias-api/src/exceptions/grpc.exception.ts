@@ -35,9 +35,8 @@ export class GrpcCallException extends HttpException {
     [Status.OUT_OF_RANGE]: HttpStatus.PAYLOAD_TOO_LARGE,
     [Status.UNIMPLEMENTED]: HttpStatus.NOT_IMPLEMENTED,
     [Status.INTERNAL]: HttpStatus.INTERNAL_SERVER_ERROR,
-    // A backend that is down is not a missing resource: saying 404 here
-    // told callers their project had vanished every time a service
-    // restarted.
+    // A backend that is down is not a missing resource; 404 here would
+    // tell a caller their project had vanished.
     [Status.UNAVAILABLE]: HttpStatus.SERVICE_UNAVAILABLE,
     [Status.DATA_LOSS]: HttpStatus.INTERNAL_SERVER_ERROR,
     [Status.UNAUTHENTICATED]: HttpStatus.UNAUTHORIZED,
@@ -51,8 +50,8 @@ export class GrpcCallException extends HttpException {
   static detailMap: Partial<Record<Status, string>> = {
     // Every platform service listens on the same port number, so a
     // connection to a stale address reaches a LIVE service that simply
-    // does not have this method. tonic answers unimplemented with no
-    // message, which used to surface as a bare 501.
+    // does not have this method, and tonic answers unimplemented with
+    // no message of its own.
     [Status.UNIMPLEMENTED]:
       'The service did not recognize this call. It is starting, or the ' +
       'address resolves to a different service.',

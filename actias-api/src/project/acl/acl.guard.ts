@@ -22,9 +22,9 @@ export const AclByProject = (bitfield: number) =>
  * describe the project itself rather than one of its resources. A
  * member holding any grant passes, a stranger does not.
  *
- * The distinction has to exist because a route with no acl metadata is
- * open to every authenticated caller, so "anyone in this project" had
- * no spelling and got written as nothing at all.
+ * Every project route needs one of these decorators. A route carrying
+ * no acl metadata is open to every authenticated caller, so this is
+ * what the weakest requirement looks like when written down.
  */
 export const AclMember = () => SetMetadata('acl', { bitfield: 0 });
 
