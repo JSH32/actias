@@ -11,6 +11,17 @@
   color: var(--ink-1);
   font-family: var(--ui);
   font-size: 13px;
+  transition: grid-template-columns 160ms ease;
+}
+
+/* The sidebar folded to its icons; everything else keeps its column. */
+.shellNarrow {
+  composes: shell;
+  grid-template-columns: 58px 1fr;
+}
+.shellRailedNarrow {
+  composes: shell;
+  grid-template-columns: 58px 236px 1fr;
 }
 
 /* Sections whose picker is too big for a sidebar sub-list get a column
@@ -671,4 +682,90 @@
   .brand:hover svg path {
     animation: none;
   }
+}
+
+/* ---- The folded sidebar: icons carry the nav, text yields. ---- */
+
+.sidebarNarrow {
+  composes: sidebar;
+}
+.sidebarNarrow .brandRow {
+  justify-content: center;
+  padding: 0;
+  gap: 0;
+}
+.sidebarNarrow .brandRow > span {
+  display: none;
+}
+.sidebarNarrow .switcher {
+  justify-content: center;
+  padding: 0;
+}
+.sidebarNarrow .switcherLabel,
+.sidebarNarrow .switcherChevron {
+  display: none;
+}
+/* Section labels become quiet rules; the grouping survives wordlessly. */
+.sidebarNarrow .navLabel {
+  font-size: 0;
+  height: 1px;
+  background: var(--line-soft);
+  padding: 0;
+  margin: 10px 14px 8px;
+}
+.sidebarNarrow .navLink,
+.sidebarNarrow .navLinkActive {
+  justify-content: center;
+  padding: 0;
+}
+.sidebarNarrow .navLink > span,
+.sidebarNarrow .navLinkActive > span {
+  display: none;
+}
+.sidebarNarrow .subNav {
+  display: none;
+}
+.sidebarNarrow .user {
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+}
+.sidebarNarrow .userText {
+  display: none;
+}
+.sidebarNarrow .collapseButton {
+  justify-content: center;
+}
+.sidebarNarrow .collapseButton > span {
+  display: none;
+}
+.sidebarNarrow .collapseIcon {
+  transform: rotate(180deg);
+}
+
+.collapseRow {
+  border-top: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.collapseButton {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+  text-align: left;
+}
+.collapseButton:hover {
+  color: var(--ink-1);
+  background: var(--night-1);
+}
+.collapseIcon {
+  flex-shrink: 0;
+  transition: transform 160ms ease;
 }

@@ -377,6 +377,18 @@ export function Shell({ children }: React.PropsWithChildren) {
   // The editor is its own full-viewport page (design 09): no sidebar, no
   // topbar, the page owns the screen. Checked after every hook so client
   // navigation in and out never changes the hook count.
+  // Folded to icons or not; the choice survives the session. Read
+  // after mount so server and first client render agree.
+  const [collapsed, setCollapsed] = React.useState(false);
+  React.useEffect(() => {
+    setCollapsed(localStorage.getItem('sidebar-collapsed') === '1');
+  }, []);
+  const toggleCollapsed = () =>
+    setCollapsed((was) => {
+      localStorage.setItem('sidebar-collapsed', was ? '0' : '1');
+      return !was;
+    });
+
   if (router.pathname === '/script/[id]/workbench') {
     return <>{children}</>;
   }
@@ -389,17 +401,28 @@ export function Shell({ children }: React.PropsWithChildren) {
   // into the cli, so showing them verbatim beats prettifying.
   const crumbs = router.asPath.split('?')[0].split('/').filter(Boolean);
 
+  const shellClass = collapsed
+    ? railed
+      ? classes.shellRailedNarrow
+      : classes.shellNarrow
+    : railed
+    ? classes.shellRailed
+    : classes.shell;
+
   return (
-    <div className={railed ? classes.shellRailed : classes.shell}>
-      <aside className={classes.sidebar}>
-        <Link href="/" className={classes.brandRow}>
+    <div className={shellClass}>
+      <aside className={collapsed ? classes.sidebarNarrow : classes.sidebar}>
+        <Link href="/" className={classes.brandRow} title="Actias">
           <Mark size={26} />
           <span>ACTIAS</span>
         </Link>
         {user && (
           <Dropdown.Root>
             <Dropdown.Trigger asChild>
-              <button className={classes.switcher}>
+              <button
+                className={classes.switcher}
+                title={currentProject?.name ?? 'Select project'}
+              >
                 <span className={classes.switcherBadge}>
                   {(currentProject?.name ?? 'pr').slice(0, 2)}
                 </span>
@@ -452,6 +475,7 @@ export function Shell({ children }: React.PropsWithChildren) {
                     key={item.slug}
                     href={href}
                     className={active ? classes.navLinkActive : classes.navLink}
+                    title={item.label}
                   >
                     <Icon name={item.icon} />
                     <span>{item.label}</span>
@@ -578,6 +602,7 @@ export function Shell({ children }: React.PropsWithChildren) {
                   ? classes.navLinkActive
                   : classes.navLink
               }
+              title={item.label}
             >
               <Icon name={item.icon} />
               <span>{item.label}</span>
@@ -605,6 +630,7 @@ export function Shell({ children }: React.PropsWithChildren) {
                       ? classes.navLinkActive
                       : classes.navLink
                   }
+                  title={item.label}
                 >
                   <Icon name={item.icon} />
                   <span>{item.label}</span>
@@ -613,6 +639,29 @@ export function Shell({ children }: React.PropsWithChildren) {
             </>
           )}
         </nav>
+        <div className={classes.collapseRow}>
+          <button
+            className={classes.collapseButton}
+            onClick={toggleCollapsed}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <svg
+              className={classes.collapseIcon}
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M11 7l-5 5l5 5" />
+              <path d="M18 7l-5 5l5 5" />
+            </svg>
+            <span>Collapse</span>
+          </button>
+        </div>
         <div className={classes.user}>
           {user ? (
             <>
