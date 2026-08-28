@@ -3,11 +3,16 @@ use tonic::Code;
 
 use crate::{
     proto::kv_service::{
-        DeletePairsRequest, Pair, PairRequest, SetPairsRequest, ValueType,
+        DeletePairsRequest, ListPairsRequest, Pair, PairRequest, SetPairsRequest, ValueType,
         kv_service_client::KvServiceClient,
     },
     runtime::extension::{ExtensionInfo, LuaExtension},
 };
+
+/// Entries one `list` page carries when the caller does not say.
+const LIST_DEFAULT_LIMIT: i64 = 100;
+/// The most entries one `list` page may carry.
+const LIST_MAX_LIMIT: i64 = 1000;
 
 pub struct KvExtension {
     pub kv_client: KvServiceClient<crate::Grpc>,
@@ -215,6 +220,58 @@ impl UserData for KvNamespace {
                 }
 
                 Ok(())
+            },
+        );
+
+        // One page per call, cursored: `list()` starts at the first key,
+        // `list({ cursor = page.cursor })` continues, and a page without
+        // a cursor is the last one. Ascending key order, straight off
+        // the service's own pagination; nothing is buffered here, so a
+        // namespace of any size lists in bounded memory.
+        methods.add_async_method_mut(
+            "list",
+            |lua, mut this, options: Option<mlua::Table>| async move {
+                crate::platform::workflow::assert_effects_allowed(&lua)?;
+                let (limit, cursor) = match &options {
+                    Some(table) => (
+                        table.get::<Option<i64>>("limit")?,
+                        table.get::<Option<String>>("cursor")?,
+                    ),
+                    None => (None, None),
+                };
+                let limit = limit.unwrap_or(LIST_DEFAULT_LIMIT);
+                if !(1..=LIST_MAX_LIMIT).contains(&limit) {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "list limit must be between 1 and {LIST_MAX_LIMIT}."
+                    )));
+                }
+
+                let request = ListPairsRequest {
+                    page_size: limit as i32,
+                    token: cursor,
+                    project_id: this.project_id.clone(),
+                    namespace: this.namespace.clone(),
+                };
+                let response = this
+                    .kv_client
+                    .list_pairs(request)
+                    .await
+                    .map_err(|e| mlua::Error::RuntimeError(e.message().to_string()))?
+                    .into_inner();
+
+                let entries = lua.create_table()?;
+                for (index, pair) in response.pairs.iter().enumerate() {
+                    let entry = lua.create_table()?;
+                    entry.set("key", pair.key.clone())?;
+                    entry.set("value", pair_into_lua(&lua, pair.r#type(), &pair.value)?)?;
+                    entries.set(index + 1, entry)?;
+                }
+                let page = lua.create_table()?;
+                page.set("entries", entries)?;
+                if let Some(token) = response.token {
+                    page.set("cursor", token)?;
+                }
+                Ok(mlua::Value::Table(page))
             },
         );
 

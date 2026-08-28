@@ -1,10 +1,19 @@
 -- Everyday globals: declarations, utilities, kv and sql storage.
 
+-- One page of a namespace, ascending by key. A page without a cursor
+-- is the last one; pass the cursor back to list for the next page.
+type KvPage = {
+    entries: { { key: string, value: any } },
+    cursor: string?,
+}
+
 type KvNamespace = {
     get: (self: KvNamespace, key: string) -> any,
     set: (self: KvNamespace, key: string, value: any) -> (),
-    delete: (self: KvNamespace, key: string) -> (),
-    list: (self: KvNamespace) -> { [string]: any },
+    -- A table of key -> value in one round trip; a nil value deletes.
+    set_batch: (self: KvNamespace, values: { [string]: any }) -> (),
+    delete: (self: KvNamespace, ...string) -> (),
+    list: (self: KvNamespace, options: { limit: number?, cursor: string? }?) -> KvPage,
 }
 
 type Database = {

@@ -20,6 +20,7 @@ ns:get("hits")                          -- value, or nil
 ns:set("hits", 41)
 ns:set_batch({ hits = 41, banner = { text = "back at 09:00" } })
 ns:delete("hits")
+ns:list({ limit = 100 })                -- one page, ascending by key
 ```
 
 <table>
@@ -30,9 +31,30 @@ ns:delete("hits")
     <tr><td><code>get(key)</code></td><td>the value, or nil</td></tr>
     <tr><td><code>set(key, value)</code></td><td>nothing</td></tr>
     <tr><td><code>set_batch(table)</code></td><td>nothing; writes every pair, deletes the nil ones</td></tr>
-    <tr><td><code>delete(key)</code></td><td>nothing</td></tr>
+    <tr><td><code>delete(...keys)</code></td><td>nothing</td></tr>
+    <tr><td><code>list(options?)</code></td><td>one page: <code>{'{ entries, cursor }'}</code></td></tr>
   </tbody>
 </table>
+
+## Listing
+
+One page per call, in ascending key order. `entries` is an array of
+`{'{ key, value }'}`; `cursor` names where the next page starts, and a
+page without one is the last. `limit` defaults to 100, capped at 1000.
+
+```lua
+local cursor
+repeat
+    local page = ns:list({ cursor = cursor })
+    for _, entry in page.entries do
+        print(entry.key, entry.value)
+    end
+    cursor = page.cursor
+until not cursor
+```
+
+A page is a snapshot of a range, not a lock: writes that land between
+pages appear or not depending on where their keys sort.
 
 ## Types
 
@@ -65,8 +87,8 @@ end)
 
 ### Gotchas
 
-- There is no listing and no query. Every value must be reachable by a
-  key you can construct.
+- Listing pages by key order; there is no query by value. Anything
+  richer than a key range wants a [database](/docs/reference/database).
 - Functions and userdata cannot be stored. Tables go through JSON, so
   what comes back is a copy, not the table you put in.
 - A nil value in `set_batch` is a delete, not a stored nil.
