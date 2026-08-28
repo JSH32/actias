@@ -26,6 +26,8 @@ export ACTIAS_WORKER2_PORT=$((PORT_BASE + 3))
 export ACTIAS_WORKER_DATA_PORT=$((PORT_BASE + 102))
 export ACTIAS_WORKER2_DATA_PORT=$((PORT_BASE + 103))
 export ACTIAS_GRAFANA_PORT=$((PORT_BASE + 30))
+# Tight hibernation so the connection checkpoint fits a test run.
+export CONNECTION_HIBERNATE_SECS=3
 WEB=http://127.0.0.1:$ACTIAS_WEB_PORT
 API=http://127.0.0.1:$ACTIAS_API_PORT/api
 WORKER=http://127.0.0.1:$ACTIAS_WORKER_PORT
@@ -119,10 +121,17 @@ local token = secret "smoke-token"
 local db = database "main" { migrations = "migrations/main" }
 
 local Hits = object "Hits" {
+    publishes = { poked = "public" },
+
     bump = function(state)
         state.sql:exec("CREATE TABLE IF NOT EXISTS hits (at INTEGER)")
         state.sql:exec("INSERT INTO hits VALUES (?)", { 1 })
         return state.sql:query_one("SELECT COUNT(*) AS n FROM hits").n
+    end,
+
+    poke = function(state)
+        state:publish("poked", { at = state.now() })
+        return true
     end,
 }
 
@@ -147,10 +156,30 @@ local Visit = object "Visit" {
     end,
 }
 
--- Declared only: the contract must carry the class and the vm must
--- accept the form at the top level.
-connection "Live" {
-    open = function(conn) end,
+-- The connection checkpoint's subject: echoes count into conn.state,
+-- a followed publish lands as an event, and the blob must survive
+-- the vm dropping in between.
+local Live = connection "Live" {
+    open = function(conn)
+        conn:follow(Hits("global"), "poked")
+        conn:send({ kind = "hello" })
+    end,
+    frame = function(conn, data)
+        conn.state.frames = (conn.state.frames or 0) + 1
+        conn:send({ kind = "echo", n = conn.state.frames })
+    end,
+    event = function(conn, event)
+        conn:send({ kind = "poked", frames = conn.state.frames })
+    end,
+}
+
+-- The heartbeat: ticks must arrive while the hibernate threshold
+-- passes underneath, because a timered connection stays warm.
+local Pulse = connection "Pulse" {
+    timer = { every = "2s", run = function(conn, missed)
+        conn.state.beats = (conn.state.beats or 0) + 1
+        conn:send({ kind = "beat", n = conn.state.beats, missed = missed })
+    end },
 }
 
 -- Armed once before the worker restarts and never touched again: only
@@ -180,6 +209,15 @@ on "queue:jobs" (function(message)
 end)
 
 on "fetch" (function(request)
+    if request.upgrade and string.find(request.context_uri or "", "/live") then
+        return request:upgrade(Live, Hits("watcher"))
+    end
+    if request.upgrade and string.find(request.context_uri or "", "/pulse") then
+        return request:upgrade(Pulse, Hits("watcher"))
+    end
+    if string.find(request.context_uri or "", "/poke") then
+        Hits:get("global"):poke()
+    end
     if string.find(request.context_uri or "", "/arm") then
         AlarmKeeper:get("watchdog"):arm("15s")
     end
@@ -298,9 +336,9 @@ DB_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfi
 LIFE_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.lifecycle | join(",")')
 [ "$LIFE_DECLARED" = "Visit:expire=10s,Visit:admit" ] \
     || { echo "the lifecycle was not in the stored contract (got '$LIFE_DECLARED')"; exit 1; }
-CONN_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.connections[0]')
-[ "$CONN_DECLARED" = "Live" ] \
-    || { echo "the connection class was not in the stored contract (got '$CONN_DECLARED')"; exit 1; }
+CONN_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.connections | join(",")')
+[ "$CONN_DECLARED" = "Live,Pulse" ] \
+    || { echo "the connection classes were not in the stored contract (got '$CONN_DECLARED')"; exit 1; }
 D1=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
 D2=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
 [ "$D2" -gt "$D1" ] 2>/dev/null \
@@ -401,6 +439,81 @@ REFUSED_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$WORKER/$IDENT/visit?name
 [ "$(pg "SELECT count(*) FROM object_epochs")" = "$EPOCHS_TOTAL" ] \
     || { echo "a refused name left an epoch fence"; exit 1; }
 echo "lifecycle round-tripped: destroy answered $FIN, epoch $EPOCH_BEFORE -> $EPOCH_AFTER, recreation fresh, expiry swept, refusal residue-free"
+
+echo "== a connection hibernates with the socket open and revives on delivery"
+# The whole arc's claim in one sequence: declared handlers run, the vm
+# falls while the socket stays open (the gauges say so), a delivery
+# revives it with conn.state intact, and closing severs the edges.
+WORKER_URL="$WORKER" IDENT="$IDENT" NODE_PATH="$REPO/actias-api/node_modules" node -e '
+const WebSocket = require("ws");
+const http = require("http");
+const base = process.env.WORKER_URL.replace("http://", "");
+const [host, port] = base.split(":");
+const fail = (why) => { console.error("connection smoke: " + why); process.exit(1); };
+setTimeout(() => fail("timeout"), 30000);
+const metric = (name) => new Promise((res) => {
+  http.get({ host, port, path: "/_metrics" }, (r) => {
+    let b = ""; r.on("data", (c) => b += c);
+    r.on("end", () => {
+      const line = b.split("\n").find((l) => l.startsWith(name + " "));
+      res(line ? Number(line.split(" ")[1]) : NaN);
+    });
+  }).on("error", () => res(NaN));
+});
+const ws = new WebSocket("ws://" + base + "/" + process.env.IDENT + "/live");
+ws.on("message", async (raw) => {
+  const msg = JSON.parse(raw.toString());
+  if (msg.kind === "hello") {
+    ws.send(JSON.stringify({ nudge: true }));
+  } else if (msg.kind === "echo") {
+    if (msg.n !== 1) fail("echo count wrong: " + msg.n);
+    await new Promise((r) => setTimeout(r, 5500));
+    const hib = await metric("actias_connections_hibernated");
+    const warm = await metric("actias_connections_warm");
+    if (!(hib >= 1)) fail("the vm never hibernated (gauge " + hib + ")");
+    if (warm !== 0) fail("a vm survived the idle threshold (warm " + warm + ")");
+    http.get({ host, port, path: "/" + process.env.IDENT + "/poke" }, () => {});
+  } else if (msg.kind === "poked") {
+    if (msg.frames !== 1) fail("conn.state did not survive hibernation: " + msg.frames);
+    const wakes = await metric("actias_connection_wakes_total");
+    if (!(wakes >= 1)) fail("the wake was not counted: " + wakes);
+    console.log("hibernated with the socket open; delivery revived with state intact; wakes=" + wakes);
+    ws.close();
+    process.exit(0);
+  }
+});
+ws.on("error", (e) => fail("socket error " + e.message));
+' || { echo "the connection checkpoint failed"; exit 1; }
+
+# Closing severed the edges: the publisher-side follower table drains.
+EDGES=1
+for _ in $(seq 1 20); do
+    EDGES=$(curl -sf "$API/project/$PROJECT_ID/objects/Hits/global/followers" -H "$AUTH" | jq '.edges | length')
+    [ "$EDGES" = 0 ] && break
+    sleep 2
+done
+[ "$EDGES" = 0 ] || { echo "the closed connection left $EDGES edge(s)"; exit 1; }
+echo "close severed the edges; the follower table is empty"
+
+echo "== a timered connection beats and stays warm"
+WORKER_URL="$WORKER" IDENT="$IDENT" NODE_PATH="$REPO/actias-api/node_modules" node -e '
+const WebSocket = require("ws");
+const base = process.env.WORKER_URL.replace("http://", "");
+const fail = (why) => { console.error("timer smoke: " + why); process.exit(1); };
+setTimeout(() => fail("timeout"), 15000);
+const ws = new WebSocket("ws://" + base + "/" + process.env.IDENT + "/pulse");
+ws.on("message", (raw) => {
+  const msg = JSON.parse(raw.toString());
+  if (msg.kind !== "beat") return;
+  if (msg.n === 2) {
+    if (msg.missed !== 0) fail("an idle timer missed ticks: " + msg.missed);
+    console.log("two beats on schedule across the hibernate threshold");
+    ws.close();
+    process.exit(0);
+  }
+});
+ws.on("error", (e) => fail("socket error " + e.message));
+' || { echo "the timer checkpoint failed"; exit 1; }
 
 echo "== cron handler runs on schedule"
 # Armed at the script's first touch, firing every two seconds since; two
