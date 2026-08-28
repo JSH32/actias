@@ -55,6 +55,9 @@ export namespace script_service {
     // &quot;Class:topic&#x3D;policy&quot; for a built-in policy (&quot;self&quot;). Read from
     // the class table&#x27;s &#x60;publishes&#x60; key at publish.
         publishes?: string[];
+        // Class lifecycle declarations: &quot;Class:expire&#x3D;30d&quot; for a declared
+    // lifespan, &quot;Class:admit&quot; for a creation gate.
+        lifecycle?: string[];
     }
     export interface ScriptConfig {
         id?: string;

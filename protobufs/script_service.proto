@@ -58,6 +58,9 @@ message Capabilities {
     // "Class:topic=policy" for a built-in policy ("self"). Read from
     // the class table's `publishes` key at publish.
     repeated string publishes = 9;
+    // Class lifecycle declarations: "Class:expire=30d" for a declared
+    // lifespan, "Class:admit" for a creation gate.
+    repeated string lifecycle = 10;
 }
 
 message ScriptConfig {

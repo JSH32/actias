@@ -113,6 +113,9 @@ pub struct Declarations {
     /// Topics from class tables' `publishes` keys, as "Class:topic" or
     /// "Class:topic=policy".
     pub publishes: Vec<String>,
+    /// Class lifecycle declarations, "Class:expire=30d" and
+    /// "Class:admit".
+    pub lifecycle: Vec<String>,
 }
 
 /// The capability contract a revision was published with.
@@ -133,6 +136,9 @@ pub struct Contract {
     /// Kept as declared (ordered, duplicates meaningless but harmless);
     /// cron arming reads these.
     events: Vec<String>,
+    /// Lifecycle entries as declared, "Class:expire=30d" and
+    /// "Class:admit".
+    lifecycle: Vec<String>,
 }
 
 /// Which contract list a declaration checks against.
@@ -220,6 +226,7 @@ impl PreparedRevision {
                     .map(|entry| bare_name(entry))
                     .collect(),
                 events: capabilities.events,
+                lifecycle: capabilities.lifecycle,
             });
 
         Ok(Self {
@@ -228,6 +235,29 @@ impl PreparedRevision {
             bundle,
             bytecode,
             contract,
+        })
+    }
+
+    /// The lifespan the contract declares for `class`, in seconds;
+    /// [`None`] means the class never expires. The claim stamps this.
+    pub fn expire_secs_for(&self, class: &str) -> Option<u64> {
+        let contract = self.contract.as_ref()?;
+        let prefix = format!("{class}:expire=");
+        let raw = contract
+            .lifecycle
+            .iter()
+            .find_map(|entry| entry.strip_prefix(&prefix))?;
+        let ms = actias_declarations::duration::parse_duration_ms(raw).ok()?;
+        u64::try_from(ms / 1000).ok().filter(|secs| *secs > 0)
+    }
+
+    /// Whether the contract declares a creation gate for `class`.
+    pub fn gates_admission(&self, class: &str) -> bool {
+        self.contract.as_ref().is_some_and(|contract| {
+            contract
+                .lifecycle
+                .iter()
+                .any(|e| e == &format!("{class}:admit"))
         })
     }
 
@@ -1510,6 +1540,7 @@ mod tests {
                     workflows: vec![],
                     workflow_steps: vec![],
                     publishes: vec![],
+                    lifecycle: vec![],
                 }),
                 ..Default::default()
             }),

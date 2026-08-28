@@ -1412,6 +1412,7 @@ mod tests {
                     workflows: vec![],
                     workflow_steps: vec![],
                     publishes: vec![],
+                    lifecycle: vec![],
                 }),
             }),
             ..Default::default()

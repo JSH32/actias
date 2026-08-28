@@ -222,7 +222,7 @@ impl ObjectRouting {
     async fn claim_lease(
         &self,
         key: &ObjectKey,
-        owner_script_id: &str,
+        owner: &PreparedRevision,
     ) -> Result<actias_worker_core::proto::node_registry::Lease, String> {
         let node_id = self
             .state
@@ -242,10 +242,12 @@ impl ObjectRouting {
                 scope_id: key.scope().to_owned(),
                 class: key.class().to_owned(),
                 name: key.name().to_owned(),
-                script_id: owner_script_id.to_owned(),
-                // Filled once the class spec carries a lifespan (OL.2)
-                // and dispatch stamps the creating object (cascade).
-                expire_secs: 0,
+                script_id: owner.script.id.clone(),
+                // The contract's declared lifespan; every claim restates
+                // it, so touch refreshes and policy changes apply on the
+                // next touch. The creator stamp arrives with the cascade
+                // work (Arc 11).
+                expire_secs: owner.expire_secs_for(key.class()).unwrap_or(0),
                 created_by: String::new(),
             })
             .await
@@ -296,7 +298,7 @@ impl ObjectRouting {
                 }
             }
             let lease = self
-                .claim_lease(key, &owner.script.id)
+                .claim_lease(key, &owner)
                 .await
                 .map_err(ResolveError::Other)?;
             if !lease.acquired {
@@ -337,7 +339,7 @@ impl ObjectRouting {
                 // object only ever lives where its lease is held, which is
                 // what makes a second node refusing to serve it correct.
                 let lease = routing
-                    .claim_lease(&identity, &owner.script.id)
+                    .claim_lease(&identity, &owner)
                     .await
                     .map_err(mlua::Error::RuntimeError)?;
                 if !lease.acquired {

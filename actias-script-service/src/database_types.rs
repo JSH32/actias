@@ -40,6 +40,8 @@ pub struct Capabilities {
     pub workflow_steps: Vec<String>,
     #[serde(default)]
     pub publishes: Vec<String>,
+    #[serde(default)]
+    pub lifecycle: Vec<String>,
 }
 
 impl From<crate::proto_script_service::Capabilities> for Capabilities {
@@ -54,6 +56,7 @@ impl From<crate::proto_script_service::Capabilities> for Capabilities {
             workflows: val.workflows,
             workflow_steps: val.workflow_steps,
             publishes: val.publishes,
+            lifecycle: val.lifecycle,
         }
     }
 }
@@ -70,6 +73,7 @@ impl From<Capabilities> for crate::proto_script_service::Capabilities {
             workflows: val.workflows,
             workflow_steps: val.workflow_steps,
             publishes: val.publishes,
+            lifecycle: val.lifecycle,
         }
     }
 }
