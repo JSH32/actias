@@ -90,6 +90,50 @@
             fi
           '';
         };
+
+        # The chart work (TODO R1b through R2b, spec in docs/HELM.md) is verified
+        # on kind, so kind is what this shell carries. It stays a separate shell
+        # rather than growing the default one because these are a few hundred
+        # megabytes of Go binaries an ordinary checkout never needs; enter it
+        # with `nix develop .#kube`. inputsFrom pulls the default shell's whole
+        # toolchain and its greeting in, so this is that shell plus a cluster,
+        # never an alternative to it.
+        #
+        # Nothing here needs the system's nix config. kind runs the control
+        # plane and its nodes as containers on the same docker daemon `just up`
+        # already uses, so a local cluster costs no kubelet service, no CNI and
+        # no k3s unit on the host. The docker caveat above applies unchanged:
+        # the daemon is the host's to provide.
+        kube = pkgs.mkShell {
+          name = "actias-kube";
+
+          inputsFrom = [ self.devShells.${pkgs.stdenv.hostPlatform.system}.default ];
+
+          nativeBuildInputs = with pkgs; [
+            kind
+            kubectl
+            kubernetes-helm
+
+            # R2a gates a chart-touching PR on `ct lint`; the same binary
+            # locally means the gate is reproducible before it is pushed.
+            chart-testing
+
+            # Rendering the chart without a cluster, which is most of the
+            # R1b-R1e loop: template, then check the output is valid against
+            # real schemas rather than by eye.
+            kubeconform
+
+            # Reading a cluster the way `just logs` reads compose.
+            k9s
+            stern
+          ];
+
+          shellHook = ''
+            if [ -t 1 ]; then
+              echo "kube: kind $(kind version | cut -d' ' -f2), kubectl $(kubectl version --client=true | head -1 | cut -d' ' -f3), helm $(helm version --short)"
+            fi
+          '';
+        };
       });
     };
 }
