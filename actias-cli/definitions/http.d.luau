@@ -28,6 +28,9 @@ type ConnectionBody = {
     frame: ((conn: Conn, data: any) -> ())?,
     event: ((conn: Conn, event: StreamEvent) -> ())?,
     close: ((conn: Conn, reason: any?) -> ())?,
+    -- The connection's own heartbeat, gone with the wire; `missed`
+    -- counts ticks that fired while a previous run was still going.
+    timer: { every: string, run: (conn: Conn, missed: number) -> () }?,
 }
 type ConnectionClass = { __connection: string }
 

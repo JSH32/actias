@@ -118,8 +118,49 @@ impl ConnectionTask {
 
     async fn serve(&mut self) -> Result<(), String> {
         self.invoke("open", None).await?;
+        let period = self.spec.timer_every_ms.map(Duration::from_millis);
+        // A timered connection stays warm: the next thing to run is
+        // already scheduled, so dropping the vm would buy one
+        // guaranteed wake per period, a rent nobody wants.
+        let hibernate_after = if period.is_some() {
+            None
+        } else {
+            self.hibernate_after
+        };
+        let mut next_tick = period.map(|every| tokio::time::Instant::now() + every);
         loop {
-            let next = match self.hibernate_after {
+            // Ticks are a select arm, never inbox items: a full inbox
+            // closes the connection, and a heartbeat must not be able
+            // to do that.
+            if let (Some(scheduled), Some(every)) = (next_tick, period) {
+                let ticked = tokio::select! {
+                    item = self.inbox.next() => Some(item),
+                    _ = tokio::time::sleep_until(scheduled) => None,
+                };
+                match ticked {
+                    Some(None) => return Ok(()),
+                    Some(Some(item)) => {
+                        if !self.handle(item).await? {
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    None => {
+                        // Lateness past the deadline is a missed
+                        // count, and the next deadline realigns to
+                        // the period grid instead of drifting.
+                        let late = tokio::time::Instant::now()
+                            .saturating_duration_since(scheduled);
+                        let missed = (late.as_millis() / every.as_millis()) as u32;
+                        self.invoke("timer", Some(ArgumentJson::Missed(missed)))
+                            .await?;
+                        next_tick = Some(scheduled + every * (missed + 1));
+                        continue;
+                    }
+                }
+            }
+
+            let next = match hibernate_after {
                 None => Ok(self.inbox.next().await),
                 Some(after) => tokio::time::timeout(after, self.inbox.next()).await,
             };
@@ -138,8 +179,17 @@ impl ConnectionTask {
                 Ok(None) => return Ok(()),
                 Ok(Some(item)) => item,
             };
-            match item {
-                InboxItem::Closed => return Ok(()),
+            if !self.handle(item).await? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// One inbox item to its handler; false means the wire ended and
+    /// serving is over.
+    async fn handle(&mut self, item: InboxItem) -> Result<bool, String> {
+        match item {
+                InboxItem::Closed => return Ok(false),
                 InboxItem::Frame(data) => {
                     let argument = ArgumentJson::Value(data);
                     self.invoke("frame", Some(argument)).await?;
@@ -159,7 +209,7 @@ impl ConnectionTask {
                     self.invoke("event", Some(argument)).await?;
                 }
             }
-        }
+        Ok(true)
     }
 
     /// Runs one declared handler with a fresh conn surface over the
@@ -171,7 +221,12 @@ impl ConnectionTask {
         handler: &str,
         argument: Option<ArgumentJson>,
     ) -> Result<(), String> {
-        if !self.spec.handlers.iter().any(|declared| declared == handler) {
+        let declared = if handler == "timer" {
+            self.spec.timer_every_ms.is_some()
+        } else {
+            self.spec.handlers.iter().any(|declared| declared == handler)
+        };
+        if !declared {
             return Ok(());
         }
         if self.vm.is_none() {
@@ -195,7 +250,16 @@ impl ConnectionTask {
                 self.spec.name
             ));
         };
-        let function: mlua::Value = class_table.get(handler).map_err(|e| e.to_string())?;
+        // The timer's function sits one table deeper than the named
+        // handlers: `timer = { every, run }`.
+        let function: mlua::Value = if handler == "timer" {
+            class_table
+                .get::<mlua::Table>("timer")
+                .and_then(|timer| timer.get("run"))
+                .map_err(|e| e.to_string())?
+        } else {
+            class_table.get(handler).map_err(|e| e.to_string())?
+        };
         let mlua::Value::Function(function) = function else {
             return Ok(());
         };
@@ -213,6 +277,7 @@ impl ConnectionTask {
             Some(ArgumentJson::Value(value)) => {
                 vm.to_value(&value).map_err(|e| e.to_string())?
             }
+            Some(ArgumentJson::Missed(missed)) => mlua::Value::Integer(missed as i64),
             Some(ArgumentJson::Event {
                 topic,
                 from_class,
@@ -268,6 +333,9 @@ impl ConnectionTask {
 /// A handler argument, carried as json until a vm exists to lift it.
 enum ArgumentJson {
     Value(serde_json::Value),
+    /// The timer's coalesced lateness: ticks that fired while a
+    /// previous invocation was still running.
+    Missed(u32),
     Event {
         topic: String,
         from_class: String,

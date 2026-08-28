@@ -1200,6 +1200,20 @@ mod tests {
             end,
         }
 
+        -- The heartbeat: ticks write the wire, a deliberately slow
+        -- first tick makes the second one carry a missed count.
+        local Beat = connection "Beat" {
+            timer = { every = "1s", run = function(conn, missed)
+                conn.state.ticks = (conn.state.ticks or 0) + 1
+                conn:send({ kind = "tick", n = conn.state.ticks, missed = missed })
+                if conn.state.slow == nil then
+                    conn.state.slow = true
+                    local from = os.clock()
+                    while os.clock() - from < 2.4 do end
+                end
+            end },
+        }
+
         local Echo = connection "Echo" {
             open = function(conn)
                 conn:follow(Hub("town"), "news")
@@ -1233,6 +1247,9 @@ mod tests {
             end
             if request.upgrade and request.wants_sticky then
                 return request:upgrade(Sticky, Reader("ada"))
+            end
+            if request.upgrade and request.wants_beat then
+                return request:upgrade(Beat, Reader("ada"))
             end
             if request.upgrade then
                 return request:upgrade(Echo, Reader("ada"))
@@ -2316,6 +2333,105 @@ mod tests {
         inbox_tx
             .push(crate::connections::InboxItem::Closed)
             .expect("close lands");
+        drive
+            .await
+            .expect("drive joins")
+            .expect("the connection ran cleanly");
+    }
+
+    /// The bridge for the timer tests: an upgraded Beat task with a
+    /// tiny hibernate threshold, which the timer must override.
+    async fn beat_task() -> (
+        crate::connections::InboxSender,
+        tokio::sync::mpsc::Receiver<crate::connections::OutboundFrame>,
+        Arc<crate::connections::actor::ConnectionGauges>,
+        tokio::task::JoinHandle<Result<(), String>>,
+        tempfile::TempDir,
+    ) {
+        use crate::connections::actor::ConnectionTask;
+        use crate::extensions::sockets::{PendingUpgrade, SockShared};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let router = town_router(dir.path().to_path_buf(), false);
+
+        let (inbox_tx, inbox_rx) = crate::connections::inbox();
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel(16);
+
+        let runtime = vm(SOURCE, false).await;
+        runtime.set_app_data::<ObjectRouter>(router.clone());
+        let request = runtime.create_table().expect("request table");
+        request.set("wants_beat", true).expect("flag");
+        crate::extensions::sockets::arm_request(&runtime, &request).expect("arms");
+        let listener = runtime.listener("fetch").expect("registered");
+        let _: mlua::Value = listener
+            .call_async(mlua::Value::Table(request))
+            .await
+            .expect("the handler upgrades");
+        let pending = runtime
+            .remove_app_data::<PendingUpgrade>()
+            .expect("the upgrade was parked");
+        drop(runtime);
+
+        let shared = SockShared::new(
+            "conn#b1".to_owned(),
+            String::new(),
+            pending.class.clone(),
+            pending.name.clone(),
+            out_tx,
+            router.clone(),
+        );
+        let gauges: Arc<crate::connections::actor::ConnectionGauges> = Arc::default();
+        let task = ConnectionTask::new(
+            inbox_rx,
+            shared,
+            pending.spec,
+            pending.seed,
+            test_vm_factory(router),
+            Some(std::time::Duration::from_millis(150)),
+            gauges.clone(),
+        );
+        (inbox_tx, out_rx, gauges, tokio::spawn(task.run()), dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_timer_ticks_coalesces_lateness_and_keeps_the_vm_warm() {
+        use crate::connections::{InboxItem, OutboundFrame};
+        use std::sync::atomic::Ordering;
+
+        let (inbox_tx, mut out_rx, gauges, drive, _dir) = beat_task().await;
+
+        let tick = |raw: Option<OutboundFrame>| -> (i64, i64) {
+            let Some(OutboundFrame::Json(frame)) = raw else {
+                panic!("expected a tick frame, got {raw:?}");
+            };
+            assert_eq!(frame["kind"], "tick");
+            (
+                frame["n"].as_i64().expect("n"),
+                frame["missed"].as_i64().expect("missed"),
+            )
+        };
+
+        // First tick fires on schedule; its handler then busy-waits
+        // past two deadlines, so the SECOND tick carries the missed
+        // count instead of a burst of catch-up ticks.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the first tick fires");
+        assert_eq!(tick(first), (1, 0), "on time, nothing missed");
+        let second = tokio::time::timeout(std::time::Duration::from_secs(6), out_rx.recv())
+            .await
+            .expect("the second tick fires");
+        let (n, missed) = tick(second);
+        assert_eq!(n, 2, "coalesced: one invocation, not a queue of them");
+        assert!(missed >= 1, "the slow handler's lateness was counted: {missed}");
+
+        // The timer overrode the 150ms hibernate threshold: across
+        // seconds of ticking the vm never dropped.
+        assert_eq!(gauges.hibernated.load(Ordering::Relaxed), 0);
+        assert_eq!(gauges.warm.load(Ordering::Relaxed), 1);
+        assert_eq!(gauges.wakes.load(Ordering::Relaxed), 0);
+
+        inbox_tx.push(InboxItem::Closed).expect("close lands");
         drive
             .await
             .expect("drive joins")
