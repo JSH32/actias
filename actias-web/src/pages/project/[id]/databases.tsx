@@ -7,11 +7,12 @@ import {
   FollowerEdgeDto,
   ObjectInstanceDto,
   ProjectDto,
+  StatePairDto,
   ResourceInstanceDto,
   TableInfoDto,
 } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
-import { JsonValue } from '@/components/JsonValue';
+import { JsonInline, JsonValue, looksLikeJson } from '@/components/JsonValue';
 import { EmptyState } from '@/ui';
 import {
   DocsHint,
@@ -19,6 +20,7 @@ import {
   DrawerSection,
   FilterTabs,
   StatePill,
+  TypeChip as PairTypeChip,
   copyText,
   formatBytes,
 } from '@/components/inspector';
@@ -77,7 +79,10 @@ const PAGE_SIZE = 50;
 /** The schema tab's column template. */
 const SCHEMA_COLUMNS = 'minmax(0,1fr) 140px 90px 90px';
 
-type Tab = 'browse' | 'query' | 'schema' | 'edges';
+type Tab = 'state' | 'browse' | 'query' | 'schema' | 'edges';
+
+/** The state tab's column template, the kv panel's shape without ttl. */
+const STATE_COLUMNS = '300px 82px minmax(0,1fr)';
 
 /** The edges tab's column template. */
 const EDGE_COLUMNS = '110px minmax(0,1fr) 130px minmax(0,1fr) 80px 120px';
@@ -109,6 +114,8 @@ function Databases({
   const [tab, setTab] = React.useState<Tab>('browse');
   const [page, setPage] = React.useState(0);
   const [inspected, setInspected] = React.useState<number | null>(null);
+  const [statePrefix, setStatePrefix] = React.useState('');
+  const [stateKey, setStateKey] = React.useState<string | null>(null);
 
   // The shell's SOURCES rail navigates with ?db=, ?obj= and ?table=;
   // follow it. A database and an object are exclusive sources.
@@ -129,9 +136,21 @@ function Databases({
       setSelectedObj({ class: className, name: rest.join('/') });
       setPage(0);
       setInspected(null);
+      setStatePrefix('');
+      setStateKey(null);
       setTab('browse');
     }
   }, [router.query.obj]);
+  // Deep links may name the tab too (?obj=...&tab=state).
+  React.useEffect(() => {
+    const wanted = router.query.tab;
+    if (
+      typeof wanted === 'string' &&
+      ['state', 'browse', 'query', 'schema', 'edges'].includes(wanted)
+    ) {
+      setTab(wanted as Tab);
+    }
+  }, [router.query.tab]);
   React.useEffect(() => {
     setSelectedTable(
       typeof router.query.table === 'string' ? router.query.table : null,
@@ -236,6 +255,40 @@ function Databases({
     enabled: (!!active || !!objectSource) && !!table && tab === 'browse',
   });
   const browsedRows = (browsed?.rows ?? []) as Record<string, unknown>[];
+
+  // The store face: the object's typed pairs, polled like the overview
+  // whenever an object is open, because the header's face summary
+  // counts keys even while another tab shows.
+  const { data: stateFace } = useQuery({
+    queryKey: ['object-state', project.id, sourceKey],
+    queryFn: () =>
+      api.objects.objectState(
+        project.id,
+        objectSource!.class,
+        objectSource!.name,
+      ),
+    enabled: !!objectSource,
+    refetchInterval: 5000,
+  });
+  const statePairs = stateFace?.entries ?? [];
+  const shownPairs = statePrefix
+    ? statePairs.filter((pair: StatePairDto) =>
+        pair.key.startsWith(statePrefix),
+      )
+    : statePairs;
+  const statePair =
+    stateKey == null
+      ? null
+      : statePairs.find((pair: StatePairDto) => pair.key === stateKey) ?? null;
+  // Parsed once for the drawer's explorer; non-json values stay raw.
+  const stateParsed = React.useMemo(() => {
+    if (!statePair || !looksLikeJson(statePair.value)) return undefined;
+    try {
+      return JSON.parse(statePair.value) as unknown;
+    } catch {
+      return undefined;
+    }
+  }, [statePair]);
 
   // Edges: who follows this object, from the publisher's own rows.
   // Runtime state, never contract, so it polls like the overview.
@@ -373,6 +426,16 @@ function Databases({
               <span className={classes.metaChip}>
                 {formatBytes(overview?.sizeBytes)}
               </span>
+              {objectSource && statePairs.length > 0 && (
+                <span className={classes.metaChip}>
+                  {statePairs.length} {statePairs.length === 1 ? 'key' : 'keys'}
+                </span>
+              )}
+              {objectSource && tables.length > 0 && (
+                <span className={classes.metaChip}>
+                  {tables.length} {tables.length === 1 ? 'table' : 'tables'}
+                </span>
+              )}
               {table && (
                 <span className={classes.metaChip}>
                   {rowCount.toLocaleString('en-US')} rows
@@ -460,6 +523,10 @@ function Databases({
             value={tab}
             onChange={setTab}
             options={[
+              // Only objects have the store face; a database is tables.
+              ...(objectSource
+                ? [{ value: 'state' as Tab, label: 'State' }]
+                : []),
               { value: 'browse', label: 'Browse' },
               { value: 'query', label: 'Query' },
               { value: 'schema', label: 'Schema' },
@@ -472,6 +539,144 @@ function Databases({
         </div>
       </div>
 
+      {tab === 'state' && objectSource && (
+        <div
+          className={statePair ? classes.split : classes.splitSolo}
+          style={{ '--drawer': '400px' } as React.CSSProperties}
+        >
+          <div className={classes.browseRegion}>
+            <div className={classes.filterRow}>
+              <div className={classes.search}>
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <circle cx="10" cy="10" r="7" />
+                  <path d="M21 21l-6 -6" />
+                </svg>
+                <input
+                  className={classes.searchInput}
+                  style={{ width: 260 }}
+                  value={statePrefix}
+                  onChange={(event) => setStatePrefix(event.target.value)}
+                  placeholder="key prefix, e.g. session:"
+                />
+              </div>
+              <span className={classes.filterCount}>
+                {shownPairs.length} shown
+              </span>
+            </div>
+            <div className={classes.tableScroll}>
+              {statePairs.length === 0 ? (
+                <div className={classes.emptyRows}>
+                  {tables.length > 0 ? (
+                    <>
+                      No keys; this object keeps its state in tables. Keys
+                      appear when it writes one:{' '}
+                      <code>state.store:set(&quot;count&quot;, 1)</code>
+                    </>
+                  ) : (
+                    <>
+                      No keys yet. Keys appear when the object writes:{' '}
+                      <code>state.store:set(&quot;count&quot;, 1)</code>
+                    </>
+                  )}
+                </div>
+              ) : shownPairs.length === 0 ? (
+                <div className={classes.emptyRows}>
+                  No key starts with that prefix.
+                </div>
+              ) : (
+                <div
+                  className={classes.tableMin}
+                  style={{ '--table-min': '640px' } as React.CSSProperties}
+                >
+                  <div
+                    className={classes.tableHead}
+                    style={{ gridTemplateColumns: STATE_COLUMNS }}
+                  >
+                    <span>key</span>
+                    <span>type</span>
+                    <span>value</span>
+                  </div>
+                  {shownPairs.map((pair: StatePairDto) => (
+                    <button
+                      key={pair.key}
+                      className={
+                        pair.key === stateKey
+                          ? classes.rowSelected
+                          : classes.row
+                      }
+                      style={{ gridTemplateColumns: STATE_COLUMNS }}
+                      onClick={() =>
+                        setStateKey((selected) =>
+                          selected === pair.key ? null : pair.key,
+                        )
+                      }
+                    >
+                      <span className={classes.cellMono}>{pair.key}</span>
+                      <span>
+                        <PairTypeChip type={pair.type} />
+                      </span>
+                      <span className={classes.cellDim}>
+                        {looksLikeJson(pair.value) ? (
+                          // Sliced before the lexer, like the kv panel: a
+                          // cell shows at most a line.
+                          <JsonInline text={pair.value.slice(0, 400)} />
+                        ) : (
+                          pair.value.slice(0, 400)
+                        )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {statePair && (
+            <Drawer title="Value" onClose={() => setStateKey(null)}>
+              <DrawerSection label="Key">
+                <button
+                  className={classes.well}
+                  title="Copy key"
+                  onClick={() => copyText(statePair.key)}
+                >
+                  {statePair.key}
+                </button>
+              </DrawerSection>
+              <div className={classes.factGrid}>
+                <div className={classes.factCol}>
+                  <span className={classes.sectionLabel}>Type</span>
+                  <span>
+                    <PairTypeChip type={statePair.type} />
+                  </span>
+                </div>
+                <div className={classes.factCol}>
+                  <span className={classes.sectionLabel}>Size</span>
+                  <span className={classes.factColValue}>
+                    {new Blob([statePair.value]).size} B
+                  </span>
+                </div>
+              </div>
+              <DrawerSection label="Value">
+                {stateParsed !== undefined ? (
+                  <JsonValue value={stateParsed} defaultDepth={2} />
+                ) : (
+                  <div className={classes.well}>{statePair.value}</div>
+                )}
+              </DrawerSection>
+            </Drawer>
+          )}
+        </div>
+      )}
+
       {tab === 'browse' && (
         <div
           className={inspectedRow ? classes.split : classes.splitSolo}
@@ -481,7 +686,14 @@ function Databases({
             <div className={classes.tableScroll}>
               {!table ? (
                 <div className={classes.emptyRows}>
-                  No tables yet; migrations apply at first touch.
+                  {objectSource && statePairs.length > 0 ? (
+                    <>
+                      No tables; this object keeps its state as keys. See the
+                      State tab.
+                    </>
+                  ) : (
+                    'No tables yet; migrations apply at first touch.'
+                  )}
                 </div>
               ) : browsedRows.length === 0 ? (
                 <div className={classes.emptyRows}>
@@ -699,7 +911,12 @@ function Databases({
         <div className={classes.queryRegion}>
           <div className={classes.console}>
             <div className={classes.consoleHead}>
-              <span>read-only against {sourceLabel}</span>
+              <span>
+                read-only against {sourceLabel}
+                {objectSource &&
+                  statePairs.length > 0 &&
+                  '; state keys are not queryable by SQL, see the State tab'}
+              </span>
               <span>
                 ⌘↵ to run
                 {consoleRows
