@@ -12,6 +12,7 @@ import { ModuleRef, Reflector } from '@nestjs/core';
 import { EntityManager } from '@mikro-orm/core';
 import { Projects } from 'src/entities/Projects';
 import { WsException } from '@nestjs/websockets';
+import { requireUuid } from 'src/util/entitydecorator';
 
 export const AclByProject = (bitfield: number) =>
   SetMetadata('acl', { bitfield });
@@ -64,9 +65,12 @@ export class AclGuard implements CanActivate {
           project = await aclData.projectFinder(request, this.em);
         }
       } else {
+        // Guards run before pipes, so the EntityPipe's shape check has
+        // not happened yet; a malformed id refuses here instead of
+        // surfacing as a database error.
         project = await this.em.findOneOrFail(
           Projects,
-          request.params['project'],
+          requireUuid(request.params['project']),
         );
       }
 
