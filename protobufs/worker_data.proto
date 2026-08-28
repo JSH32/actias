@@ -168,6 +168,10 @@ message ReadRequest {
     // The publisher's edge table plus its event-log head instead of the
     // class's overview (ReadStats only): the console's followers panel.
     bool followers = 8;
+    // The object's reserved state pairs instead of the class's overview
+    // (ReadStats only): the console's State tab. The pairs are denied to
+    // `sql` by the authorizer, so this is their only read.
+    bool state = 9;
 }
 
 // One read's answer.

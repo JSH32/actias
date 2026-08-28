@@ -236,7 +236,8 @@ export namespace node_registry {
         class?: string;
         name?: string;
         // blake3 of the identity, hex: the epoch and alarm key. The worker
-    // computes it; the registry never hashes.
+    // computes it; the registry never hashes, and an empty value reads
+    // the hash from the directory row (external deletion&#x27;s path).
         objectId?: string;
         // The expiry sweep&#x27;s guard: tombstone only if still past due with
     // no pending alarm, so a claim that refreshed the row between the

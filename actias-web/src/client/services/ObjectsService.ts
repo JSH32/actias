@@ -8,6 +8,7 @@ import type { FollowersDto } from '../models/FollowersDto';
 import type { ObjectPageDto } from '../models/ObjectPageDto';
 import type { SqlQueryDto } from '../models/SqlQueryDto';
 import type { SqlRowsDto } from '../models/SqlRowsDto';
+import type { StateDto } from '../models/StateDto';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
 import type { BaseHttpRequest } from '../core/BaseHttpRequest';
@@ -160,6 +161,33 @@ export class ObjectsService {
         return this.httpRequest.request({
             method: 'GET',
             url: '/api/project/{project}/objects/{class}/{name}/followers',
+            path: {
+                'project': project,
+                'class': _class,
+                'name': name,
+            },
+        });
+    }
+
+    /**
+     * The object's key-value state pairs, in key order. The reserved
+     * table is denied to SQL from every direction, so this typed read is
+     * the console's only window on the store face. Read-only: writes go
+     * through the object's methods, like everything else it keeps.
+     * @param project
+     * @param _class
+     * @param name
+     * @returns StateDto
+     * @throws ApiError
+     */
+    public objectState(
+        project: string,
+        _class: string,
+        name: string,
+    ): CancelablePromise<StateDto> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/project/{project}/objects/{class}/{name}/state',
             path: {
                 'project': project,
                 'class': _class,

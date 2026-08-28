@@ -18,9 +18,10 @@ pub const LIST_MAX_LIMIT: i64 = 1000;
 /// The typed-pair encoding the kv service uses: how `value` parses.
 /// Sharing the encoding is what lets one rendering serve project kv
 /// and object state alike.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Pair {
     pub key: String,
+    #[serde(rename = "type")]
     pub kind: String,
     pub value: String,
 }
@@ -97,6 +98,33 @@ pub fn delete(storage: &mut SqliteStorage, key: &str) -> Result<(), String> {
         .execute("DELETE FROM __actias_state WHERE key = ?", [key])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Every pair in key order: the console's State tab, over a file opened
+/// read-only. A file the verbs never touched has no table, which reads
+/// as no keys, not an error, so this never creates anything.
+pub fn read_all(storage: &mut SqliteStorage) -> Result<Vec<Pair>, String> {
+    let connection = storage.platform();
+    let mut statement = match connection
+        .prepare("SELECT key, type, value FROM __actias_state ORDER BY key")
+    {
+        Ok(statement) => statement,
+        Err(rusqlite::Error::SqliteFailure(_, Some(text))) if text.contains("no such table") => {
+            return Ok(Vec::new());
+        }
+        Err(other) => return Err(other.to_string()),
+    };
+    statement
+        .query_map([], |row| {
+            Ok(Pair {
+                key: row.get(0)?,
+                kind: row.get(1)?,
+                value: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// One page of pairs in ascending key order, kv's exact page shape: the

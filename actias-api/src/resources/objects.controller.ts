@@ -25,6 +25,7 @@ import {
   ObjectPageDto,
   SqlQueryDto,
   SqlRowsDto,
+  StateDto,
 } from './dto/resources.dto';
 
 /**
@@ -246,6 +247,34 @@ export class ObjectsController {
           nextAt: Number(edge.next_at ?? 0),
         }),
       ),
+    };
+  }
+
+  /** The object's key-value state pairs, in key order. The reserved
+   * table is denied to SQL from every direction, so this typed read is
+   * the console's only window on the store face. Read-only: writes go
+   * through the object's methods, like everything else it keeps. */
+  @Get(':class/:name/state')
+  @AclByProject(AccessFields.DATABASE_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async objectState(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+    @Param('name') name: string,
+  ): Promise<StateDto> {
+    this.refusePlatformClass(className);
+    const value = await this.resources.workerRead(project, className, name, {
+      state: true,
+    });
+    return {
+      entries: (Array.isArray(value) ? value : []).map((pair) => {
+        const row = pair as Record<string, unknown>;
+        return {
+          key: String(row.key ?? ''),
+          type: String(row.type ?? ''),
+          value: String(row.value ?? ''),
+        };
+      }),
     };
   }
 

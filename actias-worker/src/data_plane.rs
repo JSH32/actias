@@ -90,6 +90,7 @@ fn stats_read(request: &ReadRequest) -> Result<PlatformRead, Status> {
         Some(sql) => Ok(PlatformRead::Query { sql }),
         None if request.messages => Ok(PlatformRead::QueueMessages),
         None if request.followers => Ok(PlatformRead::Followers),
+        None if request.state => Ok(PlatformRead::StateStore),
         None => PlatformRead::stats_for_class(&request.class)
             .ok_or_else(|| Status::invalid_argument("No stats for that class.")),
     }
@@ -412,6 +413,7 @@ impl WorkerDataService {
                 sql: None,
                 messages: false,
                 followers: false,
+                state: false,
                 since: 0,
                 first_hop: true,
             };
@@ -643,6 +645,7 @@ mod tests {
             since: 0,
             first_hop: false,
             followers: false,
+            state: false,
         };
 
         assert!(matches!(

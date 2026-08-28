@@ -97,6 +97,10 @@ pub enum PlatformRead {
     /// The publisher's edge table plus its event-log head: the
     /// console's followers panel, for any object.
     Followers,
+    /// The object's reserved state pairs in key order: the console's
+    /// State tab. The authorizer denies the table to `Query`, so this
+    /// typed read is the pairs' only way out.
+    StateStore,
     /// One topic's events in (after, upto], for batched durable
     /// delivery reading a RANGE from the nearest copy of the log
     /// instead of shipping the bytes inline.
@@ -158,6 +162,7 @@ impl PlatformRead {
                 serde_json::to_value(workflow::read_journal_readonly_from(&mut storage, *since)?)
             }
             Self::Followers => return crate::streams::read_followers(&mut storage),
+            Self::StateStore => serde_json::to_value(state_store::read_all(&mut storage)?),
             Self::StreamEvents { topic, after, upto } => {
                 let events = crate::streams::events_after(&mut storage, topic, *after)?;
                 return Ok(serde_json::Value::Array(

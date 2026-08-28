@@ -67,6 +67,8 @@ export type { SetKeyDto } from './models/SetKeyDto';
 export type { SetSecretDto } from './models/SetSecretDto';
 export type { SqlQueryDto } from './models/SqlQueryDto';
 export type { SqlRowsDto } from './models/SqlRowsDto';
+export type { StateDto } from './models/StateDto';
+export type { StatePairDto } from './models/StatePairDto';
 export type { TableInfoDto } from './models/TableInfoDto';
 export type { UpdatePasswordDto } from './models/UpdatePasswordDto';
 export type { UpdateUserDto } from './models/UpdateUserDto';

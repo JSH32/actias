@@ -177,6 +177,10 @@ export namespace worker_data {
         // The publisher&#x27;s edge table plus its event-log head instead of the
     // class&#x27;s overview (ReadStats only): the console&#x27;s followers panel.
         followers?: boolean;
+        // The object&#x27;s reserved state pairs instead of the class&#x27;s overview
+    // (ReadStats only): the console&#x27;s State tab. The pairs are denied to
+    // &#x60;sql&#x60; by the authorizer, so this is their only read.
+        state?: boolean;
     }
     // One read&#x27;s answer.
     export interface ReadValue {

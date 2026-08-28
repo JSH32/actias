@@ -223,6 +223,25 @@ export class FollowersDto {
   edges: FollowerEdgeDto[];
 }
 
+/** One typed pair in an object's key-value state, the kv service's
+ * encoding: `type` records how `value` parses. */
+export class StatePairDto {
+  @ApiProperty()
+  key: string;
+
+  @ApiProperty({ description: "How 'value' parses: the kv typed-pair kind." })
+  type: string;
+
+  @ApiProperty({ description: 'The stored value, as encoded text.' })
+  value: string;
+}
+
+/** An object's reserved state pairs, in key order. */
+export class StateDto {
+  @ApiProperty({ type: [StatePairDto] })
+  entries: StatePairDto[];
+}
+
 export class SqlQueryDto {
   @ApiProperty()
   @IsString()
