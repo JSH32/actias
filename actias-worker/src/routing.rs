@@ -535,6 +535,73 @@ impl ObjectRouting {
 
                 let alarm_sync = alarm_mirror(&routing.state, &object_id, &identity.to_string());
 
+                // The deletion sequence (docs/OBJECT-LIFECYCLE.md): the
+                // tombstone is the commit point, the store marker fences
+                // any zombie ship, the local files go (unlinking beside
+                // the task's open connection is safe; space frees on
+                // close), and the purge frees the name for a fresh life.
+                let destroy_state = routing.state.clone();
+                let destroy_id = object_id.clone();
+                let destroy_key = identity.clone();
+                let destroy_file = file.clone();
+                let destroy: actias_worker_core::objects::DestroyFn = Arc::new(move || {
+                    let state = destroy_state.clone();
+                    let object_id = destroy_id.clone();
+                    let key = destroy_key.clone();
+                    let file = destroy_file.clone();
+                    Box::pin(async move {
+                        let deleted = state
+                            .registry
+                            .clone()
+                            .delete_instance(
+                                actias_worker_core::proto::node_registry::DeleteInstanceRequest {
+                                    scope_id: key.scope().to_owned(),
+                                    class: key.class().to_owned(),
+                                    name: key.name().to_owned(),
+                                    object_id: object_id.clone(),
+                                    only_if_expired: false,
+                                },
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?
+                            .into_inner();
+                        state
+                            .object_store
+                            .mark_deleted(&object_id, deleted.epoch)
+                            .await?;
+
+                        let _ = tokio::fs::remove_file(&file).await;
+                        let mut wal = file.as_os_str().to_owned();
+                        wal.push("-wal");
+                        let _ = tokio::fs::remove_file(std::path::PathBuf::from(wal)).await;
+                        let mut shm = file.as_os_str().to_owned();
+                        shm.push("-shm");
+                        let _ = tokio::fs::remove_file(std::path::PathBuf::from(shm)).await;
+                        let _ = tokio::fs::remove_file(file.with_extension("epoch")).await;
+
+                        state
+                            .shippers
+                            .lock()
+                            .expect("no poisoned lock")
+                            .remove(&object_id);
+                        state
+                            .registry
+                            .clone()
+                            .purge_instance(
+                                actias_worker_core::proto::node_registry::PurgeInstanceRequest {
+                                    scope_id: key.scope().to_owned(),
+                                    class: key.class().to_owned(),
+                                    name: key.name().to_owned(),
+                                    object_id: object_id.clone(),
+                                },
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        state.holders.invalidate(&object_id).await;
+                        Ok(())
+                    })
+                });
+
                 Ok((
                     runtime,
                     actias_worker_core::objects::TaskOptions {
@@ -544,6 +611,7 @@ impl ObjectRouting {
                         after_write: Some(after_write),
                         alarm_sync: Some(alarm_sync),
                         queue: routing.state.queue_policy.clone(),
+                        destroy: Some(destroy),
                     },
                 ))
             })

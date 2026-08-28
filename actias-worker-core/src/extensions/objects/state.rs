@@ -184,6 +184,22 @@ pub(super) fn object_state(lua: &Lua) -> mlua::Result<(Table, bool)> {
     state.set("now", lua.create_function(|_, ()| Ok(unix_now_ms()))?)?;
     state.set("set_alarm", lua.create_function(set_alarm)?)?;
 
+    // state:destroy(): forget this object once the current call commits
+    // and answers. Queued calls are refused; naming the identity again
+    // later builds a fresh instance at a higher epoch.
+    state.set(
+        "destroy",
+        lua.create_function(|lua, _this: Table| {
+            let home = lua
+                .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError("destroy runs inside object methods.".to_owned())
+                })?;
+            home.request_destroy();
+            Ok(())
+        })?,
+    )?;
+
     // state:publish(topic, event): append to the event log in this
     // call's transaction; delivery pumps after commit.
     state.set(

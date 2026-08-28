@@ -34,6 +34,12 @@ pub struct Manifest {
     /// True when `base.db` is a complete database and segments are moot.
     #[serde(default)]
     pub whole: bool,
+    /// True when this manifest is a deletion marker: the identity was
+    /// forgotten at this epoch, and the store holds no data for it. A
+    /// zombie ex-holder's ship loses the fence to it, and a recreation
+    /// at a higher epoch reads the store as empty.
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 fn one() -> u32 {
@@ -122,7 +128,7 @@ impl ObjectStore {
         thresholds: ShipThresholds,
     ) -> Result<(), String> {
         if let Some(manifest) = self.manifest(object_id).await?
-            && manifest.epoch > epoch
+            && (manifest.epoch > epoch || (manifest.deleted && manifest.epoch >= epoch))
         {
             return Err(format!(
                 "fenced: epoch {epoch} lost to {}; this node no longer owns the object",
@@ -318,6 +324,7 @@ impl ObjectStore {
                 base,
                 segments: 0,
                 whole: true,
+                deleted: false,
             },
         )
         .await?;
@@ -356,6 +363,7 @@ impl ObjectStore {
                 base,
                 segments: 0,
                 whole: false,
+                deleted: false,
             },
         )
         .await?;
@@ -427,6 +435,7 @@ impl ObjectStore {
                 base,
                 segments: segments + 1,
                 whole: false,
+                deleted: false,
             },
         )
         .await?;
@@ -438,12 +447,75 @@ impl ObjectStore {
         })
     }
 
+    /// Writes the deletion marker at the bumped epoch and clears the
+    /// store's data for the identity. The marker goes first: it is what
+    /// fences a zombie's late ship, and a crash between the two steps
+    /// leaves orphaned data behind a marker that already refuses it.
+    pub async fn mark_deleted(&self, object_id: &str, epoch: u64) -> Result<(), String> {
+        self.put_manifest(
+            object_id,
+            &Manifest {
+                version: 2,
+                epoch,
+                shipped_at: actias_worker_core::extensions::objects::unix_now_ms(),
+                base: 0,
+                segments: 0,
+                whole: false,
+                deleted: true,
+            },
+        )
+        .await?;
+
+        // Everything under the identity except the marker itself.
+        let prefix = format!("objects/{object_id}/");
+        let marker = Self::manifest_key(object_id);
+        let mut token: Option<String> = None;
+        loop {
+            let page = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix)
+                .set_continuation_token(token)
+                .send()
+                .await
+                .map_err(|e| e.into_service_error().to_string())?;
+            for key in page.contents().iter().filter_map(|o| o.key()) {
+                if key == marker {
+                    continue;
+                }
+                self.client
+                    .delete_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .map_err(|e| e.into_service_error().to_string())?;
+            }
+            match page.next_continuation_token() {
+                Some(next) if page.is_truncated() == Some(true) => token = Some(next.to_owned()),
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
     /// Restores the last shipped state into `file`; false when nothing
     /// was ever shipped (a genuinely new object).
     pub async fn restore(&self, object_id: &str, file: &Path) -> Result<bool, String> {
         let Some(manifest) = self.manifest(object_id).await? else {
             return Ok(false);
         };
+
+        // A deletion marker means the store remembers forgetting: any
+        // local file is residue from a previous life and goes with the
+        // sidecars, and the caller starts the identity fresh.
+        if manifest.deleted {
+            let _ = tokio::fs::remove_file(file).await;
+            let _ = tokio::fs::remove_file(wal_path(file)).await;
+            let _ = tokio::fs::remove_file(shm_path(file)).await;
+            return Ok(false);
+        }
 
         // A stale local WAL beside a restored base is poison: sqlite
         // would recover those old frames INTO the new file. The sidecars
@@ -579,4 +651,27 @@ fn shm_path(file: &Path) -> PathBuf {
     let mut path = file.as_os_str().to_owned();
     path.push("-shm");
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifests_from_before_the_marker_read_as_live() {
+        let old: Manifest =
+            serde_json::from_str(r#"{ "epoch": 5, "shipped_at": 1 }"#).expect("v1 parses");
+        assert_eq!(old.version, 1);
+        assert!(!old.deleted, "absence of the field means live data");
+
+        let marker: Manifest = serde_json::from_str(
+            r#"{ "version": 2, "epoch": 6, "shipped_at": 2, "deleted": true }"#,
+        )
+        .expect("marker parses");
+        assert!(marker.deleted);
+
+        // The fence a zombie's late ship must lose: a marker at the
+        // bumped epoch beats the epoch the zombie still holds.
+        assert!(marker.epoch > old.epoch);
+    }
 }

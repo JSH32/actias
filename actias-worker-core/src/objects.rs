@@ -96,6 +96,14 @@ impl ObjectHandle {
 pub type AfterWrite =
     Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+/// Runs the platform's deletion sequence for this object after a call
+/// that asked to be its last: tombstone, store marker, local files,
+/// purge. Owned by the host, which knows the identity and the stores;
+/// a failure is logged and the janitor finishes from the tombstone.
+pub type DestroyFn = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
+>;
+
 /// Mirrors this object's armed alarm into an external registry:
 /// `Some(due_ms)` on arm, [`None`] on clear. One closure per object with
 /// the identity baked in, so nothing guest- or identity-shaped leaks in
@@ -129,6 +137,9 @@ pub struct ObjectHome {
     /// This object's identity, learned at first publish; what delivered
     /// events carry as `from`.
     publisher: std::sync::Mutex<Option<(String, String)>>,
+    /// Set by `state:destroy()`; the task reads it after the call's
+    /// commit and answer, so destruction is the last thing that runs.
+    destroy_requested: std::sync::atomic::AtomicBool,
 }
 
 impl ObjectHome {
@@ -149,7 +160,20 @@ impl ObjectHome {
             alarm_sync,
             delivery_due: std::sync::Mutex::new(None),
             publisher: std::sync::Mutex::new(None),
+            destroy_requested: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// `state:destroy()`: forget this object once the current call has
+    /// committed and answered.
+    pub fn request_destroy(&self) {
+        self.destroy_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn destroy_requested(&self) -> bool {
+        self.destroy_requested
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Marks this object as having published: records its identity for
@@ -341,6 +365,10 @@ pub struct TaskOptions {
     /// Delivery limits for `__queue` instances; the default is the
     /// production policy.
     pub queue: crate::platform::queue::QueuePolicy,
+    /// The deletion sequence, run when a call asked `state:destroy()`;
+    /// [`None`] ends the task without platform cleanup (tests, embedded
+    /// runs).
+    pub destroy: Option<DestroyFn>,
 }
 
 pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> ObjectHandle {
@@ -353,6 +381,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         after_write,
         alarm_sync,
         queue,
+        destroy,
     } = options;
 
     let (sender, mut receiver) = mpsc::channel::<ObjectCall>(MAILBOX_DEPTH);
@@ -461,6 +490,10 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                             )
                             .await;
                         }
+                        if home.destroy_requested() {
+                            destroy_teardown(&mut receiver, destroy.as_ref()).await;
+                            break;
+                        }
                         continue;
                     }
                 }
@@ -506,10 +539,36 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
             // A caller that stopped waiting is its own problem; the state
             // change it asked for has already happened either way.
             let _ = call.reply.send(result);
+
+            if home.destroy_requested() {
+                destroy_teardown(&mut receiver, destroy.as_ref()).await;
+                break;
+            }
         }
     });
 
     ObjectHandle { sender }
+}
+
+/// Ends a destroyed object's residency: the destroying call's answer is
+/// already on its way, everything still queued is refused, and the
+/// platform's cleanup runs once the box is empty. New sends refuse when
+/// the channel closes with the task.
+async fn destroy_teardown(receiver: &mut mpsc::Receiver<ObjectCall>, destroy: Option<&DestroyFn>) {
+    receiver.close();
+    while let Some(queued) = receiver.recv().await {
+        let _ = queued.reply.send(Err(ObjectError::Call(
+            "The object was destroyed.".to_owned(),
+        )));
+    }
+    if let Some(destroy) = destroy
+        && let Err(error) = destroy().await
+    {
+        actias_common::tracing::warn!(
+            %error,
+            "deletion sequence incomplete; the janitor finishes from the tombstone"
+        );
+    }
 }
 
 /// Runs one due alarm: cleared before dispatch, so a handler that sets the
@@ -751,6 +810,76 @@ mod tests {
     /// unconnectable, so tests exercise only the vm.
     async fn runtime_with(source: &str) -> ActiasRuntime {
         runtime_with_files(&[("main.lua", source)]).await
+    }
+
+    /// The destroying call's caller still hears its answer, the platform
+    /// hook runs exactly once, and everything after is a refusal.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn destroy_answers_first_then_ends_the_object() {
+        let source = r#"
+            local Vault = object "Vault" {
+                put = function(state, value)
+                    state.sql:exec("CREATE TABLE IF NOT EXISTS v (n INTEGER)")
+                    state.sql:exec("INSERT INTO v VALUES (?)", { value })
+                end,
+                close = function(state)
+                    local n = state.sql:query_one("SELECT count(*) AS n FROM v").n
+                    state:destroy()
+                    return n
+                end,
+            }
+            on "fetch" (function() return { body = "ok" } end)
+        "#;
+        let runtime = runtime_with(source).await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ran = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = ran.clone();
+        let destroy: DestroyFn = Arc::new(move || {
+            let counter = counter.clone();
+            Box::pin(async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        let handle = spawn_object_task(
+            runtime,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("vault.db"))
+                        .expect("opens"),
+                ),
+                destroy: Some(destroy),
+                ..Default::default()
+            },
+        );
+
+        let dispatch = |method: &str| {
+            serde_json::json!({
+                "class": "Vault", "name": "a", "method": method,
+                "args": [7], "chain": [],
+            })
+        };
+        handle
+            .call("__dispatch", dispatch("put"))
+            .await
+            .expect("puts");
+        let answer = handle
+            .call("__dispatch", dispatch("close"))
+            .await
+            .expect("the destroying call still answers");
+        assert_eq!(answer, serde_json::json!(1));
+
+        // The teardown runs after the answer; wait for the hook, then
+        // every further call refuses.
+        for _ in 0..100 {
+            if ran.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let refused = handle.call("__dispatch", dispatch("put")).await;
+        assert!(refused.is_err(), "a destroyed object refuses: {refused:?}");
     }
 
     /// A class whose schema comes from migration files applies them at

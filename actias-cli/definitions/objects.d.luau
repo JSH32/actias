@@ -28,6 +28,10 @@ type ObjectState = {
     sql: Sql,
     now: () -> number,
     set_alarm: (self: ObjectState, duration: string | number) -> (),
+    -- Forget this object once the current call commits and answers:
+    -- storage, snapshot and edges are reclaimed, queued calls refuse,
+    -- and naming the identity again builds a fresh instance.
+    destroy: (self: ObjectState) -> (),
     publish: (self: ObjectState, topic: string, event: any) -> (),
     follow: (self: ObjectState, target: any, topic: string, filter: any?) -> boolean,
     unfollow: (self: ObjectState, target: any, topic: string) -> boolean,
