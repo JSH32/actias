@@ -25,6 +25,7 @@ export ACTIAS_WORKER_PORT=$((PORT_BASE + 2))
 export ACTIAS_WORKER2_PORT=$((PORT_BASE + 3))
 export ACTIAS_WORKER_DATA_PORT=$((PORT_BASE + 102))
 export ACTIAS_WORKER2_DATA_PORT=$((PORT_BASE + 103))
+export ACTIAS_GRAFANA_PORT=$((PORT_BASE + 30))
 WEB=http://127.0.0.1:$ACTIAS_WEB_PORT
 API=http://127.0.0.1:$ACTIAS_API_PORT/api
 WORKER=http://127.0.0.1:$ACTIAS_WORKER_PORT
@@ -125,6 +126,33 @@ local Hits = object "Hits" {
     end,
 }
 
+-- The lifecycle class: a declared lifespan, an admission gate, and a
+-- method that ends the object from inside. The counter rides the
+-- store face, so a recreation starting back at 1 proves the storage
+-- was reclaimed, not just the row.
+local Visit = object "Visit" {
+    expire = "10s",
+    admit = function(name)
+        return #name > 3
+    end,
+    touch = function(state)
+        local n = (state.store:get("touched") or 0) + 1
+        state.store:set("touched", n)
+        return n
+    end,
+    finish = function(state)
+        local n = state.store:get("touched") or 0
+        state:destroy()
+        return n
+    end,
+}
+
+-- Declared only: the contract must carry the class and the vm must
+-- accept the form at the top level.
+connection "Live" {
+    open = function(conn) end,
+}
+
 -- Armed once before the worker restarts and never touched again: only
 -- the cold-alarm sweep can fire this, and the mark it writes into the
 -- shared database is the proof.
@@ -157,6 +185,14 @@ on "fetch" (function(request)
     end
     if string.find(request.context_uri or "", "/enqueue") then
         jobs:send({ n = 1 })
+    end
+    if string.find(request.context_uri or "", "/visit") then
+        local q = request.query or {}
+        local visit = Visit(q.name or "guest")
+        if q.act == "finish" then
+            return { body = json.stringify({ finished = visit:finish() }) }
+        end
+        return { body = json.stringify({ touched = visit:touch() }) }
     end
     ns:set("visited", true)
     log.info("hello from production")
@@ -259,6 +295,12 @@ OBJ_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConf
 DB_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.databases[0]')
 [ "$DB_DECLARED" = "main=migrations/main" ] \
     || { echo "the database was not in the stored contract (got '$DB_DECLARED')"; exit 1; }
+LIFE_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.lifecycle | join(",")')
+[ "$LIFE_DECLARED" = "Visit:expire=10s,Visit:admit" ] \
+    || { echo "the lifecycle was not in the stored contract (got '$LIFE_DECLARED')"; exit 1; }
+CONN_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.connections[0]')
+[ "$CONN_DECLARED" = "Live" ] \
+    || { echo "the connection class was not in the stored contract (got '$CONN_DECLARED')"; exit 1; }
 D1=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
 D2=$(curl -sf "$WORKER/$IDENT/" | jq .db_rows)
 [ "$D2" -gt "$D1" ] 2>/dev/null \
@@ -298,6 +340,67 @@ done
 [ "$MARKS" -ge 1 ] 2>/dev/null \
     || { echo "the cold alarm never fired (marks: '$MARKS')"; exit 1; }
 echo "cold alarm fired via the sweep; $MARKS mark(s) written"
+
+echo "== lifecycle: destroy from inside, recreate fresh, expire, refuse"
+# The directory speaks for every residue location the platform keeps in
+# sql; the epoch fence is the ONE row deletion leaves on purpose.
+pg() { compose exec -T postgres psql -U actias -d actias_script_service -tA -c "$1"; }
+
+T1=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
+T2=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
+[ "$T2" = 2 ] 2>/dev/null \
+    || { echo "the store-face counter did not accumulate ($T1 -> '$T2')"; exit 1; }
+VISIT_HASH=$(pg "SELECT object_id FROM object_instances WHERE class='Visit' AND name='roomy'")
+[ -n "$VISIT_HASH" ] || { echo "the directory never learned the identity hash"; exit 1; }
+EPOCH_BEFORE=$(pg "SELECT COALESCE(MAX(epoch),0) FROM object_epochs WHERE object_id='$VISIT_HASH'")
+
+# Destroy answers first: the reply carries the state the object died with.
+FIN=$(curl -sf "$WORKER/$IDENT/visit?name=roomy&act=finish" | jq .finished)
+[ "$FIN" = 2 ] 2>/dev/null \
+    || { echo "destroy did not answer with the final state (got '$FIN')"; exit 1; }
+
+# The janitor finishes within a sweep: directory, lease and alarm rows
+# empty, and only the epoch fence outlives the object, bumped.
+LEFT=1
+for _ in $(seq 1 20); do
+    LEFT=$(pg "SELECT count(*) FROM object_instances WHERE class='Visit' AND name='roomy'")
+    [ "$LEFT" = 0 ] && break
+    sleep 2
+done
+[ "$LEFT" = 0 ] || { echo "the destroyed instance never left the directory"; exit 1; }
+[ "$(pg "SELECT count(*) FROM leases WHERE object_id='$VISIT_HASH'")" = 0 ] \
+    || { echo "a lease outlived the object"; exit 1; }
+[ "$(pg "SELECT count(*) FROM object_alarms WHERE object_id='$VISIT_HASH'")" = 0 ] \
+    || { echo "an alarm outlived the object"; exit 1; }
+EPOCH_AFTER=$(pg "SELECT COALESCE(MAX(epoch),0) FROM object_epochs WHERE object_id='$VISIT_HASH'")
+[ "$EPOCH_AFTER" -gt "$EPOCH_BEFORE" ] 2>/dev/null \
+    || { echo "deletion did not bump the epoch fence ($EPOCH_BEFORE -> '$EPOCH_AFTER')"; exit 1; }
+
+# The name is legal again and starts fresh: forget, never a ban.
+T3=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
+[ "$T3" = 1 ] 2>/dev/null \
+    || { echo "recreation did not start fresh (touched '$T3')"; exit 1; }
+
+# An untouched instance ages out through the sweep (expire=10s, sweep=3s).
+curl -sf "$WORKER/$IDENT/visit?name=brief" -o /dev/null
+SWEPT=1
+for _ in $(seq 1 20); do
+    SWEPT=$(pg "SELECT count(*) FROM object_instances WHERE class='Visit' AND name='brief'")
+    [ "$SWEPT" = 0 ] && break
+    sleep 2
+done
+[ "$SWEPT" = 0 ] || { echo "the untouched instance never expired"; exit 1; }
+
+# A refused name leaves nothing at all: no row, no epoch fence.
+EPOCHS_TOTAL=$(pg "SELECT count(*) FROM object_epochs")
+REFUSED_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$WORKER/$IDENT/visit?name=zz")
+[ "$REFUSED_CODE" != 200 ] \
+    || { echo "the admission gate admitted a two-letter name"; exit 1; }
+[ "$(pg "SELECT count(*) FROM object_instances WHERE class='Visit' AND name='zz'")" = 0 ] \
+    || { echo "a refused name reached the directory"; exit 1; }
+[ "$(pg "SELECT count(*) FROM object_epochs")" = "$EPOCHS_TOTAL" ] \
+    || { echo "a refused name left an epoch fence"; exit 1; }
+echo "lifecycle round-tripped: destroy answered $FIN, epoch $EPOCH_BEFORE -> $EPOCH_AFTER, recreation fresh, expiry swept, refusal residue-free"
 
 echo "== cron handler runs on schedule"
 # Armed at the script's first touch, firing every two seconds since; two
@@ -438,15 +541,6 @@ done
 [ -n "$HD" ] && [ "$HD" -gt "$HC" ] 2>/dev/null \
     || { echo "the returned node did not forward to the new holder ($HC -> '$HD')"; exit 1; }
 echo "returned node forwards to the new home: $HD"
-
-echo "== reads on the non-holder serve from the replica"
-# The object now lives on worker two; worker one's db reads must answer
-# locally from a restored snapshot, never entering the owner's mailbox.
-# The request above already exercised them; the counter is the witness.
-REPLICA_READS=$(curl -sf "$WORKER/_metrics" | sed -n 's/^actias_replica_reads_total //p')
-[ -n "$REPLICA_READS" ] && [ "$REPLICA_READS" -ge 1 ] 2>/dev/null \
-    || { echo "the non-holder served no replica reads (got '$REPLICA_READS')"; exit 1; }
-echo "worker one answered $REPLICA_READS read(s) from its replica"
 
 echo "== reads on the non-holder serve from the replica"
 # The object now lives on worker two; worker one's db reads must answer
@@ -622,7 +716,7 @@ cp -r "$REPO/actias-cli/template/templates/basic/." "$UNIT/"
 echo "template test and typed check passed on the local runtime"
 
 echo "== worker metrics expose the traffic"
-curl -sf "$WORKER/_metrics" | grep -q "actias_requests_total{script=\"$IDENT\"}" \
+curl -sf "$WORKER/_metrics" | grep -q "actias_requests_total{.*script=\"$IDENT\"}" \
     || { echo "the script's requests are missing from /_metrics"; exit 1; }
 echo "metrics show $IDENT traffic"
 
