@@ -1,0 +1,272 @@
+# Default values install on kind with the bundled stores, provided the
+# secrets below are set (values-kind.yaml sets throwaway ones). See the
+# README for how the pieces fit; values-production.yaml is a worked
+# external-everything example.
+
+image:
+  registry: ghcr.io/jsh32
+  # Empty means Chart.appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Wildcard base for script hosting: scripts serve at <name>.<baseDomain>
+# and the console links there. Empty disables subdomain routing; the
+# path-prefix form on the workers keeps working.
+baseDomain: ""
+
+# OTLP endpoints; empty means no exporting. Two of them because the
+# exporters differ: the rust services speak OTLP over grpc (a
+# collector's 4317) and the api speaks OTLP over http/protobuf (its
+# 4318). Giving either one the other's port drops its spans silently,
+# so they are set separately rather than guessed from one value.
+otelEndpoint: ""          # grpc, e.g. http://collector:4317
+otelHttpEndpoint: ""      # http/protobuf, e.g. http://collector:4318
+
+observability:
+  dashboards:
+    # Install the repo's Grafana dashboards as sidecar-labeled
+    # ConfigMaps (grafana_dashboard: "1").
+    enabled: false
+
+# Platform secrets. Each takes a literal `value` (the chart renders a
+# Secret) or an `existingSecret` whose `key` holds the value. Neither
+# set = the install fails; there are no default secrets.
+secrets:
+  # Signs API sessions.
+  jwtKey:
+    value: ""
+    existingSecret: ""
+    key: jwt-key
+  # Authenticates api-to-worker and worker-to-worker calls.
+  internalToken:
+    value: ""
+    existingSecret: ""
+    key: internal-token
+  # Key-encryption key for secret-service. Base64, 32 bytes
+  # (openssl rand -base64 32). Rotation adds a new id; old versions
+  # keep resolving.
+  masterKey:
+    value: ""
+    existingSecret: ""
+    key: secret-master-key
+  masterKeyId:
+    value: "kek-1"
+    existingSecret: ""
+    key: secret-master-key-id
+
+# Stores: bundled (single replica, one PVC, dev-grade) or external.
+# Production means external; bundled exists for kind and evaluation.
+postgres:
+  bundled: true
+  # Version and volume path are coupled: postgres 18 moved the data
+  # directory. Change image and manifest together or neither.
+  image: postgres:17
+  auth:
+    username: actias
+    password: ""
+    existingSecret: ""   # keys: username, password
+  storage:
+    size: 2Gi
+    storageClass: ""
+externalPostgres:
+  # Needs a role that may CREATE DATABASE, or the four databases
+  # pre-created (see README).
+  host: ""
+  port: 5432
+  # The username comes from the secret below beside the password, so
+  # there is no separate value for it.
+  existingSecret: ""     # keys: username, password
+
+redis:
+  # Live log tails and pub/sub only; no durable state.
+  bundled: true
+  image: redis:7-alpine
+  storage:
+    size: 1Gi
+    storageClass: ""
+externalRedis:
+  url: ""                # redis://host:6379
+
+minio:
+  # Blob store: script bundles and object snapshots.
+  bundled: true
+  image: minio/minio:latest
+  auth:
+    rootUser: minioadmin
+    rootPassword: ""
+    existingSecret: ""   # keys: root-user, root-password
+  storage:
+    size: 5Gi
+    storageClass: ""
+externalS3:
+  endpoint: ""
+  bucket: actias-blobs
+  existingSecret: ""     # keys: access-key, secret-key
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  console: ""            # console host -> web
+  api: ""                # api host -> api
+  # The worker host is *.<baseDomain>, which needs a wildcard cert
+  # (ACME requires a DNS01 solver; cert-manager is not installed).
+  tls: []
+  # tls:
+  #   - hosts: ["*.scripts.example.com"]
+  #     secretName: wildcard-scripts-tls
+
+# Components. All of them accept resources, nodeSelector, tolerations,
+# affinity, topologySpreadConstraints, priorityClassName, extraEnv,
+# extraVolumes and extraVolumeMounts.
+
+scriptService:
+  repository: actias_script_service
+  # Fixed at 1 until its background sweeps are drilled with
+  # concurrent replicas.
+  replicas: 1
+  # Node liveness ttl, seconds. A crashed worker's objects are
+  # unreachable for at most this long.
+  nodeTtlSecs: 45
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+secretService:
+  repository: actias_secret_service
+  replicas: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+kv:
+  repository: actias_kv_service
+  replicas: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+api:
+  repository: actias_api
+  replicas: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  # Registration by invite only.
+  inviteOnly: false
+  # First-run admin account; set all three or none.
+  admin:
+    username: ""
+    email: ""
+    password: ""
+    existingSecret: ""   # keys: username, email, password
+  # Outbound mail for invites; empty host means invite links are
+  # copied from the console instead of sent.
+  smtp:
+    host: ""
+    port: 587
+    from: ""
+    existingSecret: ""   # keys: user, pass
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+web:
+  repository: actias_web
+  replicas: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  # Replace the marketing landing page with a plain sign-in front door.
+  minimalHome: false
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+workers:
+  repository: actias_worker_service
+  # Scales freely; scale-down is ordinary pod deletion (see README).
+  replicas: 2
+  # Per-pod volume for object databases. A cache of the blob store,
+  # not the source of truth; size it for the working set.
+  storage:
+    size: 5Gi
+    storageClass: ""
+  podDisruptionBudget:
+    maxUnavailable: 1
+  terminationGracePeriodSeconds: 45
+  # Commonly adjusted settings; the rest of the worker's env goes
+  # through extraEnv.
+  tuning:
+    # Idle seconds before an object's vm is dropped (state stays on
+    # disk) and before a connection's vm hibernates.
+    objectIdleSecs: 300
+    connectionHibernateSecs: 300
+    objectSweepSecs: 30
+    objectReplicaTtlSecs: 30
+    # Size cap per object database, MB.
+    objectDbMaxMb: 64
+    # WAL shipping: whole-file cutoff and generation rotation sizes.
+    objectShipWholeMaxKb: 256
+    objectWalRotateKb: 4096
+    objectMaxSegments: 64
+    # How long a write's reply may wait for durable storage before the
+    # caller gets an unknown-outcome error, ms.
+    objectAckGateMs: 10000
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []

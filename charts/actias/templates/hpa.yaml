@@ -1,0 +1,39 @@
+{{/*
+Autoscalers for the components that hold nothing: any replica answers
+any request. Workers are deliberately absent even though they scale
+horizontally, because scaling them on cpu alone ignores what actually
+makes a worker busy (resident objects and open connections); the
+custom-metrics route off /_metrics is the documented path, and it needs
+an adapter the environment may not run.
+*/}}
+{{- $components := list
+  (dict "name" "secret" "values" .Values.secretService)
+  (dict "name" "kv" "values" .Values.kv)
+  (dict "name" "api" "values" .Values.api)
+  (dict "name" "web" "values" .Values.web)
+}}
+{{- range $component := $components }}
+{{- if $component.values.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "actias.fullname" $ }}-{{ $component.name }}
+  labels:
+    {{- include "actias.labels" (dict "root" $ "component" $component.name) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "actias.fullname" $ }}-{{ $component.name }}
+  minReplicas: {{ $component.values.autoscaling.minReplicas }}
+  maxReplicas: {{ $component.values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $component.values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}

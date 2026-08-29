@@ -1,0 +1,145 @@
+{{- $name := printf "%s-api" (include "actias.fullname" .) }}
+{{- $full := include "actias.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "api") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" . "component" "api") | nindent 8 }}
+    spec:
+      {{- include "actias.scheduling" (dict "root" . "component" .Values.api) | nindent 6 }}
+      initContainers:
+        {{- include "actias.waitFor" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.api)) "name" "postgres" "host" (include "actias.postgresHost" .) "port" (include "actias.postgresPort" .)) | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "actias.image" (dict "root" . "component" .Values.api) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PORT
+              value: "3000"
+            {{- include "actias.databaseUrlEnv" (dict "root" . "database" "actias_api") | nindent 12 }}
+            # The api addresses grpc services as host:port, without a
+            # scheme; the workers use full uris for the same services.
+            - name: SCRIPT_SERVICE_URL
+              value: "{{ $full }}-script:3000"
+            - name: KV_SERVICE_URL
+              value: "{{ $full }}-kv:3000"
+            - name: SECRET_SERVICE_URL
+              value: "{{ $full }}-secret:3000"
+            # Dashboard object dispatch and typed reads go straight to a
+            # worker's data plane, cluster-internal only.
+            - name: WORKER_GRPC_URL
+              value: "{{ $full }}-worker:3100"
+            {{- include "actias.secretEnv" (dict "root" . "env" "JWT_KEY" "entry" .Values.secrets.jwtKey "name" "secrets.jwtKey") | nindent 12 }}
+            {{- include "actias.secretEnv" (dict "root" . "env" "INTERNAL_TOKEN" "entry" .Values.secrets.internalToken "name" "secrets.internalToken") | nindent 12 }}
+            # Browser origin allowed by CORS: the console's host when
+            # ingress is on, a port-forward otherwise.
+            - name: WEB_ORIGIN
+              value: {{ include "actias.consoleOrigin" . | quote }}
+            - name: INVITE_ONLY
+              value: {{ .Values.api.inviteOnly | quote }}
+            {{- if .Values.api.admin.existingSecret }}
+            - name: ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.admin.existingSecret }}
+                  key: username
+            - name: ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.admin.existingSecret }}
+                  key: email
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.admin.existingSecret }}
+                  key: password
+            {{- else if .Values.api.admin.username }}
+            {{- /* The password lands in the chart's own Secret, so it
+                   must exist: a half-set admin would otherwise render
+                   a reference to a key nobody wrote and leave the pod
+                   in CreateContainerConfigError. */}}
+            {{- $_ := required "api.admin.password or api.admin.existingSecret is required alongside api.admin.username" .Values.api.admin.password }}
+            - name: ADMIN_USERNAME
+              value: {{ .Values.api.admin.username | quote }}
+            - name: ADMIN_EMAIL
+              value: {{ required "api.admin.email is required alongside api.admin.username" .Values.api.admin.email | quote }}
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $full }}-secrets
+                  key: admin-password
+            {{- end }}
+            {{- with .Values.api.smtp.host }}
+            - name: SMTP_HOST
+              value: {{ . | quote }}
+            - name: SMTP_PORT
+              value: {{ $.Values.api.smtp.port | quote }}
+            - name: SMTP_FROM
+              value: {{ $.Values.api.smtp.from | quote }}
+            - name: SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "api.smtp.existingSecret is required when smtp.host is set" $.Values.api.smtp.existingSecret }}
+                  key: user
+            - name: SMTP_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.api.smtp.existingSecret }}
+                  key: pass
+            {{- end }}
+            {{- include "actias.otelEnv" (dict "root" . "service" "actias_api" "http" true) | nindent 12 }}
+            {{- with .Values.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3000
+          # Readiness means the database answers, so a pod that lost its
+          # connection stops taking traffic instead of erroring it.
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          {{- with .Values.api.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.api.extraVolumeMounts }}
+          volumeMounts: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.api.extraVolumes }}
+      volumes: {{- toYaml . | nindent 8 }}
+      {{- end }}

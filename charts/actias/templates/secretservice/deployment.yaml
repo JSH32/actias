@@ -1,0 +1,75 @@
+{{- $name := printf "%s-secret" (include "actias.fullname" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "secret") | nindent 4 }}
+spec:
+  ports:
+    - name: grpc
+      port: 3000
+      targetPort: grpc
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "secret") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "secret") | nindent 4 }}
+spec:
+  {{- if not .Values.secretService.autoscaling.enabled }}
+  replicas: {{ .Values.secretService.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "secret") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" . "component" "secret") | nindent 8 }}
+    spec:
+      {{- include "actias.scheduling" (dict "root" . "component" .Values.secretService) | nindent 6 }}
+      initContainers:
+        {{- include "actias.waitFor" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.secretService)) "name" "postgres" "host" (include "actias.postgresHost" .) "port" (include "actias.postgresPort" .)) | nindent 8 }}
+      containers:
+        - name: secret-service
+          image: {{ include "actias.image" (dict "root" . "component" .Values.secretService) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PORT
+              value: "3000"
+            {{- include "actias.databaseUrlEnv" (dict "root" . "database" "actias_secret_service") | nindent 12 }}
+            # The key-encryption key: it only ever wraps per-version data
+            # keys, which is why rotating it re-wraps rather than
+            # re-encrypts.
+            {{- include "actias.secretEnv" (dict "root" . "env" "SECRET_MASTER_KEY" "entry" .Values.secrets.masterKey "name" "secrets.masterKey") | nindent 12 }}
+            {{- include "actias.secretEnv" (dict "root" . "env" "SECRET_MASTER_KEY_ID" "entry" .Values.secrets.masterKeyId "name" "secrets.masterKeyId") | nindent 12 }}
+            {{- include "actias.otelEnv" (dict "root" . "service" "actias_secret_service") | nindent 12 }}
+            {{- with .Values.secretService.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: 3000
+          readinessProbe:
+            grpc:
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          {{- with .Values.secretService.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.secretService.extraVolumeMounts }}
+          volumeMounts: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.secretService.extraVolumes }}
+      volumes: {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,96 @@
+{{- if .Values.minio.bundled }}
+{{- $name := printf "%s-minio" (include "actias.fullname" .) }}
+{{- $secret := default $name .Values.minio.auth.existingSecret }}
+{{- if not .Values.minio.auth.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "minio") | nindent 4 }}
+type: Opaque
+stringData:
+  root-user: {{ .Values.minio.auth.rootUser | quote }}
+  root-password: {{ required "minio.auth.rootPassword or minio.auth.existingSecret is required for the bundled store" .Values.minio.auth.rootPassword | quote }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "minio") | nindent 4 }}
+spec:
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "minio") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "minio") | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "minio") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" . "component" "minio") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: minio
+          image: {{ .Values.minio.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["server", "/data"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: root-password
+          ports:
+            - name: s3
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: s3
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.minio.storage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.minio.storage.size }}
+{{- end }}

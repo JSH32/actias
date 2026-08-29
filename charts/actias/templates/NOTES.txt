@@ -1,0 +1,31 @@
+Actias {{ .Chart.AppVersion }} is installing as release {{ .Release.Name }}.
+
+{{- if .Values.ingress.enabled }}
+
+Console:  https://{{ .Values.ingress.console }}
+API:      https://{{ .Values.ingress.api }}
+{{- if .Values.baseDomain }}
+Scripts:  https://<identifier>.{{ .Values.baseDomain }}
+{{- end }}
+{{- else }}
+
+Ingress is disabled; reach the console with two port-forwards. The
+console's browser calls go to the api directly, and with no ingress it
+was told to expect it on localhost:3001, so both are needed:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "actias.fullname" . }}-web 3000:3000
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "actias.fullname" . }}-api 3001:3000
+
+Scripts serve by path prefix on any worker:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "actias.fullname" . }}-worker 3002:3000
+  curl http://localhost:3002/<identifier>/
+{{- end }}
+
+Stores:
+  postgres: {{ if .Values.postgres.bundled }}bundled (single replica){{ else }}external ({{ .Values.externalPostgres.host }}){{ end }}
+  redis:    {{ if .Values.redis.bundled }}bundled{{ else }}external{{ end }}
+  s3:       {{ if .Values.minio.bundled }}bundled minio{{ else }}external ({{ .Values.externalS3.endpoint }}){{ end }}
+
+Bundled stores are for kind and evaluation; use external stores in
+production (see the chart README).

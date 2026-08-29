@@ -1,0 +1,22 @@
+# Values for kind and CI: bundled stores, throwaway secrets. The chart
+# has no default secrets, so they are set here, in the open. Not for
+# any install anyone can reach.
+secrets:
+  jwtKey:
+    value: kind-dev-jwt-key
+  internalToken:
+    value: kind-dev-internal-token
+  masterKey:
+    # Fixed 32 bytes, base64. Generate a real one with
+    # `openssl rand -base64 32`.
+    value: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+  masterKeyId:
+    value: kek-1
+
+postgres:
+  auth:
+    password: kind-dev-postgres
+
+minio:
+  auth:
+    rootPassword: kind-dev-minio

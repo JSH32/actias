@@ -1,0 +1,103 @@
+{{- if .Values.postgres.bundled }}
+{{- $name := printf "%s-postgres" (include "actias.fullname" .) }}
+{{- if not .Values.postgres.auth.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+type: Opaque
+stringData:
+  username: {{ .Values.postgres.auth.username | quote }}
+  password: {{ required "postgres.auth.password or postgres.auth.existingSecret is required for the bundled store" .Values.postgres.auth.password | quote }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" . "component" "postgres") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "actias.postgresSecretName" . }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "actias.postgresSecretName" . }}
+                  key: password
+            # Services create their own databases on first connect, so
+            # this only names the default one the image always makes.
+            - name: POSTGRES_DB
+              value: postgres
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              # The role comes from the Secret, which an operator may
+              # supply, so probing a value from values.yaml would fail
+              # forever whenever the two disagree.
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\""]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\""]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            # Postgres 17 keeps its data directory here; 18 moved it, so
+            # the image tag and this path change together.
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.postgres.storage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage.size }}
+{{- end }}

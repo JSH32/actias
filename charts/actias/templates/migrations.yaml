@@ -1,0 +1,72 @@
+{{/*
+Schema migrations, one Job per store-owning service. Each Job runs the
+SAME image as the service it migrates, so the schema a binary expects
+and the schema its Job applies are built together.
+
+Env is the database and nothing else: the secret-service migration
+never holds the master key, and the script-service migration needs no
+redis or object storage. Each migrator creates its own database when
+the server has none.
+
+When they run differs by operation, because what a gate is worth
+differs:
+
+  UPGRADE: a pre-upgrade hook. The database already holds data and
+  pods are already serving, so the new schema must land before the new
+  pods roll, and a migration that cannot apply must fail the release
+  rather than let a half-migrated deployment through.
+
+  INSTALL: an ordinary resource. A pre-install hook runs before the
+  release's own objects exist, so with a bundled store there would be
+  no database to reach and not even a Secret to read credentials from.
+  Nothing is serving yet either, so there is nothing to gate: the Job
+  comes up beside the store and retries through the backoff until it
+  answers, and `--wait` covers the whole convergence.
+*/}}
+{{- $jobs := list
+  (dict "name" "script" "component" .Values.scriptService "database" "actias_script_service" "command" (list "/app/target" "--migrate"))
+  (dict "name" "secret" "component" .Values.secretService "database" "actias_secret_service" "command" (list "/app/target" "--migrate"))
+  (dict "name" "kv" "component" .Values.kv "database" "actias_kv" "command" (list "/app/target" "--migrate"))
+  (dict "name" "api" "component" .Values.api "database" "actias_api" "command" (list "npx" "mikro-orm" "migration:up"))
+}}
+{{- range $job := $jobs }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "actias.fullname" $ }}-migrate-{{ $job.name }}
+  labels:
+    {{- include "actias.labels" (dict "root" $ "component" (printf "migrate-%s" $job.name)) | nindent 4 }}
+  {{- if not $.Release.IsInstall }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  {{- end }}
+spec:
+  # The wait below handles a store that is merely slow, so an attempt
+  # that fails here failed for a reason retrying will not fix. A few
+  # are kept for genuinely transient faults.
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" $ "component" (printf "migrate-%s" $job.name)) | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # On install the store is coming up alongside this Job, so waiting
+      # is what keeps the attempts below from being spent on a database
+      # that simply is not listening yet.
+      initContainers:
+        {{- include "actias.waitFor" (dict "root" $ "image" (include "actias.image" (dict "root" $ "component" $job.component)) "name" "postgres" "host" (include "actias.postgresHost" $) "port" (include "actias.postgresPort" $)) | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "actias.image" (dict "root" $ "component" $job.component) | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: {{ toYaml $job.command | nindent 12 }}
+          env:
+            {{- include "actias.databaseUrlEnv" (dict "root" $ "database" $job.database) | nindent 12 }}
+{{- end }}

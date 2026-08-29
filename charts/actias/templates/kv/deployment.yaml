@@ -1,0 +1,72 @@
+{{- $name := printf "%s-kv" (include "actias.fullname" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "kv") | nindent 4 }}
+spec:
+  ports:
+    - name: grpc
+      port: 3000
+      targetPort: grpc
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "kv") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "kv") | nindent 4 }}
+spec:
+  {{- if not .Values.kv.autoscaling.enabled }}
+  replicas: {{ .Values.kv.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "kv") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" . "component" "kv") | nindent 8 }}
+    spec:
+      {{- include "actias.scheduling" (dict "root" . "component" .Values.kv) | nindent 6 }}
+      initContainers:
+        {{- include "actias.waitFor" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.kv)) "name" "postgres" "host" (include "actias.postgresHost" .) "port" (include "actias.postgresPort" .)) | nindent 8 }}
+      containers:
+        - name: kv-service
+          image: {{ include "actias.image" (dict "root" . "component" .Values.kv) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PORT
+              value: "3000"
+            # DATABASE_URL alone selects the postgres backend; the scylla
+            # one wants SCYLLA_NODES instead, and setting both is refused.
+            {{- include "actias.databaseUrlEnv" (dict "root" . "database" "actias_kv") | nindent 12 }}
+            {{- include "actias.otelEnv" (dict "root" . "service" "actias_kv_service") | nindent 12 }}
+            {{- with .Values.kv.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: 3000
+          readinessProbe:
+            grpc:
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          {{- with .Values.kv.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.kv.extraVolumeMounts }}
+          volumeMounts: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.kv.extraVolumes }}
+      volumes: {{- toYaml . | nindent 8 }}
+      {{- end }}

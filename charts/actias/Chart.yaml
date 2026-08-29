@@ -1,0 +1,21 @@
+apiVersion: v2
+name: actias
+description: >-
+  The Actias platform: serverless Luau compute, durable objects,
+  workflows, queues and streams, with the API and web console that
+  operate them.
+type: application
+# Version moves in lockstep with the workspace version; appVersion is
+# the image tag the release pipeline stamps on a v* tag.
+version: 0.1.0
+appVersion: latest
+home: https://github.com/JSH32/actias
+sources:
+  - https://github.com/JSH32/actias
+maintainers:
+  - name: JSH32
+    url: https://github.com/JSH32
+# No dependencies on purpose: the bundled dev-grade stores are this
+# chart's own manifests on the upstream official images, and production
+# uses external stores. A third-party store chart would be a supply
+# chain dependency for what is only ever the dev path.
