@@ -1,0 +1,76 @@
+name: Chart
+
+# The chart's own gate, kept off every other PR: lint and schema
+# validation on any chart change, and a kind install that proves the
+# wiring holds in kubernetes. Behaviour is the compose smoke's job; what
+# this catches is service discovery, probes, migration hooks, volumes
+# and the address a worker registers.
+on:
+  pull_request:
+    paths:
+      - "charts/**"
+      - "observability/dashboards/**"
+      - "scripts/chart-smoke.sh"
+      - ".github/workflows/chart.yml"
+  push:
+    branches: [master]
+    paths:
+      - "charts/**"
+      - "observability/dashboards/**"
+      - "scripts/chart-smoke.sh"
+      - ".github/workflows/chart.yml"
+
+jobs:
+  lint:
+    name: Lint and validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # ct compares against the base branch to decide what changed.
+          fetch-depth: 0
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Lint the chart
+        run: nix develop .#kube -c just chart-lint
+
+  install:
+    name: Install on kind
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # The smoke loads local images into the cluster, so the chart is
+      # tested against this commit rather than a published tag.
+      - name: Build images
+        run: docker compose build --quiet
+          script_service secret_service kv_service worker_service actias_api actias_web
+
+      - name: Install and probe
+        run: nix develop .#kube -c just chart-install

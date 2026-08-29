@@ -1,0 +1,22 @@
+# The cluster the chart smoke runs on. The port mappings and the
+# ingress-ready label are what let an ingress controller bind the node's
+# :80 and be reachable from the host, which is how the three-host
+# routing gets exercised for real rather than assumed.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # High host ports so the drill never fights whatever is on :80.
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP

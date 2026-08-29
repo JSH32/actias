@@ -127,6 +127,26 @@ down:
 logs service="":
     docker compose logs -f {{ service }}
 
+# Copy the shared dashboards into the chart. A chart cannot read files
+# above its own directory, so the copy is what lets one set of json
+# serve both compose and helm; it is generated, gitignored, and every
+# chart verb below runs this first.
+chart-sync:
+    rm -rf charts/actias/dashboards
+    mkdir -p charts/actias/dashboards
+    cp observability/dashboards/*.json charts/actias/dashboards/
+
+# Lint the chart the way CI does. Needs `nix develop .#kube`.
+chart-lint: chart-sync
+    helm lint charts/actias -f charts/actias/values-kind.yaml
+    ct lint --charts charts/actias
+    helm template actias charts/actias -f charts/actias/values-kind.yaml | kubeconform -strict -summary
+
+# Install the chart into a kind cluster and prove it serves a script.
+# Creates the cluster if it is missing. Needs `nix develop .#kube`.
+chart-install: chart-sync
+    ./scripts/chart-smoke.sh
+
 # Everything CI gates on.
 ci: deps lint-rust test-rust build-rust lint-api typecheck-api test-api build-api lint-web typecheck-web build-web check-generated
 

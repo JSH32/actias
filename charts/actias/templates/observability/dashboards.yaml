@@ -1,0 +1,31 @@
+{{- if .Values.observability.dashboards.enabled }}
+{{/*
+The repo's dashboards, delivered as ConfigMaps for a Grafana running
+the standard sidecar. They name their datasources "prometheus" and
+"tempo" and nothing else about the environment, which is what lets the
+same files serve the compose stack and this chart.
+
+A chart can only read files under its own directory, so the shared
+json is copied in by `just chart-sync` (which chart-lint, chart-install
+and the publish workflow all run first). Finding none means the copy
+did not happen, and saying so beats installing an empty ConfigMap.
+*/}}
+{{- $dashboards := .Files.Glob "dashboards/*.json" }}
+{{- if not $dashboards }}
+{{- fail "observability.dashboards.enabled is on but the chart carries no dashboards; run `just chart-sync` to copy them from observability/dashboards" }}
+{{- end }}
+{{- range $path, $_ := $dashboards }}
+{{- $name := base $path | trimSuffix ".json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "actias.fullname" $ }}-dashboard-{{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" $ "component" "dashboards") | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+{{- end }}
+{{- end }}
