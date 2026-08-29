@@ -79,7 +79,10 @@ impl Metrics {
         out.push_str(&format!("actias_objects_resident {objects_resident}\n"));
         let load = |n: &std::sync::atomic::AtomicI64| n.load(std::sync::atomic::Ordering::Relaxed);
         out.push_str("# TYPE actias_connections_warm gauge\n");
-        out.push_str(&format!("actias_connections_warm {}\n", load(&connections.warm)));
+        out.push_str(&format!(
+            "actias_connections_warm {}\n",
+            load(&connections.warm)
+        ));
         out.push_str("# TYPE actias_connections_hibernated gauge\n");
         out.push_str(&format!(
             "actias_connections_hibernated {}\n",
