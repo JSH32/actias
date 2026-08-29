@@ -26,13 +26,40 @@ handlers run when the wire or an edge delivers.
   <tbody>
     <tr><td><code>open(conn)</code></td><td>once, before any item; the follow calls usually live here</td></tr>
     <tr><td><code>frame(conn, data)</code></td><td>per json frame the client sent</td></tr>
-    <tr><td><code>event(conn, event)</code></td><td>per delivered edge event</td></tr>
+    <tr><td><code>event(conn, event)</code></td><td>per delivered edge event; takes a policy instead of a function (below)</td></tr>
     <tr><td><code>close(conn, reason)</code></td><td>after the wire ends, either side; edges sever after it returns</td></tr>
   </tbody>
 </table>
 
 Handlers for one connection run one at a time, in arrival order, each
 under the per-call budget.
+
+## The forward policy
+
+`event` takes a policy in place of a function, the same hook-or-policy
+shape `publishes` uses for topics:
+
+```lua
+local Device = connection "Device" {
+    open = function(conn) conn:follow(Account(conn.name), "events") end,
+    event = "forward",
+}
+```
+
+Each delivery then reaches the client as
+
+```json
+{ "type": "event", "topic": "...",
+  "from": { "id": "...", "class": "...", "name": "..." },
+  "data": { } }
+```
+
+built by the platform, with no vm involved, so a hibernated connection
+stays hibernated while it relays. Declare a function instead to choose
+your own wire shape, and pay a handler call per event for it.
+
+Declaring neither drops deliveries, which is what you want only when
+the follow exists to be counted (`state:followers`) rather than heard.
 
 ## Upgrading
 
@@ -75,9 +102,8 @@ local Watcher = connection "Watcher" {
         conn:follow(Account(conn.name), "events")
     end,
 
-    event = function(conn, event)
-        conn:send({ topic = event.topic, data = event.data })
-    end,
+    -- The platform envelope, without waking this program.
+    event = "forward",
 
     frame = function(conn, data)
         if data.op == "watch" then
@@ -106,9 +132,10 @@ end)
 - Connection edges are at-most-once and die with the connection.
 - The inbox holds 256 items. A connection whose handlers cannot keep
   up closes rather than buffering.
-- There is no platform wire protocol. The frames on the wire are the
-  ones your handlers send and interpret, so follow targets come from
-  your code, never from a string the client sent.
+- The only frame the platform defines is the forwarded event envelope
+  above, and declaring an `event` handler replaces it. Every other
+  frame on the wire is one your handlers send or interpret, so follow
+  targets come from your code, never from a string the client sent.
 
 ## Related
 

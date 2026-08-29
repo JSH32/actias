@@ -6,8 +6,11 @@
 //! blob. The vm is the ONE droppable part: built from the factory
 //! when a handler needs it, dropped again after `hibernate_after` of
 //! silence. Hibernated, the connection costs about a file
-//! descriptor; any inbox item rebuilds the vm, and the blob and the
-//! follows never noticed.
+//! descriptor; an inbox item whose handler is declared rebuilds the
+//! vm, and the blob and the follows never noticed. A class that
+//! declared the forward policy instead of an `event` handler never
+//! needs one for a delivery: the platform envelope goes straight to
+//! the wire.
 //!
 //! Ordering per connection is the actor itself, the discipline object
 //! mailboxes provide: handlers for one connection never run
@@ -34,9 +37,8 @@ pub const STATE_CAP_BYTES: usize = 64 * 1024;
 /// Builds a vm of the connection's revision on demand. The worker
 /// supplies it; worker-core never dials a backend itself.
 pub type VmFactory = Arc<
-    dyn Fn() -> std::pin::Pin<
-            Box<dyn Future<Output = Result<ActiasRuntime, String>> + Send>,
-        > + Send
+    dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Result<ActiasRuntime, String>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -149,8 +151,7 @@ impl ConnectionTask {
                         // Lateness past the deadline is a missed
                         // count, and the next deadline realigns to
                         // the period grid instead of drifting.
-                        let late = tokio::time::Instant::now()
-                            .saturating_duration_since(scheduled);
+                        let late = tokio::time::Instant::now().saturating_duration_since(scheduled);
                         let missed = (late.as_millis() / every.as_millis()) as u32;
                         self.invoke("timer", Some(ArgumentJson::Missed(missed)))
                             .await?;
@@ -189,17 +190,36 @@ impl ConnectionTask {
     /// serving is over.
     async fn handle(&mut self, item: InboxItem) -> Result<bool, String> {
         match item {
-                InboxItem::Closed => return Ok(false),
-                InboxItem::Frame(data) => {
-                    let argument = ArgumentJson::Value(data);
-                    self.invoke("frame", Some(argument)).await?;
-                }
-                InboxItem::Event {
-                    topic,
-                    from_class,
-                    from_name,
-                    data,
-                } => {
+            InboxItem::Closed => return Ok(false),
+            InboxItem::Frame(data) => {
+                let argument = ArgumentJson::Value(data);
+                self.invoke("frame", Some(argument)).await?;
+            }
+            InboxItem::Event {
+                topic,
+                from_class,
+                from_name,
+                data,
+            } => {
+                // The declared forward policy sends the platform
+                // envelope straight to the wire: delivery costs a
+                // serialize and a channel send, and a hibernated vm
+                // stays down. A declared handler shapes the frame
+                // itself; declaring neither drops the event without
+                // building a vm to discover that.
+                if self.spec.forwards {
+                    let frame = crate::extensions::sockets::event_frame(
+                        &topic,
+                        &from_class,
+                        &from_name,
+                        &data,
+                    );
+                    let _ = self
+                        .shared
+                        .outbound_sender()
+                        .send(OutboundFrame::Json(frame))
+                        .await;
+                } else {
                     let argument = ArgumentJson::Event {
                         topic,
                         from_class,
@@ -209,7 +229,21 @@ impl ConnectionTask {
                     self.invoke("event", Some(argument)).await?;
                 }
             }
+        }
         Ok(true)
+    }
+
+    /// Whether the declared program names this handler; the timer is
+    /// its own table, so it is declared by its interval.
+    fn declares(&self, handler: &str) -> bool {
+        if handler == "timer" {
+            self.spec.timer_every_ms.is_some()
+        } else {
+            self.spec
+                .handlers
+                .iter()
+                .any(|declared| declared == handler)
+        }
     }
 
     /// Runs one declared handler with a fresh conn surface over the
@@ -221,12 +255,7 @@ impl ConnectionTask {
         handler: &str,
         argument: Option<ArgumentJson>,
     ) -> Result<(), String> {
-        let declared = if handler == "timer" {
-            self.spec.timer_every_ms.is_some()
-        } else {
-            self.spec.handlers.iter().any(|declared| declared == handler)
-        };
-        if !declared {
+        if !self.declares(handler) {
             return Ok(());
         }
         if self.vm.is_none() {
@@ -265,8 +294,11 @@ impl ConnectionTask {
         };
 
         let conn = conn_surface(vm, self.shared.clone()).map_err(|e| e.to_string())?;
-        conn.set("state", vm.to_value(&self.state).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        conn.set(
+            "state",
+            vm.to_value(&self.state).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         conn.set("name", self.shared.name.clone())
             .map_err(|e| e.to_string())?;
         conn.set("class", self.shared.class.clone())
@@ -274,9 +306,7 @@ impl ConnectionTask {
 
         let argument = match argument {
             None => mlua::Value::Nil,
-            Some(ArgumentJson::Value(value)) => {
-                vm.to_value(&value).map_err(|e| e.to_string())?
-            }
+            Some(ArgumentJson::Value(value)) => vm.to_value(&value).map_err(|e| e.to_string())?,
             Some(ArgumentJson::Missed(missed)) => mlua::Value::Integer(missed as i64),
             Some(ArgumentJson::Event {
                 topic,

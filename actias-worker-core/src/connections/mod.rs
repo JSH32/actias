@@ -10,11 +10,12 @@
 //! released like any response; the class's handlers run in
 //! [`actor::ConnectionTask`], one invocation per inbox item. The
 //! connection SPEAKS AS the minted identity; `transport =
-//! "connection"` decides only the edge kind. There is NO platform wire
-//! protocol in either direction: the wire carries only frames the app
-//! defines, and no stdlib connection program exists (one was retracted
-//! in review precisely because it would have made the platform's event
-//! envelope a de-facto wire format).
+//! "connection"` decides only the edge kind. No stdlib connection
+//! program exists, and the app's own frames are the only ones the
+//! wire carries in either direction, with one exception a class asks
+//! for by name: `event = "forward"` sends deliveries in the platform
+//! envelope, which is a declared policy rather than a blessed
+//! closure.
 //!
 //! One bounded inbox per connection merges both producers, edge
 //! deliveries and the client's own frames; a connection whose handlers

@@ -13,13 +13,25 @@ use crate::duration::parse_duration_ms;
 /// lives on the spec.
 pub const CONNECTION_HANDLERS: [&str; 4] = ["open", "frame", "event", "close"];
 
+/// The one policy `event` takes instead of a function: deliveries go to
+/// the wire in the platform envelope, with no vm built to pass them
+/// along. Named for the stdlib helper this replaces, which was
+/// retracted for making that envelope a wire format nobody declared.
+pub const FORWARD_POLICY: &str = "forward";
+
 /// What a connection class IS, normalized once: its name, which
 /// handlers the body declares, and its heartbeat period when one is.
 #[derive(Debug)]
 pub struct ConnectionSpec {
     pub name: String,
     /// The declared handler names, in [`CONNECTION_HANDLERS`] order.
+    /// An undeclared handler costs no vm: the item is dropped without
+    /// one ever being built.
     pub handlers: Vec<String>,
+    /// Whether `event` declared [`FORWARD_POLICY`] instead of a
+    /// function. Exclusive with `event` in [`Self::handlers`], since
+    /// one key cannot be both.
+    pub forwards: bool,
     /// The declared `timer.every`, in milliseconds; [`None`] means no
     /// heartbeat. A timered connection stays warm.
     pub timer_every_ms: Option<u64>,
@@ -32,6 +44,7 @@ impl ConnectionSpec {
     /// makes `check` a handler-shape verifier.
     pub fn parse(name: &str, body: &Table) -> mlua::Result<Self> {
         let mut timer_every_ms = None;
+        let mut forwards = false;
         for pair in body.pairs::<mlua::Value, mlua::Value>() {
             let (key, value) = pair?;
             let Some(key) = key
@@ -53,6 +66,23 @@ impl ConnectionSpec {
                      has handlers, not methods: open, frame, event, close."
                 )));
             }
+            // `event` takes a policy in place of a function, the same
+            // hook-or-policy shape `publishes` uses for its topics.
+            if key == "event"
+                && let mlua::Value::String(policy) = &value
+            {
+                let policy = policy.to_str()?;
+                if *policy != *FORWARD_POLICY {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "'{name}': event = \"{policy}\" is not a policy. \
+                         Declare a function to shape the frames yourself, \
+                         or event = \"{FORWARD_POLICY}\" to send each \
+                         delivery in the platform envelope."
+                    )));
+                }
+                forwards = true;
+                continue;
+            }
             if !matches!(value, mlua::Value::Function(_)) {
                 return Err(mlua::Error::RuntimeError(format!(
                     "'{name}': '{key}' must be a function."
@@ -61,12 +91,14 @@ impl ConnectionSpec {
         }
         let handlers = CONNECTION_HANDLERS
             .iter()
+            .filter(|handler| !(forwards && **handler == "event"))
             .filter(|handler| body.contains_key(**handler).unwrap_or(false))
             .map(|handler| (*handler).to_owned())
             .collect();
         Ok(Self {
             name: name.to_owned(),
             handlers,
+            forwards,
             timer_every_ms,
         })
     }
@@ -87,9 +119,8 @@ fn parse_timer(name: &str, value: &mlua::Value) -> mlua::Result<u64> {
     if !matches!(run, mlua::Value::Function(_)) {
         return Err(shape());
     }
-    let ms = parse_duration_ms(&every).map_err(|error| {
-        mlua::Error::RuntimeError(format!("'{name}': timer.every: {error}"))
-    })?;
+    let ms = parse_duration_ms(&every)
+        .map_err(|error| mlua::Error::RuntimeError(format!("'{name}': timer.every: {error}")))?;
     let ms = u64::try_from(ms).map_err(|_| shape())?;
     if ms < 1000 {
         return Err(mlua::Error::RuntimeError(format!(
@@ -136,17 +167,40 @@ mod tests {
     }
 
     #[test]
+    fn event_takes_a_handler_or_the_forward_policy() {
+        let shaped = parse("{ event = function() end }").expect("a handler parses");
+        assert_eq!(shaped.handlers, vec!["event"]);
+        assert!(!shaped.forwards, "a handler is not the policy");
+
+        // The policy is not a handler: nothing runs, so nothing is
+        // declared to run, and the vm is never built for a delivery.
+        let forwarding =
+            parse("{ event = \"forward\", frame = function() end }").expect("a policy parses");
+        assert_eq!(forwarding.handlers, vec!["frame"]);
+        assert!(forwarding.forwards);
+
+        let refused = parse("{ event = \"shout\" }").expect_err("must refuse");
+        assert!(refused.to_string().contains("is not a policy"), "{refused}");
+        assert!(
+            refused.to_string().contains("event = \"forward\""),
+            "the refusal names the one policy: {refused}"
+        );
+    }
+
+    #[test]
     fn a_timer_declares_its_period_and_bad_shapes_refuse() {
-        let spec = parse(
-            "{ timer = { every = \"30s\", run = function() end }, frame = function() end }",
-        )
-        .expect("a timered body parses");
+        let spec =
+            parse("{ timer = { every = \"30s\", run = function() end }, frame = function() end }")
+                .expect("a timered body parses");
         assert_eq!(spec.timer_every_ms, Some(30_000));
 
         for (body, tell) in [
             ("{ timer = function() end }", "declared as"),
             ("{ timer = { every = \"30s\" } }", "declared as"),
-            ("{ timer = { every = \"oops\", run = function() end } }", "timer.every"),
+            (
+                "{ timer = { every = \"oops\", run = function() end } }",
+                "timer.every",
+            ),
             (
                 "{ timer = { every = \"200ms\", run = function() end } }",
                 "busy loop",

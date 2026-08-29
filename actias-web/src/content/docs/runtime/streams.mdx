@@ -132,6 +132,12 @@ Websocket connections are also followers, with weaker promises:
 at-most-once, no retry, and the edge dies with the tab. See
 [sockets](/docs/runtime/sockets).
 
+A connection that declares an `event` handler shapes each delivered
+event into its own frame. One that declares `event = "forward"` sends
+the platform envelope, `{ type = "event", topic, from, data }`,
+without running any code, so a socket that exists only to relay what
+it follows costs a write per event and nothing else.
+
 Keep anything that must survive on an object edge, one hop back from
 the connection. A device may miss a frame; the object does not miss the
 event.

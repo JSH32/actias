@@ -26,7 +26,10 @@ type Conn = {
 type ConnectionBody = {
     open: ((conn: Conn) -> ())?,
     frame: ((conn: Conn, data: any) -> ())?,
-    event: ((conn: Conn, event: StreamEvent) -> ())?,
+    -- A function shapes each delivery into this app's own frame;
+    -- "forward" sends it as { type = "event", topic, from, data }
+    -- without building a vm. Declared as neither, deliveries drop.
+    event: (((conn: Conn, event: StreamEvent) -> ()) | "forward")?,
     close: ((conn: Conn, reason: any?) -> ())?,
     -- The connection's own heartbeat, gone with the wire; `missed`
     -- counts ticks that fired while a previous run was still going.

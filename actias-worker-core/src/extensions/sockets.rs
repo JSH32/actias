@@ -24,11 +24,18 @@
 //!
 //! There is deliberately NO stdlib connection program (a
 //! `sockets.forward` existed briefly and was retracted in owner
-//! review): the wire carries only frames the app defines, and a
-//! shipped forwarder would promote the platform's internal event
-//! envelope into a de-facto wire protocol. The app writes every
-//! handler that touches the wire; the handlers are named instead of
-//! inlined, which is what lets them survive the vm.
+//! review): a shipped forwarder would have let the platform's
+//! internal envelope escape as a wire protocol nobody declared. The
+//! app writes every handler that touches the wire, and the handlers
+//! are named instead of inlined, which is what lets them survive the
+//! vm.
+//!
+//! The one platform-defined frame is [`event_frame`], sent for a
+//! class that declares `event = "forward"`. It is the same fast path
+//! that retraction named its terms for, spelled as the policy a body
+//! declares rather than a helper it calls: following something
+//! without reshaping it costs no vm, so a hibernated connection stays
+//! down.
 //!
 //! The conn is a plain Lua TABLE whose verb fields are async
 //! functions, exactly the instance-handle pattern: Luau cannot yield
@@ -470,6 +477,28 @@ pub fn conn_surface(lua: &Lua, shared: Arc<SockShared>) -> mlua::Result<Table> {
     )?;
 
     Ok(conn)
+}
+
+/// The platform envelope a handler-less connection forwards to its
+/// wire: the same event the `event` handler would have seen, wrapped
+/// as `{ type = "event", topic, from, data }`. Built in serde so the
+/// forward never needs a vm.
+pub fn event_frame(
+    topic: &str,
+    from_class: &str,
+    from_name: &str,
+    data: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "event",
+        "topic": topic,
+        "from": {
+            "id": format!("{from_class}/{from_name}"),
+            "class": from_class,
+            "name": from_name,
+        },
+        "data": data,
+    })
 }
 
 /// One delivered edge event as the table the `event` handler receives:

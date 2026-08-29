@@ -22,7 +22,9 @@ local Session = connection "Session" {
         Room(conn.state.room):post(conn.name, data.text)
     end,
 
-    -- A delivered edge event.
+    -- A delivered edge event. A function chooses a custom wire shape;
+    -- event = "forward" sends the platform envelope instead, without
+    -- running any code at all.
     event = function(conn, event)
         conn:send({ event = "message", text = event.data.text })
     end,
@@ -85,7 +87,8 @@ connection and cannot be changed by anything the client sends.
 
 ## Sending
 
-`conn:send(value)` writes one JSON frame. There is no platform wire
+`conn:send(value)` writes one JSON frame. Apart from the envelope a
+class asks for with `event = "forward"`, there is no platform wire
 protocol: the frames on the wire are the ones your handlers send.
 
 To let clients change subscriptions, define a frame for it:
@@ -136,16 +139,25 @@ A connection's vm is rebuildable, so an idle one does not keep it:
   </thead>
   <tbody>
     <tr><td>warm</td><td>a vm and everything below</td><td>a vm</td><td>idle past the threshold drops the vm</td></tr>
-    <tr><td>hibernated</td><td>the socket, the inbox, <code>conn.state</code>, the follows</td><td>about a file descriptor</td><td>any frame or delivery rebuilds the vm</td></tr>
+    <tr><td>hibernated</td><td>the socket, the inbox, <code>conn.state</code>, the follows</td><td>about a file descriptor</td><td>anything with a declared handler to run rebuilds the vm</td></tr>
     <tr><td>gone</td><td>nothing</td><td>zero</td><td>is the end</td></tr>
   </tbody>
 </table>
 
 Hibernation is invisible from both ends of the wire: the socket stays
-open, deliveries land in the inbox and wake the handlers, and
-`conn.state` is exactly what the last handler left. It is a memory
-economy, not durability; a node dying still drops its sockets, and
-reconnect-with-catch-up is still the recovery story.
+open, deliveries land in the inbox, and `conn.state` is exactly what
+the last handler left. It is a memory economy, not durability; a node
+dying still drops its sockets, and reconnect-with-catch-up is still
+the recovery story.
+
+What a hibernated connection pays depends on what it declared. An
+undeclared handler costs nothing at all: a `close` with no `close`
+handler never builds a vm to discover there is nothing to run. Neither
+does a delivery to a class that declared `event = "forward"`, since
+the platform writes that frame itself. A connection that only relays
+what it follows therefore stays hibernated for its whole life, which
+is what makes many thousands of them per node ordinary rather than
+notable.
 
 ## Backpressure and limits
 
