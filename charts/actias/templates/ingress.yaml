@@ -1,0 +1,74 @@
+{{- if .Values.ingress.enabled }}
+{{- $full := include "actias.fullname" . }}
+{{/*
+Three hosts: the console, the api, and a wildcard for user scripts.
+
+The api and worker rules need websockets to survive: the console holds
+one for live logs and the playground, and user connections hold theirs
+open and quiet for as long as the client lives. The nginx annotations
+below raise both timeouts to a day and turn off buffering. Another
+controller wants its own equivalents, which is what ingress.annotations
+is for.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "ingress") | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "86400"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "86400"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- with .Values.ingress.console }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-web
+                port:
+                  number: 3000
+    {{- end }}
+    {{- with .Values.ingress.api }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-api
+                port:
+                  number: 3000
+    {{- end }}
+    {{- with .Values.baseDomain }}
+    # Every published script answers under its own label here, and
+    # revision previews under "<script>--r-<revision>". One wildcard
+    # rule covers both, which is why the certificate must be a wildcard
+    # too (ACME issues those through a DNS01 solver only).
+    - host: {{ printf "*.%s" . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-worker
+                port:
+                  number: 3000
+    {{- end }}
+{{- end }}
