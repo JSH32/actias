@@ -1,0 +1,196 @@
+{{- $name := printf "%s-worker" (include "actias.fullname" .) }}
+{{- $headless := printf "%s-worker-hs" (include "actias.fullname" .) }}
+{{- $full := include "actias.fullname" . }}
+{{/*
+Two services on purpose. The headless one gives every pod a stable DNS
+name, which is what a worker registers as its address and what peers
+and the api dial back long after a restart. The regular one is for
+callers that want any worker: ingress traffic for scripts, and the
+api's data-plane reads.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $headless }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  clusterIP: None
+  # A worker must be addressable before it passes its probes: peers
+  # resolve it by name during startup, and its own registration races
+  # readiness.
+  publishNotReadyAddresses: true
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+    - name: grpc
+      port: 3100
+      targetPort: grpc
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "worker") | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+    - name: grpc
+      port: 3100
+      targetPort: grpc
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "worker") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  serviceName: {{ $headless }}
+  replicas: {{ .Values.workers.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" . "component" "worker") | nindent 8 }}
+    spec:
+      # The stop sequence is: finish in-flight requests, flush unshipped
+      # object state, deregister. Generous rather than load-bearing;
+      # objects rehome on next touch either way.
+      terminationGracePeriodSeconds: {{ .Values.workers.terminationGracePeriodSeconds }}
+      {{- include "actias.scheduling" (dict "root" . "component" .Values.workers) | nindent 6 }}
+      # A worker exits when script-service is unreachable, so without
+      # this the whole fleet crashloops through a fresh install while
+      # the registry's own database is still coming up.
+      initContainers:
+        {{- include "actias.waitFor" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.workers)) "name" "script-service" "host" (printf "%s-script" $full) "port" 3000) | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "actias.image" (dict "root" . "component" .Values.workers) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PORT
+              value: "3000"
+            - name: WORKER_GRPC_PORT
+              value: "3100"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The address peers and the api dial back. It must survive a
+            # restart, which is why workers are a StatefulSet: the pod
+            # name is stable and the headless service resolves it.
+            - name: NODE_ADDRESS
+              value: "$(POD_NAME).{{ $headless }}.{{ .Release.Namespace }}.svc.cluster.local:3100"
+            # Full uris here; the api addresses the same services as
+            # bare host:port.
+            - name: SCRIPT_SERVICE_URI
+              value: "http://{{ $full }}-script:3000"
+            - name: KV_SERVICE_URI
+              value: "http://{{ $full }}-kv:3000"
+            - name: SECRET_SERVICE_URI
+              value: "http://{{ $full }}-secret:3000"
+            - name: REDIS_URL
+              value: {{ include "actias.redisUrl" . | quote }}
+            {{- include "actias.s3Env" . | nindent 12 }}
+            {{- include "actias.secretEnv" (dict "root" . "env" "INTERNAL_TOKEN" "entry" .Values.secrets.internalToken "name" "secrets.internalToken") | nindent 12 }}
+            {{- with .Values.baseDomain }}
+            # Scripts answer on their own subdomain under this; the
+            # path-prefix forms keep working regardless.
+            - name: BASE_DOMAIN
+              value: {{ . | quote }}
+            {{- end }}
+            # One sqlite file per durable object lives here. The volume
+            # is a cache of the blob store, not the truth.
+            - name: OBJECT_DATA_DIR
+              value: /data/objects
+            - name: OBJECT_IDLE_SECS
+              value: {{ .Values.workers.tuning.objectIdleSecs | quote }}
+            - name: CONNECTION_HIBERNATE_SECS
+              value: {{ .Values.workers.tuning.connectionHibernateSecs | quote }}
+            - name: OBJECT_SWEEP_SECS
+              value: {{ .Values.workers.tuning.objectSweepSecs | quote }}
+            - name: OBJECT_REPLICA_TTL_SECS
+              value: {{ .Values.workers.tuning.objectReplicaTtlSecs | quote }}
+            - name: OBJECT_DB_MAX_MB
+              value: {{ .Values.workers.tuning.objectDbMaxMb | quote }}
+            - name: OBJECT_SHIP_WHOLE_MAX_KB
+              value: {{ .Values.workers.tuning.objectShipWholeMaxKb | quote }}
+            - name: OBJECT_WAL_ROTATE_KB
+              value: {{ .Values.workers.tuning.objectWalRotateKb | quote }}
+            - name: OBJECT_MAX_SEGMENTS
+              value: {{ .Values.workers.tuning.objectMaxSegments | quote }}
+            - name: OBJECT_ACK_GATE_MS
+              value: {{ .Values.workers.tuning.objectAckGateMs | quote }}
+            {{- include "actias.otelEnv" (dict "root" . "service" "actias_worker") | nindent 12 }}
+            {{- with .Values.workers.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: grpc
+              containerPort: 3100
+          # The data plane's health surface covers the whole process:
+          # scripts and objects both fail if it is down.
+          readinessProbe:
+            grpc:
+              port: 3100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 3100
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          {{- with .Values.workers.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: objects
+              mountPath: /data/objects
+            {{- with .Values.workers.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      {{- with .Values.workers.extraVolumes }}
+      volumes: {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: objects
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.workers.storage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.workers.storage.size }}
+{{/*
+Worker request metrics serve on /_metrics. Scraping is the
+environment's collector's job; with the prometheus operator installed,
+this is the shape:
+
+  apiVersion: monitoring.coreos.com/v1
+  kind: PodMonitor
+  metadata:
+    name: {{ $name }}
+  spec:
+    selector:
+      matchLabels:
+        {{- include "actias.selectorLabels" (dict "root" . "component" "worker") | nindent 8 }}
+    podMetricsEndpoints:
+      - port: http
+        path: /_metrics
+*/}}

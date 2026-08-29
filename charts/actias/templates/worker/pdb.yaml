@@ -1,0 +1,19 @@
+{{- if .Values.workers.podDisruptionBudget }}
+{{/*
+Node drains displace one worker at a time. Each displacement is cheap
+(the objects rehome on their next call) but they are not free, and a
+drain that evicted every worker at once would move the whole fleet's
+objects in one burst.
+*/}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "actias.fullname" . }}-worker
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.workers.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+{{- end }}
