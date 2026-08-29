@@ -23,6 +23,7 @@ type WfJob = {
 }
 
 type Wf = {
+    step_id: string,
     step: (self: Wf, name: string, body: (() -> any) | { any }, body2: (() -> any)?) -> any,
     sleep: (self: Wf, duration: string | number) -> (),
     await: (self: Wf, name: string, opts: { timeout: (string | number)? }?) -> any,

@@ -735,6 +735,201 @@ mod tests {
             serde_json::Value::Null
         }
 
+        /// The effect identity, both halves of its contract. A crash
+        /// between the effect and its verdict replays under the SAME id,
+        /// because nobody can know whether that effect landed and the
+        /// retry has to reach the outside world under the key it already
+        /// used. A recorded failure is the opposite case: the outcome is
+        /// known, the next try is a new effect, and it gets a new id.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_effect_id_survives_a_crash_and_moves_on_from_a_failure() {
+            const SOURCE: &str = r#"
+                ids = {}
+                tries = 0
+                workflow "charging" (function(wf, input)
+                    local out = wf:step("charge", {
+                        retries = 3,
+                        backoff = "40ms",
+                    }, function()
+                        ids[#ids + 1] = wf.step_id
+                        tries = tries + 1
+                        if tries < 2 then
+                            error("the card processor hung up")
+                        end
+                        return { id = wf.step_id, ids = ids }
+                    end)
+                    return out
+                end)
+            "#;
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("wf.db");
+
+            // The trace a crash leaves is exactly one thing: an INTENT
+            // with no verdict after it. Writing that row IS the crash,
+            // as far as the journal (and therefore the replay) can tell.
+            {
+                let mut storage = crate::storage::SqliteStorage::open(&path).expect("opens");
+                ensure_schema(&mut storage).expect("schema");
+                storage.begin().expect("tx");
+                append(
+                    &mut storage,
+                    EntryKind::Started,
+                    &serde_json::json!({ "seed": 1, "input": {}, "revision": "" }),
+                )
+                .expect("started");
+                append(
+                    &mut storage,
+                    EntryKind::Intent,
+                    &serde_json::json!({ "step": "charge", "attempt": 1 }),
+                )
+                .expect("intent");
+                storage.commit().expect("commit");
+            }
+
+            let (runtime, _shared) = workflow_vm(SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(crate::storage::SqliteStorage::open(&path).expect("opens")),
+                    ..Default::default()
+                },
+            );
+
+            // The interrupted attempt's effect is retried, so the id the
+            // body sees must be the one the lost attempt used: #1.
+            let parked = handle
+                .call(
+                    "__dispatch",
+                    call("charging/c1", "start", serde_json::json!([{}])),
+                )
+                .await
+                .expect("the crashed run resumes and parks on its retry");
+            assert_eq!(parked["status"], "parked", "{parked}");
+
+            let done = status_until(&handle, "charging/c1", "COMPLETED").await;
+            assert_eq!(done["kind"], "COMPLETED", "the run never converged");
+
+            let joined = handle
+                .call(
+                    "__dispatch",
+                    call("charging/c1", "start", serde_json::json!([{}])),
+                )
+                .await
+                .expect("joins the finished run");
+            let ids = joined["value"]["ids"]
+                .as_array()
+                .expect("the body recorded its ids")
+                .iter()
+                .map(|id| id.as_str().expect("a string").to_owned())
+                .collect::<Vec<_>>();
+
+            // One occurrence of the step (it is reached once per run),
+            // two tries at it. The interrupted attempt used #1.1 before
+            // the crash, so the body seeing #1.1 again is the whole
+            // point: the retry reaches the provider under the key the
+            // lost attempt already used. Only the recorded failure
+            // after it moves the try to #1.2.
+            assert_eq!(
+                ids[0], "charging/c1/charge#1.1",
+                "the crash-interrupted effect keeps the identity it had: {ids:?}"
+            );
+            assert_eq!(
+                ids[1], "charging/c1/charge#1.2",
+                "a recorded failure earns a new identity: {ids:?}"
+            );
+        }
+
+        /// A step name used twice in one run is two effects, and the
+        /// platform supports that on purpose (a loop over items is the
+        /// documented shape). Two effects sharing an id would be worse
+        /// than no id at all: a provider keyed on it would treat the
+        /// second charge as a duplicate of the first and silently drop
+        /// it.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn each_execution_of_a_step_names_its_own_effect() {
+            const SOURCE: &str = r#"
+                workflow "batching" (function(wf, input)
+                    local ids = {}
+                    for i = 1, 3 do
+                        ids[#ids + 1] = wf:step("notify", function()
+                            return wf.step_id
+                        end)
+                    end
+                    return { ids = ids }
+                end)
+            "#;
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            let done = handle
+                .call(
+                    "__dispatch",
+                    call("batching/b1", "start", serde_json::json!([{}])),
+                )
+                .await
+                .expect("the run completes");
+            let ids = done["value"]["ids"]
+                .as_array()
+                .expect("three ids")
+                .iter()
+                .map(|id| id.as_str().expect("a string").to_owned())
+                .collect::<Vec<_>>();
+
+            assert_eq!(ids.len(), 3, "{ids:?}");
+            let unique: std::collections::HashSet<_> = ids.iter().collect();
+            assert_eq!(
+                unique.len(),
+                3,
+                "each execution is its own effect and needs its own id: {ids:?}"
+            );
+        }
+
+        /// Outside a step body there is no effect to name, and saying so
+        /// beats handing back something that looks usable.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn the_effect_id_does_not_exist_outside_a_step() {
+            const SOURCE: &str = r#"
+                workflow "peeking" (function(wf, input)
+                    return { id = wf.step_id }
+                end)
+            "#;
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (runtime, _shared) = workflow_vm(SOURCE, false).await;
+            let handle = spawn_object_task(
+                runtime,
+                TaskOptions {
+                    storage: Some(
+                        crate::storage::SqliteStorage::open(&dir.path().join("wf.db"))
+                            .expect("opens"),
+                    ),
+                    ..Default::default()
+                },
+            );
+
+            let refused = handle
+                .call(
+                    "__dispatch",
+                    call("peeking/p1", "start", serde_json::json!([{}])),
+                )
+                .await
+                .expect_err("reading it outside a step is an error");
+            assert!(
+                refused.to_string().contains("inside a step body"),
+                "{refused}"
+            );
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn retries_park_with_backoff_and_converge() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1486,6 +1681,11 @@ struct Attempt {
     /// True for exactly one attempt after a resume dispatch: the step
     /// whose final failure blocks the run consumes it and retries.
     resume: bool,
+    /// How many times each step name has been reached so far in THIS
+    /// execution of the run function. A name used in a loop is several
+    /// effects, and they must not share an identity; replay walks the
+    /// same code in the same order, so this counts the same either way.
+    occurrences: std::collections::HashMap<String, i64>,
 }
 
 impl Attempt {
@@ -1511,9 +1711,12 @@ pub struct WfShared {
     /// Set when a step exhausts its retries: the run is failed, not
     /// broken; a resume re-enters at that step.
     failed: std::sync::Mutex<Option<String>>,
-    /// True while a step body executes: the one window where effects
-    /// (kv, objects, http-in-context) are allowed in a workflow vm.
-    in_step: std::sync::atomic::AtomicBool,
+    /// The executing step's effect identity, present exactly while a
+    /// step body runs: the one window where effects (kv, objects,
+    /// http-in-context) are allowed in a workflow vm. Being the same
+    /// cell for both questions is deliberate, since "may I perform an
+    /// effect" and "what is this effect called" have one answer.
+    step: std::sync::Mutex<Option<String>>,
     /// Step results substituted by the test harness: a faked step never
     /// runs its body but journals exactly like a real one, so replay
     /// cannot tell tests from production.
@@ -1537,7 +1740,43 @@ impl WfShared {
 
     /// Whether a step body is executing right now: the effect window.
     pub fn effects_allowed(&self) -> bool {
-        self.in_step.load(std::sync::atomic::Ordering::Relaxed)
+        self.step.lock().expect("no poisoned lock").is_some()
+    }
+
+    /// The executing effect's identity, or [`None`] outside a step.
+    ///
+    /// Stable across replay of the same attempt, which is the whole
+    /// point: a crash between the effect and its RESULT row replays the
+    /// body with this same string, so an external system keyed on it
+    /// deduplicates the retry. A fresh attempt after a recorded failure
+    /// gets a new one, because a retry is deliberately a new effect.
+    fn step_id(&self) -> Option<String> {
+        self.step.lock().expect("no poisoned lock").clone()
+    }
+
+    /// Opens the effect window, naming the effect about to happen.
+    fn enter_step(&self, id: String) {
+        *self.step.lock().expect("no poisoned lock") = Some(id);
+    }
+
+    /// Closes it; effects outside a step body are refused again.
+    fn leave_step(&self) {
+        *self.step.lock().expect("no poisoned lock") = None;
+    }
+
+    /// The effect identity: which execution of the step, and which try
+    /// at it. The instance name already carries the definition and the
+    /// caller's id (`<definition>/<caller id>`), so this reads as a path
+    /// to the effect and fits an idempotency key as-is.
+    ///
+    /// Both numbers are load-bearing. `occurrence` separates a step name
+    /// reached more than once in a run (a loop over items is several
+    /// effects, not one), and `try` separates a retry after a recorded
+    /// failure from the effect it replaces. An attempt interrupted by a
+    /// crash moves neither, which is what makes the retry arrive under
+    /// the identity the lost attempt already used.
+    fn effect_id(instance: &str, step: &str, occurrence: i64, try_number: i64) -> String {
+        format!("{instance}/{step}#{occurrence}.{try_number}")
     }
 
     /// Installs test fakes: step name to the value its body would have
@@ -1799,6 +2038,26 @@ fn await_signals(
 struct WfHandle;
 
 impl mlua::UserData for WfHandle {
+    fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
+        // The executing effect's name, for an external system to
+        // deduplicate on (a payment provider's idempotency key, a row
+        // id, an object key). Outside a step there is no effect to
+        // name, so reading it there is the same mistake as performing
+        // an effect there and reads the same way.
+        fields.add_field_method_get("step_id", |lua, _this| {
+            let shared = lua
+                .app_data_ref::<std::sync::Arc<WfShared>>()
+                .map(|shared| shared.clone())
+                .ok_or_else(|| mlua::Error::RuntimeError("Not a workflow vm.".to_owned()))?;
+            shared.step_id().ok_or_else(|| {
+                mlua::Error::RuntimeError(
+                    "wf.step_id names the effect a step is performing; it exists only inside a step body."
+                        .to_owned(),
+                )
+            })
+        });
+    }
+
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         use mlua::LuaSerdeExt;
         // step(name, fn) or step(name, opts, fn); opts (retries, backoff,
@@ -1875,13 +2134,32 @@ impl mlua::UserData for WfHandle {
                     Run { attempt: i64 },
                     Blocked(String),
                 }
-                let plan = {
+                let (plan, instance, occurrence, try_number) = {
                     let mut guard = shared.attempt.lock().expect("no poisoned lock");
                     let attempt = guard.as_mut().ok_or_else(|| {
                         mlua::Error::RuntimeError("No workflow attempt is executing.".to_owned())
                     })?;
+                    let instance = attempt.name.clone();
+                    // Counted before the plan is decided, so a replayed
+                    // execution advances it exactly like the one that
+                    // ran; otherwise the second iteration of a loop
+                    // would name the first iteration's effect.
+                    let occurrence = {
+                        let seen = attempt.occurrences.entry(name.clone()).or_insert(0);
+                        *seen += 1;
+                        *seen
+                    };
 
                     let mut attempts_seen: i64 = 0;
+                    // Recorded OUTCOMES, which is a different count from
+                    // attempts and the one the effect id rides. An attempt
+                    // interrupted by a crash journals its INTENT and no
+                    // verdict, so it raises attempts_seen (it spent a
+                    // retry) while leaving this alone, and the replay
+                    // names the same effect: the outside world cannot
+                    // tell whether that effect landed, so the retry has
+                    // to arrive under the key it already used.
+                    let mut outcomes_seen: i64 = 0;
                     let mut plan = None;
                     while plan.is_none() {
                         set_aside_leading_signals(&mut attempt.pending);
@@ -1909,11 +2187,13 @@ impl mlua::UserData for WfHandle {
                                     attempt.pending.pop_front();
                                     attempt.resume = false;
                                     attempts_seen = 0;
+                                    outcomes_seen += 1;
                                     plan = Some(Plan::Run { attempt: 1 });
                                 } else {
                                     // A historical failure (retried past,
                                     // or resumed long ago): consumed.
                                     attempt.pending.pop_front();
+                                    outcomes_seen += 1;
                                 }
                             }
                             Some(entry)
@@ -1962,7 +2242,7 @@ impl mlua::UserData for WfHandle {
                                 .map_err(mlua::Error::RuntimeError)?;
                         }
                     }
-                    plan
+                    (plan, instance, occurrence, outcomes_seen + 1)
                 };
 
                 match plan {
@@ -1979,9 +2259,9 @@ impl mlua::UserData for WfHandle {
                             .expect("no poisoned lock")
                             .get(&name)
                             .cloned();
-                        shared
-                            .in_step
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        shared.enter_step(WfShared::effect_id(
+                            &instance, &name, occurrence, try_number,
+                        ));
                         let outcome: Result<mlua::Value, mlua::Error> = if let Some(value) = fake {
                             lua.to_value(&value)
                         } else if timeout_ms > 0 {
@@ -1999,9 +2279,7 @@ impl mlua::UserData for WfHandle {
                         } else {
                             body.call_async(()).await
                         };
-                        shared
-                            .in_step
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        shared.leave_step();
 
                         let shared_after = lua
                             .app_data_ref::<std::sync::Arc<WfShared>>()
@@ -2576,6 +2854,7 @@ async fn run_attempt(
         own_key: context.own_key.to_owned(),
         name: context.name.to_owned(),
         resume,
+        occurrences: std::collections::HashMap::new(),
     });
 
     let outcome: Result<mlua::Value, mlua::Error> = {

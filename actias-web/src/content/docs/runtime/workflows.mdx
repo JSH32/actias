@@ -96,6 +96,39 @@ When a step exhausts its attempts the run parks as failed and stops
 there. The journal keeps everything up to that point, and the console
 can resume it.
 
+### Making an effect safe to repeat
+
+A step records its result after the body returns, so a crash in
+between leaves the platform unable to know whether the effect
+happened. It cannot: that gap belongs to the outside world. What it
+can do is tell you the effect's name, so the outside world can
+recognise a repeat.
+
+```lua
+wf:step("charge", { retries = 3 }, function()
+    return http.make_request({
+        uri = "https://api.example.com/charges",
+        method = "POST",
+        headers = { ["Idempotency-Key"] = wf.step_id },
+        body = json.encode({ amount = order.total }),
+    })
+end)
+```
+
+`wf.step_id` names the effect the body is performing, and it holds
+still exactly where that matters. A run resumed after a crash calls
+the body again with the same `wf.step_id`, so a provider keyed on it
+returns the original charge instead of making a second one. A retry
+after a failure the platform actually recorded gets a new
+`wf.step_id`, because that attempt is a new effect and you want it to
+go through. So does each pass of a loop: calling the same step name
+for every item in an order is one effect per item, and they are named
+apart.
+
+The same string works anywhere a repeat needs recognising: a row id,
+an object key, a filename. Reading it outside a step body is an
+error, since there is no effect to name there.
+
 ## Waiting
 
 ```lua

@@ -72,6 +72,33 @@ wf:spawn(definition, input)
   </tbody>
 </table>
 
+### wf.step_id
+
+The executing effect's name, for anything outside the platform that
+deduplicates: an `Idempotency-Key` header, a row id, an object key.
+
+```lua
+wf:step("charge", function()
+    return charge(order.total, wf.step_id)
+end)
+```
+
+The value reads `<run>/<step>#<occurrence>.<try>`, for example
+`order-fulfillment/order:42/charge#1.1`.
+
+<table>
+  <thead>
+    <tr><th>Across</th><th>The id</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>a crash between the effect and its recorded result</td><td>stays the same, so the repeat is recognised</td></tr>
+    <tr><td>a retry after a recorded failure</td><td>changes, because that attempt is a new effect</td></tr>
+    <tr><td>the same step name reached again (a loop)</td><td>changes, because each pass is its own effect</td></tr>
+    <tr><td>a replay of an already-recorded step</td><td>never runs the body at all</td></tr>
+    <tr><td>outside a step body</td><td>is an error; there is no effect to name</td></tr>
+  </tbody>
+</table>
+
 ## Determinism
 
 Run code replays from the journal after every park, crash or deploy.
