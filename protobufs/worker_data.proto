@@ -43,15 +43,25 @@ service WorkerData {
     rpc DeliverReceives(ReceiveBatch) returns (ReceiveReceipts);
 }
 
-// Due events for the connections one node hosts.
+// Due events for the connections one node hosts. The events ride
+// once per batch; each edge names the slice it gets, so the payload
+// never multiplies by listeners.
 message InboxBatch {
-    repeated ConnectionEvents entries = 1;
+    // A json array of {seq, topic, from_class, from_name, data}
+    // objects, in publish order.
+    string events_json = 1;
+    repeated InboxEdge edges = 2;
 }
 
-message ConnectionEvents {
+// One followed connection's slice of the batch.
+message InboxEdge {
     string connection = 1;
-    // A json array of {topic, from_class, from_name, data} objects.
-    string events_json = 2;
+    string topic = 2;
+    // Events at or below this seq were already heard.
+    int64 after = 3;
+    // Empty forwards everything on the topic; anything else is a json
+    // object matched against event data.
+    string filter_json = 4;
 }
 
 message InboxReceipts {

@@ -16,7 +16,7 @@ use actias_worker_core::proto::node_registry::{GetLeaseRequest, GetNodeRequest};
 use actias_worker_core::proto::worker_data::worker_data_client::WorkerDataClient;
 use actias_worker_core::proto::worker_data::worker_data_server::WorkerData;
 use actias_worker_core::proto::worker_data::{
-    CallResult, ConnectionEvents, InboxBatch, InboxReceipts, ObjectCall, ReadRequest, ReadValue,
+    CallResult, InboxBatch, InboxEdge, InboxReceipts, ObjectCall, ReadRequest, ReadValue,
     ReceiveBatch, ReceiveEntry, ReceiveOutcome, ReceiveReceipts,
 };
 
@@ -315,23 +315,34 @@ impl WorkerData for WorkerDataService {
     }
 
     /// One publisher's due events for the connections THIS node hosts:
-    /// walk the local registry, report back whoever is gone. This is
-    /// the receiving half of node-grouped fan-out; the publisher sent
-    /// one call for everything here instead of one per socket.
+    /// the events arrive once, each edge names its slice (topic, seq
+    /// watermark, filter), and this walks the local registry to fan
+    /// out, reporting back whoever is gone. The publisher sent one
+    /// call for everything here instead of one per socket, and one
+    /// copy of each event instead of one per socket.
     async fn deliver_inbox(
         &self,
         request: Request<InboxBatch>,
     ) -> Result<Response<InboxReceipts>, Status> {
+        use actias_worker_core::streams::filter_matches;
+
         let batch = request.into_inner();
+        let events =
+            serde_json::from_str::<Vec<serde_json::Value>>(&batch.events_json).unwrap_or_default();
         let mut gone = Vec::new();
-        for entry in batch.entries {
-            let Ok(events) = serde_json::from_str::<Vec<serde_json::Value>>(&entry.events_json)
-            else {
-                continue;
-            };
-            for event in events {
+        for edge in batch.edges {
+            let filter = (!edge.filter_json.is_empty())
+                .then(|| serde_json::from_str::<serde_json::Value>(&edge.filter_json).ok())
+                .flatten();
+            for event in &events {
+                if event["topic"].as_str() != Some(edge.topic.as_str())
+                    || event["seq"].as_i64().unwrap_or(0) <= edge.after
+                    || !filter_matches(filter.as_ref(), &event["data"])
+                {
+                    continue;
+                }
                 let item = actias_worker_core::connections::InboxItem::Event {
-                    topic: event["topic"].as_str().unwrap_or_default().to_owned(),
+                    topic: edge.topic.clone(),
                     from_class: event["from_class"].as_str().unwrap_or_default().to_owned(),
                     from_name: event["from_name"].as_str().unwrap_or_default().to_owned(),
                     data: event["data"].clone(),
@@ -339,10 +350,12 @@ impl WorkerData for WorkerDataService {
                 if self
                     .state
                     .connections
-                    .deliver(&entry.connection, item)
+                    .deliver(&edge.connection, item)
                     .is_err()
                 {
-                    gone.push(entry.connection.clone());
+                    if !gone.contains(&edge.connection) {
+                        gone.push(edge.connection.clone());
+                    }
                     break;
                 }
             }
@@ -492,7 +505,7 @@ pub(crate) fn connection_forwarder(
 ) -> actias_worker_core::streams::ConnectionForwarder {
     let state = state.clone();
     std::sync::Arc::new(
-        move |node: String, deliveries: Vec<actias_worker_core::streams::RemoteDelivery>| {
+        move |node: String, batch: actias_worker_core::streams::NodeInbox| {
             let state = state.clone();
             Box::pin(async move {
                 let resolved = match state
@@ -506,25 +519,40 @@ pub(crate) fn connection_forwarder(
                     // a fresh one), so every socket that lived there died
                     // with it: prune the lot.
                     Err(status) if status.code() == tonic::Code::NotFound => {
-                        return Ok(deliveries
+                        let mut gone: Vec<String> = batch
+                            .edges
                             .into_iter()
-                            .map(|delivery| delivery.connection)
-                            .collect());
+                            .map(|edge| edge.connection)
+                            .collect();
+                        gone.dedup();
+                        return Ok(gone);
                     }
                     Err(e) => {
                         return Err(format!("the follower's node could not be resolved: {e}"));
                     }
                 };
                 let mut client = peer_client(&state, &resolved.address).await?;
-                let entries = deliveries
+                let edges = batch
+                    .edges
                     .into_iter()
-                    .map(|delivery| ConnectionEvents {
-                        connection: delivery.connection,
-                        events_json: serde_json::Value::Array(delivery.events).to_string(),
+                    .map(|edge| InboxEdge {
+                        connection: edge.connection,
+                        topic: edge.topic,
+                        after: edge.after,
+                        filter_json: edge
+                            .filter
+                            .map(|filter| filter.to_string())
+                            .unwrap_or_default(),
                     })
                     .collect();
                 let receipts = client
-                    .deliver_inbox(authed(&state.internal_token, InboxBatch { entries }))
+                    .deliver_inbox(authed(
+                        &state.internal_token,
+                        InboxBatch {
+                            events_json: serde_json::Value::Array(batch.events).to_string(),
+                            edges,
+                        },
+                    ))
                     .await
                     .map_err(|e| e.message().to_owned())?
                     .into_inner();
@@ -669,6 +697,83 @@ mod tests {
             stats_read(&request(None, false, "__cron"))
                 .is_err_and(|status| status.code() == tonic::Code::InvalidArgument)
         );
+    }
+
+    /// The receiving half of node-grouped fan-out: events arrive once
+    /// and each edge takes its own slice by topic, watermark and
+    /// filter; a connection nobody holds is reported gone exactly
+    /// once, however many edges it rode in on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deliver_inbox_slices_the_shared_events_per_edge() {
+        use actias_worker_core::connections::InboxItem;
+
+        let state = state_with(empty_caches());
+        let (inbox_tx, mut inbox_rx) = actias_worker_core::connections::inbox();
+        state.connections.register("conn#here", inbox_tx);
+        let service = WorkerDataService::new(state);
+
+        let events = serde_json::json!([
+            { "seq": 1, "topic": "news", "from_class": "Hub", "from_name": "town",
+              "data": { "kind": "sport" } },
+            { "seq": 2, "topic": "news", "from_class": "Hub", "from_name": "town",
+              "data": { "kind": "weather" } },
+            { "seq": 3, "topic": "noise", "from_class": "Hub", "from_name": "town",
+              "data": { "kind": "static" } },
+        ]);
+        let receipts = service
+            .deliver_inbox(Request::new(InboxBatch {
+                events_json: events.to_string(),
+                edges: vec![
+                    // Heard seq 1 already; the filter drops nothing.
+                    InboxEdge {
+                        connection: "conn#here".into(),
+                        topic: "news".into(),
+                        after: 1,
+                        filter_json: String::new(),
+                    },
+                    // A filter that matches nothing this batch holds.
+                    InboxEdge {
+                        connection: "conn#here".into(),
+                        topic: "noise".into(),
+                        after: 0,
+                        filter_json: serde_json::json!({ "kind": "melody" }).to_string(),
+                    },
+                    // Two edges of a connection nobody registered.
+                    InboxEdge {
+                        connection: "conn#gone".into(),
+                        topic: "news".into(),
+                        after: 0,
+                        filter_json: String::new(),
+                    },
+                    InboxEdge {
+                        connection: "conn#gone".into(),
+                        topic: "noise".into(),
+                        after: 0,
+                        filter_json: String::new(),
+                    },
+                ],
+            }))
+            .await
+            .expect("the batch is served")
+            .into_inner();
+
+        assert_eq!(receipts.gone, vec!["conn#gone"], "gone once, not per edge");
+
+        let heard = tokio::time::timeout(std::time::Duration::from_secs(2), inbox_rx.next())
+            .await
+            .expect("the slice arrives")
+            .expect("inbox open");
+        match heard {
+            InboxItem::Event { topic, data, .. } => {
+                assert_eq!(topic, "news");
+                assert_eq!(data["kind"], "weather", "seq 1 was already heard");
+            }
+            other => panic!("not an event: {other:?}"),
+        }
+        // Nothing else may arrive: the filtered noise event stayed out.
+        let quiet =
+            tokio::time::timeout(std::time::Duration::from_millis(200), inbox_rx.next()).await;
+        assert!(quiet.is_err(), "exactly one event was due: {quiet:?}");
     }
 
     /// The served surface end to end: a wrong token never reaches a

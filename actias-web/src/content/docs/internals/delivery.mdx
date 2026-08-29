@@ -34,13 +34,28 @@ Publish cost is the number of nodes holding followers, not the number
 of followers. A channel with 5,000 live watchers spread over 8 nodes
 costs 8 sends per message.
 
+The payload does not multiply either. A node's batch carries the due
+events **once**, in publish order, beside a list naming each edge and
+the slice it is owed: its topic, how far it has already heard, and its
+filter. The receiving node does the slicing. So the 5,000 watchers
+above move one copy of a message per node, not 5,000, and the
+publisher reads its own log once per topic in the batch rather than
+once per edge.
+
 ## Connection edges
 
 Connection edges promise at-most-once. A local follower's events are
 pushed into its connection inbox; a full inbox (256 items) closes the
 connection. Remote batches fan out to the receiving node's own
 inboxes, which reports sockets that are gone so the publisher prunes
-their edges.
+every edge that connection held.
+
+From the inbox, what happens next depends on the program: a class
+declaring an `event` handler runs it, in a vm built or woken for the
+purpose; a class declaring `event = "forward"` has the platform write
+the envelope itself, which costs a serialize and a send with no vm
+involved. That is what lets a hibernated connection stay hibernated
+while still receiving what it follows.
 
 The edge cursor advances whether or not the push landed. A miss is
 not retried: anything that must survive a tab closing belongs on the
@@ -85,14 +100,17 @@ never loses its subscription to its node dying.
 
 ## Large payloads
 
-Events ride inline in a batch up to 32 KB. Past that, the batch
+Events ride inline in a durable edge's batch up to 32 KB. Past that,
+the batch
 carries only the sequence range and the edge's filter; the receiving
 node materializes the events through the platform read path from
 [placement](/docs/internals/placement): its own copy of the
 publisher's file, else the holder, else the shipped replica.
 
 Bytes come from the nearest copy. The publisher's node sends sequence
-numbers, not payloads, for heavy traffic.
+numbers, not payloads, for heavy traffic. Connection batches have no
+such range form and always ride inline, which they can afford because
+a node's copy is one per event however many sockets are owed it.
 
 ## Ordering
 

@@ -71,13 +71,25 @@ pub fn ensure_tables(storage: &mut SqliteStorage) -> Result<(), String> {
 #[derive(Clone)]
 pub struct LocalNode(pub String);
 
-/// One remote connection's due events, shaped for the wire: the
-/// publisher batches these per node and sends each node one call.
-pub struct RemoteDelivery {
+/// One remote connection edge riding a node batch: which connection,
+/// what it follows, how far it has heard, and its filter. The events
+/// themselves ride once per node beside these.
+pub struct InboxEdge {
     pub edge_id: i64,
     pub connection: String,
-    /// Each entry is {topic, from_class, from_name, data}.
+    pub topic: String,
+    /// Events at or below this seq were already heard.
+    pub after: i64,
+    pub filter: Option<serde_json::Value>,
+}
+
+/// One node's connection fan-out: the due events once, each
+/// {seq, topic, from_class, from_name, data}, and every edge they are
+/// due for. The receiving node slices per edge by topic, seq and
+/// filter, so the payload never multiplies by listeners.
+pub struct NodeInbox {
     pub events: Vec<serde_json::Value>,
+    pub edges: Vec<InboxEdge>,
 }
 
 /// Sends one node's batch and returns the connection ids that node
@@ -87,7 +99,7 @@ pub struct RemoteDelivery {
 pub type ConnectionForwarder = std::sync::Arc<
     dyn Fn(
             String,
-            Vec<RemoteDelivery>,
+            NodeInbox,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Vec<String>, String>> + Send>,
         > + Send
@@ -747,8 +759,9 @@ pub async fn pump(
     // Remote connection edges batch per node: every node with
     // followers hears ONE call carrying everything due for it, and
     // fans out to its own sockets. Publish cost is the number of
-    // nodes listening, never the number of listeners.
-    let mut remote: std::collections::HashMap<String, Vec<RemoteDelivery>> =
+    // nodes listening, never the number of listeners, and the flush
+    // ships each due event once per node however many edges want it.
+    let mut remote: std::collections::HashMap<String, Vec<InboxEdge>> =
         std::collections::HashMap::new();
     let mut remote_receives: std::collections::HashMap<String, Vec<ReceiveDelivery>> =
         std::collections::HashMap::new();
@@ -763,7 +776,7 @@ pub async fn pump(
                 .as_deref()
                 .filter(|node| !node.is_empty() && !local_node.is_empty() && *node != local_node);
             if let Some(node) = elsewhere {
-                stage_remote_edge(home, &edge, node, &mut remote);
+                stage_remote_edge(&edge, node, &mut remote);
             } else {
                 deliver_connection_edge(home, &edge, registry.as_deref());
             }
@@ -869,45 +882,25 @@ pub async fn pump(
     }
 }
 
-/// Reads one remote connection edge's due, filtered events into its
-/// node's batch. The cursor does not move here; the flush owns it.
+/// Records one remote connection edge into its node's batch. No
+/// events are read here: the flush reads each due topic once for the
+/// whole node, and the receiving node slices per edge, filter
+/// included. The cursor does not move here either; the flush owns it.
 fn stage_remote_edge(
-    home: &std::sync::Arc<crate::objects::ObjectHome>,
     edge: &Edge,
     node: &str,
-    remote: &mut std::collections::HashMap<String, Vec<RemoteDelivery>>,
+    remote: &mut std::collections::HashMap<String, Vec<InboxEdge>>,
 ) {
     let Some(connection) = edge.connection.clone() else {
         return;
     };
-    let events = match home.with_storage(|storage| events_after(storage, &edge.topic, edge.cursor))
-    {
-        Ok(events) => events,
-        Err(error) => {
-            actias_common::tracing::warn!(%error, "stream pump could not read events");
-            return;
-        }
-    };
-    let due: Vec<serde_json::Value> = events
-        .iter()
-        .filter(|event| filter_matches(edge.filter.as_ref(), &event.data))
-        .map(|event| {
-            serde_json::json!({
-                "topic": event.topic,
-                "from_class": event.from_class,
-                "from_name": event.from_name,
-                "data": event.data,
-            })
-        })
-        .collect();
-    remote
-        .entry(node.to_owned())
-        .or_default()
-        .push(RemoteDelivery {
-            edge_id: edge.id,
-            connection,
-            events: due,
-        });
+    remote.entry(node.to_owned()).or_default().push(InboxEdge {
+        edge_id: edge.id,
+        connection,
+        topic: edge.topic.clone(),
+        after: edge.cursor,
+        filter: edge.filter.clone(),
+    });
 }
 
 /// Reads one durable edge's due, filtered events into its node's
@@ -1020,25 +1013,57 @@ async fn flush_receive_batch(
     }
 }
 
-/// One node's batch over the wire. At-most-once all the way: cursors
-/// advance to head whatever happens (a miss is a miss), and only an
-/// explicit "gone" from the hosting node prunes an edge. A transport
-/// failure keeps the edges for next time.
+/// One node's batch over the wire: the due events once (one log read
+/// per topic at that topic's furthest-behind edge, sorted back into
+/// publish order by seq), and every edge they are due for. At-most-once
+/// all the way: cursors advance to head whatever happens (a miss is a
+/// miss), and only an explicit "gone" from the hosting node prunes,
+/// which drops every edge that connection held. A transport failure
+/// keeps the edges for next time.
 async fn flush_remote_batch(
     home: &std::sync::Arc<crate::objects::ObjectHome>,
     forwarder: Option<&ConnectionForwarder>,
     node: &str,
-    batch: Vec<RemoteDelivery>,
+    edges: Vec<InboxEdge>,
 ) {
     let head = home.with_storage(head_seq).unwrap_or(0);
-    let edge_of: std::collections::HashMap<String, i64> = batch
-        .iter()
-        .map(|delivery| (delivery.connection.clone(), delivery.edge_id))
-        .collect();
-    let edge_ids: Vec<i64> = batch.iter().map(|delivery| delivery.edge_id).collect();
+    let mut edges_of: std::collections::HashMap<String, Vec<i64>> =
+        std::collections::HashMap::new();
+    let mut after_of: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for edge in &edges {
+        edges_of
+            .entry(edge.connection.clone())
+            .or_default()
+            .push(edge.edge_id);
+        after_of
+            .entry(edge.topic.clone())
+            .and_modify(|after| *after = (*after).min(edge.after))
+            .or_insert(edge.after);
+    }
+    let edge_ids: Vec<i64> = edges.iter().map(|edge| edge.edge_id).collect();
+
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    for (topic, after) in after_of {
+        let read = home.with_storage(|storage| events_after(storage, &topic, after));
+        match read {
+            Ok(list) => events.extend(list.iter().map(|event| {
+                serde_json::json!({
+                    "seq": event.seq,
+                    "topic": event.topic,
+                    "from_class": event.from_class,
+                    "from_name": event.from_name,
+                    "data": event.data,
+                })
+            })),
+            Err(error) => {
+                actias_common::tracing::warn!(%error, "stream pump could not read events");
+            }
+        }
+    }
+    events.sort_by_key(|event| event["seq"].as_i64().unwrap_or(0));
 
     let gone = match forwarder {
-        Some(forward) => match forward(node.to_owned(), batch).await {
+        Some(forward) => match forward(node.to_owned(), NodeInbox { events, edges }).await {
             Ok(gone) => gone,
             Err(error) => {
                 actias_common::tracing::debug!(%error, node, "remote inbox batch missed");
@@ -1055,8 +1080,8 @@ async fn flush_remote_batch(
         let _ = home.with_storage(|storage| advance_cursor(storage, edge_id, head));
     }
     for connection in gone {
-        if let Some(edge_id) = edge_of.get(&connection) {
-            let _ = home.with_storage(|storage| prune_edge(storage, *edge_id));
+        for edge_id in edges_of.remove(&connection).unwrap_or_default() {
+            let _ = home.with_storage(|storage| prune_edge(storage, edge_id));
         }
     }
 }
@@ -1064,8 +1089,8 @@ async fn flush_remote_batch(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConnectionForwarder, Edge, LocalNode, PublisherIdentity, ReceiveForwarder, ReceiveReport,
-        head_seq, list_edges,
+        ConnectionForwarder, Edge, LocalNode, NodeInbox, PublisherIdentity, ReceiveForwarder,
+        ReceiveReport, head_seq, list_edges,
     };
     use crate::extensions::objects::{ObjectRouter, ObjectTarget};
     use crate::objects::{ObjectHandle, TaskOptions, spawn_object_task};
@@ -1178,8 +1203,9 @@ mod tests {
             end,
         }
 
-        -- The one-stream socket, written out as declared handlers: the
-        -- app decides the wire shape (no stdlib forwarder exists).
+        -- The one-stream socket with a DECLARED event handler: the app
+        -- chose its own wire shape. Omitting the handler forwards the
+        -- platform envelope instead (Sticky is that case).
         local Forwarder = connection "Forwarder" {
             open = function(conn)
                 conn:follow(Hub("town"), "news")
@@ -1192,8 +1218,11 @@ mod tests {
         }
 
         -- Session state that must outlive the vm: the hibernation
-        -- tests count frames across a drop.
+        -- tests count frames across a drop. The forward policy rides
+        -- along, so the same class also proves a delivery reaches the
+        -- wire without building a vm to carry it.
         local Sticky = connection "Sticky" {
+            event = "forward",
             frame = function(conn, data)
                 conn.state.n = (conn.state.n or 0) + 1
                 conn:send({ kind = "count", n = conn.state.n })
@@ -1572,7 +1601,10 @@ mod tests {
             ("Reader", "ada"),
             "the identity travels from the handle"
         );
-        assert_eq!(pending.spec.name, "Echo", "the declared class travels whole");
+        assert_eq!(
+            pending.spec.name, "Echo",
+            "the declared class travels whole"
+        );
         drop(runtime);
 
         let shared = SockShared::new(
@@ -1931,21 +1963,27 @@ mod tests {
     async fn a_remote_connection_edge_batches_through_the_forwarder() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        // What each "node" heard: (node, [(connection, event count)]).
-        type Heard = Arc<std::sync::Mutex<Vec<(String, Vec<(String, usize)>)>>>;
+        // What each "node" heard: (node, events shipped, connections).
+        type Heard = Arc<std::sync::Mutex<Vec<(String, usize, Vec<String>)>>>;
         let heard: Heard = Arc::default();
         let forwarder: ConnectionForwarder = {
             let heard = heard.clone();
-            Arc::new(move |node, batch| {
+            Arc::new(move |node, batch: NodeInbox| {
                 let heard = heard.clone();
                 Box::pin(async move {
-                    let shape = batch
+                    let mut connections: Vec<String> = batch
+                        .edges
                         .iter()
-                        .map(|delivery| (delivery.connection.clone(), delivery.events.len()))
+                        .map(|edge| edge.connection.clone())
                         .collect();
-                    heard.lock().expect("no panics").push((node, shape));
+                    connections.sort_unstable();
+                    connections.dedup();
+                    heard
+                        .lock()
+                        .expect("no panics")
+                        .push((node, batch.events.len(), connections));
                     // The second connection is gone wherever it went;
-                    // its edge must not survive the receipt.
+                    // none of its edges may survive the receipt.
                     Ok(vec!["conn#gone".to_owned()])
                 })
             })
@@ -1968,14 +2006,21 @@ mod tests {
         )
         .await
         .expect("admitted");
-        for connection in ["conn#far", "conn#gone"] {
+        // Three edges on one node: two connections on "news", and a
+        // second topic on the connection that is about to be gone, so
+        // the prune must take BOTH of its edges.
+        for (connection, topic) in [
+            ("conn#far", "news"),
+            ("conn#gone", "news"),
+            ("conn#gone", "noise"),
+        ] {
             call(
                 &router,
                 "Hub",
                 "town",
                 "__follow",
                 vec![
-                    serde_json::json!("news"),
+                    serde_json::json!(topic),
                     serde_json::Value::Null,
                     serde_json::json!({
                         "class": "Reader",
@@ -2013,27 +2058,25 @@ mod tests {
             panic!("the forwarder never heard the batch");
         };
 
-        // ONE call to the one node, both connections riding it.
+        // ONE call to the one node, both connections riding it, and
+        // the one posted event travels ONCE however many edges want
+        // it: the payload never multiplies by listeners.
         assert_eq!(batches.len(), 1, "one node, one send: {batches:?}");
-        let (node, shape) = &batches[0];
+        let (node, events, connections) = &batches[0];
         assert_eq!(node, "elsewhere");
-        let mut connections: Vec<&str> = shape
-            .iter()
-            .map(|(connection, _)| connection.as_str())
-            .collect();
-        connections.sort_unstable();
-        assert_eq!(connections, vec!["conn#far", "conn#gone"]);
-        assert!(shape.iter().all(|(_, events)| *events == 1));
+        assert_eq!(*events, 1, "the event ships once per node");
+        assert_eq!(connections, &vec!["conn#far", "conn#gone"]);
 
-        // The receipt pruned the gone edge and advanced the survivor.
+        // The receipt pruned EVERY edge the gone connection held, the
+        // second topic included, and advanced the survivor.
         let file = dir.path().join("Hub_town.db");
         let mut storage = crate::storage::SqliteStorage::open(&file).expect("opens");
-        let survivors: Vec<Edge> = list_edges(&mut storage, Some("news"))
+        let survivors: Vec<Edge> = list_edges(&mut storage, None)
             .expect("edges list")
             .into_iter()
             .filter(|edge| edge.kind == "connection")
             .collect();
-        assert_eq!(survivors.len(), 1, "the gone edge was pruned");
+        assert_eq!(survivors.len(), 1, "both gone edges were pruned");
         assert_eq!(survivors[0].connection.as_deref(), Some("conn#far"));
         let head = head_seq(&mut storage).expect("head");
         assert_eq!(survivors[0].cursor, head, "at-most-once advanced to head");
@@ -2223,8 +2266,9 @@ mod tests {
         );
     }
 
-    /// The written-out one-stream socket (the app owns the wire
-    /// shape; no stdlib forwarder exists after owner review).
+    /// The written-out one-stream socket: a DECLARED event handler,
+    /// so the app owns the wire shape rather than taking the
+    /// forwarded envelope.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_one_stream_program_pushes_shaped_frames() {
         use crate::connections::OutboundFrame;
@@ -2423,7 +2467,10 @@ mod tests {
             .expect("the second tick fires");
         let (n, missed) = tick(second);
         assert_eq!(n, 2, "coalesced: one invocation, not a queue of them");
-        assert!(missed >= 1, "the slow handler's lateness was counted: {missed}");
+        assert!(
+            missed >= 1,
+            "the slow handler's lateness was counted: {missed}"
+        );
 
         // The timer overrode the 150ms hibernate threshold: across
         // seconds of ticking the vm never dropped.
@@ -2531,7 +2578,10 @@ mod tests {
             .await
             .expect("the count answers")
             .expect("outbound open");
-        assert_eq!(first, OutboundFrame::Json(serde_json::json!({ "kind": "count", "n": 1 })));
+        assert_eq!(
+            first,
+            OutboundFrame::Json(serde_json::json!({ "kind": "count", "n": 1 }))
+        );
         wait_gauges(&gauges, 1, 0).await;
 
         // Silence past the threshold: the vm falls, the task stays.
@@ -2545,7 +2595,10 @@ mod tests {
             .await
             .expect("the count answers")
             .expect("outbound open");
-        assert_eq!(second, OutboundFrame::Json(serde_json::json!({ "kind": "count", "n": 2 })));
+        assert_eq!(
+            second,
+            OutboundFrame::Json(serde_json::json!({ "kind": "count", "n": 2 }))
+        );
         assert_eq!(gauges.wakes.load(Ordering::Relaxed), 1, "one wake, counted");
         wait_gauges(&gauges, 1, 0).await;
 
@@ -2580,7 +2633,68 @@ mod tests {
             .await
             .expect("drive joins")
             .expect("the connection ran cleanly");
-        assert_eq!(gauges.wakes.load(Ordering::Relaxed), 0, "no wake for an undeclared handler");
+        assert_eq!(
+            gauges.wakes.load(Ordering::Relaxed),
+            0,
+            "no wake for an undeclared handler"
+        );
+        wait_gauges(&gauges, 0, 0).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_forward_policy_sends_without_a_wake() {
+        use crate::connections::{InboxItem, OutboundFrame};
+        use std::sync::atomic::Ordering;
+
+        let (inbox_tx, mut out_rx, gauges, drive, _dir) =
+            sticky_task(std::time::Duration::from_millis(150)).await;
+
+        // Warm the vm with a frame, then let it hibernate.
+        inbox_tx
+            .push(InboxItem::Frame(serde_json::json!({})))
+            .expect("frame lands");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the count answers");
+        wait_gauges(&gauges, 0, 1).await;
+
+        // Sticky declares event = "forward", so a delivered event
+        // reaches the wire in the platform envelope with the vm still
+        // down: this is what makes hibernation compatible with being
+        // a follower.
+        inbox_tx
+            .push(InboxItem::Event {
+                topic: "news".to_owned(),
+                from_class: "Hub".to_owned(),
+                from_name: "town".to_owned(),
+                data: serde_json::json!({ "kind": "sport" }),
+            })
+            .expect("event lands");
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(4), out_rx.recv())
+            .await
+            .expect("the forward answers")
+            .expect("outbound open");
+        assert_eq!(
+            frame,
+            OutboundFrame::Json(serde_json::json!({
+                "type": "event",
+                "topic": "news",
+                "from": { "id": "Hub/town", "class": "Hub", "name": "town" },
+                "data": { "kind": "sport" },
+            }))
+        );
+        assert_eq!(
+            gauges.wakes.load(Ordering::Relaxed),
+            0,
+            "no wake to forward"
+        );
+        wait_gauges(&gauges, 0, 1).await;
+
+        inbox_tx.push(InboxItem::Closed).expect("close lands");
+        drive
+            .await
+            .expect("drive joins")
+            .expect("the connection ran cleanly");
         wait_gauges(&gauges, 0, 0).await;
     }
 
