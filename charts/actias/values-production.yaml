@@ -1,0 +1,143 @@
+# A worked example, not a profile the chart applies. Copy it, change
+# the hosts and secret names, and install with `-f`.
+#
+# The differences from the defaults are the ones that matter in
+# production: stores live outside the cluster, every secret comes from
+# something else's Secret, and nothing runs as a single replica except
+# the one component that must.
+#
+# Create the Secrets this references first. For example:
+#   kubectl create secret generic actias-platform \
+#     --from-literal=jwt-key="$(openssl rand -base64 48)" \
+#     --from-literal=internal-token="$(openssl rand -base64 48)" \
+#     --from-literal=secret-master-key="$(openssl rand -base64 32)" \
+#     --from-literal=secret-master-key-id=kek-1
+# Or point these names at whatever your secret manager syncs.
+
+image:
+  tag: v0.1.0            # pin; do not track a floating tag
+
+ingress:
+  enabled: true
+  className: nginx
+  console: console.example.com
+  api: api.example.com
+  tls:
+    - hosts: [console.example.com, api.example.com]
+      secretName: actias-tls
+    # Scripts share one wildcard certificate. With cert-manager this
+    # needs an issuer using a DNS01 solver; HTTP01 cannot answer for a
+    # wildcard.
+    - hosts: ["*.scripts.example.com"]
+      secretName: actias-wildcard-tls
+baseDomain: scripts.example.com
+
+otelEndpoint: http://otel-collector.observability:4317
+otelHttpEndpoint: http://otel-collector.observability:4318
+observability:
+  dashboards:
+    enabled: true
+
+secrets:
+  jwtKey:
+    existingSecret: actias-platform
+    key: jwt-key
+  internalToken:
+    existingSecret: actias-platform
+    key: internal-token
+  masterKey:
+    existingSecret: actias-platform
+    key: secret-master-key
+  masterKeyId:
+    existingSecret: actias-platform
+    key: secret-master-key-id
+
+postgres:
+  bundled: false
+externalPostgres:
+  host: actias-db.internal
+  port: 5432
+  existingSecret: actias-postgres     # keys: username, password
+
+redis:
+  bundled: false
+externalRedis:
+  url: redis://actias-cache.internal:6379
+
+minio:
+  bundled: false
+externalS3:
+  endpoint: https://s3.us-east-1.amazonaws.com
+  bucket: actias-production
+  existingSecret: actias-s3           # keys: access-key, secret-key
+
+# Fixed at one until concurrent sweeps are drilled; see values.yaml.
+scriptService:
+  replicas: 1
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+secretService:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+kv:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+api:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+  inviteOnly: true
+  smtp:
+    host: smtp.example.com
+    port: 587
+    from: actias@example.com
+    existingSecret: actias-smtp       # keys: user, pass
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+web:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+workers:
+  replicas: 3
+  storage:
+    size: 50Gi
+    storageClass: fast-ssd
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { memory: 2Gi }
+  # Objects are single-homed, so spreading workers across zones spreads
+  # the objects with them.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          # Named and instanced too, so two releases in one namespace
+          # spread against their own workers rather than each other's.
+          app.kubernetes.io/name: actias
+          app.kubernetes.io/instance: actias
+          app.kubernetes.io/component: worker
