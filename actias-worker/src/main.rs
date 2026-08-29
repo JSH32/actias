@@ -168,6 +168,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             rotate_bytes: config.object_wal_rotate_bytes,
             max_segments: config.object_max_segments,
         },
+        ack_gate: std::time::Duration::from_millis(config.object_ack_gate_ms),
         admit_refusals: moka::future::Cache::builder()
             .max_capacity(100_000)
             .time_to_live(std::time::Duration::from_secs(config.pointer_ttl_secs))

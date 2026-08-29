@@ -47,6 +47,13 @@ A method's writes to `state.sql` commit together when the method
 returns. A `state:publish` inside the method is part of the same
 commit, so an event never describes a write that did not happen.
 
+The answer waits for one thing more than the commit: the writes
+leaving the machine. Committing locally and being told it happened
+are separate events, and the caller only ever sees the second, which
+is what makes the durability promise below true. Calls that arrive
+while an answer is waiting still run, so a busy object commits at its
+own speed and a burst of writes leaves together.
+
 Migrations apply inside the transaction of the call that triggered
 them: a failing migration applies nothing and surfaces as that call's
 error.
@@ -80,8 +87,10 @@ handlers cannot keep up has chosen to fall behind, and the platform
 closes it rather than growing memory on its behalf.
 
 An idle connection hibernates: its vm drops after the idle threshold
-and rebuilds on the next frame or delivery, with `conn.state` intact.
-The socket never notices; only the memory does.
+and rebuilds for the next item its program declares a handler for,
+with `conn.state` intact. A class that declared `event = "forward"`
+does not rebuild it for deliveries at all, since the platform writes
+those frames. The socket never notices; only the memory does.
 
 ## Failure behaviour
 
@@ -89,8 +98,23 @@ A machine leaving gracefully (deploys, scale-downs) loses nothing:
 the drain flushes every object's unshipped state before the process
 exits. Objects move, alarms re-arm from storage, workflow runs
 resume from their journal, queue messages redeliver, and stream
-subscriptions survive their follower rehoming. A hard crash can lose
-an object's newest writes, back to its last completed ship.
+subscriptions survive their follower rehoming.
+
+A hard crash cannot take back a call the platform answered. A method
+that wrote is not answered until its writes have reached durable
+storage off the machine, so anything you were told succeeded survives
+the loss of the node that ran it. What a crash can take back is work
+that was never acknowledged: a call still waiting for its answer
+(the caller sees the connection fail, which reads as an unknown
+outcome, the same as any interrupted request), and platform work with
+no caller to answer, such as an alarm handler's writes.
+
+When durable storage is unreachable, writes stop being acknowledged
+rather than being acknowledged falsely: the call fails with an unknown
+outcome after ten seconds, and the platform keeps trying to store the
+write behind it. Reads keep answering throughout. A retry needs the
+same idempotence any timed-out request needs, because the first
+attempt may still land.
 
 Connections do not survive a machine going away. Clients reconnect and
 re-follow; that path runs often enough in normal operation (deploys,

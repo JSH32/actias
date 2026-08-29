@@ -568,12 +568,13 @@ impl ObjectRouting {
                     .set_size_limit(routing.state.object_db_max_bytes)
                     .map_err(mlua::Error::RuntimeError)?;
 
-                // The output gate: a write marks the object dirty and one
-                // background flight ships the latest state, coalescing
-                // bursts, so callers stop paying an s3 round trip per
-                // write. The drain flushes every dirty object, so only a
-                // hard crash can lose the tail since the last ship; the
-                // epoch fence is unchanged.
+                // The output gate: a write marks the object dirty, takes a
+                // ticket, and is answered only once a flight carrying its
+                // frames has written its manifest. Bursts coalesce, so
+                // one flight acknowledges many writes and the gate costs
+                // latency rather than throughput. The epoch fence is
+                // unchanged, and the drain still flushes every dirty
+                // object before the process leaves.
                 let ship_store = routing.state.object_store.clone();
                 let ship_id = object_id.clone();
                 let ship_file = file.clone();
@@ -600,9 +601,13 @@ impl ObjectRouting {
                     .lock()
                     .expect("no poisoned lock")
                     .insert(object_id.clone(), ship.clone());
+                let ack_gate = routing.state.ack_gate;
                 let after_write: actias_worker_core::objects::AfterWrite = Arc::new(move || {
-                    ship.mark_dirty();
-                    Box::pin(async {})
+                    // Marking here rather than inside the future is what
+                    // lets platform work with no caller drop the wait and
+                    // keep the shipping.
+                    let ticket = ship.mark_and_ticket();
+                    Box::pin(async move { ticket.wait(ack_gate).await })
                 });
 
                 let alarm_sync = alarm_mirror(&routing.state, &object_id, &identity.to_string());

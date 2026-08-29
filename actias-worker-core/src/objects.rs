@@ -26,6 +26,12 @@ pub enum ObjectError {
     /// The method failed or does not exist; the text is the script's own
     /// error, exactly as a request handler's failure would read.
     Call(String),
+    /// The method ran and committed, but the platform could not confirm
+    /// the write had left the node before the gate's budget ran out. The
+    /// outcome is unknown rather than failed: the frames are still being
+    /// retried, so the call may yet become durable. A caller that
+    /// retries needs the same idempotence a network timeout demands.
+    NotDurable(String),
     /// The object's task is gone; the caller should resolve the object
     /// again rather than retry blindly.
     Gone,
@@ -35,6 +41,9 @@ impl std::fmt::Display for ObjectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ObjectError::Call(message) => f.write_str(message),
+            ObjectError::NotDurable(message) => {
+                write!(f, "The call's outcome is unknown: {message}.")
+            }
             ObjectError::Gone => f.write_str("the object's task is gone"),
         }
     }
@@ -88,13 +97,28 @@ impl ObjectHandle {
     }
 }
 
-/// Moves `runtime` onto its own task forever and hands back its mailbox.
+/// A pending durability confirmation: resolves once the writes it was
+/// taken for are safe off this machine, or with the reason they are not.
+pub type GateFuture = std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+
+/// The output gate, called once after a call that wrote. Calling it
+/// starts the write on its way (the host marks its shipper); the
+/// [`GateFuture`] it returns resolves when that write is durable, and the
+/// call's answer waits on it. Dropping the future therefore keeps the
+/// shipping and skips only the waiting, which is what platform-initiated
+/// work with no caller to answer does.
 ///
-/// The task ends when every handle is dropped; the vm drops with it.
-/// Runs after a call that wrote, before its caller hears the result:
-/// the output gate. Shipping a snapshot is the intended occupant.
-pub type AfterWrite =
-    Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+/// The error is the reason durability could not be confirmed, for the
+/// caller to report as an unknown outcome ([`ObjectError::NotDurable`]).
+pub type AfterWrite = Arc<dyn Fn() -> GateFuture + Send + Sync>;
+
+/// One dispatched call's answer, plus the gate its answer waits behind.
+struct Dispatched {
+    result: Result<serde_json::Value, ObjectError>,
+    /// Present when the call wrote and its answer is worth gating; the
+    /// mailbox awaits it off the task so the next call runs meanwhile.
+    gate: Option<GateFuture>,
+}
 
 /// Runs the platform's deletion sequence for this object after a call
 /// that asked to be its last: tombstone, store marker, local files,
@@ -408,6 +432,9 @@ pub struct TaskOptions {
     pub keep_claimed: Option<KeepClaimed>,
 }
 
+/// Moves `runtime` onto its own task forever and hands back its mailbox.
+///
+/// The task ends when every handle is dropped; the vm drops with it.
 pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> ObjectHandle {
     use crate::extensions::objects::PendingAlarm;
 
@@ -566,7 +593,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                 otel.name = %format!("{span_prefix}{}", call.method),
                 otel.kind = "internal",
             );
-            let result = actias_common::tracing::Instrument::instrument(
+            let Dispatched { result, gate } = actias_common::tracing::Instrument::instrument(
                 guarded_dispatch(
                     &runtime,
                     &home,
@@ -581,7 +608,27 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
 
             // A caller that stopped waiting is its own problem; the state
             // change it asked for has already happened either way.
-            let _ = call.reply.send(result);
+            match gate {
+                // The output gate waits OFF this task, so the next call
+                // runs while this answer is held. That is what keeps the
+                // gate a latency cost rather than a throughput one: a
+                // burst of writes rides one shipping flight and their
+                // answers release together. Order is the mailbox's
+                // property and is untouched by answering out of it.
+                Some(gate) => {
+                    let reply = call.reply;
+                    tokio::spawn(async move {
+                        let answer = match gate.await {
+                            Ok(()) => result,
+                            Err(error) => Err(ObjectError::NotDurable(error)),
+                        };
+                        let _ = reply.send(answer);
+                    });
+                }
+                None => {
+                    let _ = call.reply.send(result);
+                }
+            }
 
             // A busy object is not abandoned: restating the claim keeps
             // its lifespan measuring idleness, not residency age.
@@ -642,7 +689,12 @@ async fn fire_alarm(
     } else {
         "__alarm"
     };
-    let result = guarded_dispatch(
+    // The gate is dropped rather than awaited: an alarm has no caller to
+    // answer, so there is no acknowledgment for durability to protect,
+    // and holding the mailbox for a round trip would throttle the
+    // alarm-driven platform classes (queue delivery above all). The
+    // write still ships, and a failure to ship is logged by the shipper.
+    let Dispatched { result, gate: _ } = guarded_dispatch(
         runtime,
         home,
         "__dispatch",
@@ -672,21 +724,27 @@ async fn guarded_dispatch(
     payload: serde_json::Value,
     call_budget: Option<u64>,
     after_write: Option<&AfterWrite>,
-) -> Result<serde_json::Value, ObjectError> {
+) -> Dispatched {
     // The platform's own end-of-life verb: handles refuse every "__"
     // spelling, so its arrival here is provably platform-originated.
     // The answer goes out first; the task tears down after it.
     if payload.get("method").and_then(|m| m.as_str()) == Some("__destroy") {
         home.request_destroy();
-        return Ok(serde_json::Value::Null);
+        return Dispatched {
+            result: Ok(serde_json::Value::Null),
+            gate: None,
+        };
     }
 
     let has_storage = home.has_storage();
 
     if has_storage && let Err(error) = home.with_storage(|storage| storage.begin()) {
-        return Err(ObjectError::Call(format!(
-            "The call's transaction could not open: {error}"
-        )));
+        return Dispatched {
+            result: Err(ObjectError::Call(format!(
+                "The call's transaction could not open: {error}"
+            ))),
+            gate: None,
+        };
     }
 
     if let Some(seconds) = call_budget {
@@ -701,13 +759,18 @@ async fn guarded_dispatch(
     };
     runtime.end_call_budget();
 
+    let mut gate = None;
+
     if has_storage {
         match &result {
             Ok(_) => {
                 if let Err(error) = home.with_storage(|storage| storage.commit()) {
-                    return Err(ObjectError::Call(format!(
-                        "The call's writes could not commit: {error}"
-                    )));
+                    return Dispatched {
+                        result: Err(ObjectError::Call(format!(
+                            "The call's writes could not commit: {error}"
+                        ))),
+                        gate: None,
+                    };
                 }
             }
             Err(_) => {
@@ -723,16 +786,22 @@ async fn guarded_dispatch(
         // TRUNCATE bought, minus folding the log on every call. The
         // shipper owns checkpoints (docs/WAL-SHIPPING.md).
 
-        // The output gate: a call that wrote does not answer until the
-        // write has also left the building.
+        // The output gate: calling the hook starts the write on its way,
+        // and the future it hands back is what the answer waits behind.
+        // A failed call is not gated, only shipped: a rolled-back call
+        // acknowledges nothing, so there is nothing for durability to
+        // protect and no reason to make its error wait.
         if let Some(after_write) = after_write
             && home.writes_advanced()
         {
-            after_write().await;
+            let waiting = after_write();
+            if result.is_ok() {
+                gate = Some(waiting);
+            }
         }
     }
 
-    result
+    Dispatched { result, gate }
 }
 
 /// Extends a call chain onto `key`, refusing cycles.
@@ -2744,9 +2813,8 @@ mod tests {
                 ),
                 after_write: Some(Arc::new(move || {
                     let observed = observed.clone();
-                    Box::pin(async move {
-                        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    })
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Box::pin(async move { Ok(()) })
                 })),
                 ..Default::default()
             },
@@ -2762,6 +2830,102 @@ mod tests {
 
         handle.call("__dispatch", call("put")).await.expect("put");
         assert_eq!(shipped.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// A write is answered only after its gate resolves, and a gate that
+    /// cannot confirm turns the answer into an unknown outcome rather
+    /// than a success or a method failure.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_write_waits_for_its_gate_and_reports_an_unconfirmed_one() {
+        const SOURCE: &str = r#"
+            local Keeper = object "Keeper" {
+                init = function(state)
+                    state.sql:exec("CREATE TABLE t (n INTEGER)")
+                end,
+                put = function(state)
+                    state.sql:exec("INSERT INTO t VALUES (1)")
+                end,
+            }
+        "#;
+        let call = serde_json::json!({ "class": "Keeper", "method": "put", "args": [] });
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // The gate the test drives by hand: the first call's answer must
+        // not appear until this is released.
+        let (release, released) = tokio::sync::watch::channel(false);
+        let confirm = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let gate_confirms = confirm.clone();
+        // Counted at dispatch, so it says how many calls RAN, whatever
+        // their answers are doing.
+        let dispatched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ran = dispatched.clone();
+
+        let handle = spawn_object_task(
+            runtime_with(SOURCE).await,
+            TaskOptions {
+                storage: Some(
+                    crate::storage::SqliteStorage::open(&dir.path().join("k.db")).expect("opens"),
+                ),
+                after_write: Some(Arc::new(move || {
+                    let mut released = released.clone();
+                    let confirms = gate_confirms.clone();
+                    ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Box::pin(async move {
+                        while !*released.borrow_and_update() {
+                            if released.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                        if confirms.load(std::sync::atomic::Ordering::SeqCst) {
+                            Ok(())
+                        } else {
+                            Err("the store never answered".to_owned())
+                        }
+                    })
+                })),
+                ..Default::default()
+            },
+        );
+
+        let answering: Vec<_> = (0..2)
+            .map(|_| {
+                let handle = handle.clone();
+                let call = call.clone();
+                tokio::spawn(async move { handle.call("__dispatch", call).await })
+            })
+            .collect();
+
+        // Held: both writes committed, but nothing may be acknowledged
+        // until the gate says the frames left the node. Both RAN while
+        // held, which is the property that keeps the gate a latency cost
+        // and lets a burst share one flight: the input gate ends at the
+        // commit, not at the acknowledgment.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            answering.iter().all(|task| !task.is_finished()),
+            "an ungated write was answered"
+        );
+        assert_eq!(
+            dispatched.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a held answer must not hold the mailbox"
+        );
+
+        release.send_replace(true);
+        for task in answering {
+            task.await
+                .expect("the answering task")
+                .expect("the write is answered once its gate resolves");
+        }
+
+        // A gate that gives up makes the outcome unknown; the method
+        // itself never failed, so ObjectError::Call would be a lie.
+        confirm.store(false, std::sync::atomic::Ordering::SeqCst);
+        let unknown = handle
+            .call("__dispatch", call)
+            .await
+            .expect_err("an unconfirmed write is not a success");
+        assert!(matches!(unknown, ObjectError::NotDurable(_)), "{unknown:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
