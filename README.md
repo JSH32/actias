@@ -112,6 +112,21 @@ workers, storage). The `actias-cli` binary creates projects
 editor support wired by the generated project files), and publishes
 them (`actias publish`). None of this is production-ready yet.
 
+On kubernetes, one chart installs the same stack:
+
+```sh
+helm install actias oci://ghcr.io/jsh32/charts/actias \
+  --set ingress.enabled=true \
+  --set ingress.console=console.example.com \
+  --set ingress.api=api.example.com \
+  --set baseDomain=scripts.example.com \
+  -f my-secrets.yaml
+```
+
+It brings its own postgres, redis and object storage for evaluation,
+and points at external ones for anything real. See
+[charts/actias](./charts/actias/README.md).
+
 ## How it is built
 
 A Rust workspace does the serving: `actias-worker` runs scripts and

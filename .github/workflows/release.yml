@@ -105,3 +105,41 @@ jobs:
           tags: |
             ghcr.io/jsh32/${{ matrix.image.name }}:${{ github.ref_name }}
             ghcr.io/jsh32/${{ matrix.image.name }}:latest
+
+  chart:
+    name: Publish chart
+    runs-on: ubuntu-24.04
+    # After the images, so a pulled chart never names tags that are not
+    # in the registry yet.
+    needs: images
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Chart version and appVersion both become the tag, so
+      # `helm pull` at any version is a coherent snapshot: the chart and
+      # the images it names were built from one commit.
+      - name: Package and push
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          nix develop .#kube -c bash -c "
+            just chart-sync
+            helm package charts/actias --version '$version' --app-version '$GITHUB_REF_NAME'
+            helm push 'actias-$version.tgz' oci://ghcr.io/jsh32/charts
+          "
