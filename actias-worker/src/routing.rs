@@ -594,7 +594,12 @@ impl ObjectRouting {
                             .await
                     })
                 });
-                let ship = crate::shipper::Shipper::new(object_id.clone(), ship_fn);
+                let ship = crate::shipper::Shipper::new(
+                    object_id.clone(),
+                    ship_fn,
+                    routing.state.ship_gauges.clone(),
+                    routing.state.ship_limits.clone(),
+                );
                 routing
                     .state
                     .shippers

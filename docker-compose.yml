@@ -179,6 +179,11 @@ services:
       - OBJECT_SHIP_WHOLE_MAX_KB=${OBJECT_SHIP_WHOLE_MAX_KB:-256}
       - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
       - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
+      # Flights this node may have in the air at once (0 unbounded), and
+      # how many of those are held for writes a caller waits on.
+      - OBJECT_SHIP_CONCURRENCY=${OBJECT_SHIP_CONCURRENCY:-32}
+      - OBJECT_SHIP_RESERVED=${OBJECT_SHIP_RESERVED:-8}
+      - OBJECT_ACK_GATE_MS=${OBJECT_ACK_GATE_MS:-10000}
       # The WorkerData grpc service: object dispatch and typed reads;
       # the address the node registers is this listener's.
       - WORKER_GRPC_PORT=3100
@@ -231,6 +236,11 @@ services:
       - OBJECT_SHIP_WHOLE_MAX_KB=${OBJECT_SHIP_WHOLE_MAX_KB:-256}
       - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
       - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
+      # Flights this node may have in the air at once (0 unbounded), and
+      # how many of those are held for writes a caller waits on.
+      - OBJECT_SHIP_CONCURRENCY=${OBJECT_SHIP_CONCURRENCY:-32}
+      - OBJECT_SHIP_RESERVED=${OBJECT_SHIP_RESERVED:-8}
+      - OBJECT_ACK_GATE_MS=${OBJECT_ACK_GATE_MS:-10000}
       # The WorkerData grpc service: object dispatch and typed reads;
       # the address the node registers is this listener's.
       - WORKER_GRPC_PORT=3100

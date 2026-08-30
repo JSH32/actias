@@ -48,6 +48,10 @@ pub struct Config {
     /// Longest a written call's answer waits for its frames to reach the
     /// object store before the caller is told the outcome is unknown.
     pub object_ack_gate_ms: u64,
+    /// Flights this node may have in the air at once; 0 is unbounded.
+    pub object_ship_concurrency: usize,
+    /// How many of those are held for writes a caller is waiting on.
+    pub object_ship_reserved: usize,
     /// Idle seconds before a pinned object vm hibernates.
     pub object_idle_secs: u64,
     /// Idle seconds before a connection's vm hibernates; 0 never does.
@@ -111,6 +115,8 @@ impl Config {
             object_wal_rotate_bytes: get_env_or::<u64>("OBJECT_WAL_ROTATE_KB", 4096) * 1024,
             object_max_segments: get_env_or("OBJECT_MAX_SEGMENTS", 64),
             object_ack_gate_ms: get_env_or("OBJECT_ACK_GATE_MS", 10_000),
+            object_ship_concurrency: get_env_or("OBJECT_SHIP_CONCURRENCY", 32),
+            object_ship_reserved: get_env_or("OBJECT_SHIP_RESERVED", 8),
             object_idle_secs: get_env_or("OBJECT_IDLE_SECS", 300),
             connection_hibernate_secs: get_env_or("CONNECTION_HIBERNATE_SECS", 300),
             queue_max_attempts: get_env_or("QUEUE_MAX_ATTEMPTS", 5),

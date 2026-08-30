@@ -638,6 +638,287 @@
           "legendFormat": "{{node}}"
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Durability (object writes reaching the store)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Objects dirty",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#E0B400"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(actias_objects_dirty)"
+        }
+      ],
+      "description": "Objects whose committed writes the store has not taken yet. This is the backlog, and since a write is answered only once it is durable, it is also what predicts ack latency."
+    },
+    {
+      "type": "stat",
+      "title": "Ships in flight",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 5,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#4CA85A"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(actias_ships_in_flight)"
+        }
+      ],
+      "description": "Flights talking to the object store right now, against the node's OBJECT_SHIP_CONCURRENCY bound."
+    },
+    {
+      "type": "stat",
+      "title": "Ships queued",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 10,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#E0B400"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(actias_ships_queued)"
+        }
+      ],
+      "description": "Flights waiting for a permit. Persistently above zero means the bound is the bottleneck, which is the number that says whether to raise it."
+    },
+    {
+      "type": "stat",
+      "title": "Unknown outcomes \u00b7 range",
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 15,
+        "y": 21
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#C4162A"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "graphMode": "area",
+        "colorMode": "value",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(actias_ack_gate_expired_total[$__range]))"
+        }
+      ],
+      "description": "Writes that committed but could not be confirmed durable before the gate budget ran out, so their callers were told the outcome is unknown. Anything but zero is worth explaining."
+    },
+    {
+      "type": "timeseries",
+      "title": "Ack gate wait (mean)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(actias_ack_gate_wait_ms_total[$__rate_interval])) / clamp_min(sum(rate(actias_ack_gate_waits_total[$__rate_interval])), 1)",
+          "legendFormat": "gate wait"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(actias_ship_duration_ms_total[$__rate_interval])) / clamp_min(sum(rate(actias_ships_total[$__rate_interval])), 1)",
+          "legendFormat": "ship duration"
+        }
+      ],
+      "description": "What durability costs a caller. The gate wait is the part of a write's response time spent waiting for its frames to reach the store; the ship duration is one flight. Gate above ship means writes are queueing behind other flights."
+    },
+    {
+      "type": "timeseries",
+      "title": "Shipping rate and coalescing",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(actias_ships_total[$__rate_interval]))",
+          "legendFormat": "flights/s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(actias_ack_gate_waits_total[$__rate_interval]))",
+          "legendFormat": "gated writes/s"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(actias_ship_failures_total[$__rate_interval]))",
+          "legendFormat": "failures/s"
+        }
+      ],
+      "description": "Gated writes above flights is coalescing working: one flight carrying several writes is what keeps a hot object affordable."
     }
   ]
 }

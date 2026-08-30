@@ -169,6 +169,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             max_segments: config.object_max_segments,
         },
         ack_gate: std::time::Duration::from_millis(config.object_ack_gate_ms),
+        ship_gauges: std::sync::Arc::default(),
+        ship_limits: shipper::ShipLimits::new(
+            config.object_ship_concurrency,
+            config.object_ship_reserved,
+        ),
         admit_refusals: moka::future::Cache::builder()
             .max_capacity(100_000)
             .time_to_live(std::time::Duration::from_secs(config.pointer_ttl_secs))
@@ -262,8 +267,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         data_plane.await.map_err(anyhow::Error::from)
     },)?;
 
-    // The drain flushed every request; now flush every dirty snapshot,
-    // bounded, so a deploy never leaves state only this volume holds.
+    // The drain flushed every request; now flush every dirty snapshot so
+    // a deploy never leaves state only this volume holds. The floor is
+    // five seconds; a node holding a real backlog gets more, because
+    // shipping is bounded and the backlog drains in waves.
     shipper::flush_all(&state.shippers, std::time::Duration::from_secs(5)).await;
 
     // A fast drain must not outrun the goodbye: when nothing holds the

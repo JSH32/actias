@@ -27,7 +27,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use tokio::sync::watch;
 
@@ -44,6 +44,69 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 6;
 /// Longest a retry backoff grows between failed flights.
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How many flights a node may have in the air at once. Unbounded, a
+/// node with N dirty objects opens N connections to the store.
+///
+/// The reserve is for flights a caller is blocked on. Background
+/// shipping (alarm writes, a hibernating object's last flush) takes only
+/// general permits, so it starves first when the node is saturated.
+pub struct ShipLimits {
+    general: tokio::sync::Semaphore,
+    reserved: tokio::sync::Semaphore,
+}
+
+impl ShipLimits {
+    /// `concurrency` of 0 is unbounded, which the drills measure
+    /// against.
+    pub fn new(concurrency: usize, reserved: usize) -> Arc<Self> {
+        let (general, reserved) = if concurrency == 0 {
+            (tokio::sync::Semaphore::MAX_PERMITS, 0)
+        } else {
+            (concurrency, reserved.min(concurrency))
+        };
+        Arc::new(Self {
+            general: tokio::sync::Semaphore::new(general),
+            reserved: tokio::sync::Semaphore::new(reserved),
+        })
+    }
+
+    /// Waits for permission to talk to the store. A gated flight may
+    /// take either pool, trying the reserve first; an ungated one may
+    /// only take a general permit.
+    async fn acquire(&self, gated: bool) -> tokio::sync::SemaphorePermit<'_> {
+        if gated && let Ok(permit) = self.reserved.try_acquire() {
+            return permit;
+        }
+        self.general
+            .acquire()
+            .await
+            .expect("the limiter is never closed")
+    }
+}
+
+/// Node-wide shipping counters for `/_metrics`, shared by every
+/// object's shipper: the pressure that matters is the node's total.
+#[derive(Default)]
+pub struct ShipGauges {
+    pub in_flight: AtomicI64,
+    /// Flights waiting for a permit; persistently above zero means the
+    /// bound is the bottleneck.
+    pub queued: AtomicI64,
+    /// Objects with committed writes the store has not taken yet. The
+    /// backlog, and with the output gate also what predicts ack latency.
+    pub dirty: AtomicI64,
+    pub ships: AtomicU64,
+    pub failures: AtomicU64,
+    pub ship_ms_total: AtomicU64,
+    /// Answers held by the output gate and how long they waited; their
+    /// mean is what durability costs a caller.
+    pub gate_waits: AtomicU64,
+    pub gate_wait_ms_total: AtomicU64,
+    /// Gates that ran out of budget: committed, unconfirmed, and the
+    /// caller told the outcome is unknown.
+    pub gates_expired: AtomicU64,
+}
+
 pub struct Shipper {
     ship: ShipFn,
     dirty: AtomicBool,
@@ -53,10 +116,20 @@ pub struct Shipper {
     begun: AtomicU64,
     /// Highest flight number whose manifest landed. Tickets wait on it.
     landed: watch::Sender<u64>,
+    gauges: Arc<ShipGauges>,
+    limits: Arc<ShipLimits>,
+    /// Outstanding tickets; non-zero means a caller is blocked on the
+    /// next flight, which earns it the reserved lane.
+    waiting: AtomicU64,
 }
 
 impl Shipper {
-    pub fn new(label: String, ship: ShipFn) -> Arc<Self> {
+    pub fn new(
+        label: String,
+        ship: ShipFn,
+        gauges: Arc<ShipGauges>,
+        limits: Arc<ShipLimits>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             ship,
             dirty: AtomicBool::new(false),
@@ -64,6 +137,9 @@ impl Shipper {
             label,
             begun: AtomicU64::new(0),
             landed: watch::Sender::new(0),
+            gauges,
+            limits,
+            waiting: AtomicU64::new(0),
         })
     }
 
@@ -71,7 +147,11 @@ impl Shipper {
     /// Coalescing lives here: N marks during one flight cost one more
     /// flight, not N.
     pub fn mark_dirty(self: &Arc<Self>) {
-        self.dirty.store(true, Ordering::SeqCst);
+        // On the transition, so the gauge counts objects rather than
+        // writes.
+        if !self.dirty.swap(true, Ordering::SeqCst) {
+            self.gauges.dirty.fetch_add(1, Ordering::Relaxed);
+        }
         self.ensure_flight();
     }
 
@@ -83,10 +163,15 @@ impl Shipper {
         // conservative: any flight numbered past this began after the
         // write it is waiting for.
         let target = self.begun.load(Ordering::SeqCst) + 1;
+        // Before the mark, so the flight it arms sees the waiting caller
+        // and takes the reserved lane.
+        self.waiting.fetch_add(1, Ordering::SeqCst);
         self.mark_dirty();
         Ticket {
             target,
             landed: self.landed.subscribe(),
+            gauges: self.gauges.clone(),
+            shipper: self.clone(),
         }
     }
 
@@ -98,8 +183,26 @@ impl Shipper {
         tokio::spawn(async move {
             let mut failures = 0;
             while this.dirty.swap(false, Ordering::SeqCst) {
+                this.gauges.dirty.fetch_sub(1, Ordering::Relaxed);
                 let number = this.begun.fetch_add(1, Ordering::SeqCst) + 1;
-                match (this.ship)().await {
+                // The permit is taken around the store call only: the
+                // bookkeeping above and below is local and instant, and
+                // holding a permit across it would shrink the bound for
+                // no reason.
+                let gated = this.waiting.load(Ordering::SeqCst) > 0;
+                this.gauges.queued.fetch_add(1, Ordering::Relaxed);
+                let permit = this.limits.acquire(gated).await;
+                this.gauges.queued.fetch_sub(1, Ordering::Relaxed);
+                this.gauges.in_flight.fetch_add(1, Ordering::Relaxed);
+                let started = std::time::Instant::now();
+                let outcome = (this.ship)().await;
+                drop(permit);
+                this.gauges.in_flight.fetch_sub(1, Ordering::Relaxed);
+                this.gauges.ships.fetch_add(1, Ordering::Relaxed);
+                this.gauges
+                    .ship_ms_total
+                    .fetch_add(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                match outcome {
                     Ok(()) => {
                         failures = 0;
                         this.landed.send_replace(number);
@@ -110,18 +213,23 @@ impl Shipper {
                             object = this.label,
                             "object snapshot did not ship"
                         );
+                        this.gauges.failures.fetch_add(1, Ordering::Relaxed);
                         failures += 1;
                         if failures >= MAX_CONSECUTIVE_FAILURES {
                             // Leaving the object dirty keeps it unsettled,
                             // so the drain still waits for it and the next
                             // write re-arms the loop.
-                            this.dirty.store(true, Ordering::SeqCst);
+                            if !this.dirty.swap(true, Ordering::SeqCst) {
+                                this.gauges.dirty.fetch_add(1, Ordering::Relaxed);
+                            }
                             break;
                         }
                         // The write is still unshipped, and a ticket may be
                         // waiting on it: retry rather than idling until the
                         // next write happens along.
-                        this.dirty.store(true, Ordering::SeqCst);
+                        if !this.dirty.swap(true, Ordering::SeqCst) {
+                            this.gauges.dirty.fetch_add(1, Ordering::Relaxed);
+                        }
                         tokio::time::sleep(backoff(failures)).await;
                     }
                 }
@@ -152,6 +260,16 @@ fn backoff(failures: u32) -> std::time::Duration {
 pub struct Ticket {
     target: u64,
     landed: watch::Receiver<u64>,
+    gauges: Arc<ShipGauges>,
+    /// Held so the shipper knows a caller is still blocked on it, and
+    /// so the count comes back down however the wait ends.
+    shipper: Arc<Shipper>,
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        self.shipper.waiting.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Ticket {
@@ -162,6 +280,7 @@ impl Ticket {
     /// a caller that must now treat its call's outcome as unknown. The
     /// frames keep being retried in the background either way.
     pub async fn wait(mut self, budget: std::time::Duration) -> Result<(), String> {
+        let started = std::time::Instant::now();
         let confirmed = tokio::time::timeout(budget, async {
             while *self.landed.borrow_and_update() < self.target {
                 if self.landed.changed().await.is_err() {
@@ -173,6 +292,14 @@ impl Ticket {
             true
         })
         .await;
+
+        self.gauges.gate_waits.fetch_add(1, Ordering::Relaxed);
+        self.gauges
+            .gate_wait_ms_total
+            .fetch_add(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+        if !matches!(confirmed, Ok(true)) {
+            self.gauges.gates_expired.fetch_add(1, Ordering::Relaxed);
+        }
 
         match confirmed {
             Ok(true) => Ok(()),
@@ -192,7 +319,18 @@ pub type Shippers = Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<S
 
 /// Waits for every shipper to settle, bounded; the drain calls this so
 /// a deploy never leaves dirty state behind.
+/// Longest the drain waits per dirty object still to be shipped. The
+/// bound on flights means a backlog drains in waves rather than all at
+/// once, so a fixed budget would quietly start losing the deploys it
+/// exists to protect as soon as a node holds enough objects.
+const DRAIN_PER_OBJECT: std::time::Duration = std::time::Duration::from_millis(50);
+
 pub async fn flush_all(shippers: &Shippers, budget: std::time::Duration) {
+    let outstanding = {
+        let map = shippers.lock().expect("no poisoned lock");
+        map.values().filter(|shipper| !shipper.settled()).count()
+    };
+    let budget = budget.max(DRAIN_PER_OBJECT * outstanding as u32);
     let deadline = tokio::time::Instant::now() + budget;
     loop {
         let pending: Vec<String> = {
@@ -235,7 +373,7 @@ mod tests {
                 })
             })
         };
-        let shipper = Shipper::new("t".into(), ship);
+        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
 
         for _ in 0..50 {
             shipper.mark_dirty();
@@ -275,7 +413,7 @@ mod tests {
                 Ok(())
             })
         });
-        let shipper = Shipper::new("t".into(), ship);
+        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
 
         // Flight 1 is in the air and parked.
         shipper.mark_dirty();
@@ -317,7 +455,7 @@ mod tests {
                 Ok(())
             })
         });
-        let shipper = Shipper::new("t".into(), ship);
+        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
 
         // The first write puts a flight in the air; the rest land while
         // it flies and are confirmed together by the one after it.
@@ -336,12 +474,101 @@ mod tests {
         );
     }
 
+    /// The gauges are the only view an operator has of this, and the
+    /// dirty one is the easiest to get wrong: it counts objects waiting
+    /// on the store, so it must move on the transition and come back to
+    /// zero once the store has taken everything, including after the
+    /// retries a failure causes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_gauges_track_the_backlog_and_the_gate() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = attempts.clone();
+        let ship: ShipFn = Arc::new(move || {
+            // Fails once, so the re-mark path is exercised rather than
+            // only the happy one.
+            let n = counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if n == 0 {
+                    Err("the store blinked".to_owned())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let gauges: Arc<ShipGauges> = Arc::default();
+        let shipper = Shipper::new("t".into(), ship, gauges.clone(), ShipLimits::new(0, 0));
+
+        shipper
+            .mark_and_ticket()
+            .wait(std::time::Duration::from_secs(5))
+            .await
+            .expect("the retry confirms it");
+
+        assert_eq!(gauges.dirty.load(Ordering::SeqCst), 0, "backlog drained");
+        assert_eq!(gauges.in_flight.load(Ordering::SeqCst), 0, "nothing flying");
+        assert_eq!(gauges.failures.load(Ordering::SeqCst), 1, "the blink");
+        assert!(gauges.ships.load(Ordering::SeqCst) >= 2, "failed then flew");
+        assert_eq!(gauges.gate_waits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            gauges.gates_expired.load(Ordering::SeqCst),
+            0,
+            "it was confirmed, not abandoned"
+        );
+    }
+
+    /// The bound is the whole point: however many objects want the
+    /// store at once, only so many talk to it, and the rest wait their
+    /// turn instead of opening a connection each.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_node_never_exceeds_its_flight_bound() {
+        const OBJECTS: usize = 40;
+        const BOUND: usize = 4;
+
+        let peak = Arc::new(AtomicUsize::new(0));
+        let live = Arc::new(AtomicUsize::new(0));
+        let gauges: Arc<ShipGauges> = Arc::default();
+        let limits = ShipLimits::new(BOUND, 0);
+
+        let shippers: Vec<_> = (0..OBJECTS)
+            .map(|n| {
+                let (peak, live) = (peak.clone(), live.clone());
+                let ship: ShipFn = Arc::new(move || {
+                    let (peak, live) = (peak.clone(), live.clone());
+                    Box::pin(async move {
+                        let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        live.fetch_sub(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+                });
+                Shipper::new(format!("obj-{n}"), ship, gauges.clone(), limits.clone())
+            })
+            .collect();
+
+        let tickets: Vec<_> = shippers.iter().map(|s| s.mark_and_ticket()).collect();
+        for ticket in tickets {
+            ticket
+                .wait(std::time::Duration::from_secs(10))
+                .await
+                .expect("every write confirms");
+        }
+
+        let observed = peak.load(Ordering::SeqCst);
+        assert!(
+            observed <= BOUND,
+            "{OBJECTS} objects put {observed} flights in the air against a bound of {BOUND}"
+        );
+        assert!(observed > 1, "the bound serialized everything: {observed}");
+        assert_eq!(gauges.queued.load(Ordering::SeqCst), 0, "queue drained");
+    }
+
     /// A store that never answers costs the write its acknowledgment
     /// rather than hanging the caller forever.
     #[tokio::test(flavor = "multi_thread")]
     async fn an_unconfirmable_write_gives_up_on_its_budget() {
         let ship: ShipFn = Arc::new(move || Box::pin(async move { Err("no store".to_owned()) }));
-        let shipper = Shipper::new("t".into(), ship);
+        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
 
         let error = shipper
             .mark_and_ticket()

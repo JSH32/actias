@@ -44,6 +44,7 @@ impl Metrics {
         &self,
         objects_resident: usize,
         connections: &actias_worker_core::connections::actor::ConnectionGauges,
+        ships: &crate::shipper::ShipGauges,
     ) -> String {
         let scripts = self.scripts.lock().expect("no poisoned lock").clone();
 
@@ -101,6 +102,48 @@ impl Metrics {
                 .load(std::sync::atomic::Ordering::Relaxed)
         ));
 
+        // Shipping, the object plane's back pressure. in_flight against
+        // dirty says whether the store is keeping up; the gate pair says
+        // what that costs a caller, since a write is not answered until
+        // its frames are durable.
+        let count = |n: &std::sync::atomic::AtomicU64| n.load(std::sync::atomic::Ordering::Relaxed);
+        out.push_str("# TYPE actias_ships_in_flight gauge\n");
+        out.push_str(&format!(
+            "actias_ships_in_flight {}\n",
+            load(&ships.in_flight)
+        ));
+        out.push_str("# TYPE actias_ships_queued gauge\n");
+        out.push_str(&format!("actias_ships_queued {}\n", load(&ships.queued)));
+        out.push_str("# TYPE actias_objects_dirty gauge\n");
+        out.push_str(&format!("actias_objects_dirty {}\n", load(&ships.dirty)));
+        out.push_str("# TYPE actias_ships_total counter\n");
+        out.push_str(&format!("actias_ships_total {}\n", count(&ships.ships)));
+        out.push_str("# TYPE actias_ship_failures_total counter\n");
+        out.push_str(&format!(
+            "actias_ship_failures_total {}\n",
+            count(&ships.failures)
+        ));
+        out.push_str("# TYPE actias_ship_duration_ms_total counter\n");
+        out.push_str(&format!(
+            "actias_ship_duration_ms_total {}\n",
+            count(&ships.ship_ms_total)
+        ));
+        out.push_str("# TYPE actias_ack_gate_waits_total counter\n");
+        out.push_str(&format!(
+            "actias_ack_gate_waits_total {}\n",
+            count(&ships.gate_waits)
+        ));
+        out.push_str("# TYPE actias_ack_gate_wait_ms_total counter\n");
+        out.push_str(&format!(
+            "actias_ack_gate_wait_ms_total {}\n",
+            count(&ships.gate_wait_ms_total)
+        ));
+        out.push_str("# TYPE actias_ack_gate_expired_total counter\n");
+        out.push_str(&format!(
+            "actias_ack_gate_expired_total {}\n",
+            count(&ships.gates_expired)
+        ));
+
         out
     }
 }
@@ -115,7 +158,7 @@ mod tests {
         metrics.record("proj-1", "my-script", Duration::from_millis(12), true);
         metrics.record("proj-1", "my-script", Duration::from_millis(8), false);
 
-        let text = metrics.render(3, &Default::default());
+        let text = metrics.render(3, &Default::default(), &Default::default());
 
         assert!(text.contains("actias_requests_total{project=\"proj-1\",script=\"my-script\"} 2"));
         assert!(

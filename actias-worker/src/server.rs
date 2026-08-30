@@ -129,6 +129,11 @@ pub struct AppState {
     /// How long a written call's answer waits on the output gate before
     /// its outcome is reported unknown.
     pub ack_gate: std::time::Duration,
+    /// Shipping and output-gate counters, shared by every object's
+    /// shipper on this node.
+    pub ship_gauges: Arc<crate::shipper::ShipGauges>,
+    /// How much of the store this node may occupy at once.
+    pub ship_limits: Arc<crate::shipper::ShipLimits>,
     /// Names an admission gate refused, with the refusal; junk
     /// identities answer from here for a pointer ttl.
     pub admit_refusals: moka::future::Cache<String, String>,
@@ -470,9 +475,11 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
 /// The prometheus exposition; gauges are measured at scrape time.
 async fn metrics_handler(State(state): State<AppState>) -> Response {
     let resident = state.objects.resident_count().await;
-    let mut response = Response::new(Body::from(
-        state.metrics.render(resident, &state.connection_gauges),
-    ));
+    let mut response = Response::new(Body::from(state.metrics.render(
+        resident,
+        &state.connection_gauges,
+        &state.ship_gauges,
+    )));
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/plain; version=0.0.4"),
@@ -976,18 +983,16 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         let factory = vm_factory(state.clone(), prepared, logs);
         let hibernate_after = state.connection_hibernate_after;
         let gauges = state.connection_gauges.clone();
-        return Ok(websocket.on_upgrade(move |socket| {
-            drive_socket(
-                socket,
-                factory,
-                pending,
-                registry,
-                connection_router,
-                node,
-                hibernate_after,
-                gauges,
-            )
-        }));
+        let spawn = ConnectionSpawn {
+            factory,
+            pending,
+            registry,
+            router: connection_router,
+            node,
+            hibernate_after,
+            gauges,
+        };
+        return Ok(websocket.on_upgrade(move |socket| drive_socket(socket, spawn)));
     }
 
     let lua_response: extensions::http::Response = lua.from_value(value)?;
@@ -1029,16 +1034,30 @@ fn vm_factory(
 /// vms it builds from the factory. When either side ends, edges sever
 /// (politely by the actor, or by the pump's deliver-or-prune for
 /// whatever that missed) and the registry forgets the id.
-async fn drive_socket(
-    mut socket: axum::extract::ws::WebSocket,
+/// Everything a connection needs besides its socket, gathered at the
+/// upgrade and handed to the task that outlives the request.
+struct ConnectionSpawn {
     factory: actias_worker_core::connections::actor::VmFactory,
     pending: actias_worker_core::extensions::sockets::PendingUpgrade,
     registry: Arc<actias_worker_core::connections::ConnectionRegistry>,
     router: ObjectRouter,
+    /// The node hosting this connection, so a publisher homed elsewhere
+    /// knows where its events must travel.
     node: String,
     hibernate_after: Option<std::time::Duration>,
     gauges: Arc<actias_worker_core::connections::actor::ConnectionGauges>,
-) {
+}
+
+async fn drive_socket(mut socket: axum::extract::ws::WebSocket, spawn: ConnectionSpawn) {
+    let ConnectionSpawn {
+        factory,
+        pending,
+        registry,
+        router,
+        node,
+        hibernate_after,
+        gauges,
+    } = spawn;
     use actias_worker_core::connections::actor::ConnectionTask;
     use actias_worker_core::connections::{InboxItem, OutboundFrame, inbox};
     use actias_worker_core::extensions::sockets::SockShared;
@@ -1181,6 +1200,8 @@ pub(crate) mod test_state {
                 max_segments: 64,
             },
             ack_gate: Duration::from_millis(10_000),
+            ship_gauges: Arc::default(),
+            ship_limits: crate::shipper::ShipLimits::new(32, 8),
             admit_refusals: moka::future::Cache::builder()
                 .max_capacity(100_000)
                 .time_to_live(std::time::Duration::from_secs(5))
