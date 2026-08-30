@@ -62,14 +62,24 @@ export namespace worker_data {
             ...rest: any[]
         ): Observable<ReceiveReceipts>;
     }
-    // Due events for the connections one node hosts.
+    // Due events for the connections one node hosts. The events ride
+    // once per batch; each edge names the slice it gets, so the payload
+    // never multiplies by listeners.
     export interface InboxBatch {
-        entries?: worker_data.ConnectionEvents[];
-    }
-    export interface ConnectionEvents {
-        connection?: string;
-        // A json array of {topic, from_class, from_name, data} objects.
+        // A json array of {seq, topic, from_class, from_name, data}
+    // objects, in publish order.
         eventsJson?: string;
+        edges?: worker_data.InboxEdge[];
+    }
+    // One followed connection&#x27;s slice of the batch.
+    export interface InboxEdge {
+        connection?: string;
+        topic?: string;
+        // Events at or below this seq were already heard.
+        after?: number;
+        // Empty forwards everything on the topic; anything else is a json
+    // object matched against event data.
+        filterJson?: string;
     }
     export interface InboxReceipts {
         // Connections the node no longer holds; their edges are dead.
