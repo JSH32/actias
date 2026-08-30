@@ -5,6 +5,7 @@
 //! CLI's test runner) embeds the same crate, so scripts behave identically
 //! wherever they run.
 
+pub mod budget;
 pub mod connections;
 pub mod egress;
 pub mod extensions;

@@ -333,13 +333,17 @@ impl ConnectionTask {
                 },
             )
             .map_err(|e| e.to_string())?;
-        // Each invocation is one platform call; the budget arms here.
+        // Each invocation is one platform call, so the budget arms here
+        // and closes below: a connection vm outlives its invocations,
+        // and an open scope would charge the idle time between them to
+        // whichever handler ran last.
         vm.start_timer();
         let outcome = driver
             .call_async::<mlua::Value>((function, conn.clone(), argument))
             .await
             .map(|_| ())
             .map_err(|e| e.to_string());
+        vm.end_call_budget();
 
         // The blob is what survives the invocation, cap enforced:
         // refusing here (and closing, in run's error path) is the

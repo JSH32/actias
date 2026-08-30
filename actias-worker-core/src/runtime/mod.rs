@@ -19,21 +19,21 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     ops::Deref,
-    sync::{Arc, RwLock},
-    time::Instant,
+    sync::Arc,
 };
 
 /// Lua runtime with actias specific methods.
 pub struct ActiasRuntime {
     lua: Lua,
-    // Arc to pass to interrupt handler.
-    timer: Arc<RwLock<Timer>>,
-}
-
-#[derive(Clone)]
-struct Timer {
-    start_time: Option<Instant>,
-    time_limit: Option<u64>,
+    /// What this vm has spent and may still spend, shared with the
+    /// interrupt that charges it ([`crate::budget`]).
+    meter: Arc<crate::budget::Meter>,
+    /// The backstop for one armed scope; work is the real ceiling.
+    wall_limit: Option<std::time::Duration>,
+    /// Work a single armed scope may spend. Defaults to
+    /// [`crate::budget::DEFAULT_WORK_LIMIT`]; a host overrides it from
+    /// its own config with [`Self::set_work_limit`].
+    work_limit: std::sync::atomic::AtomicU64,
 }
 
 impl Deref for ActiasRuntime {
@@ -795,10 +795,9 @@ impl ActiasRuntime {
             // still resume once control returns to Rust, and panics in
             // request paths are bugs by house rule anyway.
             lua: Lua::new_with(mlua::StdLib::ALL_SAFE, mlua::LuaOptions::new())?,
-            timer: Arc::new(RwLock::new(Timer {
-                start_time: None,
-                time_limit,
-            })),
+            meter: Arc::new(crate::budget::Meter::default()),
+            wall_limit: time_limit.map(std::time::Duration::from_secs),
+            work_limit: std::sync::atomic::AtomicU64::new(crate::budget::DEFAULT_WORK_LIMIT),
         };
 
         lua.set_app_data::<Arc<PreparedRevision>>(prepared.clone());
@@ -808,25 +807,17 @@ impl ActiasRuntime {
         // 128 MB memory limit.
         lua.set_memory_limit(128 * 1000000)?;
 
-        let timer = lua.timer.clone();
-
-        // Time limit each worker total runtime.
-        // TODO: Figure out how to make this CPU time based.
-        // Next best thing is setting a hook trigger for every nth instruction.
-        // With https://docs.rs/mlua/latest/mlua/struct.HookTriggers.html#structfield.every_nth_instruction
-        // Or https://docs.rs/mlua/latest/mlua/struct.Lua.html#method.set_hook
-        lua.set_interrupt(move |_| {
-            let timer = timer.read().unwrap();
-            if let (Some(start_time), Some(time_limit)) = (timer.start_time, timer.time_limit)
-                && Instant::now().duration_since(start_time).as_secs() > time_limit
-            {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "Script timed out, limit is {} seconds.",
-                    time_limit
-                )));
-            }
-
-            Ok(mlua::VmState::Continue)
+        // Luau fires this while guest code executes, so counting fires
+        // IS the work meter: measured, a loop iteration costs one tick
+        // and a two-hundred millisecond await costs eight, so waiting on
+        // io is free and computing is not. mlua offers no instruction
+        // hook under Luau (`set_hook` is cfg'd out), and this needs
+        // none. The clock survives inside the meter as a sampled
+        // backstop (crate::budget).
+        let meter = lua.meter.clone();
+        lua.set_interrupt(move |_| match meter.tick() {
+            Ok(()) => Ok(mlua::VmState::Continue),
+            Err(exhausted) => Err(mlua::Error::RuntimeError(exhausted.to_string())),
         });
 
         Self::set_event_declaration(&lua)?;
@@ -904,13 +895,13 @@ impl ActiasRuntime {
 
         let entry_point = prepared.entry_module().transpose()?;
 
-        // We need to set a new timer temporarily when registering.
-        // This should be one second since nothing should be happening in this time.
-        let original_timer = lua.timer.read().unwrap().clone();
-        *lua.timer.write().unwrap() = Timer {
-            start_time: Some(Instant::now()),
-            time_limit: Some(1),
-        };
+        // Top-level evaluation gets its own scope: declarations are
+        // cheap by construction, so anything spending a real budget up
+        // here is a runaway rather than a program.
+        lua.meter.arm(crate::budget::Budget::new(
+            crate::budget::DECLARATION_WORK_LIMIT,
+            std::time::Duration::from_secs(1),
+        ));
 
         // Declarations exist only while the entry point's top level runs;
         // afterwards the same calls error, which is what keeps the code
@@ -925,36 +916,50 @@ impl ActiasRuntime {
 
         lua.set_app_data(DeclarationPhase(false));
 
-        // Set original timer.
-        *lua.timer.write().unwrap() = original_timer;
+        // The vm idles unmetered until a call arms it.
+        lua.meter.disarm();
 
         Ok(lua)
     }
 
-    /// Start the timer. This only works if `time_limit` is set.
-    /// This will stop the runtime with an error once the time limit has passed since the timer has been started.
-    /// Arms the interrupt for one bounded piece of work; pair with
+    /// Arms the meter for one bounded piece of work; pair with
     /// [`Self::end_call_budget`]. Pinned vms live indefinitely, so their
     /// budget is per call, never per lifetime.
+    ///
+    /// `seconds` is the wall backstop for this scope; the work ceiling
+    /// comes from [`Self::set_work_limit`] and is what actually stops a
+    /// runaway.
     pub fn begin_call_budget(&self, seconds: u64) {
-        let mut timer = self.timer.write().expect("no poisoned lock");
-        timer.time_limit = Some(seconds);
-        timer.start_time = Some(Instant::now());
+        self.meter.arm(crate::budget::Budget::new(
+            self.work_limit.load(std::sync::atomic::Ordering::Relaxed),
+            std::time::Duration::from_secs(seconds),
+        ));
     }
 
-    /// Disarms the per-call budget; the vm idles unbounded until the next
+    /// Disarms the per-call budget; the vm idles unmetered until the next
     /// call arms it again.
     pub fn end_call_budget(&self) {
-        let mut timer = self.timer.write().expect("no poisoned lock");
-        timer.time_limit = None;
-        timer.start_time = None;
+        self.meter.disarm();
     }
 
+    /// Arms the scope a request runs in, using the vm's configured
+    /// ceilings.
     pub fn start_timer(&self) {
-        let mut timer = self.timer.write().unwrap();
-        if timer.time_limit.is_some() {
-            timer.start_time = Some(Instant::now());
-        }
+        self.meter.arm(crate::budget::Budget {
+            work: Some(self.work_limit.load(std::sync::atomic::Ordering::Relaxed)),
+            wall: self.wall_limit,
+        });
+    }
+
+    /// Sets how much work one scope may spend, from the host's config.
+    pub fn set_work_limit(&self, units: u64) {
+        self.work_limit
+            .store(units, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// What this vm has spent, for metering.
+    pub fn consumed(&self) -> crate::budget::Consumed {
+        self.meter.consumed()
     }
 
     /// Register an extension into the runtime.

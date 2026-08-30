@@ -1237,8 +1237,10 @@ mod tests {
                 conn:send({ kind = "tick", n = conn.state.ticks, missed = missed })
                 if conn.state.slow == nil then
                     conn.state.slow = true
-                    local from = os.clock()
-                    while os.clock() - from < 2.4 do end
+                    -- Slow by waiting, the way a real handler is slow.
+                    -- Burning cpu here would (correctly) hit the work
+                    -- budget instead of testing coalescing.
+                    test_slow(2400)
                 end
             end },
         }
@@ -1286,6 +1288,23 @@ mod tests {
             return { body = "ok" }
         end)
     "#;
+
+    /// A host function the connection tests use to be slow without
+    /// spending cpu: real handlers are slow because they wait, and the
+    /// work budget is meant to stop the ones that are slow because they
+    /// compute.
+    fn register_test_slow(runtime: &ActiasRuntime) {
+        let slow = runtime
+            .create_async_function(|_, ms: u64| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                Ok(())
+            })
+            .expect("host fn builds");
+        runtime
+            .globals()
+            .set("test_slow", slow)
+            .expect("global sets");
+    }
 
     async fn vm(source: &str, flaky: bool) -> ActiasRuntime {
         let source = if flaky {
@@ -1539,6 +1558,7 @@ mod tests {
             Box::pin(async move {
                 let runtime = vm(SOURCE, false).await;
                 runtime.set_app_data::<ObjectRouter>(router);
+                register_test_slow(&runtime);
                 Ok(runtime)
             })
         })

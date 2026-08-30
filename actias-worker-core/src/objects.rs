@@ -804,18 +804,31 @@ async fn guarded_dispatch(
     Dispatched { result, gate }
 }
 
-/// Extends a call chain onto `key`, refusing cycles.
+/// How deep object calls may nest. Cycles are refused below; this is the
+/// other unbounded shape, distinct objects each costing a mailbox and
+/// possibly a network forward. Real designs nest a handful deep.
+pub const MAX_CALL_DEPTH: usize = 32;
+
+/// Extends a call chain onto `key`, refusing cycles and runaway depth.
 ///
 /// Every routed call carries the keys already on its stack; a target that
 /// appears there would deadlock on its own busy mailbox, so it is refused
 /// loudly instead.
 ///
 /// # Errors
-/// Returns the cycle spelled out, for the script author.
+/// Returns the cycle or the depth spelled out, for the script author.
 pub fn extend_call_chain(chain: &[String], key: &str) -> Result<Vec<String>, String> {
     if chain.iter().any(|entry| entry == key) {
         return Err(format!(
             "Reentrant object call refused: {} -> {key} would deadlock.",
+            chain.join(" -> "),
+        ));
+    }
+
+    if chain.len() >= MAX_CALL_DEPTH {
+        return Err(format!(
+            "Object calls nested {} deep, past the limit of {MAX_CALL_DEPTH}: {} -> {key}.",
+            chain.len(),
             chain.join(" -> "),
         ));
     }
@@ -1543,19 +1556,33 @@ mod tests {
             "#,
         )
         .await;
+        // A distant backstop, so the work ceiling is what stops the
+        // loop rather than the clock racing it on a busy machine.
         let handle = spawn_object_task(
             runtime,
             TaskOptions {
-                call_budget: Some(1),
+                call_budget: Some(30),
                 ..Default::default()
             },
         );
 
+        let started = std::time::Instant::now();
         let error = handle
             .call("spin", serde_json::Value::Null)
             .await
-            .expect_err("the runaway must time out");
+            .expect_err("the runaway must be stopped");
         assert!(matches!(error, ObjectError::Call(_)), "{error}");
+        // Work catches this, and says so, rather than sending the
+        // author to look at latency.
+        assert!(
+            error.to_string().contains("too much work"),
+            "the work meter should stop this, not the clock: {error}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "stopped by work in {:?}, long before the backstop",
+            started.elapsed()
+        );
 
         // The budget was per call: the vm answers the next caller.
         let value = handle
@@ -2783,6 +2810,59 @@ mod tests {
 
     /// The output gate: only calls that wrote pay it, and it has run by
     /// the time the caller has its answer.
+    /// Not an assertion, a measurement: what guest work costs, which is
+    /// what a work ceiling would be set from. Run with
+    /// `--ignored --nocapture` to re-derive it on other hardware.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn tick_rate() {
+        let runtime = runtime_with(
+            r#"
+            function spin() while true do end end
+            function work() local s = 0 for i = 1, 200000 do s = s + i end return s end
+            function trivial() return 1 end
+            "#,
+        )
+        .await;
+        let handle = spawn_object_task(
+            runtime,
+            TaskOptions {
+                call_budget: Some(1),
+                ..Default::default()
+            },
+        );
+        for name in ["trivial", "work"] {
+            let before = std::time::Instant::now();
+            let out = handle.call(name, serde_json::Value::Null).await;
+            println!("PROBE {name}: {:?} ok={}", before.elapsed(), out.is_ok());
+        }
+        let before = std::time::Instant::now();
+        let err = handle.call("spin", serde_json::Value::Null).await;
+        println!(
+            "PROBE spin stopped after {:?}: {}",
+            before.elapsed(),
+            err.err().map(|e| e.to_string()).unwrap_or_default()
+        );
+    }
+
+    /// Depth is the other unbounded shape: no cycle, but every hop is a
+    /// mailbox and possibly a network forward.
+    #[test]
+    fn a_call_chain_is_refused_once_it_runs_away() {
+        let shallow: Vec<String> = (0..5).map(|n| format!("p/C/{n}")).collect();
+        extend_call_chain(&shallow, "p/C/next").expect("ordinary nesting is fine");
+
+        let deep: Vec<String> = (0..MAX_CALL_DEPTH).map(|n| format!("p/C/{n}")).collect();
+        let refused = extend_call_chain(&deep, "p/C/one-more")
+            .expect_err("past the depth limit it is a runaway");
+        assert!(refused.contains("past the limit"), "{refused}");
+
+        // The cycle refusal is unchanged and still takes precedence.
+        let cyclic = vec!["p/C/a".to_owned(), "p/C/b".to_owned()];
+        let cycle = extend_call_chain(&cyclic, "p/C/a").expect_err("a cycle deadlocks");
+        assert!(cycle.contains("Reentrant"), "{cycle}");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn the_after_write_gate_fires_for_writes_only() {
         const SOURCE: &str = r#"
