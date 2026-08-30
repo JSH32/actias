@@ -36,7 +36,7 @@ fn database_of(url: &str) -> Option<(String, String)> {
 /// CREATE's text when creating fails.
 pub async fn ensure_database(url: &str) -> Result<(), String> {
     match PgConnection::connect(url).await {
-        Ok(mut connection) => {
+        Ok(connection) => {
             let _ = connection.close().await;
             return Ok(());
         }

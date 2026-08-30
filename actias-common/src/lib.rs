@@ -2,10 +2,10 @@ pub mod classes;
 pub mod config;
 pub mod logging;
 pub mod naming;
-#[cfg(feature = "postgres")]
-pub mod postgres;
 #[cfg(feature = "otel")]
 pub mod otel;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 pub use thiserror;
 pub use tracing;
 
