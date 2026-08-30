@@ -12,6 +12,11 @@ import { ProjectModule } from 'src/project/project.module';
   imports: [AuthModule, ProjectModule],
   exports: [RegistrationService],
   controllers: [RegistrationController, ManageController],
-  providers: [RegistrationService, BootstrapService, MailService, ManageService],
+  providers: [
+    RegistrationService,
+    BootstrapService,
+    MailService,
+    ManageService,
+  ],
 })
 export class AdminModule {}
