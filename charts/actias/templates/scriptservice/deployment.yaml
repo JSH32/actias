@@ -20,9 +20,9 @@ metadata:
   labels:
     {{- include "actias.labels" (dict "root" . "component" "script") | nindent 4 }}
 spec:
-  # The node registry rides this binary, and its sweeps are per-replica
-  # on timers; concurrent sweeping is undrilled, so this stays at one.
+  {{- if not .Values.scriptService.autoscaling.enabled }}
   replicas: {{ .Values.scriptService.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "actias.selectorLabels" (dict "root" . "component" "script") | nindent 6 }}

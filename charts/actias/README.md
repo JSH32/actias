@@ -117,10 +117,14 @@ timers, sweep cadence, database size cap, WAL shipping thresholds,
 the durability ack budget). Anything else goes through
 `workers.extraEnv`.
 
-`scriptService.replicas` stays at 1 for now: its background sweeps
-have not been drilled with concurrent replicas. Everything else
-scales with `replicas`, or `autoscaling` for the API, web, kv and
-secret services.
+Every service scales with `replicas`. The stateless ones (api, web,
+kv, secret, script) can also autoscale on CPU through `autoscaling`;
+workers are left out because CPU says little about what makes a worker
+busy. The script service belongs in that list because it keeps nothing
+in memory: Postgres decides who owns a lease, Redis holds live script
+sessions, and its one background job deletes aged-out node rows, which
+is harmless to run from several replicas. The default is 1 because the
+registry is rarely the busy part.
 
 ## Observability
 

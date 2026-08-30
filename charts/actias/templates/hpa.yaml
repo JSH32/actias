@@ -11,6 +11,7 @@ an adapter the environment may not run.
   (dict "name" "kv" "values" .Values.kv)
   (dict "name" "api" "values" .Values.api)
   (dict "name" "web" "values" .Values.web)
+  (dict "name" "script" "values" .Values.scriptService)
 }}
 {{- range $component := $components }}
 {{- if $component.values.autoscaling.enabled }}

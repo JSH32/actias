@@ -126,9 +126,12 @@ ingress:
 
 scriptService:
   repository: actias_script_service
-  # Fixed at 1 until its background sweeps are drilled with
-  # concurrent replicas.
   replicas: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
   # Node liveness ttl, seconds. A crashed worker's objects are
   # unreachable for at most this long.
   nodeTtlSecs: 45
