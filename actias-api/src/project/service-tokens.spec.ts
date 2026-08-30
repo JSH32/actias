@@ -8,7 +8,11 @@ import { AclGuard } from './acl/acl.guard';
 import { AclService } from './acl/acl.service';
 import { AccessFields } from './acl/accessFields';
 
-const PROJECT = { id: 'project-1' } as any;
+// Real uuids: the acl guard runs the project param through requireUuid,
+// so a readable placeholder would fail as a malformed id and never
+// reach the authorization these tests are about.
+const PROJECT = { id: '11111111-1111-4111-8111-111111111111' } as any;
+const OTHER_PROJECT_ID = '22222222-2222-4222-8222-222222222222';
 
 /** A stored token row carrying the given access bits. */
 function tokenWith(bits: AccessFields) {
@@ -114,7 +118,7 @@ describe('service token authorization', () => {
 
   it('refuses a token inside a project it does not belong to', async () => {
     const token = tokenWith(AccessFields.FULL);
-    token.project = { id: 'another-project' };
+    token.project = { id: OTHER_PROJECT_ID };
 
     const guard = aclGuard({ bitfield: AccessFields.SCRIPT_READ });
     const request: any = {
