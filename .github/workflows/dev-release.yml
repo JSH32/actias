@@ -1,0 +1,226 @@
+name: Dev release
+
+# A release you queue by hand, for trying a branch in a real cluster
+# without cutting a version. Everything it publishes is marked: images
+# are tagged dev-<sha> and never `latest`, and the chart version carries
+# a `-dev.` prerelease segment, so `helm pull` without a version and
+# `:latest` both keep resolving to the last real release.
+on:
+  workflow_dispatch:
+    inputs:
+      run_ci:
+        description: "Run the CI gate first (off publishes an unverified build)"
+        type: boolean
+        default: true
+      images:
+        description: "Publish images (off reuses whatever dev tag is already in the registry)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: dev-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The tags every later job uses, computed once so the chart and the
+  # images cannot disagree about what was built.
+  name:
+    name: Name the build
+    runs-on: ubuntu-24.04
+    outputs:
+      image_tag: ${{ steps.tags.outputs.image_tag }}
+      chart_version: ${{ steps.tags.outputs.chart_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute tags
+        id: tags
+        run: |
+          short="$(git rev-parse --short HEAD)"
+          base="$(grep '^version:' charts/actias/Chart.yaml | awk '{print $2}')"
+          # SemVer prerelease, so it sorts below the release it branches
+          # from and helm never selects it by default. The run number
+          # keeps two builds of one commit distinct.
+          echo "image_tag=dev-$short" >> "$GITHUB_OUTPUT"
+          echo "chart_version=$base-dev.${{ github.run_number }}.$short" >> "$GITHUB_OUTPUT"
+
+  gate:
+    name: CI gate
+    runs-on: ubuntu-24.04
+    if: inputs.run_ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('actias-api/package-lock.json', 'actias-web/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Run CI pipeline
+        run: nix develop -c just ci
+
+  images:
+    name: Publish ${{ matrix.image.name }}
+    runs-on: ubuntu-24.04
+    needs: [name, gate]
+    # The gate is skipped when run_ci is off, and a skipped need would
+    # otherwise skip this too. Failure still stops the run.
+    if: always() && inputs.images && needs.gate.result != 'failure' && needs.name.result == 'success'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: actias_script_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-script-service"
+          - name: actias_secret_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-secret-service"
+          - name: actias_kv_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-kv"
+          - name: actias_worker_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-worker"
+          - name: actias_api
+            context: .
+            dockerfile: ./docker/Dockerfile.api
+            build-args: ""
+          - name: actias_web
+            context: .
+            dockerfile: ./actias-web/Dockerfile
+            build-args: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No `latest` here on purpose: that tag belongs to the release
+      # pipeline, and a manual build must never move it.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          build-args: ${{ matrix.image.build-args }}
+          push: true
+          tags: ghcr.io/jsh32/${{ matrix.image.name }}:${{ needs.name.outputs.image_tag }}
+
+  chart:
+    name: Publish chart
+    runs-on: ubuntu-24.04
+    needs: [name, gate, images]
+    if: always() && needs.name.result == 'success' && needs.gate.result != 'failure' && needs.images.result != 'failure'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # appVersion is the image tag the chart defaults to, so pointing
+      # it at dev-<sha> is what makes an install pull this build rather
+      # than the last release. The annotations are the marker a human
+      # sees in `helm show chart`.
+      - name: Mark the chart as a dev build
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          path = pathlib.Path("charts/actias/Chart.yaml")
+          text = path.read_text()
+          text = text.replace("appVersion: latest", f"appVersion: {os.environ['IMAGE_TAG']}")
+          text += (
+              "annotations:\n"
+              '  actias.dev/build: "manual"\n'
+              f'  actias.dev/commit: "{os.environ["GITHUB_SHA"]}"\n'
+              f'  actias.dev/run: "{os.environ["RUN_URL"]}"\n'
+          )
+          path.write_text(text)
+          PY
+        env:
+          IMAGE_TAG: ${{ needs.name.outputs.image_tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Package and push
+        run: |
+          nix develop .#kube -c bash -c "
+            just chart-sync
+            helm package charts/actias --version '$CHART_VERSION' --app-version '$IMAGE_TAG'
+            helm push 'actias-$CHART_VERSION.tgz' oci://ghcr.io/jsh32/charts
+          "
+        env:
+          CHART_VERSION: ${{ needs.name.outputs.chart_version }}
+          IMAGE_TAG: ${{ needs.name.outputs.image_tag }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Dev release"
+            echo
+            echo "Not a release: images carry no \`latest\` tag and the chart version is a prerelease."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`$GITHUB_SHA\` |"
+            echo "| Image tag | \`$IMAGE_TAG\` |"
+            echo "| Chart version | \`$CHART_VERSION\` |"
+            echo "| CI gate | ${{ inputs.run_ci && 'ran' || 'SKIPPED' }} |"
+            echo
+            echo '```sh'
+            echo "helm install actias oci://ghcr.io/jsh32/charts/actias --version $CHART_VERSION \\"
+            echo "  --set secrets.jwtKey.value=... --set secrets.masterKey.value=... \\"
+            echo "  --set secrets.internalToken.value=..."
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          CHART_VERSION: ${{ needs.name.outputs.chart_version }}
+          IMAGE_TAG: ${{ needs.name.outputs.image_tag }}
