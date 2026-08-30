@@ -15,6 +15,10 @@ pub struct SqliteStorage {
     connection: rusqlite::Connection,
 }
 
+/// How long a connection waits for a lock another one holds. Contention
+/// here is momentary by construction, so waiting resolves it.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl SqliteStorage {
     /// Opens (or creates) the object's file.
     ///
@@ -23,6 +27,13 @@ impl SqliteStorage {
     pub fn open(path: &Path) -> Result<Self, String> {
         let connection = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
 
+        // The shipper opens its own connection to this file to snapshot
+        // and checkpoint while this one commits. Sqlite fails such a
+        // collision instantly by default, which loses writes that only
+        // needed to wait a moment.
+        connection
+            .busy_timeout(BUSY_TIMEOUT)
+            .map_err(|e| e.to_string())?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| e.to_string())?;
@@ -70,6 +81,9 @@ impl SqliteStorage {
         let connection =
             rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .map_err(|e| e.to_string())?;
+        connection
+            .busy_timeout(BUSY_TIMEOUT)
+            .map_err(|e| e.to_string())?;
 
         Ok(Self { connection })
     }
