@@ -13,6 +13,7 @@ import { ResourcesModule } from './resources/resources.module';
 import { KvModule } from './kv/kv.module';
 import { SecretsModule } from './secrets/secrets.module';
 import { AdminModule } from './admin/admin.module';
+import { InterestModule } from './interest/interest.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { AdminModule } from './admin/admin.module';
     SecretsModule,
     AdminModule,
     ResourcesModule,
+    InterestModule,
   ],
   controllers: [],
   providers: [
