@@ -85,21 +85,52 @@ if [ "$INGRESS" = 1 ]; then
     echo "== installing the ingress controller"
     kubectl apply -f "$INGRESS_MANIFEST" >/dev/null
     # Wait on the POD, not the Deployment: the deployment reports
-    # available before the admission webhook inside it is listening, and
-    # creating an Ingress against a webhook that is not yet serving fails
-    # the release with a connection refused.
+    # available before the admission webhook inside it is listening.
     kubectl -n ingress-nginx wait --for=condition=ready pod \
         --selector=app.kubernetes.io/component=controller --timeout=5m
-    # Belt: the webhook is reached through its service, so wait until
-    # that service actually has an endpoint behind it.
-    for _ in $(seq 1 60); do
-        ready=$(kubectl -n ingress-nginx get endpointslices \
-            -l kubernetes.io/service-name=ingress-nginx-controller-admission \
-            -o jsonpath='{.items[*].endpoints[*].addresses[*]}' 2>/dev/null)
-        [ -n "$ready" ] && break
+    # The patch job installs the webhook's CA bundle. Until it finishes
+    # the apiserver has nothing to trust the endpoint with.
+    kubectl -n ingress-nginx wait --for=condition=complete job \
+        --selector=app.kubernetes.io/component=admission-webhook --timeout=5m 2>/dev/null || true
+
+    # None of the above proves the apiserver can actually reach the
+    # webhook: an endpoint is published before it is ready, and
+    # kube-proxy programs the service a moment later still. So ask the
+    # real question instead of proxying for it. A server-side dry run
+    # runs admission and creates nothing, so it fails exactly as the
+    # release would and costs nothing when it succeeds.
+    admitted=0
+    for _ in $(seq 1 90); do
+        if kubectl create --dry-run=server -f - >/dev/null 2>&1 <<'PROBE'; then
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: admission-probe
+  namespace: default
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: probe.invalid
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: probe
+                port:
+                  number: 80
+PROBE
+            admitted=1
+            break
+        fi
         sleep 2
     done
-    [ -n "$ready" ] || { echo "the admission webhook never got an endpoint"; exit 1; }
+    [ "$admitted" = 1 ] || {
+        echo "the admission webhook never accepted an ingress"
+        kubectl -n ingress-nginx get pod,svc,endpointslices
+        exit 1
+    }
 fi
 
 echo "== installing the chart"
@@ -203,7 +234,7 @@ end)
 LUA
 
 cargo build -p actias-cli --quiet
-"$REPO/target/debug/actias-cli" publish "$DEVDIR/project" >/dev/null
+"$REPO/target/debug/actias" publish "$DEVDIR/project" >/dev/null
 
 echo "== the worker serves the script"
 body=""
