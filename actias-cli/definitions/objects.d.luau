@@ -60,40 +60,48 @@ type ObjectState = {
     unfollow: (self: ObjectState, target: any, topic: string) -> boolean,
     followers: (self: ObjectState, topic: string?) -> { any },
     drop_followers: (self: ObjectState, match: any) -> (),
-    [string]: any,
 }
 
--- A class body: `publishes` entries are bare topics (the hooks.follow
--- gate decides) or topic = policy ("self", "public"); `receives` maps
--- "Class:topic" to a handler; `migrations` names a bundle dir applied
--- to each instance's own storage before init (init only ever seeds);
--- every other key is a routable method.
+-- What `object` accepts: a table whose every entry is a state-first
+-- method. The reserved keys a body may also carry are `publishes`
+-- (bare topics, or topic = "self" / "public"), `migrations` (a bundle
+-- dir applied to each instance before init), `receives`
+-- ("Class:topic" -> handler), `admit`, `expire` and `hooks`
+-- (init, alarm, follow).
+--
+-- Those keys are deliberately NOT fields of this type. A generic
+-- constraint carrying named optional fields makes Luau's inference fail
+-- whenever a body omits one, which is what made `--!strict` unusable on
+-- any class that did not happen to declare `migrations`. Their names and
+-- shapes are enforced where they are actually read: RESERVED_METHODS in
+-- actias-declarations, and the declaration pass behind `actias check`.
 type ClassBody = {
-    publishes: { [number | string]: string }?,
-    migrations: string?,
-    -- A name this returns false for never comes to exist: no lease, no
-    -- row, no file. Runs once per fresh identity, never on access.
-    admit: ((name: string) -> boolean)?,
-    -- An instance untouched this long is deleted by the platform; touch
-    -- refreshes. A pending alarm blocks expiry.
-    expire: string?,
-    receives: { [string]: (state: ObjectState, event: StreamEvent) -> () }?,
-    hooks: {
-        init: ((state: ObjectState) -> ())?,
-        alarm: ((state: ObjectState) -> ())?,
-        follow: ((state: ObjectState, topic: string, follower: Follower) -> boolean)?,
-    }?,
-    -- Methods are state-first; the new solver types their parameter
-    -- from this indexer, so `state` needs no annotation in a method.
     [string]: (state: ObjectState, ...any) -> any,
 }
+
+-- Sibling dispatch and scratch keys in a `--!strict` file: name the
+-- class's own state type and annotate the methods with it. `ObjectState`
+-- carries no catch-all, so this is also what makes `state:typo()` an
+-- error instead of silently passing.
+--
+--     type AccountState = ObjectState & {
+--         face: (AccountState) -> Face,
+--         cached: Face?,
+--     }
+--     local Account = object "Account" {
+--         face = function(state: AccountState) ... end,
+--         home = function(state: AccountState) return state:face() end,
+--     }
+--
+-- Without the annotation a method's state is `ObjectState`, which is
+-- everything the platform gives you and nothing the class adds.
 
 -- Callable: `Room("lobby")` is the blessed spelling of `Room:get("lobby")`.
 -- Generic over the class body, so an instance offers the class's own
 -- methods: their state-first signatures are what `:` calls satisfy.
 -- The reference form has no body to carry, so its instances stay any.
-type ObjectHandle<Body> = ((name: string) -> Body) & {
-    get: (self: ObjectHandle<Body>, name: string) -> Body,
+type ObjectHandle<Body> = ((name: string) -> Body & ObjectState) & {
+    get: (self: ObjectHandle<Body>, name: string) -> Body & ObjectState,
 }
 
 declare object: (class: string) -> <Body>(body: Body & ClassBody) -> ObjectHandle<Body>

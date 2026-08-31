@@ -27,6 +27,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 // One in-memory module per project file, keyed by its bundle path.
 // `require("lib/domain")` resolves against those keys, with or without
@@ -655,20 +656,39 @@ extern "C" const char* definitionScript(const char* module, int line, int column
                 {
                     if (Luau::TypeId* tableType = checked->astTypes.find(index->expr))
                     {
+                        // An object instance is `Body & ObjectState`, so the
+                        // key can live in either half: gather every table in
+                        // the type rather than only accepting a bare one.
+                        std::vector<const Luau::TableType*> tables;
                         Luau::TypeId followed = Luau::follow(*tableType);
                         if (const Luau::TableType* table = Luau::get<Luau::TableType>(followed))
-                        {
-                            auto prop = table->props.find(index->index.value);
-                            if (prop != table->props.end() && prop->second.location)
-                                target = prop->second.location;
-                            // Alias-declared tables (the platform types)
-                            // carry no per-key locations; the type's own
-                            // definition site is the next best jump.
-                            else if (prop != table->props.end())
-                                target = table->definitionLocation;
+                            tables.push_back(table);
+                        else if (const Luau::IntersectionType* parts = Luau::get<Luau::IntersectionType>(followed))
+                            for (Luau::TypeId part : parts->parts)
+                                if (const Luau::TableType* table = Luau::get<Luau::TableType>(Luau::follow(part)))
+                                    tables.push_back(table);
 
-                            if (target && !table->definitionModuleName.empty())
-                                targetModule = table->definitionModuleName;
+                        // Two passes so a real per-key location wins over an
+                        // alias's own site: the class body knows where the
+                        // method was written, ObjectState only knows where
+                        // the type was declared.
+                        for (bool exact : {true, false})
+                        {
+                            if (target)
+                                break;
+                            for (const Luau::TableType* table : tables)
+                            {
+                                auto prop = table->props.find(index->index.value);
+                                if (prop == table->props.end())
+                                    continue;
+                                if (exact && !prop->second.location)
+                                    continue;
+                                target = exact ? prop->second.location : table->definitionLocation;
+                                if (target && !table->definitionModuleName.empty())
+                                    targetModule = table->definitionModuleName;
+                                if (target)
+                                    break;
+                            }
                         }
                     }
                 }
