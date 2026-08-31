@@ -263,32 +263,32 @@ printf 'hello from an asset' > "$DEVDIR/published/motd.txt"
 # Scaffold the migration through the cli, then give it content. The bare
 # CREATE (no IF NOT EXISTS) doubles as the reapply detector: a second
 # application would fail every db request.
-"$REPO/target/debug/actias-cli" sql main create visits --directory "$DEVDIR/published"
+"$REPO/target/debug/actias" sql main create visits --directory "$DEVDIR/published"
 cat > "$DEVDIR/published/migrations/main/0001_visits.sql" <<'SQL'
 CREATE TABLE visits (at INTEGER);
 SQL
-"$REPO/target/debug/actias-cli" sql main create alarm_marks --directory "$DEVDIR/published"
+"$REPO/target/debug/actias" sql main create alarm_marks --directory "$DEVDIR/published"
 cat > "$DEVDIR/published/migrations/main/0002_alarm_marks.sql" <<'SQL'
 CREATE TABLE alarm_marks (at INTEGER);
 SQL
-"$REPO/target/debug/actias-cli" sql main create cron_marks --directory "$DEVDIR/published"
+"$REPO/target/debug/actias" sql main create cron_marks --directory "$DEVDIR/published"
 cat > "$DEVDIR/published/migrations/main/0003_cron_marks.sql" <<'SQL'
 CREATE TABLE cron_marks (at INTEGER);
 SQL
-"$REPO/target/debug/actias-cli" sql main create queue_done --directory "$DEVDIR/published"
+"$REPO/target/debug/actias" sql main create queue_done --directory "$DEVDIR/published"
 cat > "$DEVDIR/published/migrations/main/0004_queue_done.sql" <<'SQL'
 CREATE TABLE queue_done (n INTEGER);
 SQL
 printf '<h1>served without a vm</h1>' > "$DEVDIR/published/page.html"
 
 echo "== setting a secret (actias secret put)"
-"$REPO/target/debug/actias-cli" secret "$PROJECT_ID" put smoke-token hunter2-from-secrets
+"$REPO/target/debug/actias" secret "$PROJECT_ID" put smoke-token hunter2-from-secrets
 
-"$REPO/target/debug/actias-cli" publish "$DEVDIR/published"
+"$REPO/target/debug/actias" publish "$DEVDIR/published"
 
 echo "== republishing unchanged (incremental publish)"
 # Every hash is now stored, so the same tree must upload nothing.
-REPUBLISH=$("$REPO/target/debug/actias-cli" publish "$DEVDIR/published")
+REPUBLISH=$("$REPO/target/debug/actias" publish "$DEVDIR/published")
 echo "$REPUBLISH" | grep -q "Uploading 0 of" \
     || { echo "an unchanged republish resent content"; echo "$REPUBLISH"; exit 1; }
 echo "republish uploaded zero files"
@@ -444,8 +444,7 @@ echo "== a connection hibernates with the socket open and revives on delivery"
 # The whole arc's claim in one sequence: declared handlers run, the vm
 # falls while the socket stays open (the gauges say so), a delivery
 # revives it with conn.state intact, and closing severs the edges.
-WORKER_URL="$WORKER" IDENT="$IDENT" NODE_PATH="$REPO/actias-api/node_modules" node -e '
-const WebSocket = require("ws");
+WORKER_URL="$WORKER" IDENT="$IDENT" node -e '
 const http = require("http");
 const base = process.env.WORKER_URL.replace("http://", "");
 const [host, port] = base.split(":");
@@ -461,8 +460,8 @@ const metric = (name) => new Promise((res) => {
   }).on("error", () => res(NaN));
 });
 const ws = new WebSocket("ws://" + base + "/" + process.env.IDENT + "/live");
-ws.on("message", async (raw) => {
-  const msg = JSON.parse(raw.toString());
+ws.addEventListener("message", async (event) => {
+  const msg = JSON.parse(String(event.data));
   if (msg.kind === "hello") {
     ws.send(JSON.stringify({ nudge: true }));
   } else if (msg.kind === "echo") {
@@ -482,7 +481,7 @@ ws.on("message", async (raw) => {
     process.exit(0);
   }
 });
-ws.on("error", (e) => fail("socket error " + e.message));
+ws.addEventListener("error", () => fail("socket error"));
 ' || { echo "the connection checkpoint failed"; exit 1; }
 
 # Closing severed the edges: the publisher-side follower table drains.
@@ -496,14 +495,13 @@ done
 echo "close severed the edges; the follower table is empty"
 
 echo "== a timered connection beats and stays warm"
-WORKER_URL="$WORKER" IDENT="$IDENT" NODE_PATH="$REPO/actias-api/node_modules" node -e '
-const WebSocket = require("ws");
+WORKER_URL="$WORKER" IDENT="$IDENT" node -e '
 const base = process.env.WORKER_URL.replace("http://", "");
 const fail = (why) => { console.error("timer smoke: " + why); process.exit(1); };
 setTimeout(() => fail("timeout"), 15000);
 const ws = new WebSocket("ws://" + base + "/" + process.env.IDENT + "/pulse");
-ws.on("message", (raw) => {
-  const msg = JSON.parse(raw.toString());
+ws.addEventListener("message", (event) => {
+  const msg = JSON.parse(String(event.data));
   if (msg.kind !== "beat") return;
   if (msg.n === 2) {
     if (msg.missed !== 0) fail("an idle timer missed ticks: " + msg.missed);
@@ -512,7 +510,7 @@ ws.on("message", (raw) => {
     process.exit(0);
   }
 });
-ws.on("error", (e) => fail("socket error " + e.message));
+ws.addEventListener("error", () => fail("socket error"));
 ' || { echo "the timer checkpoint failed"; exit 1; }
 
 echo "== cron handler runs on schedule"
@@ -563,7 +561,7 @@ on "fetch" (function(request)
     return { body = "sent", headers = {} }
 end)
 LUA
-"$REPO/target/debug/actias-cli" publish "$DEVDIR/producer"
+"$REPO/target/debug/actias" publish "$DEVDIR/producer"
 curl -sf "$WORKER/$PRODUCER_IDENT/" -o /dev/null
 QN2=0
 for _ in $(seq 1 15); do
@@ -736,7 +734,7 @@ on "fetch" (function(request)
     return { body = "version two" }
 end)
 LUA
-"$REPO/target/debug/actias-cli" publish "$DEVDIR/published"
+"$REPO/target/debug/actias" publish "$DEVDIR/published"
 
 # The worker's pointer cache expires within seconds; wait for the flip.
 CURRENT=""
@@ -764,7 +762,7 @@ echo "old revision previews at /_rev/ and $IDENT--r-<rev>.scripts.localhost whil
 echo "== environment aliases (actias alias)"
 # An alias is a movable pointer: aim staging at the old revision, see the
 # old code at its url, then move it to the current one and see the new.
-"$REPO/target/debug/actias-cli" alias "$SCRIPT_ID" set staging "$OLD_REV"
+"$REPO/target/debug/actias" alias "$SCRIPT_ID" set staging "$OLD_REV"
 
 ALIASED=$(curl -sf "$WORKER/_alias/$IDENT/staging/")
 echo "$ALIASED" | jq -e '.ok == true' >/dev/null \
@@ -773,13 +771,13 @@ HOST_ALIASED=$(curl -sf -H "Host: $IDENT--staging.scripts.localhost" "$WORKER/")
 echo "$HOST_ALIASED" | jq -e '.ok == true' >/dev/null \
     || { echo "the alias subdomain did not serve the old revision: $HOST_ALIASED"; exit 1; }
 
-"$REPO/target/debug/actias-cli" alias "$SCRIPT_ID" list | grep -q "staging" \
+"$REPO/target/debug/actias" alias "$SCRIPT_ID" list | grep -q "staging" \
     || { echo "alias list did not show staging"; exit 1; }
 
 # Moving the alias is the rollback primitive; the pointer ttl bounds how
 # long the old target keeps serving.
 CURRENT_REV=$(curl -sf "$API/script/$SCRIPT_ID" -H "$AUTH" | jq -r .currentRevisionId)
-"$REPO/target/debug/actias-cli" alias "$SCRIPT_ID" set staging "$CURRENT_REV"
+"$REPO/target/debug/actias" alias "$SCRIPT_ID" set staging "$CURRENT_REV"
 MOVED=""
 for _ in $(seq 1 30); do
     MOVED=$(curl -sf -H "Host: $IDENT--staging.scripts.localhost" "$WORKER/" || true)
@@ -806,11 +804,11 @@ mkdir -p "$MACHINE_CONFIG/actias-cli"
 printf '{"apiUrl":"http://127.0.0.1:%s","token":"%s"}' "$ACTIAS_API_PORT" "$SVC_TOKEN" \
     > "$MACHINE_CONFIG/actias-cli/settings.json"
 
-XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias-cli" publish "$DEVDIR/published" \
+XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias" publish "$DEVDIR/published" \
     || { echo "a service token could not publish"; exit 1; }
 
 curl -sf -X DELETE "$API/project/$PROJECT_ID/tokens/$SVC_ID" -H "$AUTH" >/dev/null
-if XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias-cli" publish "$DEVDIR/published" >/dev/null 2>&1; then
+if XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias" publish "$DEVDIR/published" >/dev/null 2>&1; then
     echo "a revoked token still published"
     exit 1
 fi
@@ -822,9 +820,9 @@ echo "== local tests (actias test)"
 UNIT="$DEVDIR/unit"
 mkdir -p "$UNIT"
 cp -r "$REPO/actias-cli/template/templates/basic/." "$UNIT/"
-"$REPO/target/debug/actias-cli" test "$UNIT" \
+"$REPO/target/debug/actias" test "$UNIT" \
     || { echo "the template's shipped test failed"; exit 1; }
-"$REPO/target/debug/actias-cli" check "$UNIT" \
+"$REPO/target/debug/actias" check "$UNIT" \
     || { echo "the template failed actias check"; exit 1; }
 echo "template test and typed check passed on the local runtime"
 
@@ -848,7 +846,7 @@ end)
 LUA
 
 DEV_LOG="$DEVDIR/dev.log"
-(cd "$DEVDIR" && exec "$REPO/target/debug/actias-cli" dev project --worker-url "$WORKER" > "$DEV_LOG" 2>&1) &
+(cd "$DEVDIR" && exec "$REPO/target/debug/actias" dev project --worker-url "$WORKER" > "$DEV_LOG" 2>&1) &
 DEV_PID=$!
 
 LIVE_URL=""
@@ -890,7 +888,7 @@ DEV_PID=""
 
 echo "== tailing the published script (actias tail)"
 TAIL_LOG="$DEVDIR/tail.log"
-"$REPO/target/debug/actias-cli" tail "$SCRIPT_ID" > "$TAIL_LOG" 2>&1 &
+"$REPO/target/debug/actias" tail "$SCRIPT_ID" > "$TAIL_LOG" 2>&1 &
 DEV_PID=$!
 
 for _ in $(seq 1 15); do
@@ -920,18 +918,17 @@ echo "== websocket tail authenticates via query token (browser path)"
 # Browsers cannot set upgrade headers; the dashboard's live tail rides a
 # ?token= query instead. Prove the whole handshake: ready, tail, tailing.
 WS_URL="ws://127.0.0.1:$ACTIAS_API_PORT/liveScript?token=$TOKEN" SID="$SCRIPT_ID" \
-NODE_PATH="$REPO/actias-api/node_modules" node -e '
-const WebSocket = require("ws");
+node -e '
 const ws = new WebSocket(process.env.WS_URL);
 let ok = false;
-ws.on("message", (raw) => {
-  const message = JSON.parse(raw);
+ws.addEventListener("message", (event) => {
+  const message = JSON.parse(String(event.data));
   if (message.status === "ready")
     ws.send(JSON.stringify({ event: "tail", data: { scriptId: process.env.SID } }));
   if (message.status === "tailing") { ok = true; ws.close(); }
 });
-ws.on("close", () => process.exit(ok ? 0 : 1));
-ws.on("error", () => process.exit(1));
+ws.addEventListener("close", () => process.exit(ok ? 0 : 1));
+ws.addEventListener("error", () => process.exit(1));
 setTimeout(() => process.exit(1), 10000);
 ' || { echo "query-token websocket tail failed"; exit 1; }
 echo "browser tail handshake completed"
@@ -943,8 +940,7 @@ echo "== playground protocol round-trips (browser live session)"
 curl -sf "$WEB/script/shell/workbench" -o /dev/null \
     || { echo "the workbench page did not render"; exit 1; }
 PLAY_SESSION=$(WS_URL="ws://127.0.0.1:$ACTIAS_API_PORT/liveScript?token=$TOKEN" SID="$SCRIPT_ID" \
-NODE_PATH="$REPO/actias-api/node_modules" node -e '
-const WebSocket = require("ws");
+node -e '
 const ws = new WebSocket(process.env.WS_URL);
 const source = Buffer.from(
   `on "fetch" (function(r) return { body = "from the playground" } end)`
@@ -956,12 +952,12 @@ const payload = {
     bundle: { entryPoint: "main.lua", files: [{ filePath: "main.lua", content: source }] },
   },
 };
-ws.on("message", (raw) => {
-  const message = JSON.parse(raw);
+ws.addEventListener("message", (event) => {
+  const message = JSON.parse(String(event.data));
   if (message.status === "ready") ws.send(JSON.stringify({ event: "start", data: payload }));
   if (message.status === "created") { console.log(message.sessionId); process.exit(0); }
 });
-ws.on("error", () => process.exit(1));
+ws.addEventListener("error", () => process.exit(1));
 setTimeout(() => process.exit(1), 10000);
 ') || { echo "the playground session did not start"; exit 1; }
 PLAY_BODY=$(curl -sf "$WORKER/_live/$IDENT/$PLAY_SESSION/")
