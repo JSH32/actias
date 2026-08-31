@@ -24,6 +24,9 @@ actias login          # asks for the api url and your credentials
 actias project create my-project
 ```
 
+`actias projects` lists the ones you can reach, and the console shows the
+same set at `/projects`.
+
 A **project** owns your scripts and everything they declare. The kv
 namespaces, databases, objects and secrets a script uses are scoped to
 it.
@@ -49,10 +52,11 @@ cd hello
 Open `main.lua`:
 
 ```lua
+-- `on` declares an event handler; declarations live at the top level.
 on "fetch" (function(request)
     return {
-        headers = { ["content-type"] = "application/json" },
-        body = json.stringify({ hello = "actias" }),
+        body = json.stringify({hello = "world"}),
+        headers = {["Content-Type"] = "application/json"}
     }
 end)
 ```
@@ -91,7 +95,7 @@ Your script answers at `<worker-url>/<identifier>/`:
 
 ```sh
 curl http://localhost:3002/hello/
-{"hello":"actias"}
+{"hello":"world"}
 ```
 
 ## Add something that remembers

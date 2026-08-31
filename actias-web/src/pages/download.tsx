@@ -32,7 +32,7 @@ const steps = [
   },
   {
     title: 'Make a project',
-    body: 'A project owns your scripts and everything they declare.',
+    body: 'A project owns your scripts and everything they declare. actias projects lists the ones you can reach.',
     command: 'actias project create my-project',
   },
   {

@@ -63,16 +63,16 @@ between two steps replays from the last recorded one.
 
 ## Limits
 
-Defaults. An operator running their own workers can change every one
-of them.
+Defaults. Most are operator-tunable on a self-hosted worker; the two
+budget rows are constants today.
 
 <table>
   <thead>
     <tr><th>Limit</th><th>Value</th><th>What happens at it</th></tr>
   </thead>
   <tbody>
-    <tr><td>Request budget</td><td>30 seconds</td><td>the request is cut off</td></tr>
-    <tr><td>Object call budget</td><td>10 seconds per call</td><td>the call is cut off</td></tr>
+    <tr><td>Guest work budget</td><td>about a second of solid computation, per request and per object call</td><td>the run is cut off</td></tr>
+    <tr><td>Wall backstop</td><td>10 seconds, for code stuck outside the vm</td><td>the run is cut off</td></tr>
     <tr><td>Object database</td><td>64 MB per instance</td><td>writes fail, reads keep working</td></tr>
     <tr><td>Queue attempts</td><td>5, first retry 2s, doubling to 1h</td><td>dead-lettered</td></tr>
     <tr><td>Stream edge attempts</td><td>8, first retry 500ms, doubling to 60s</td><td>the edge is dropped</td></tr>
@@ -81,6 +81,11 @@ of them.
     <tr><td>conn.state</td><td>64 KB serialized</td><td>the connection is closed; a bigger session belongs in an object</td></tr>
   </tbody>
 </table>
+
+Guest code is metered in work rather than seconds, so waiting on io,
+a database or another object costs nothing and only computation counts.
+The clock stays as a backstop for what the meter cannot see: code
+blocked inside a host call that never re-enters the vm.
 
 The connection inbox is not a buffer to fill. A connection whose
 handlers cannot keep up has chosen to fall behind, and the platform

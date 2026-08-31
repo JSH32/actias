@@ -72,8 +72,9 @@ uri:tostring()
 - `http` is absent from a [workflow](/docs/reference/workflow)
   environment, step bodies included. Call an object from a step to
   reach the network.
-- An outbound call spends the request's 30 second budget. A slow host
-  takes the whole request down with it.
+- Waiting on a response spends no work budget, but it does spend the
+  request's ten second wall backstop. A slow host takes the whole
+  request down with it.
 - `request.headers` keys are lowercase. `request.headers["Content-Type"]`
   is nil.
 
