@@ -55,24 +55,63 @@ const projectNav: { label: string; slug: string; icon: IconName }[] = [
   { label: 'Tokens', slug: 'tokens', icon: 'tokens' },
 ];
 
-/** Minimal chrome for public pages: wordmark, log in, nothing else. */
+/** The landing's own sections, offered as anchors in the public bar so
+ * the page is navigable from its chrome. Only the landing has them, so
+ * only the landing shows them. */
+const landingSections = [
+  { label: 'Primitives', href: '#primitives' },
+  { label: 'Objects', href: '#objects' },
+  { label: 'Placement', href: '#placement' },
+  { label: 'Realtime', href: '#realtime' },
+  { label: 'Hosted', href: '#hosted' },
+];
+
+/** Chrome for public pages: a sticky hairline bar carrying the wordmark,
+ * the way in, and one filled action. On the landing the middle of the
+ * bar becomes that page's section anchors; everywhere else it carries
+ * the routes a reader of the docs wants next. */
 function PublicChrome({ children }: React.PropsWithChildren) {
   const { data: user } = useUser();
+  const router = useRouter();
+  const onLanding = router.pathname === '/';
+
   return (
     <div className={classes.publicPage}>
       <header className={classes.publicHeader}>
-        <Link href="/" className={classes.brand}>
+        <Link href="/" className={classes.publicBrand}>
           <Mark size={26} />
           <span>ACTIAS</span>
         </Link>
         <nav className={classes.publicNav}>
-          <Link href="/docs">Docs</Link>
-          <Link href="/download">Download</Link>
+          {onLanding ? (
+            <span className={classes.publicAnchors}>
+              {landingSections.map((section) => (
+                <a key={section.href} href={section.href}>
+                  {section.label}
+                </a>
+              ))}
+            </span>
+          ) : (
+            <Link href="/download">Download</Link>
+          )}
+          <a
+            href="https://github.com/JSH32/actias"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Source on GitHub"
+            className={classes.publicIconLink}
+          >
+            <Icon name="github" size={17} />
+          </a>
           {user ? (
             <Link href="/projects">Open console</Link>
           ) : (
             <Link href="/login">Log in</Link>
           )}
+          <Link href="/docs" className={classes.publicCta}>
+            Docs
+            <Icon name="arrowRight" size={13} />
+          </Link>
         </nav>
       </header>
       <main>{children}</main>
@@ -429,7 +468,9 @@ export function Shell({ children }: React.PropsWithChildren) {
                 <span className={classes.switcherLabel}>
                   {currentProject?.name ?? 'Select project'}
                 </span>
-                <span className={classes.switcherChevron}>▾</span>
+                <span className={classes.switcherChevron}>
+                  <Icon name="chevronDown" size={13} />
+                </span>
               </button>
             </Dropdown.Trigger>
             <Dropdown.Portal>

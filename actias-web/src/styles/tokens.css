@@ -1,24 +1,33 @@
 /*
- * The design system's token sheet, verbatim from the Foundations design
- * document (claude design output 01, backed by docs/UI-DESIGN.md).
+ * The design system's token sheet, from the Foundations design document
+ * (claude design output 01, backed by docs/UI-DESIGN.md) with the night
+ * ramp and shape scale taken from the v8 landing concept.
  *
- * Surfaces separate by line, not shadow: three night levels and one
- * border. Luna is a state, not a fill: solid luna is reserved for one
- * primary action per view and the live dot. Elevation exists only for
- * things that float over the page (overlay, modal).
+ * Surfaces separate by line, not shadow: three night levels and three
+ * border weights. Luna is a state, not a fill: solid luna is reserved
+ * for one primary action per view and the live dot. Elevation exists
+ * only for things that float over the page (overlay, modal).
+ *
+ * The night ramp is warm-neutral rather than blue so that luna reads as
+ * the surface's own accent instead of a second hue laid over it. Ink
+ * steps keep the contrast ranks the console was built against: the
+ * hue moved, the ratios did not.
  */
 :root {
   /* Surface and line */
-  --night-0: #0b0d12; /* page background */
-  --night-1: #12151d; /* cards, table rows, sidebar */
-  --night-2: #1a1e29; /* inputs, code, wells */
-  --line: #262b38; /* borders, dividers, rules */
-  --line-soft: #1f2431;
+  --night-0: #0a0c0b; /* page background */
+  --night-1: #0f1211; /* cards, table rows, sidebar */
+  --night-2: #171c1a; /* inputs, code, wells */
+  --line: #2a322c; /* borders that carry an edge: controls, panels */
+  --line-soft: #1e241f; /* dividers inside a panel */
+  --line-faint: #171c18; /* full-bleed section rules */
 
   /* Ink */
-  --ink-1: #e8ebf0; /* primary text, 16.2:1 on night-0 */
-  --ink-2: #9aa3b2; /* secondary text, 7.7:1 */
-  --ink-3: #7c8699; /* non-text only: icons, rules, index numbers */
+  --ink-1: #e9ede9; /* primary text, 16.6:1 on night-0 */
+  --ink-2: #97a09a; /* secondary text, 7.3:1 */
+  --ink-3: #7e887f; /* faint text and icons, 5.3:1 */
+  --ink-lead: #c4ccc6; /* lead paragraphs and emphasis, 12:1 */
+  --ink-mark: #545e57; /* non-text only: rules, ticks, dim marks */
 
   /* Accent and status */
   --luna: #a3e6b4;
@@ -48,6 +57,9 @@
   --syn-field: #9aa3b2;
   --syn-comment: #7c8699;
 
+  /* Luna at reduced strength, for hover fills on a solid luna control. */
+  --luna-lift: #c9f1d5;
+
   /* Type */
   --ui: 'Sora', system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, monospace;
@@ -56,10 +68,12 @@
   /* Archivo stays available for display headings and the wordmark. */
   --display: 'Archivo', system-ui, sans-serif;
 
-  /* Shape */
-  --r1: 2px;
-  --r2: 4px;
-  --r3: 6px;
+  /* Shape. Square, because a surface that separates by line has nothing
+   * for a radius to do: the corner is where two rules meet. Circles are
+   * drawn with a literal 50% where a dot is meant to be a dot. */
+  --r1: 0;
+  --r2: 0;
+  --r3: 0;
 
   /* Elevation: reserved for things that float over the page */
   --shadow-overlay: 0 6px 18px -8px rgb(0 0 0 / 0.7);

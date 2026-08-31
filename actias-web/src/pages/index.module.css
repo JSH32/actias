@@ -1,332 +1,699 @@
+/* The landing. One measure, one surface, and hairlines doing all the
+ * separating: sections are told apart by a rule and a half-step of
+ * background, never by a card floating on a page. */
+
 .page {
+  --measure: 1120px;
+  --gutter: 32px;
   position: relative;
   isolation: isolate;
+  font-size: 15px;
 }
+
+/* Sections are full-bleed so their rules and bands reach the viewport
+ * edge; the padding holds their contents to the measure. */
+.section,
+.sectionRaised,
+.band,
+.closing,
+.footer {
+  padding-left: max(var(--gutter), calc((100% - var(--measure)) / 2));
+  padding-right: max(var(--gutter), calc((100% - var(--measure)) / 2));
+}
+
+.section {
+  padding-top: 72px;
+  padding-bottom: 76px;
+  border-top: 1px solid var(--line-faint);
+}
+
+/* Every other section steps half a level up, which is enough to tell
+ * them apart without a border doing it twice. */
+.sectionRaised {
+  composes: section;
+  background: var(--night-1);
+}
+
+/* Hero */
 
 .hero {
-  position: relative;
-  z-index: 1;
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 68px 24px 56px;
-}
-
-/* The under-construction notice: a line of text, no frame. It sits
- * under the actions so it qualifies the page without competing with the
- * headline. */
-.notice {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(430px, 1fr));
+  gap: 48px;
   align-items: center;
-  gap: 8px;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--ink-3);
-  margin: -28px 0 44px;
+  padding: 80px max(var(--gutter), calc((100% - var(--measure)) / 2)) 64px;
 }
 
-.noticeDot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--warn);
-  flex: none;
+@media (max-width: 940px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
+    padding-top: 56px;
+  }
 }
 
-.noticeStrong {
-  color: var(--ink-2);
+.heroText {
+  min-width: 0;
 }
 
-/* The topbar already wears the mark; the headline stands alone. */
-.brandRow {
-  margin-bottom: 20px;
+.heroPanel {
+  min-width: 0;
 }
 
 .title {
-  font-family: var(--display);
-  font-size: clamp(27px, 4.6vw, 44px);
-  font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: -0.015em;
-  /* One line wherever it fits; balanced rather than orphaned when it
-   * cannot. No character cap, which was breaking it early. */
+  font-size: clamp(34px, 4.6vw, 58px);
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.034em;
+  margin: 0 0 24px;
+  max-width: 18ch;
   text-wrap: balance;
 }
 
 .lead {
-  color: var(--ink-2);
-  font-size: 16px;
-  line-height: 1.62;
-  max-width: 62ch;
-  margin: 0 0 28px;
+  color: var(--ink-lead);
+  font-size: 17px;
+  line-height: 1.55;
+  margin: 0 0 30px;
+  max-width: 46ch;
+}
+
+.ideas {
+  margin-bottom: 32px;
 }
 
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 48px;
+  align-items: center;
+  gap: 18px;
 }
 
-/* Code sample */
-
-.sample {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
-  gap: 20px;
-  align-items: start;
+/* The one filled action per view, sized for a landing rather than a
+ * console row, so it is a link wearing the primary treatment instead of
+ * the console's Button. */
+.primaryAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 20px;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--luna);
+  color: var(--night-0);
+  transition: background 160ms ease;
 }
 
-@media (max-width: 820px) {
-  .sample {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.primaryAction:hover {
+  background: var(--luna-lift);
+  color: var(--night-0);
 }
 
-.code {
-  background: var(--night-1);
+.secondaryAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 20px;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
   border: 1px solid var(--line);
-  border-radius: var(--r3);
-  overflow: hidden;
+  color: var(--ink-1);
+  transition: border-color 160ms ease;
 }
 
-.codeBar {
+.secondaryAction:hover {
+  border-color: var(--ink-3);
+  color: var(--ink-1);
+}
+
+/* The command band */
+
+.band {
+  border-top: 1px solid var(--line-faint);
+  border-bottom: 1px solid var(--line-faint);
+  background: var(--night-1);
+}
+
+/* Cells share a single hairline between them; the shadow trick draws
+ * that line without a wrapper grid painting a background through gaps. */
+.commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+}
+
+.command {
+  flex: 1 1 230px;
+  min-width: 0;
+  padding: 22px 24px 24px;
+  box-shadow:
+    1px 0 0 var(--line-faint),
+    -1px 0 0 var(--line-faint);
+}
+
+.commandName {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--line-soft);
+  gap: 9px;
+  margin-bottom: 8px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12.5px;
+  color: var(--ink-1);
+}
+
+.commandName svg {
+  flex: none;
   color: var(--ink-3);
 }
 
-.codeBody {
+.commandBody {
   margin: 0;
-  padding: 16px 18px;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  line-height: 1.75;
-  overflow-x: auto;
-  color: var(--syn-default);
-}
-
-.kw {
-  color: var(--syn-keyword);
-}
-.decl {
-  color: var(--syn-decl);
-}
-.fn {
-  color: var(--syn-fn);
-}
-.str {
-  color: var(--syn-string);
-}
-.num {
-  color: var(--syn-number);
-}
-.field {
-  color: var(--syn-field);
-}
-.cmt {
-  color: var(--syn-comment);
-}
-
-.sampleNote {
   color: var(--ink-2);
-  font-size: 14px;
-  line-height: 1.65;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
-.sampleNote strong {
-  color: var(--ink-1);
-  font-weight: 600;
+/* A reference, not a call to action: the code face keeps it quiet. */
+.docLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  transition: color 140ms ease;
 }
 
-.sampleNote p {
-  margin: 0 0 12px;
+.docLink:hover {
+  color: var(--luna);
 }
 
-/* Capability grid */
-
-.section {
-  position: relative;
-  z-index: 1;
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 0 24px 64px;
+.docLink svg {
+  flex: none;
 }
 
-.section:last-child {
-  padding-bottom: 88px;
-}
+/* Section headings */
 
 .sectionHead {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 16px;
-  border-top: 1px solid var(--line-soft);
-  padding-top: 28px;
-  margin-bottom: 22px;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 26px;
 }
 
 .sectionTitle {
-  font-size: 15px;
+  font-size: clamp(24px, 2.8vw, 32px);
   font-weight: 600;
-  color: var(--ink-1);
+  letter-spacing: -0.028em;
+  margin: 0;
+}
+
+.sectionTitleWide {
+  composes: sectionTitle;
+  max-width: 26ch;
 }
 
 .sectionAside {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink-3);
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14.5px;
+  line-height: 1.55;
+  max-width: 46ch;
 }
+
+.sectionCopy {
+  margin: 0 0 24px;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 64ch;
+}
+
+/* The primitives grid */
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1px;
-  background: var(--line-soft);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r3);
-  overflow: hidden;
+  background: var(--line-faint);
+  border: 1px solid var(--line-faint);
 }
 
 .cell {
+  display: block;
   background: var(--night-0);
-  padding: 16px 16px 18px;
-  transition: background 120ms ease;
+  padding: 20px;
+  color: inherit;
+  transition: background 160ms ease;
 }
 
 .cell:hover {
   background: var(--night-1);
-}
-
-@media (max-width: 1000px) {
-  .grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 560px) {
-  .grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
+  color: inherit;
 }
 
 .cellName {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-family: var(--mono);
-  font-size: 12px;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 14.5px;
+  font-weight: 500;
   color: var(--ink-1);
-  margin-bottom: 7px;
 }
 
 .dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex: none;
 }
 
-.cellBody {
-  color: var(--ink-2);
-  font-size: 13px;
-  line-height: 1.6;
-  margin: 0;
+.cellCode {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--luna);
+  margin-bottom: 10px;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 
-/* Principles strip */
+.cellBody {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.55;
+}
 
-.principles {
+/* Two-column bodies */
+
+.split {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 46px;
+  align-items: start;
+}
+
+.splitNarrow {
+  composes: split;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 44px;
+}
+
+@media (max-width: 860px) {
+  .split,
+  .splitNarrow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+}
+
+.copyLead {
+  color: var(--ink-lead);
+  font-size: 16px;
+  line-height: 1.6;
+  margin: 16px 0 14px;
+  max-width: 50ch;
+}
+
+.copy {
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.6;
+  margin: 16px 0 26px;
+  max-width: 50ch;
+}
+
+.aside {
+  margin: 16px 0 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 44ch;
+}
+
+/* The queue drawing */
+
+.queueDrawing {
+  width: 100%;
+  max-width: 460px;
+  height: auto;
+  display: block;
+}
+
+.queueInk {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.queueInk rect,
+.queueInk line {
+  fill: none;
+  stroke: var(--line);
+}
+
+.queueCall {
+  fill: var(--ink-1);
+}
+
+.queueWaiting {
+  fill: var(--ink-2);
+}
+
+.queueLine {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.queuePip {
+  fill: var(--kind-obj);
+  animation: travel 3.4s linear infinite;
+}
+
+.queueAdmit {
+  fill: none;
+  stroke: var(--kind-obj);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.queueRail {
+  fill: var(--ink-2);
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+.queueObject {
+  stroke: var(--kind-obj);
+}
+
+.queueObjectName {
+  fill: var(--kind-obj);
+  font-size: 12px;
+}
+
+.queueFact {
+  fill: var(--ink-2);
+  font-size: 10.5px;
+}
+
+/* The console, quoted */
+
+.inspector {
+  border: 1px solid var(--line-soft);
+  background: var(--night-0);
+}
+
+.inspectorBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.inspectorBar svg {
+  flex: none;
+  color: var(--kind-obj);
+}
+
+.inspectorSlash {
+  color: var(--ink-mark);
+}
+
+.inspectorPath {
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inspectorHead,
+.inspectorRow {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 84px;
+  font-family: var(--mono);
+  color: var(--ink-2);
+}
+
+.inspectorHead {
+  padding: 10px 16px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.inspectorRow {
+  padding: 9px 16px;
+  border-top: 1px solid var(--line-faint);
+  font-size: 12px;
+}
+
+.inspectorNumber {
+  text-align: right;
+}
+
+.inspectorUser {
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inspectorAmount {
+  text-align: right;
+  color: var(--luna);
+  font-variant-numeric: tabular-nums;
+}
+
+.inspectorFoot {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--line-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.liveDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--luna);
+  animation: livePulse 2.4s ease-in-out infinite;
+}
+
+/* Roadmap and the follow box */
+
+.roadmap {
+  border-top: 1px solid var(--line-soft);
+}
+
+.roadmapRow {
+  display: grid;
+  grid-template-columns: 16px 96px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.roadmapIcon {
+  display: inline-flex;
+  align-self: center;
+}
+
+.roadmapName {
+  color: var(--ink-1);
+  white-space: nowrap;
+}
+
+.roadmapNote {
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+
+.keepUp {
+  border: 1px solid var(--line);
+  padding: 24px;
+}
+
+.keepUpHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 15.5px;
+  font-weight: 600;
+}
+
+.keepUpHead svg {
+  flex: none;
+  color: var(--luna);
+}
+
+.keepUpBody {
+  margin: 0 0 18px;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 40ch;
+}
+
+/* The references under the form: quieter than it, separated by a rule
+ * rather than a gap so the card reads as one thing with two halves. */
+.keepUpLinks {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.keepUpLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  font-size: 13.5px;
+  color: var(--ink-1);
+  border-bottom: 1px solid transparent;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease;
+}
+
+.keepUpLink svg {
+  flex: none;
+  color: var(--ink-3);
+  transition: color 140ms ease;
+}
+
+.keepUpLink:hover {
+  color: var(--luna);
+  border-bottom-color: var(--luna-edge);
+}
+
+.keepUpLink:hover svg {
+  color: var(--luna);
+}
+
+/* Closing and footer */
+
+.closing {
+  padding-top: 64px;
+  padding-bottom: 68px;
+  border-top: 1px solid var(--line-faint);
+  background: var(--night-1);
+}
+
+.closingInner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
   gap: 28px;
 }
 
-.principleTitle {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--ink-1);
-  margin: 0 0 8px;
-  padding-left: 12px;
-  border-left: 2px solid var(--luna-edge);
-}
-
-.principleBody {
-  color: var(--ink-2);
-  font-size: 14px;
-  line-height: 1.68;
-  margin: 0;
-  padding-left: 12px;
-}
-
 .closingTitle {
-  font-family: var(--display);
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  margin: 0 0 8px;
-}
-
-/* Closing rail */
-
-.closing {
-  border-top: 1px solid var(--line-soft);
-  padding-top: 34px;
+  font-size: clamp(26px, 3.2vw, 38px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.08;
+  margin: 0 0 14px;
+  max-width: 20ch;
 }
 
 .closingText {
+  margin: 0;
   color: var(--ink-2);
-  font-size: 14.5px;
-  line-height: 1.65;
-  max-width: 56ch;
-  margin: 0 0 22px;
+  font-size: 15.5px;
+  line-height: 1.6;
+  max-width: 52ch;
 }
 
-.meta {
-  display: block;
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px 32px;
+  padding-top: 24px;
+  padding-bottom: 56px;
+  border-top: 1px solid var(--line-faint);
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--ink-3);
-  margin-top: 26px;
+  color: var(--ink-2);
 }
 
-/* Inline code inside prose: a tint, not a well. */
-.lead code,
-.sampleNote code,
-.closingText code {
-  font-family: var(--mono);
-  font-size: 0.88em;
+/* Each end wraps within itself before the two ends stack, so a narrow
+ * viewport gets two short groups rather than one ragged run. */
+.footerFacts,
+.footerLinks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 28px;
+}
+
+.footer a {
+  color: var(--ink-2);
+}
+
+.footer a:hover {
   color: var(--ink-1);
-  background: var(--night-2);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r2);
-  padding: 1px 5px;
 }
 
-/* Hero entrance: one rise, staggered by depth. */
+.footerBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.footerBrand svg {
+  fill: var(--ink-mark);
+}
+
+/* Motion */
+
 .rise {
   animation: rise 700ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
 .rise2 {
-  animation-delay: 70ms;
+  animation-delay: 80ms;
 }
 
 .rise3 {
-  animation-delay: 140ms;
+  animation-delay: 200ms;
 }
 
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(16px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
@@ -334,11 +701,39 @@
   }
 }
 
+@keyframes livePulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.28;
+  }
+}
+
+@keyframes travel {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(56px);
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .rise {
+  .rise,
+  .liveDot,
+  .queuePip {
     animation: none;
   }
-
 }
 
 /* The web scale confession, five headline taps deep. */
@@ -346,22 +741,11 @@
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.04em;
-  color: var(--ink-3);
-  margin: -32px 0 44px;
+  color: var(--ink-2);
+  margin: -14px 0 26px;
   max-width: 480px;
   cursor: pointer;
-  animation: webScaleIn 400ms ease-out;
-}
-
-@keyframes webScaleIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  animation: rise 400ms ease-out;
 }
 
 /* The administration-plane front door: one lockup, one action, the
@@ -369,7 +753,7 @@
 .minimal {
   position: relative;
   overflow: hidden;
-  min-height: calc(100dvh - 52px);
+  min-height: calc(100dvh - 56px);
   display: grid;
   place-items: center;
   padding: 40px 20px 84px;
@@ -505,7 +889,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 28px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--line-faint);
   animation: rise 0.7s ease-out 0.5s backwards;
 }
 
@@ -516,7 +900,7 @@
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: var(--ink-3);
+  color: var(--ink-2);
 }
 
 .minimalDot {
@@ -536,7 +920,7 @@
   border: 1px solid var(--line);
   border-radius: 50%;
   font-size: 9px;
-  color: var(--ink-3);
+  color: var(--ink-2);
   text-decoration: none;
 }
 
@@ -549,11 +933,24 @@
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: var(--ink-3);
+  color: var(--ink-2);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .minimalMark svg path {
     animation: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .page {
+    --gutter: 20px;
+  }
+  .minimalLockup {
+    gap: 18px;
+  }
+  .minimalActions {
+    padding-left: 0;
+    flex-wrap: wrap;
   }
 }

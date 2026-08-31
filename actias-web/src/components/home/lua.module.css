@@ -1,0 +1,20 @@
+/* The Lua syntax slots of the token sheet, as classes the highlighter
+ * can hand out. Same colours the workbench editor uses. */
+.kw {
+  color: var(--syn-keyword);
+}
+.decl {
+  color: var(--syn-decl);
+}
+.fn {
+  color: var(--syn-fn);
+}
+.str {
+  color: var(--syn-string);
+}
+.num {
+  color: var(--syn-number);
+}
+.cmt {
+  color: var(--syn-comment);
+}

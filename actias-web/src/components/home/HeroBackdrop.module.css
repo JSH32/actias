@@ -9,9 +9,11 @@
 .grid {
   position: absolute;
   inset: 0;
-  background-image:
-    linear-gradient(rgba(232, 235, 240, 0.022) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(232, 235, 240, 0.022) 1px, transparent 1px);
+  background-image: linear-gradient(
+      rgba(233, 237, 233, 0.022) 1px,
+      transparent 1px
+    ),
+    linear-gradient(90deg, rgba(233, 237, 233, 0.022) 1px, transparent 1px);
   background-size: 44px 44px;
   mask-image: radial-gradient(120% 52% at 72% 2%, #000 0%, transparent 76%);
   -webkit-mask-image: radial-gradient(

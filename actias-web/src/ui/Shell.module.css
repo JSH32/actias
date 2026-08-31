@@ -296,7 +296,9 @@
 }
 .navLink svg {
   flex-shrink: 0;
-  transition: width 160ms ease, height 160ms ease;
+  transition:
+    width 160ms ease,
+    height 160ms ease;
 }
 .navLink:hover {
   color: var(--ink-1);
@@ -323,7 +325,9 @@
 .initials {
   width: 26px;
   height: 26px;
-  transition: width 160ms ease, height 160ms ease;
+  transition:
+    width 160ms ease,
+    height 160ms ease;
   flex-shrink: 0;
   border-radius: var(--r2);
   background: var(--viola-tint);
@@ -356,7 +360,9 @@
 .logout {
   width: 24px;
   height: 24px;
-  transition: width 160ms ease, height 160ms ease;
+  transition:
+    width 160ms ease,
+    height 160ms ease;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -433,24 +439,99 @@
   font-size: 13px;
 }
 
+/* The public bar: hairline and translucent, so content passing under it
+ * stays legible as a blur rather than disappearing. It sticks because
+ * the landing is long enough that the way out should not be a scroll
+ * away.
+ *
+ * The bar is chrome, so it spans the window rather than sitting on the
+ * page measure: held to 1120px the lockup drifts toward the middle on a
+ * wide display and stops reading as the corner of the window. */
 .publicHeader {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 24px;
+  height: 56px;
   padding: 0 24px;
-  height: 52px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-faint);
+  background: color-mix(in srgb, var(--night-0) 94%, transparent);
+  backdrop-filter: blur(12px);
+  font-size: 13.5px;
+}
+
+/* The bar's lockup, at the sidebar's weight: the mark carries the
+ * corner and has to hold its own against a 56px bar. */
+.publicBrand {
+  composes: brand;
+  padding: 0;
+  gap: 10px;
+  white-space: nowrap;
 }
 
 .publicNav {
   display: flex;
-  gap: 18px;
+  align-items: center;
+  gap: 22px;
+  white-space: nowrap;
 }
 .publicNav a {
   color: var(--ink-2);
+  transition: color 140ms ease;
 }
 .publicNav a:hover {
   color: var(--ink-1);
+}
+
+.publicAnchors {
+  display: contents;
+}
+
+.publicIconLink {
+  display: inline-flex;
+}
+
+/* The one filled action in the chrome. Written to outrank the nav's own
+ * link colour, which is otherwise the more specific selector. */
+.publicNav a.publicCta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 13px;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--luna);
+  color: var(--night-0);
+  transition: background 160ms ease;
+}
+.publicCta:hover,
+.publicNav a.publicCta:hover {
+  background: var(--luna-lift);
+  color: var(--night-0);
+}
+
+/* Anchors are the first thing to go when the bar runs out of room; the
+ * sections they point at are still reachable by scrolling. */
+@media (max-width: 1000px) {
+  .publicAnchors {
+    display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .publicHeader {
+    padding: 0 20px;
+    gap: 16px;
+  }
+  .publicNav {
+    gap: 16px;
+  }
+  .publicBrand span {
+    display: none;
+  }
 }
 
 /* Narrow viewports: the sidebar collapses to its icons. */
@@ -498,7 +579,9 @@
 .switcherBadge {
   width: 20px;
   height: 20px;
-  transition: width 160ms ease, height 160ms ease;
+  transition:
+    width 160ms ease,
+    height 160ms ease;
   flex-shrink: 0;
   display: grid;
   place-items: center;
@@ -519,8 +602,8 @@
 }
 
 .switcherChevron {
+  display: inline-flex;
   color: var(--ink-3);
-  font-size: 11px;
 }
 
 /* The contextual sub-list under the section nav: NAMESPACES / QUEUES /
@@ -881,5 +964,8 @@
 }
 .collapseIcon {
   flex-shrink: 0;
-  transition: transform 160ms ease, width 160ms ease, height 160ms ease;
+  transition:
+    transform 160ms ease,
+    width 160ms ease,
+    height 160ms ease;
 }

@@ -1,0 +1,108 @@
+.form {
+  display: block;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.input {
+  flex: 1 1 190px;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 12px 13px;
+  background: var(--night-2);
+  border: 1px solid var(--line);
+  color: var(--ink-1);
+  transition: border-color 140ms ease;
+}
+
+.input::placeholder {
+  color: var(--ink-3);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--luna);
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--err);
+}
+
+.input:disabled {
+  color: var(--ink-2);
+}
+
+.submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 17px;
+  font-family: var(--ui);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid var(--luna);
+  background: var(--luna);
+  color: var(--night-0);
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.submit:hover:enabled {
+  background: var(--luna-lift);
+  border-color: var(--luna-lift);
+}
+
+.submit:disabled {
+  cursor: progress;
+  background: var(--luna-dim);
+  border-color: var(--luna-dim);
+}
+
+.error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--err);
+}
+
+/* The confirmation replaces the form rather than sitting under it: the
+ * address is on the list, so there is nothing left to submit. */
+.done {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 4px 0;
+}
+
+.tick {
+  display: inline-flex;
+  flex: none;
+  margin-top: 2px;
+  color: var(--luna);
+}
+
+.doneTitle {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--luna);
+  overflow-wrap: anywhere;
+}
+
+.doneBody {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}

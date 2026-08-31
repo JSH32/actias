@@ -1,0 +1,564 @@
+.viewRow {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.views {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.view {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  padding: 9px 13px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background 140ms ease;
+}
+
+.view:hover {
+  color: var(--ink-1);
+}
+
+.view[data-state='active'] {
+  color: var(--ink-1);
+  background: var(--night-2);
+  border-bottom-color: var(--luna);
+}
+
+.viewShort {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  min-width: 0;
+}
+
+.stage {
+  position: relative;
+}
+
+/* The drawing is laid out at 1000 x 520 and scales; below the width
+ * where its text stops being legible it scrolls instead of shrinking. */
+.canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+@media (max-width: 720px) {
+  .stage {
+    overflow-x: auto;
+  }
+  .canvas {
+    width: 720px;
+  }
+}
+
+.ink {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* Lines. Unlit is a hairline; a view lights the paths it is about, and
+ * whatever the pointer is on outranks the view. */
+.edge {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.1;
+  transition:
+    opacity 300ms ease,
+    stroke 300ms ease;
+}
+
+.edge[data-lit] {
+  stroke: var(--luna);
+}
+
+.edge[data-store] {
+  stroke: var(--kind-obj);
+}
+
+.edge[data-muted] {
+  opacity: 0.3;
+}
+
+.edge[data-hot] {
+  stroke: var(--ink-1);
+  opacity: 1;
+}
+
+/* A wider invisible copy of each line, so a 1px path is still a target. */
+.hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 15;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.pulse,
+.pulseQuiet {
+  fill: var(--kind);
+  animation-name: glide;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.pulseQuiet {
+  fill: var(--ink-mark);
+}
+
+@keyframes glide {
+  from {
+    offset-distance: 0%;
+  }
+  to {
+    offset-distance: 100%;
+  }
+}
+
+.store {
+  fill: none;
+  stroke: var(--line-faint);
+  opacity: 0.55;
+  transition: opacity 300ms ease;
+}
+
+.canvas[data-view='idle'] .store {
+  opacity: 1;
+}
+
+.storeInk {
+  fill: var(--ink-2);
+  font-size: 11px;
+  opacity: 0.55;
+  transition: opacity 300ms ease;
+}
+
+.canvas[data-view='idle'] .storeInk {
+  opacity: 1;
+}
+
+/* The one hop that is not yours, drawn as something outside the frame. */
+.outside {
+  fill: none;
+  stroke: var(--line-soft);
+  stroke-dasharray: 4 4;
+}
+
+.sub {
+  fill: var(--ink-2);
+  font-size: 11px;
+}
+
+/* Browser tabs holding a socket. They light up in the idle view, which
+ * is the whole point of that view: the tabs outlive the vms. */
+.tab {
+  fill: var(--ink-mark);
+  transition: fill 300ms ease;
+}
+
+.canvas[data-view='idle'] .tab {
+  fill: var(--luna);
+  animation: pulse 2.6s ease-in-out infinite;
+}
+
+/* Boxes. The kind's colour is the resting edge; luna means you are
+ * reading it, and a dulled hairline means it is asleep. */
+.node {
+  cursor: pointer;
+  transition: opacity 300ms ease;
+}
+
+.nodeBox {
+  fill: var(--night-1);
+  stroke: var(--kind);
+  stroke-width: 1.1;
+  transition:
+    stroke 240ms ease,
+    fill 240ms ease,
+    stroke-width 240ms ease;
+}
+
+.node[data-asleep] .nodeBox {
+  stroke: var(--line-soft);
+}
+
+.node[data-on] .nodeBox {
+  fill: var(--luna-tint);
+  stroke: var(--luna);
+  stroke-width: 1.9;
+}
+
+.node:focus-visible {
+  outline: none;
+}
+
+.node:focus-visible .nodeBox {
+  stroke: var(--luna);
+  stroke-width: 1.9;
+}
+
+/* Sized by the component to fit the box it sits in; 13px is the size
+ * every label but the longest one gets. */
+.nodeLabel {
+  fill: var(--ink-lead);
+  font-size: var(--label-size, 13px);
+  transition: fill 240ms ease;
+}
+
+.node[data-on] .nodeLabel {
+  fill: var(--ink-1);
+}
+
+.nodeSub {
+  fill: var(--ink-2);
+  font-size: 10.5px;
+  transition: fill 300ms ease;
+}
+
+/* The socket that kept its wire while its vm went away. */
+.node[data-hibernating] {
+  animation: pulse 2.8s ease-in-out infinite;
+}
+
+.node[data-hibernating] .nodeSub {
+  fill: var(--kind-kv);
+}
+
+/* The inspector. It floats, so it is the one thing on this page allowed
+ * a shadow, and it is corner-marked rather than framed so it reads as an
+ * instrument pointed at the drawing. */
+.hud {
+  position: absolute;
+  width: min(310px, 78vw);
+  z-index: 5;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--night-0) 96%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 18px 40px -18px rgb(0 0 0 / 0.9);
+  transition:
+    left 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    top 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 200ms ease,
+    border-color 220ms ease;
+}
+
+.hud[data-reading] {
+  border-color: var(--kind-kv);
+}
+
+.hud[data-locked] {
+  border-color: var(--luna);
+}
+
+.scan {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    rgb(233 237 233 / 0.03) 0px,
+    rgb(233 237 233 / 0.03) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  animation: scan 9s linear infinite;
+}
+
+.glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 80% at 6% 0%,
+    rgb(233 237 233 / 0.015),
+    transparent 60%
+  );
+  transition: background 300ms ease;
+}
+
+.hud[data-reading] .glow {
+  background: radial-gradient(
+    120% 80% at 6% 0%,
+    rgb(125 211 252 / 0.06),
+    transparent 60%
+  );
+}
+
+.hud[data-locked] .glow {
+  background: radial-gradient(
+    120% 80% at 6% 0%,
+    rgb(163 230 180 / 0.07),
+    transparent 60%
+  );
+}
+
+.hudBar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: var(--ink-2);
+}
+
+.hudTarget {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--ink-lead);
+}
+
+.hudStatus {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-mark);
+  transition: color 200ms ease;
+}
+
+.hud[data-reading] .hudStatus {
+  color: var(--kind-kv);
+}
+
+.hud[data-locked] .hudStatus {
+  color: var(--luna);
+}
+
+.hudBody {
+  position: relative;
+  padding: 15px 15px 13px;
+}
+
+.hudTitle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 9px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--ink-1);
+  line-height: 1.25;
+}
+
+.hudKind {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--kind);
+  transition: background 200ms ease;
+}
+
+.hudDecl {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--luna);
+  margin-bottom: 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding-bottom: 2px;
+}
+
+.hudText {
+  margin: 0;
+  color: var(--ink-lead);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* What the current view adds to what the line always means. */
+.hudNote {
+  margin: 8px 0 0;
+  padding-left: 9px;
+  border-left: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.more {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+  transition: color 140ms ease;
+}
+
+.more:hover {
+  color: var(--luna);
+}
+
+.arrow,
+.arrowUp {
+  display: inline-flex;
+  transition: transform 200ms ease;
+}
+
+.arrowUp {
+  transform: rotate(180deg);
+}
+
+.hudFoot {
+  position: relative;
+  display: flex;
+  gap: 9px;
+  padding: 10px 13px 12px;
+  border-top: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1.55;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+/* The key, not the label: at this width a long view name pushed the
+ * hint beside it into a two-word wrap. */
+.hudViewTag {
+  flex: none;
+  color: var(--ink-mark);
+}
+
+/* The drawing's text as text. Closed by default so it does not compete
+ * with the graph, but it is markup on the page, not a tooltip. */
+/* The drawing's text as text. Closed by default so it does not compete
+ * with the graph, but it is markup on the page, not a tooltip. */
+.legend {
+  margin-top: 28px;
+  border-top: 1px solid var(--line-faint);
+  padding-top: 16px;
+}
+
+.legendSummary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color 140ms ease;
+  /* The native marker is a glyph; the icon beside it is the page's. */
+  list-style: none;
+}
+
+.legendSummary::-webkit-details-marker {
+  display: none;
+}
+
+.legendSummary:hover {
+  color: var(--ink-1);
+}
+
+.legendChevron {
+  display: inline-flex;
+  flex: none;
+  transform: rotate(-90deg);
+  transition: transform 200ms ease;
+}
+
+.legend[open] .legendChevron {
+  transform: none;
+}
+
+/* Columns, not a grid: a grid row is as tall as its tallest cell and
+ * left a hole under every short entry. */
+.legendList {
+  columns: 290px 3;
+  column-gap: 36px;
+  margin: 22px 0 0;
+}
+
+/* A bare dt and dd are two boxes and split across a column break. */
+.legendEntry {
+  break-inside: avoid;
+  margin: 0 0 20px;
+}
+
+.legendTerm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 9px;
+  margin: 0 0 5px;
+}
+
+.legendLabel {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink-1);
+}
+
+.legendCall {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--luna);
+  overflow-wrap: anywhere;
+}
+
+.legendBody {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.28;
+  }
+}
+
+@keyframes scan {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 60px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse,
+  .pulseQuiet,
+  .scan,
+  .tab,
+  .node,
+  .hud {
+    animation: none;
+    transition: none;
+  }
+}

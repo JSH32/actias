@@ -7,6 +7,13 @@
   box-sizing: border-box;
 }
 
+/* A class that sets `display` outranks the user agent's [hidden] rule,
+ * which is how a closed Radix panel keeps holding its space open. The
+ * attribute means hidden, so say so loudly enough to be believed. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -26,7 +33,7 @@ a {
   color: var(--luna);
 }
 a:hover {
-  color: #c9f1d5;
+  color: var(--luna-lift);
 }
 ::selection {
   background: rgba(167, 139, 250, 0.3);
@@ -48,6 +55,5 @@ select:focus-visible {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--line);
-  border-radius: 999px;
   border: 2px solid var(--night-0);
 }

@@ -1,0 +1,298 @@
+.layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 44px;
+  align-items: start;
+}
+
+@media (max-width: 820px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+  }
+}
+
+/* State of the walkthrough sits with the controls for it. */
+.stageRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.stages {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.playToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 2px;
+  border: 0;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: color 140ms ease;
+}
+
+.playToggle:hover {
+  color: var(--ink-1);
+}
+
+.playToggle svg {
+  flex: none;
+}
+
+/* The lifecycle's tab row. Viola rather than luna: this control selects
+ * a state of a durable object, and viola is the object kind's colour. */
+.stage {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background 140ms ease;
+}
+
+.stage:hover {
+  color: var(--ink-1);
+}
+
+.stage[data-state='active'] {
+  color: var(--ink-1);
+  background: var(--night-2);
+  border-bottom-color: var(--kind-obj);
+}
+
+/* Held open so a shorter stage does not pull the drawing up the page. */
+.prose {
+  min-height: 148px;
+}
+
+.stageTitle {
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--ink-1);
+  margin-bottom: 10px;
+  animation: swap 420ms ease both;
+}
+
+.stageBody {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14.5px;
+  line-height: 1.6;
+  max-width: 48ch;
+  animation: swap 420ms ease 60ms both;
+}
+
+.drawing {
+  width: 100%;
+  max-width: 560px;
+  height: auto;
+  display: block;
+}
+
+.aside {
+  margin: 18px 0 0;
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.6;
+  max-width: 46ch;
+}
+
+/* The drawing. Everything is a hairline on the page surface; the only
+ * fills are the lease token and the pip that says it is being used. */
+.ink {
+  font-family: var(--mono);
+}
+
+.box,
+.holder,
+.store {
+  fill: none;
+  stroke: var(--line);
+}
+
+.store {
+  stroke: var(--line-soft);
+}
+
+.label {
+  fill: var(--ink-lead);
+  font-size: 11.5px;
+}
+
+.sub {
+  fill: var(--ink-2);
+  font-size: 10.5px;
+}
+
+.holder {
+  transition: stroke 500ms ease;
+}
+
+.holderInk {
+  fill: var(--ink-2);
+  font-size: 11.5px;
+  transition: fill 500ms ease;
+}
+
+.lease {
+  fill: var(--kind-obj);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  opacity: 0;
+  transition: opacity 500ms ease;
+}
+
+.callLine {
+  fill: none;
+  stroke: var(--luna);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.callInk {
+  fill: var(--luna);
+  font-size: 9.5px;
+}
+
+.moveLine {
+  fill: none;
+  stroke: var(--kind-obj);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.moveInk {
+  fill: var(--kind-obj);
+  font-size: 10.5px;
+}
+
+.flushLine {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.flushInk {
+  fill: var(--ink-2);
+  font-size: 10.5px;
+}
+
+.onHot,
+.onLease,
+.onIdle {
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+
+.chip {
+  fill: var(--viola-tint);
+  stroke: var(--kind-obj);
+}
+
+.chipInk {
+  fill: var(--ink-1);
+  font-size: 10px;
+}
+
+.pip {
+  fill: var(--luna);
+}
+
+/* The token rides between storage and the worker holding the lease.
+ * One element, four positions: the movement is the explanation. */
+.token {
+  transform: translate(0, 0);
+  transition: transform 700ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.drawing[data-stage='lease'] .token,
+.drawing[data-stage='hot'] .token {
+  transform: translate(0, -110px);
+}
+
+.drawing[data-stage='lease'] .holder,
+.drawing[data-stage='hot'] .holder {
+  stroke: var(--kind-obj);
+}
+
+.drawing[data-stage='lease'] .holderInk,
+.drawing[data-stage='hot'] .holderInk {
+  fill: var(--ink-1);
+}
+
+.drawing[data-stage='lease'] .lease,
+.drawing[data-stage='hot'] .lease {
+  opacity: 1;
+}
+
+.drawing[data-stage='lease'] .onLease {
+  opacity: 1;
+}
+
+.drawing[data-stage='hot'] .onHot {
+  opacity: 1;
+}
+
+.drawing[data-stage='hot'] .pip {
+  animation: pulse 2.2s ease-in-out infinite;
+}
+
+.drawing[data-stage='idle'] .onIdle {
+  opacity: 1;
+}
+
+@keyframes swap {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.28;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stageTitle,
+  .stageBody,
+  .token,
+  .pip {
+    animation: none;
+    transition: none;
+  }
+}

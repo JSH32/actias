@@ -1,0 +1,93 @@
+.panel {
+  border: 1px solid var(--line-soft);
+  background: var(--night-1);
+  min-width: 0;
+}
+
+/* Tab labels name code shapes, so they are set in the code face. The
+ * luna underline is the design system's tab grammar, unchanged. */
+.tabs {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line-soft);
+  overflow-x: auto;
+}
+
+.tab {
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 11px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background 140ms ease;
+}
+
+.tab:hover {
+  color: var(--ink-1);
+}
+
+.tab[data-state='active'] {
+  color: var(--ink-1);
+  background: var(--night-2);
+  border-bottom-color: var(--luna);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.code {
+  margin: 0;
+  padding: 20px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.9;
+  overflow-x: auto;
+  color: var(--syn-default);
+}
+
+/* The claim the panel exists to make, on its own rule under the code. */
+.creates {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 20px;
+  border-top: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tick {
+  display: inline-flex;
+  flex: none;
+  color: var(--luna);
+}
+
+.createsLabel {
+  flex: none;
+}
+
+.createsList {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-1);
+}
+
+@media (max-width: 560px) {
+  .code {
+    padding: 16px;
+    font-size: 11.5px;
+  }
+}

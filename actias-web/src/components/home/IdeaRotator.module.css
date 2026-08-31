@@ -1,0 +1,90 @@
+/* An aside hung off a rule rather than boxed: it is a caption on the
+ * headline, not a card competing with it. */
+.rotator {
+  border-left: 2px solid var(--line);
+  padding: 2px 0 2px 18px;
+}
+
+.label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 11px;
+}
+
+/* Fixed height so the swap does not shunt the buttons under it. */
+.body {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 46px;
+}
+
+.icon {
+  display: inline-flex;
+  flex: none;
+  margin-top: 3px;
+}
+
+.text {
+  min-width: 0;
+  animation: swap 440ms ease both;
+}
+
+.title {
+  color: var(--ink-1);
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.note {
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+/* Bars, not circles: they read as a position in a sequence. */
+.dots {
+  display: flex;
+  gap: 5px;
+  margin-top: 14px;
+}
+
+.dot {
+  width: 20px;
+  height: 3px;
+  padding: 0;
+  border: 0;
+  background: var(--line);
+  cursor: pointer;
+  transition: background 240ms ease;
+}
+
+.dot:hover {
+  background: var(--ink-3);
+}
+
+.dot[data-state='active'] {
+  background: var(--luna);
+}
+
+@keyframes swap {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text {
+    animation: none;
+  }
+}
