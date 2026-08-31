@@ -12,114 +12,107 @@ import rehypeAutolinkHeadings from 'rehype-autolink-headings';
 import rehypeSlug from 'rehype-slug';
 
 import { PostMeta, getPostFromSlug, getSlugs } from '@/helpers/blog';
+import { Icon } from '@/ui/icons';
+import { highlightLua } from '@/components/home/lua';
+import classes from './post.module.css';
 
 interface MDXPost {
   source: MDXRemoteSerializeResult<Record<string, unknown>>;
   meta: PostMeta;
 }
 
-/** Prose renders in Newsreader per the type sheet; code stays mono. */
-const codeBlock: React.CSSProperties = {
-  background: 'var(--night-2)',
-  border: '1px solid var(--line)',
-  borderRadius: 'var(--r2)',
-  fontFamily: 'var(--mono)',
-  fontSize: 13,
-  padding: '12px 14px',
-  overflowX: 'auto',
-  margin: '12px 0',
-};
+/** The language a fence declared, from the class remark puts on `code`. */
+function fenceLanguage(node: React.ReactNode): string | null {
+  if (!React.isValidElement(node)) return null;
+  const className = (node.props as { className?: string }).className ?? '';
+  const found = className
+    .split(' ')
+    .find((name) => name.startsWith('language-'));
+  return found ? found.slice('language-'.length) : null;
+}
+
+function fenceSource(node: React.ReactNode): string {
+  if (!React.isValidElement(node)) return '';
+  const children = (node.props as { children?: unknown }).children;
+  return typeof children === 'string' ? children : '';
+}
 
 const heading =
-  (size: number) =>
+  (level: 'h2' | 'h3' | 'h4', style: string) =>
   // eslint-disable-next-line react/display-name
-  (props: object) => (
-    <h2
-      style={{
-        fontFamily: 'var(--ui)',
-        fontSize: size,
-        fontWeight: 700,
-        margin: '24px 0 8px',
-      }}
-      {...props}
-    />
-  );
+  (props: object) => {
+    const Tag = level;
+    return <Tag className={style} {...props} />;
+  };
 
 const components: MDXComponents = {
+  // eslint-disable-next-line @next/next/no-img-element
   img: (props: { src?: string; alt?: string }) => (
     // eslint-disable-next-line @next/next/no-img-element
-    <img
-      style={{ objectFit: 'cover', maxWidth: '100%' }}
-      src={props.src}
-      alt={props.alt}
-    />
+    <img style={{ maxWidth: '100%' }} src={props.src} alt={props.alt} />
   ),
-  code: (props: object) => (
-    <code
-      style={{
-        fontFamily: 'var(--mono)',
-        fontSize: '0.9em',
-        color: 'var(--kind-db)',
-      }}
-      {...props}
-    />
-  ),
+  code: (props: object) => <code className={classes.inline} {...props} />,
   pre: (props: React.HTMLAttributes<HTMLPreElement>) => {
-    const child = props.children as
-      | React.ReactElement<{ children?: string }>
-      | undefined;
-    return <pre style={codeBlock}>{child?.props?.children}</pre>;
+    const child = props.children;
+    const language = fenceLanguage(child);
+    const source = fenceSource(child);
+
+    // Lua is the only language worth colouring here: it is what the
+    // posts are about, and the highlighter already exists for the
+    // landing's samples. Everything else keeps its shell transcript
+    // shape rather than being coloured wrongly.
+    if (language === 'lua') {
+      return (
+        <pre className={classes.block}>
+          <code>{highlightLua(source)}</code>
+        </pre>
+      );
+    }
+    return (
+      <pre className={language === 'sql' ? classes.block : classes.shell}>
+        {source}
+      </pre>
+    );
   },
-  h1: heading(24),
-  h2: heading(20),
-  h3: heading(17),
-  h4: heading(15),
-  h5: heading(14),
-  h6: heading(13),
+  h1: heading('h2', classes.h2),
+  h2: heading('h2', classes.h2),
+  h3: heading('h3', classes.h3),
+  h4: heading('h4', classes.h4),
+  p: (props: object) => <p className={classes.paragraph} {...props} />,
+  ul: (props: object) => <ul className={classes.list} {...props} />,
+  ol: (props: object) => <ol className={classes.list} {...props} />,
+  blockquote: (props: object) => (
+    <blockquote className={classes.quote} {...props} />
+  ),
 };
+
+/** The post's date as the list and the header both show it. */
+function published(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? value : date.toISOString().slice(0, 10);
+}
 
 export default function PostPage({ post }: { post: MDXPost }) {
   return (
-    <div
-      style={{
-        maxWidth: 680,
-        margin: '32px auto',
-        padding: '0 24px',
-        fontFamily: 'var(--prose)',
-        fontSize: 16,
-        lineHeight: 1.7,
-      }}
-    >
+    <article className={classes.article}>
       <NextSeo title={post.meta.title} description={post.meta.excerpt} />
-      <Link
-        href="/blog"
-        style={{
-          fontFamily: 'var(--mono)',
-          fontSize: 12,
-          color: 'var(--ink-3)',
-        }}
-      >
-        ← blog
+      <Link href="/blog" className={classes.back}>
+        <Icon name="arrowLeft" size={12} />
+        blog
       </Link>
-      <h1
-        style={{
-          fontFamily: 'var(--ui)',
-          fontSize: 26,
-          fontWeight: 700,
-          margin: '8px 0 4px',
-        }}
-      >
-        {post.meta.title}
-      </h1>
-      <hr
-        style={{
-          border: 'none',
-          borderTop: '1px solid var(--line)',
-          margin: '12px 0 20px',
-        }}
-      />
+      <h1 className={classes.title}>{post.meta.title}</h1>
+      <div className={classes.meta}>
+        {post.meta.category && (
+          <span className={classes.category}>{post.meta.category}</span>
+        )}
+        <span>{published(post.meta.date)}</span>
+        {post.meta.tags.map((tag) => (
+          <span key={tag}>#{tag}</span>
+        ))}
+      </div>
+      <hr className={classes.rule} />
       <MDXRemote {...post.source} components={components} />
-    </div>
+    </article>
   );
 }
 

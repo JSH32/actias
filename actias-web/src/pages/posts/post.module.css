@@ -1,0 +1,160 @@
+/* One column of prose at a comfortable measure. The blog is reading,
+ * not a console surface, so it gets the serif and generous leading the
+ * docs use for body copy. */
+.article {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 40px 24px 96px;
+  font-family: var(--prose);
+  font-size: 17px;
+  line-height: 1.7;
+  color: var(--ink-lead);
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  transition: color 140ms ease;
+}
+
+.back:hover {
+  color: var(--luna);
+}
+
+.title {
+  font-family: var(--ui);
+  font-size: clamp(28px, 4vw, 38px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin: 14px 0 10px;
+  color: var(--ink-1);
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.category {
+  color: var(--luna);
+  text-transform: uppercase;
+}
+
+.rule {
+  border: none;
+  border-top: 1px solid var(--line-faint);
+  margin: 24px 0 28px;
+}
+
+/* Headings step down in size only; the page has one column, so weight
+ * and space do the hierarchy. */
+.h2,
+.h3,
+.h4 {
+  font-family: var(--ui);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--ink-1);
+  margin: 40px 0 12px;
+}
+
+.h2 {
+  font-size: 23px;
+}
+
+.h3 {
+  font-size: 18px;
+}
+
+.h4 {
+  font-size: 16px;
+}
+
+.paragraph {
+  margin: 0 0 18px;
+}
+
+.list {
+  margin: 0 0 18px;
+  padding-left: 22px;
+}
+
+.list li {
+  margin-bottom: 8px;
+}
+
+.article a {
+  color: var(--luna);
+  text-decoration: underline;
+  text-decoration-color: var(--luna-edge);
+  text-underline-offset: 3px;
+}
+
+.article a:hover {
+  color: var(--luna-lift);
+}
+
+/* rehype-autolink-headings wraps each heading in its own anchor, which
+ * the rule above would otherwise draw as a link. The heading keeps its
+ * own colour; the anchor is only there to be copied. */
+.article h2 a,
+.article h3 a,
+.article h4 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.article strong {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+
+/* Inline code is a tint inside prose; a fenced block is a well. */
+.inline {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  color: var(--ink-1);
+  background: var(--night-2);
+  border: 1px solid var(--line-soft);
+  padding: 1px 5px;
+}
+
+.block {
+  margin: 0 0 22px;
+  padding: 16px 18px;
+  background: var(--night-1);
+  border: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.75;
+  overflow-x: auto;
+  color: var(--syn-default);
+}
+
+/* A shell block reads as a transcript, so it takes the page surface
+ * rather than the panel one. */
+.shell {
+  composes: block;
+  background: var(--night-0);
+  color: var(--ink-lead);
+}
+
+.quote {
+  margin: 0 0 22px;
+  padding-left: 18px;
+  border-left: 2px solid var(--line);
+  color: var(--ink-2);
+}

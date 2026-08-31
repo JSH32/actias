@@ -1,33 +1,45 @@
 import Link from 'next/link';
 import type { GetStaticProps } from 'next';
 import { PostMeta, getAllPosts } from '@/helpers/blog';
-import { Card } from '@/ui';
+import classes from './blog.module.css';
+
+/** The date as the post header shows it, so the two agree. */
+function published(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? value : date.toISOString().slice(0, 10);
+}
 
 function Blog({ posts }: { posts: PostMeta[] }) {
   return (
-    <div style={{ maxWidth: 640, margin: '48px auto', padding: '0 24px' }}>
-      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>Blog</h1>
-      {posts.map((post) => (
-        <Link key={post.slug} href={`/posts/${post.slug}`}>
-          <Card style={{ padding: 16, marginBottom: 10 }}>
-            <div
-              style={{
-                fontFamily: 'var(--mono)',
-                fontSize: 11,
-                color: 'var(--luna)',
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-              }}
+    <div className={classes.page}>
+      <h1 className={classes.title}>Blog</h1>
+      <p className={classes.lead}>
+        What shipped, what broke, and what the platform can do that it could not
+        before.
+      </p>
+
+      {posts.length === 0 ? (
+        <p className={classes.empty}>Nothing written down yet.</p>
+      ) : (
+        <div className={classes.list}>
+          {posts.map((post) => (
+            <Link
+              key={post.slug}
+              href={`/posts/${post.slug}`}
+              className={classes.post}
             >
-              {post.category}
-            </div>
-            <div style={{ fontWeight: 700, margin: '4px 0' }}>{post.title}</div>
-            <p style={{ color: 'var(--ink-2)', fontSize: 13 }}>
-              {post.excerpt}
-            </p>
-          </Card>
-        </Link>
-      ))}
+              <div className={classes.meta}>
+                {post.category && (
+                  <span className={classes.category}>{post.category}</span>
+                )}
+                <span>{published(post.date)}</span>
+              </div>
+              <div className={classes.postTitle}>{post.title}</div>
+              <p className={classes.excerpt}>{post.excerpt}</p>
+            </Link>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

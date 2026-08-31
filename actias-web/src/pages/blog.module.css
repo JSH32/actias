@@ -1,0 +1,77 @@
+.page {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+}
+
+.title {
+  font-size: clamp(26px, 3.2vw, 34px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  margin: 0 0 6px;
+}
+
+.lead {
+  margin: 0 0 32px;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* Posts share one hairline between them rather than sitting in cards:
+ * a list of a few entries is a list, not a stack of boxes. */
+.list {
+  border-top: 1px solid var(--line-faint);
+}
+
+.post {
+  display: block;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--line-faint);
+  color: inherit;
+}
+
+.post:hover {
+  color: inherit;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+
+.category {
+  color: var(--luna);
+  text-transform: uppercase;
+}
+
+.postTitle {
+  margin: 8px 0 6px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink-1);
+  transition: color 140ms ease;
+}
+
+.post:hover .postTitle {
+  color: var(--luna);
+}
+
+.excerpt {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+.empty {
+  color: var(--ink-2);
+  font-size: 14.5px;
+}

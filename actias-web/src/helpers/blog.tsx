@@ -10,8 +10,10 @@ export interface PostMeta {
   title: string;
   tags: string[];
   date: string;
-  category: string;
-  image?: string;
+  /** Null rather than undefined on both of these: they cross
+   * getStaticProps, and Next refuses to serialize undefined. */
+  category: string | null;
+  image: string | null;
 }
 
 interface Post {
@@ -57,8 +59,8 @@ export const getPostFromSlug = (slug: string): Post => {
       title: data.title ?? slug,
       tags: (data.tags ?? []).sort(),
       date: (data.date ?? new Date()).toString(),
-      image: data.image ?? undefined,
-      category: data.category ?? undefined,
+      image: data.image ?? null,
+      category: data.category ?? null,
     },
   };
 };

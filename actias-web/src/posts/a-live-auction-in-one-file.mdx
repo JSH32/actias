@@ -1,0 +1,343 @@
+---
+title: A live auction in one file
+tags:
+  - tutorial
+  - objects
+  - streams
+date: 2026-08-30
+excerpt: A counter is easy. Two people bidding the same amount at the same millisecond is the interesting part, and it is where durable objects earn their keep.
+category: Tutorial
+---
+
+Every serverless tutorial starts with a counter, and a counter is a fine
+way to prove that storage exists. It is a bad way to show what is hard.
+
+Here is the hard version. Two people bid on the same lot in the same
+millisecond, both read a high bid of 4,000, both write 4,200, and one of
+them silently loses money. Anywhere else that is where you reach for a
+transaction, a row lock, or a Redis mutex you are fairly sure you got
+right. On Actias it is where you stop writing coordination code, because
+a durable object takes one call at a time and the second bid simply reads
+what the first one wrote.
+
+This walks the whole thing: a lot with its own database file, a live feed
+into open browser tabs, a durable record that survives a closed tab, and
+an alarm that ends the auction while nobody is watching. It is one Lua
+file plus two migrations.
+
+## Start a project
+
+```sh
+actias init auction basic
+cd auction
+```
+
+That gives you `main.lua`, a `script.json` naming the entry point and
+which files ship in the bundle, a `definitions/` folder your editor reads
+for autocomplete, and a `tests/` folder. The template's `main.lua` is a
+hello world; you are about to replace it.
+
+## Declare the lot
+
+A durable object is a class you declare and then address by name.
+`Auction("lot-42")` is one instance: one live entity, one private SQLite
+file, one call at a time.
+
+```lua
+local Auction = object "Auction" {
+    migrations = "migrations/Auction",
+    publishes = { bid = "public", closed = "public" },
+
+    -- The lot name arrives from a url, so decide here what is allowed
+    -- to exist. A refused name leaves nothing behind.
+    admit = function(name)
+        return name:match("^lot%-%d+$") ~= nil
+    end,
+
+    bid = function(state, bidder, amount)
+        local high = state.sql:query_one("SELECT MAX(amount) AS amount FROM bids")
+        if high and high.amount and amount <= high.amount then
+            return { ok = false, high = high.amount }
+        end
+
+        state.sql:exec(
+            "INSERT INTO bids (bidder, amount, at) VALUES (?, ?, ?)",
+            { bidder, amount, state.now() })
+        state:publish("bid", { bidder = bidder, amount = amount })
+        return { ok = true }
+    end,
+
+    top = function(state)
+        return state.sql:query(
+            "SELECT bidder, amount FROM bids ORDER BY amount DESC LIMIT 5")
+    end,
+}
+```
+
+Read `bid` again with the race in mind. It reads the maximum, compares,
+then writes, which is exactly the pattern that loses updates on a shared
+database. Here it cannot, because the second call does not start until
+the first one has returned. There is no lock in that code because there
+is nothing to lock: one writer is where the object lives, not a mutex it
+takes.
+
+`admit` is worth its four lines. The instance name is going to come out
+of a query string in a moment, and without `admit` any string a stranger
+sends creates a lot. With it, `lot-42` exists and `lot-<anything else>`
+never gets as far as a file.
+
+## Give it a schema
+
+The class points at a directory of `.sql` files. Scaffold the first one:
+
+```sh
+actias sql Auction create bids
+```
+
+That writes `migrations/Auction/0001_bids.sql`. Fill it in:
+
+```sql
+CREATE TABLE bids (
+    bidder TEXT    NOT NULL,
+    amount INTEGER NOT NULL,
+    at     INTEGER NOT NULL
+);
+```
+
+Every instance of the class gets its own copy of that schema in its own
+file. `lot-42` and `lot-43` are not two rows in a shared table with a
+`lot_id` column; they are two databases. Nothing runs at publish time.
+The files apply at the first call that touches an instance, inside that
+call's transaction.
+
+## Answer requests
+
+```lua
+on "fetch" (function(request)
+    local lot = request.query.lot or "lot-42"
+
+    if request.method == "POST" then
+        local body = json.parse(request.body)
+        return {
+            headers = { ["content-type"] = "application/json" },
+            body = json.stringify(Auction(lot):bid(body.bidder, body.amount)),
+        }
+    end
+
+    return {
+        headers = { ["content-type"] = "application/json" },
+        body = json.stringify(Auction(lot):top()),
+    }
+end)
+```
+
+Check it and publish:
+
+```sh
+actias check
+actias publish
+```
+
+`check` runs the same declaration pass the server runs at publish, then
+type-checks every file, and prints what your code asked the platform for:
+
+```text
+📜 Project validated!
+⚡ Handles events: fetch
+```
+
+Then bid against it:
+
+```sh
+curl -X POST 'http://localhost:3002/auction/?lot=lot-42' \
+  -d '{"bidder":"mira","amount":4200}'
+```
+
+```json
+{"ok":true}
+```
+
+Send the same amount again as somebody else and you get
+`{"ok":false,"high":4200}`. Send a thousand of them concurrently and you
+still get exactly one winner per amount, with no retry loop in the
+handler.
+
+## Push it to open tabs
+
+A number that is only correct when you refresh is not an auction. The
+class already declares two topics; `state:publish` appends the event to
+the instance's log in the same transaction as the insert above it, so an
+event can never describe a write that did not happen.
+
+A **connection** is the socket's program, declared the same way a class
+is:
+
+```lua
+local Floor = connection "Floor" {
+    open = function(conn)
+        conn:follow(Auction(conn.state.lot), "bid")
+        conn:follow(Auction(conn.state.lot), "closed")
+    end,
+
+    -- The platform writes the frame, so no vm has to wake to relay one.
+    event = "forward",
+}
+```
+
+Then upgrade in the same handler that answers HTTP, before the `POST`
+branch:
+
+```lua
+if request.upgrade then
+    return request:upgrade(Floor, { lot = lot }, Bidder(request.query.as or "anon"))
+end
+```
+
+`request:upgrade(Class, seed, identity)` seeds `conn.state` and fixes the
+identity the socket speaks as for the rest of its life. The client cannot
+change it afterwards, which matters because identity is what the follow
+policies check.
+
+The identity here comes off a query string so the example stays one file.
+In anything real it comes out of a verified session, the same way the
+`POST` branch would check who is bidding. `admit` protects the lot names;
+nothing yet protects the bidder names.
+
+With `event = "forward"` each delivery reaches the browser as the
+platform's own envelope, without running any of your code:
+
+```json
+{ "type": "event", "topic": "bid",
+  "from": { "id": "Auction/lot-42", "class": "Auction", "name": "lot-42" },
+  "data": { "bidder": "mira", "amount": 4200 } }
+```
+
+Open two tabs, bid in one, and the number moves in both.
+
+## Survive the tab closing
+
+Connection edges are deliberately weak: at-most-once, no retry, and they
+die with the socket. That is the right trade for a live number on screen
+and the wrong one for "you won". Anything that must not be missed follows
+one hop back, from an object.
+
+```lua
+local Bidder = object "Bidder" {
+    migrations = "migrations/Bidder",
+
+    receives = {
+        ["Auction:closed"] = function(state, event)
+            state.sql:exec(
+                "INSERT INTO results (lot, won, at) VALUES (?, ?, ?)",
+                { event.from.name, event.data.winner == state.name and 1 or 0, state.now() })
+        end,
+    },
+
+    watch = function(state, lot)
+        state:follow(Auction(lot), "closed")
+    end,
+
+    results = function(state)
+        return state.sql:query("SELECT lot, won, at FROM results ORDER BY at DESC LIMIT 20")
+    end,
+}
+```
+
+Scaffold its table too:
+
+```sh
+actias sql Bidder create results
+```
+
+```sql
+CREATE TABLE results (
+    lot  TEXT    NOT NULL,
+    won  INTEGER NOT NULL,
+    at   INTEGER NOT NULL
+);
+```
+
+Delivery to an object is at-least-once and it reaches a sleeping one. The
+publisher's log keeps the event, the edge tracks how far this follower has
+read, and delivery wakes it. Mira can close her laptop during the auction
+and the result is waiting in her own file when she comes back, with no
+catch-up protocol to write. Because it is at-least-once, a `receives`
+handler has to tolerate running twice on the same event; if that matters
+for yours, make the write idempotent.
+
+## End it while nobody is looking
+
+Objects schedule their own work. The `init` hook runs once per instance,
+before its first call proceeds, and `alarm` runs when the timer comes due:
+
+```lua
+hooks = {
+    init = function(state)
+        state:set_alarm("10m")
+    end,
+
+    alarm = function(state)
+        local top = state.sql:query_one(
+            "SELECT bidder, amount FROM bids ORDER BY amount DESC LIMIT 1")
+        state:publish("closed", {
+            winner = top and top.bidder,
+            amount = top and top.amount,
+        })
+    end,
+}
+```
+
+No cron service, no worker pool, no row somewhere with a `closes_at` that
+something else has to poll. The lot knows when it ends because it set the
+alarm itself, and the event that closes it goes down both kinds of edge:
+to the open tabs, which see it immediately, and to every `Bidder` that
+followed, which see it whenever they next wake.
+
+## While you are working
+
+Publishing to try one change gets old. `actias dev` watches the directory
+and mirrors every save into a live session:
+
+```sh
+actias dev
+```
+
+It prints a URL under `/_live/<identifier>/<session>/` that reloads on
+save, so the loop is edit, save, curl. `actias tail` streams a published
+script's log lines when you want the deployed one instead.
+
+`actias test` runs `tests/*.lua` on the same runtime the platform uses,
+with kv and secrets faked in memory:
+
+```lua
+test("the second identical bid loses", function()
+    local response = fetch({ method = "GET", path = "/" })
+    assert(response.status_code == 200)
+end)
+```
+
+Be aware of the edge of that: the fakes cover kv and secrets, not object
+storage, so tests cover routing and request shape, and the object path
+wants a running platform. `actias dev` is the loop for that half.
+
+## What the console shows
+
+Open the project's Databases section and the object classes are there
+beside the SQL databases, `Auction` with an instance per lot. Click
+`lot-42` and you are reading that instance's own SQLite file, the actual
+rows the method wrote, not a projection of them. The same is true of
+queue journals and workflow runs: the console reads the real thing.
+
+## Where to go next
+
+- [object](/docs/reference/objects) for the full class surface: `expire`,
+  `state.store`, `destroy`, and the rest of the hooks.
+- [Streams](/docs/runtime/streams) for follow policies and what
+  at-least-once actually promises.
+- [connection](/docs/reference/sockets) for the frame handlers this post
+  skipped by using `event = "forward"`.
+- [Object placement](/docs/internals/placement) for why one writer is a
+  lease rather than a lock, and what happens when a worker gets crowded.
+
+The counter still works, by the way. It is four lines and it is still the
+right answer for a counter. This is what the next question looks like.
