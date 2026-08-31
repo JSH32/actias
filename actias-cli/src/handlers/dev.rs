@@ -76,10 +76,9 @@ pub async fn handle(
 
     let ws_url = gateway::live_socket_url(&settings.api_url)?;
 
-    println!(
-        "{} for {}",
-        script_path.display().to_string().purple(),
-        script.public_identifier.purple(),
+    ui::step(
+        "Watching",
+        format!("{} for {}", script_path.display(), script.public_identifier),
     );
 
     let mut backoff = Duration::from_secs(1);
@@ -144,15 +143,14 @@ async fn run_session(
         )));
     };
 
-    println!(
-        "{}",
+    ui::done(
+        "Live",
         format!(
             "{}/_live/{}/{}/",
             worker_url.trim_end_matches('/'),
             identifier,
             session_id
-        )
-        .purple()
+        ),
     );
 
     let mut heartbeat = tokio::time::interval(HEARTBEAT);
