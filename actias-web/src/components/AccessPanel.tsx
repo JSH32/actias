@@ -7,7 +7,7 @@
  * access column carries the same words, compressed.
  */
 import * as React from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
 import { AclListDto, ProjectDto, UserDto } from '@/client';
@@ -143,7 +143,7 @@ export default function AccessPanel({
 }) {
   const queryClient = useQueryClient();
   const [inviteOpen, setInviteOpen] = React.useState(false);
-  const [search, setSearch] = React.useState('');
+  const [identifier, setIdentifier] = React.useState('');
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
 
   const { data: members } = useQuery({
@@ -153,16 +153,6 @@ export default function AccessPanel({
   const { data: allPermissions } = useQuery({
     queryKey: ['permissions'],
     queryFn: () => api.acl.getPermissions(),
-  });
-  const { data: candidates } = useQuery({
-    queryKey: ['user-search', search],
-    queryFn: async () =>
-      (
-        (await api.users.searchUsers(search, 1)) as unknown as {
-          items: UserDto[];
-        }
-      ).items,
-    enabled: inviteOpen,
   });
 
   const reload = React.useCallback(
@@ -198,22 +188,64 @@ export default function AccessPanel({
     roster.find((entry: AclListDto) => entry.user.id === selectedId) ??
     roster[0];
 
-  const invite = (user: UserDto) => {
-    // A fresh member joins as a Viewer: scripts read, kv read.
-    const viewer = shapes[0].bits;
-    api.acl
-      .putAcl(user.id, project.id, viewer)
-      .then(() => {
-        toast({
-          title: 'Member added',
-          message: `${user.username} joins as a Viewer: scripts read, kv read.`,
-        });
-        setInviteOpen(false);
-        setSelectedId(user.id);
-        reload();
-      })
-      .catch(showError);
+  /**
+   * Turns what was typed into exactly one account, or nothing.
+   *
+   * The search endpoint matches substrings, so it can answer with people
+   * who merely resemble what was typed. An invite has to be the person
+   * meant, so only an exact username or address counts.
+   */
+  const resolveAccount = async (typed: string): Promise<UserDto | null> => {
+    const wanted = typed.trim().toLowerCase();
+    if (!wanted) return null;
+    const page = (await api.users.searchUsers(wanted, 1)) as unknown as {
+      items: UserDto[];
+    };
+    return (
+      page.items.find(
+        (user) =>
+          user.username.toLowerCase() === wanted ||
+          user.email.toLowerCase() === wanted,
+      ) ?? null
+    );
   };
+
+  const invite = useMutation({
+    mutationFn: async (typed: string) => {
+      const user = await resolveAccount(typed);
+      if (!user) throw new Error('No account with that email or username.');
+      if (user.id === project.ownerId) {
+        throw new Error('That is the owner, who already holds everything.');
+      }
+      // Granting the Viewer preset to somebody who already holds more
+      // would quietly demote them, which is not what "invite" means.
+      if (roster.some((entry: AclListDto) => entry.user.id === user.id)) {
+        throw new Error(
+          `${user.username} is already a member. Change their access in the list.`,
+        );
+      }
+      // A fresh member joins as a Viewer: scripts read, kv read.
+      await api.acl.putAcl(user.id, project.id, shapes[0].bits);
+      return user;
+    },
+    onSuccess: (user) => {
+      toast({
+        title: 'Member added',
+        message: `${user.username} joins as a Viewer: scripts read, kv read.`,
+      });
+      setInviteOpen(false);
+      setIdentifier('');
+      setSelectedId(user.id);
+      reload();
+    },
+  });
+
+  // Guard failures carry their own sentence; anything from the api
+  // carries the server's.
+  const inviteError = invite.error
+    ? (invite.error as { body?: { message?: string } }).body?.message ||
+      (invite.error as Error).message
+    : null;
 
   const remove = (entry: AclListDto) => {
     api.acl
@@ -260,7 +292,14 @@ export default function AccessPanel({
               </p>
             </div>
             {write && (
-              <Dialog.Root open={inviteOpen} onOpenChange={setInviteOpen}>
+              <Dialog.Root
+                open={inviteOpen}
+                onOpenChange={(open) => {
+                  setInviteOpen(open);
+                  setIdentifier('');
+                  invite.reset();
+                }}
+              >
                 <Dialog.Trigger asChild>
                   <button className={classes.accentButton}>
                     Invite member
@@ -272,49 +311,49 @@ export default function AccessPanel({
                     <Dialog.Title className={dialogClasses.dialogTitle}>
                       Invite to {project.name}
                     </Dialog.Title>
-                    <input
-                      className={classes.searchInput}
-                      style={{
-                        width: '100%',
-                        height: 30,
-                        padding: '0 10px',
-                        border: '1px solid var(--line)',
-                        borderRadius: 'var(--r2)',
-                      }}
-                      placeholder="Search users"
-                      value={search}
-                      onChange={(event) => setSearch(event.target.value)}
-                      autoFocus
-                    />
-                    <span
-                      style={{
-                        display: 'block',
-                        marginTop: 8,
-                        fontSize: 11,
-                        color: 'var(--ink-3)',
+                    {/* One identifier, not a directory: naming who you
+                     * mean beats browsing everyone with an account. */}
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        invite.mutate(identifier);
                       }}
                     >
-                      They join as a Viewer: scripts read, kv read.
-                    </span>
-                    <div
-                      style={{
-                        marginTop: 10,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 4,
-                      }}
-                    >
-                      {(candidates ?? []).slice(0, 6).map((user: UserDto) => (
+                      <input
+                        className={classes.inviteInput}
+                        style={{ marginTop: 12 }}
+                        placeholder="Email address or username"
+                        value={identifier}
+                        onChange={(event) => setIdentifier(event.target.value)}
+                        autoFocus
+                        autoComplete="off"
+                        spellCheck={false}
+                        aria-label="Email address or username"
+                        aria-invalid={inviteError ? true : undefined}
+                      />
+                      <p className={classes.inviteHint}>
+                        They join as a Viewer: scripts read, kv read.
+                      </p>
+                      {inviteError && (
+                        <p className={classes.inviteError} role="alert">
+                          {inviteError}
+                        </p>
+                      )}
+                      <div className={dialogClasses.dialogActions}>
+                        <Dialog.Close asChild>
+                          <button type="button" className={classes.ghostButton}>
+                            Cancel
+                          </button>
+                        </Dialog.Close>
                         <button
-                          key={user.id}
-                          className={classes.ghostButton}
-                          style={{ width: '100%', justifyContent: 'start' }}
-                          onClick={() => invite(user)}
+                          type="submit"
+                          className={classes.accentButton}
+                          disabled={!identifier.trim() || invite.isPending}
                         >
-                          {user.username}
+                          {invite.isPending ? 'Inviting' : 'Invite'}
                         </button>
-                      ))}
-                    </div>
+                      </div>
+                    </form>
                   </Dialog.Content>
                 </Dialog.Portal>
               </Dialog.Root>
