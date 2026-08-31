@@ -40,5 +40,10 @@ mkdir /tmp/actias-cli
 cd /tmp/actias-cli
 git clone https://github.com/JSH32/actias.git .
 
-# Installing actias-cli
+# Installing the cli. The crate is actias-cli; the binary it installs is
+# `actias`, which is what every command in the docs starts with.
 cargo install --path ./actias-cli
+
+echo
+echo "Installed. The binary is 'actias', in ${CARGO_HOME:-$HOME/.cargo}/bin"
+echo "Start with: actias login"

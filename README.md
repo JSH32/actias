@@ -107,7 +107,7 @@ the project, so any script in it reaches the same `Auction("lot-42")`.
 ## Running it
 
 `docker-compose up -d` boots the whole stack locally (api, console,
-workers, storage). The `actias-cli` binary creates projects
+workers, storage). The `actias` binary creates projects
 (`actias init`), type-checks them (`actias check`, with luau-lsp
 editor support wired by the generated project files), and publishes
 them (`actias publish`). None of this is production-ready yet.

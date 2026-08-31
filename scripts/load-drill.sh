@@ -49,9 +49,9 @@ setup() {
 
     DIR=$(mktemp -d)
     export XDG_CONFIG_HOME="$DIR/config"
-    mkdir -p "$XDG_CONFIG_HOME/actias-cli" "$DIR/project"
+    mkdir -p "$XDG_CONFIG_HOME/actias" "$DIR/project"
     printf '{"apiUrl":"%s","token":"%s"}' "${API%/api}" "$TOKEN" \
-        > "$XDG_CONFIG_HOME/actias-cli/settings.json"
+        > "$XDG_CONFIG_HOME/actias/settings.json"
     cat > "$DIR/project/script.json" <<EOF
 {"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua"],"ignore":[]}
 EOF

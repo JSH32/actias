@@ -10,17 +10,17 @@ const platforms = [
   {
     os: 'Linux',
     arch: 'x86_64',
-    artifact: 'actias-cli-Linux-x86_64.tar.gz',
+    artifact: 'actias-Linux-x86_64.tar.gz',
   },
   {
     os: 'macOS',
     arch: 'x86_64',
-    artifact: 'actias-cli-Darwin-x86_64.tar.gz',
+    artifact: 'actias-Darwin-x86_64.tar.gz',
   },
   {
     os: 'Windows',
     arch: 'x86_64',
-    artifact: 'actias-cli-Windows-x86_64.zip',
+    artifact: 'actias-Windows-x86_64.zip',
   },
 ];
 

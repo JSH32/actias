@@ -102,9 +102,9 @@ cargo build -p actias-cli --quiet
 
 DEVDIR=$(mktemp -d)
 export XDG_CONFIG_HOME="$DEVDIR/config"
-mkdir -p "$XDG_CONFIG_HOME/actias-cli" "$DEVDIR/published" "$DEVDIR/project"
+mkdir -p "$XDG_CONFIG_HOME/actias" "$DEVDIR/published" "$DEVDIR/project"
 printf '{"apiUrl":"http://127.0.0.1:%s","token":"%s"}' "$ACTIAS_API_PORT" "$TOKEN" \
-    > "$XDG_CONFIG_HOME/actias-cli/settings.json"
+    > "$XDG_CONFIG_HOME/actias/settings.json"
 
 cat > "$DEVDIR/published/script.json" <<EOF
 {"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua","**/*.txt","**/*.html","migrations/**/*.sql"],"ignore":[]}
@@ -800,9 +800,9 @@ SVC_ID=$(echo "$TOKEN_JSON" | jq -r .id)
 # The CLI authenticates with whatever bearer its settings carry; hand it
 # the machine token instead of the user session.
 MACHINE_CONFIG="$DEVDIR/machine-config"
-mkdir -p "$MACHINE_CONFIG/actias-cli"
+mkdir -p "$MACHINE_CONFIG/actias"
 printf '{"apiUrl":"http://127.0.0.1:%s","token":"%s"}' "$ACTIAS_API_PORT" "$SVC_TOKEN" \
-    > "$MACHINE_CONFIG/actias-cli/settings.json"
+    > "$MACHINE_CONFIG/actias/settings.json"
 
 XDG_CONFIG_HOME="$MACHINE_CONFIG" "$REPO/target/debug/actias" publish "$DEVDIR/published" \
     || { echo "a service token could not publish"; exit 1; }

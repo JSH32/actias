@@ -14,7 +14,6 @@ mod util;
 
 use clap::Parser;
 use commands::{Cli, Commands};
-use dirs::config_dir;
 use errors::{Error, print_error};
 use reqwest::header;
 use router::Router;
@@ -53,10 +52,7 @@ async fn run() -> errors::Result<()> {
 
     // Parsing settings should trigger a re-auth.
     let relog = if let Commands::Login = cli.command {
-        let setting_path = config_dir()
-            .unwrap()
-            .join("actias-cli")
-            .join("settings.json");
+        let setting_path = settings::settings_path().map_err(Error::Config)?;
 
         if std::fs::exists(&setting_path)? {
             std::fs::remove_file(setting_path)

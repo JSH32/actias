@@ -201,9 +201,9 @@ SCRIPT_ID=$(curl -sf -X POST "$API/project/$PROJECT_ID/scripts" -H "$AUTH" -H 'C
 
 DEVDIR=$(mktemp -d)
 export XDG_CONFIG_HOME="$DEVDIR/config"
-mkdir -p "$XDG_CONFIG_HOME/actias-cli" "$DEVDIR/project"
+mkdir -p "$XDG_CONFIG_HOME/actias" "$DEVDIR/project"
 printf '{"apiUrl":"http://127.0.0.1:18080","token":"%s"}' "$TOKEN" \
-    > "$XDG_CONFIG_HOME/actias-cli/settings.json"
+    > "$XDG_CONFIG_HOME/actias/settings.json"
 
 cat > "$DEVDIR/project/script.json" <<EOF
 {"id":"$SCRIPT_ID","entryPoint":"main.lua","includes":["**/*.lua"],"ignore":[]}

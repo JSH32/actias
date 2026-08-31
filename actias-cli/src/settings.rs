@@ -22,13 +22,19 @@ pub struct Settings {
     pub token: String,
 }
 
+/// Where the login lives. One place, because the path used to be spelled
+/// out at both call sites and they could drift.
+pub fn settings_path() -> Result<std::path::PathBuf, String> {
+    let auth_dir = config_dir()
+        .ok_or("no config directory for this user")?
+        .join("actias");
+    std::fs::create_dir_all(&auth_dir).map_err(|e| e.to_string())?;
+    Ok(auth_dir.join("settings.json"))
+}
+
 impl Settings {
     pub async fn new(relog: bool) -> Result<Self, String> {
-        let config_dir = config_dir().unwrap();
-        let auth_dir = config_dir.join("actias-cli");
-        std::fs::create_dir_all(&auth_dir).map_err(|e| e.to_string())?;
-
-        let settings_file = auth_dir.join("settings.json");
+        let settings_file = settings_path()?;
 
         // If no settings file or relog requested, create new settings
         if !settings_file.as_path().exists() || relog {
