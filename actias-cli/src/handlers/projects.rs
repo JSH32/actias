@@ -2,9 +2,10 @@ use colored::*;
 use prettytable::{Table, row};
 
 use crate::{
-    client::Client,
+    client::{Client, types::CreateProjectDto},
     commands::ProjectOperations,
-    errors::{Result, progenitor_error},
+    errors::{Error, Result, progenitor_error},
+    ui,
 };
 
 /// Handle listing projects
@@ -21,7 +22,7 @@ pub async fn handle_list(client: &Client, page: f64) -> Result<()> {
     table.add_row(row!["ID", "Name", "Created At", "Updated At"]);
 
     println!(
-        "🔍 Displaying project page {} of {}",
+        "page {} of {}",
         response.page.to_string().yellow(),
         response.last_page.to_string().yellow()
     );
@@ -36,20 +37,45 @@ pub async fn handle_list(client: &Client, page: f64) -> Result<()> {
 }
 
 /// Handle project operations
-pub async fn handle_operation(
-    client: &Client,
-    id: &str,
-    operation: &ProjectOperations,
-) -> Result<()> {
-    let project = client
-        .get_project()
-        .project(id)
-        .send()
-        .await
-        .map_err(progenitor_error)?;
-
+pub async fn handle_operation(client: &Client, operation: &ProjectOperations) -> Result<()> {
     match operation {
-        ProjectOperations::Delete => {
+        ProjectOperations::Create { name } => {
+            // The generated client enforces this too, but as a failed
+            // body conversion, which reads like a bug rather than a
+            // typo.
+            if !(6..=36).contains(&name.chars().count()) {
+                return Err(Error::Command(
+                    "a project name is 6 to 36 characters".to_owned(),
+                ));
+            }
+
+            let project = client
+                .create_project()
+                .body(CreateProjectDto::builder().name(name.clone()))
+                .send()
+                .await
+                .map_err(progenitor_error)?;
+
+            ui::done(
+                "Created",
+                format!(
+                    "project {} {}",
+                    project.name,
+                    format!("({})", project.id).bright_black()
+                ),
+            );
+            ui::detail(format!("actias init my-app basic {}", project.id).bright_black());
+        }
+        ProjectOperations::Delete { id } => {
+            // Read first, so the confirmation names what went rather than
+            // echoing back the id that was typed.
+            let project = client
+                .get_project()
+                .project(id)
+                .send()
+                .await
+                .map_err(progenitor_error)?;
+
             client
                 .delete_project()
                 .project(id)
@@ -57,10 +83,13 @@ pub async fn handle_operation(
                 .await
                 .map_err(progenitor_error)?;
 
-            println!(
-                "🚮 Deleted project {} {}",
-                project.name.purple(),
-                format!("({})", project.id).bright_black()
+            ui::done(
+                "Deleted",
+                format!(
+                    "project {} {}",
+                    project.name,
+                    format!("({})", project.id).bright_black()
+                ),
             );
         }
     }

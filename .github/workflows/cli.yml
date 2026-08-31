@@ -22,21 +22,21 @@ jobs:
           - release_for: Linux-x86_64
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            bin: actias-cli
+            bin: actias
             name: actias-cli-Linux-x86_64.tar.gz
             command: build
 
           - release_for: Windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: actias-cli.exe
+            bin: actias.exe
             name: actias-cli-Windows-x86_64.zip
             command: build
 
           - release_for: macOS-x86_64
             os: macOS-latest
             target: x86_64-apple-darwin
-            bin: actias-cli
+            bin: actias
             name: actias-cli-Darwin-x86_64.tar.gz
             command: build
         toolchain:

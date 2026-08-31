@@ -72,7 +72,7 @@ on "fetch" (function(request)
 end)
 LUA
     cargo build -p actias-cli --quiet
-    ./target/debug/actias-cli publish "$DIR/project" >/dev/null
+    ./target/debug/actias publish "$DIR/project" >/dev/null
     rm -rf "$DIR"
     echo "$IDENT"
 }

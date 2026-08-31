@@ -4,6 +4,12 @@ version.workspace = true
 edition = "2024"
 license = "MIT"
 
+# The crate is actias-cli; the binary it installs is `actias`, which is
+# what every doc, the console and the landing page tell people to type.
+[[bin]]
+name = "actias"
+path = "src/main.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

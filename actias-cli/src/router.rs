@@ -49,7 +49,7 @@ impl Router {
                 handlers::objects::handle(&self.client, &project, sub).await
             }
             Commands::Projects { page } => self.handle_list_projects(page).await,
-            Commands::Project { id, sub } => self.handle_project(id, sub).await,
+            Commands::Project { sub } => self.handle_project(sub).await,
             Commands::Script { id, sub } => self.handle_script(id, sub).await,
             // Handled before authentication in main; unreachable here.
             Commands::Check { .. } | Commands::Test { .. } | Commands::Sql { .. } => Ok(()),
@@ -82,8 +82,8 @@ impl Router {
     }
 
     // Route to Project management handler
-    async fn handle_project(&self, id: String, operation: ProjectOperations) -> Result<()> {
-        handlers::projects::handle_operation(&self.client, &id, &operation).await
+    async fn handle_project(&self, operation: ProjectOperations) -> Result<()> {
+        handlers::projects::handle_operation(&self.client, &operation).await
     }
 
     // Route to Script management handler
