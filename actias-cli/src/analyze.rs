@@ -14,7 +14,6 @@
 use std::process::Command;
 
 use base64::Engine;
-use colored::*;
 
 use crate::script::ScriptConfig;
 
@@ -108,10 +107,7 @@ pub fn analyze(config: &ScriptConfig) -> Result<(), String> {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             cleanup();
-            println!(
-                "{}",
-                "⚠️ luau-analyze not found; skipping the type check.".yellow()
-            );
+            crate::ui::warn("luau-analyze not found; skipping the type check");
             return Ok(());
         }
         Err(error) => {
@@ -132,7 +128,7 @@ pub fn analyze(config: &ScriptConfig) -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
-        Err("The type check found errors.".to_owned())
+        Err("the type check found errors".to_owned())
     }
 }
 

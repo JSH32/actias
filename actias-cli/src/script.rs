@@ -50,7 +50,7 @@ impl ScriptConfig {
             .project_path
             .as_ref()
             .ok_or("the project path is unset")?;
-        println!("🔨 Running build: {}", command.purple());
+        crate::ui::step("Building", command);
         #[cfg(windows)]
         let mut shell = {
             let mut shell = std::process::Command::new("cmd");
@@ -97,7 +97,7 @@ impl ScriptConfig {
 
         if !config_path.exists() {
             return Err(format!(
-                "{} is missing from the provided directory!",
+                "{} is missing from the provided directory",
                 "script.json".yellow()
             ));
         }

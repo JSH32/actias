@@ -9,6 +9,7 @@ use crate::{
     client::{Client, types::SetSecretDto},
     commands::SecretOperations,
     errors::{Error, Result, progenitor_error},
+    ui,
 };
 
 /// Handle secret command
@@ -32,7 +33,7 @@ pub async fn handle(client: &Client, project: &str, operation: &SecretOperations
                 .await
                 .map_err(progenitor_error)?;
 
-            println!("🔐 Secret {} set.", name.purple());
+            ui::done("Set", format!("secret {name}"));
         }
         SecretOperations::List => {
             let secrets = client
@@ -48,7 +49,7 @@ pub async fn handle(client: &Client, project: &str, operation: &SecretOperations
             }
             for secret in secrets {
                 println!(
-                    "🔐 {} {}",
+                    "{} {}",
                     secret.name.purple(),
                     format!("v{}", secret.version as i64).dimmed()
                 );
@@ -63,7 +64,7 @@ pub async fn handle(client: &Client, project: &str, operation: &SecretOperations
                 .await
                 .map_err(progenitor_error)?;
 
-            println!("🚮 Secret {} deleted.", name.purple());
+            ui::done("Deleted", format!("secret {name}"));
         }
     }
 

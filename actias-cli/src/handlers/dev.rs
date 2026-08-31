@@ -15,6 +15,7 @@ use crate::{
     gateway::{self, GatewayReply},
     script::ScriptConfig,
     settings::Settings,
+    ui,
     util::get_dir,
 };
 
@@ -45,7 +46,7 @@ pub async fn handle(
 
     let Some(script_id) = config.id.clone() else {
         return Err(Error::Script(format!(
-            "This project has no script ID yet; run {} once to create it.",
+            "this project has no script id yet; run {} once to create it",
             "actias publish".yellow()
         )));
     };
@@ -76,7 +77,7 @@ pub async fn handle(
     let ws_url = gateway::live_socket_url(&settings.api_url)?;
 
     println!(
-        "👀 Watching {} for {}",
+        "{} for {}",
         script_path.display().to_string().purple(),
         script.public_identifier.purple(),
     );
@@ -96,19 +97,15 @@ pub async fn handle(
 
         match end {
             Ok(SessionEnd::Quit) => {
-                println!("👋 Session left to expire; bye.");
+                ui::step("Stopped", "session left to expire");
                 return Ok(());
             }
             Ok(SessionEnd::Disconnected) => {
-                println!("{}", "🔌 Connection lost, reconnecting...".yellow());
+                ui::step("Reconnecting", "connection lost");
                 backoff = Duration::from_secs(1);
             }
             Err(error) => {
-                println!(
-                    "{} {error} (retrying in {}s)",
-                    "⚠️".yellow(),
-                    backoff.as_secs()
-                );
+                ui::warn(format!("{error} (retrying in {}s)", backoff.as_secs()));
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
@@ -148,7 +145,7 @@ async fn run_session(
     };
 
     println!(
-        "🔴 Live at {}",
+        "{}",
         format!(
             "{}/_live/{}/{}/",
             worker_url.trim_end_matches('/'),
@@ -186,11 +183,11 @@ async fn run_session(
                             .send(gateway::event_message("update", payload))
                             .await
                             .map_err(|e| Error::Api(format!("Failed to send the update: {e}")))?;
-                        println!("📤 Updated {}", chrono::Local::now().format("%H:%M:%S").to_string().bright_black());
+                        ui::done("Updated", chrono::Local::now().format("%H:%M:%S").to_string().bright_black());
                     }
                     // A save can be observed mid-write or with a broken
                     // config; report it and keep watching rather than dying.
-                    Err(error) => println!("{} {error}", "⚠️".yellow()),
+                    Err(error) => ui::warn(error),
                 }
             }
 
@@ -207,7 +204,7 @@ async fn run_session(
                         match serde_json::from_str::<GatewayReply>(&text) {
                             Ok(reply) if reply.status == "log" => gateway::print_log_line(&reply),
                             Ok(reply) if reply.status == "updated" || reply.status == "alive" => {}
-                            _ => println!("{} gateway: {text}", "⚠️".yellow()),
+                            _ => ui::warn(format!("gateway: {text}")),
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => return Ok(SessionEnd::Disconnected),

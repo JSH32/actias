@@ -9,6 +9,7 @@ use crate::{
     errors::{Error, Result, progenitor_error},
     handlers::publish,
     script::ScriptConfig,
+    ui,
     util::{copy_definitions, copy_dir_all, get_dir, write_revision},
 };
 
@@ -24,15 +25,18 @@ pub async fn handle_delete(client: &Client, script: &ScriptDto, revision_id: &st
         .await
         .map_err(progenitor_error)?;
 
-    println!("🚮 Deleted revision {}", revision_id.bright_black());
-    println!(
-        "✅ Set {}'s {} revision to {}",
-        script.public_identifier.purple(),
-        format!("({})", result.script_id).bright_black(),
-        match &result.revision_id {
-            Some(v) => v.yellow(),
-            None => "NONE".red(),
-        }
+    ui::done("Deleted", format!("revision {revision_id}"));
+    ui::done(
+        "Set",
+        format!(
+            "{}'s {} revision to {}",
+            script.public_identifier,
+            format!("({})", result.script_id).bright_black(),
+            match &result.revision_id {
+                Some(v) => v.yellow(),
+                None => "NONE".red(),
+            }
+        ),
     );
 
     Ok(())
@@ -59,7 +63,7 @@ pub async fn handle_list(client: &Client, script_id: &str, page: &Option<i64>) -
     table.add_row(row!["ID", "Created",]);
 
     println!(
-        "🔍 Displaying revision page {} of {}",
+        "page {} of {}",
         response.page.to_string().yellow(),
         response.last_page.to_string().yellow()
     );
@@ -97,11 +101,14 @@ pub async fn handle_set(client: &Client, script_id: &str, revision_id: &str) -> 
         .await
         .map_err(progenitor_error)?;
 
-    println!(
-        "✅ Set {}'s {} revision to {}",
-        script.public_identifier.purple(),
-        format!("({})", response.script_id).bright_black(),
-        response.revision_id.clone().unwrap().yellow()
+    ui::done(
+        "Set",
+        format!(
+            "{}'s {} revision to {}",
+            script.public_identifier,
+            format!("({})", response.script_id).bright_black(),
+            response.revision_id.clone().unwrap().yellow()
+        ),
     );
 
     Ok(())
@@ -132,7 +139,7 @@ pub async fn handle_clone(
     copy_definitions(&path).map_err(Error::Script)?;
 
     println!(
-        "📥 Cloned revision {} for {} {}",
+        "revision {} for {} {}",
         format!("({})", revision.id).bright_black(),
         script.public_identifier.purple(),
         format!("({})", script.id).bright_black(),

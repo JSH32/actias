@@ -10,6 +10,7 @@ use crate::{
     commands::AliasOperations,
     errors::{Result, progenitor_error},
     script::ScriptConfig,
+    ui,
 };
 
 /// Handles `actias alias <script> <op>`; `script` may be a script id or a
@@ -43,12 +44,11 @@ async fn set(client: &Client, script_id: &str, name: &str, revision_id: &str) ->
         .send()
         .await
         .map_err(progenitor_error)?;
-    println!(
-        "🏷️ Alias {} now serves revision {} {}",
-        alias.name.purple(),
-        alias.revision_id.purple(),
-        format!("(/_alias/{}/{})", script.public_identifier, alias.name).bright_black(),
+    ui::done(
+        "Aliased",
+        format!("{} -> revision {}", alias.name, alias.revision_id),
     );
+    ui::detail(format!("/_alias/{}/{}", script.public_identifier, alias.name).bright_black());
 
     Ok(())
 }
@@ -68,7 +68,7 @@ async fn list(client: &Client, script_id: &str) -> Result<()> {
     }
 
     for alias in aliases {
-        println!("🏷️ {} → {}", alias.name.purple(), alias.revision_id);
+        ui::detail(format!("{} -> {}", alias.name, alias.revision_id));
     }
 
     Ok(())

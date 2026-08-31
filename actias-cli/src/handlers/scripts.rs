@@ -30,7 +30,7 @@ pub async fn handle_list(client: &Client, project: &str, page: f64) -> Result<()
     ]);
 
     println!(
-        "🔍 Displaying script page {} of {}",
+        "page {} of {}",
         response.page.to_string().yellow(),
         response.last_page.to_string().yellow()
     );
@@ -42,7 +42,7 @@ pub async fn handle_list(client: &Client, project: &str, page: f64) -> Result<()
             item.last_updated,
             item.current_revision_id
                 .clone()
-                .unwrap_or("No Revision!".yellow().to_string())
+                .unwrap_or("no revision".yellow().to_string())
         ]);
     }
 
@@ -90,7 +90,7 @@ async fn handle_delete(client: &Client, id: &str) -> Result<()> {
         .map_err(progenitor_error)?;
 
     println!(
-        "🚮 Deleted script {} {}",
+        "{} {}",
         script.public_identifier.purple(),
         format!("({})", script.id).bright_black()
     );

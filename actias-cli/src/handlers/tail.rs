@@ -12,6 +12,7 @@ use crate::{
     gateway::{self, GatewayReply},
     script::ScriptConfig,
     settings::Settings,
+    ui,
     util::get_dir,
 };
 
@@ -35,25 +36,21 @@ pub async fn handle(client: &Client, settings: &Settings, target: &str) -> Resul
 
     let ws_url = gateway::live_socket_url(&settings.api_url)?;
 
-    println!("📡 Tailing {}", script.public_identifier.purple());
+    ui::step("Tailing", &script.public_identifier);
 
     let mut backoff = Duration::from_secs(1);
     loop {
         match tail_once(&ws_url, &settings.token, &script_id).await {
             Ok(TailEnd::Quit) => {
-                println!("👋 Bye.");
+                ui::step("Stopped", "tail closed");
                 return Ok(());
             }
             Ok(TailEnd::Disconnected) => {
-                println!("{}", "🔌 Connection lost, reconnecting...".yellow());
+                ui::step("Reconnecting", "connection lost");
                 backoff = Duration::from_secs(1);
             }
             Err(error) => {
-                println!(
-                    "{} {error} (retrying in {}s)",
-                    "⚠️".yellow(),
-                    backoff.as_secs()
-                );
+                ui::warn(format!("{error} (retrying in {}s)", backoff.as_secs()));
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
@@ -94,7 +91,7 @@ async fn tail_once(ws_url: &str, token: &str, script_id: &str) -> Result<TailEnd
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<GatewayReply>(&text) {
                             Ok(reply) if reply.status == "log" => gateway::print_log_line(&reply),
-                            _ => println!("{} gateway: {text}", "⚠️".yellow()),
+                            _ => ui::warn(format!("gateway: {text}")),
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => return Ok(TailEnd::Disconnected),
@@ -114,7 +111,7 @@ fn resolve_script_id(target: &str) -> Result<String> {
     {
         return config.id.ok_or_else(|| {
             Error::Script(format!(
-                "This project has no script ID yet; run {} once to create it.",
+                "this project has no script id yet; run {} once to create it",
                 "actias publish".yellow()
             ))
         });

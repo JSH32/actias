@@ -7,6 +7,7 @@ use crate::{
     client::{Client, types::CreateRevisionDto, types::CreateScriptDto},
     errors::{Error, Result, progenitor_error},
     script::ScriptConfig,
+    ui,
     util::{copy_definitions, copy_dir_all, get_dir},
 };
 
@@ -37,9 +38,9 @@ pub async fn handle(
     // Generate TypeScript definitions
     copy_definitions(&script_path).map_err(Error::Script)?;
 
-    println!(
-        "📜 Script {} was created!",
-        script_path.file_name().unwrap().to_str().unwrap().magenta()
+    ui::done(
+        "Created",
+        script_path.file_name().unwrap().to_str().unwrap(),
     );
 
     // Create script in API if project ID was provided
@@ -155,10 +156,13 @@ async fn publish_new_script(
         .await
         .map_err(|e| Error::Api(format!("Failed to upload revision: {}", e)))?;
 
-    println!(
-        "🚀 Script published to {} {}",
-        script.public_identifier.purple(),
-        format!("({})", script.id).bright_black(),
+    ui::done(
+        "Published",
+        format!(
+            "{} {}",
+            script.public_identifier,
+            format!("({})", script.id).bright_black()
+        ),
     );
 
     Ok(())

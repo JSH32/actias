@@ -1,7 +1,5 @@
 use std::fmt;
 
-use colored::Colorize;
-
 /// Custom error type for the application
 #[derive(Debug)]
 pub enum Error {
@@ -66,14 +64,14 @@ pub fn progenitor_error<E: std::error::Error>(err: E) -> Error {
 /// Handle and print errors in a consistent way
 pub fn print_error(err: &Error) {
     match err {
-        Error::Authentication(msg) => println!("❌ {}: {}", "Authentication Error".red(), msg),
-        Error::Permission(msg) => println!("❌ {}: {}", "Permission Error".red(), msg),
-        Error::Api(msg) => println!("❌ {}: {}", "API Error".red(), msg),
-        Error::Io(msg) => println!("❌ {}: {}", "IO Error".red(), msg),
-        Error::Config(msg) => println!("❌ {}: {}", "Configuration Error".red(), msg),
-        Error::Script(msg) => println!("❌ {}: {}", "Script Error".red(), msg),
-        Error::Command(msg) => println!("❌ {}: {}", "Error".red(), msg),
-        Error::NotFound(msg) => println!("❌ {}: {}", "Not Found".red(), msg),
+        Error::Authentication(msg) => crate::ui::error("authentication error", msg),
+        Error::Permission(msg) => crate::ui::error("permission denied", msg),
+        Error::Api(msg) => crate::ui::error("api error", msg),
+        Error::Io(msg) => crate::ui::error("io error", msg),
+        Error::Config(msg) => crate::ui::error("configuration error", msg),
+        Error::Script(msg) => crate::ui::error("script error", msg),
+        Error::Command(msg) => crate::ui::error("error", msg),
+        Error::NotFound(msg) => crate::ui::error("not found", msg),
     }
 }
 

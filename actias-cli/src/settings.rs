@@ -33,7 +33,7 @@ impl Settings {
         // If no settings file or relog requested, create new settings
         if !settings_file.as_path().exists() || relog {
             if !relog {
-                println!("🔑 You are not logged in!");
+                crate::ui::warn("you are not logged in");
             }
 
             // Get server URL
@@ -78,7 +78,7 @@ impl Settings {
             serde_json::to_writer(&mut writer, &settings).map_err(|e| e.to_string())?;
             writer.flush().map_err(|e| e.to_string())?;
 
-            println!("{}", "🔑 Logged in successfully!".green());
+            crate::ui::done("Logged in", "credentials stored");
             return Ok(settings);
         }
 

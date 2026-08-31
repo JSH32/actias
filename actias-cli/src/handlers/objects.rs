@@ -66,7 +66,7 @@ pub async fn handle(client: &Client, project: &str, operation: ObjectOperations)
             }
             table.printstd();
             println!(
-                "🧩 {} of {} instance(s)",
+                "{} of {} instance(s)",
                 response.items.len().to_string().yellow(),
                 (response.total as u64).to_string().yellow()
             );
@@ -83,7 +83,7 @@ pub async fn handle(client: &Client, project: &str, operation: ObjectOperations)
                 .into_inner();
             if outcome.deleting > 0.0 {
                 println!(
-                    "🗑️ Deleting {class} \"{name}\"; the name may be recreated and starts fresh."
+                    "Deleting {class} \"{name}\"; the name may be recreated and starts fresh."
                 );
             } else {
                 println!("Nothing to delete: no live {class} \"{name}\".");
@@ -99,7 +99,7 @@ pub async fn handle(client: &Client, project: &str, operation: ObjectOperations)
                 .map_err(progenitor_error)?
                 .into_inner();
             println!(
-                "🗑️ Deleting {} instance(s) of {class}.",
+                "Deleting {} instance(s) of {class}.",
                 (outcome.deleting as u64).to_string().yellow()
             );
         }

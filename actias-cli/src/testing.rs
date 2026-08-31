@@ -353,7 +353,7 @@ fn test_files(config: &ScriptConfig) -> Result<Vec<PathBuf>, String> {
     let root = config
         .project_path
         .as_ref()
-        .ok_or("Project has no path.")?
+        .ok_or("project has no path")?
         .join("tests");
 
     let mut files = Vec::new();
@@ -607,7 +607,7 @@ fn install_workflow_testing(
 pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
     let files = test_files(config)?;
     if files.is_empty() {
-        return Err("No tests found; add tests/*.lua to the project.".to_owned());
+        return Err("no tests found; add tests/*.lua to the project".to_owned());
     }
 
     let prepared = prepare(config)?;
@@ -624,7 +624,7 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
             .and_then(|n| n.to_str())
             .unwrap_or("test")
             .to_owned();
-        println!("🧪 {}", name.purple());
+        crate::ui::step("Running", &name);
 
         // Each file gets its own store and vm, so no state leaks between
         // files; cases within one file share both on purpose.
@@ -683,7 +683,8 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
 
         runtime.start_timer();
         if let Err(error) = runtime.load(&source).set_name(&name).exec_async().await {
-            println!("  {} the file itself failed: {error}", "❌".red());
+            println!("    {} ... {}", name, "FAILED".red().bold());
+            println!("      the file itself failed: {error}");
             summary.failed += 1;
             continue;
         }
@@ -699,11 +700,12 @@ pub async fn run_tests(config: &ScriptConfig) -> Result<TestSummary, String> {
 
             match function.call_async::<()>(()).await {
                 Ok(()) => {
-                    println!("  {} {case_name}", "✅".green());
+                    println!("    {case_name} ... {}", "ok".green());
                     summary.passed += 1;
                 }
                 Err(error) => {
-                    println!("  {} {case_name}: {error}", "❌".red());
+                    println!("    {case_name} ... {}", "FAILED".red().bold());
+                    println!("      {error}");
                     summary.failed += 1;
                 }
             }

@@ -9,6 +9,7 @@ mod router;
 mod script;
 mod settings;
 mod testing;
+mod ui;
 mod util;
 
 use clap::Parser;

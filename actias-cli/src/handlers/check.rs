@@ -1,10 +1,10 @@
-use colored::*;
 use std::path::Path;
 
 use crate::{
     analyze, capabilities,
     errors::{Error, Result},
     script::ScriptConfig,
+    ui,
 };
 
 /// Handle the Check command
@@ -15,66 +15,60 @@ pub fn handle(directory: &str) -> Result<()> {
     // cleanly also publishes cleanly.
     let declared = capabilities::extract(&config).map_err(Error::Script)?;
 
-    println!("{}", "📜 Project validated!".green());
+    ui::done("Validated", &config.entry_point);
     if !declared.kv.is_empty() {
-        println!("📦 Declares kv: {}", declared.kv.join(", ").purple());
+        ui::done("Declares", format!("kv {}", declared.kv.join(", ")));
     }
     if !declared.events.is_empty() {
-        println!("⚡ Handles events: {}", declared.events.join(", ").purple());
+        ui::done("Handles", declared.events.join(", "));
     }
     if !declared.secrets.is_empty() {
-        println!(
-            "🔐 Declares secrets: {}",
-            declared.secrets.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("secrets {}", declared.secrets.join(", ")),
         );
     }
     if !declared.objects.is_empty() {
-        println!(
-            "🧩 Declares objects: {}",
-            declared.objects.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("objects {}", declared.objects.join(", ")),
         );
     }
     if !declared.databases.is_empty() {
-        println!(
-            "🗄️ Declares databases: {}",
-            declared
-                .databases
-                .iter()
-                .map(|entry| entry.split('=').next().unwrap_or(entry))
-                .collect::<Vec<_>>()
-                .join(", ")
-                .purple()
-        );
+        let names = declared
+            .databases
+            .iter()
+            .map(|entry| entry.split('=').next().unwrap_or(entry))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui::done("Declares", format!("databases {names}"));
     }
     if !declared.queues.is_empty() {
-        println!(
-            "📬 Declares queues: {}",
-            declared.queues.join(", ").purple()
-        );
+        ui::done("Declares", format!("queues {}", declared.queues.join(", ")));
     }
     if !declared.connections.is_empty() {
-        println!(
-            "\u{1f50c} Declares connections: {}",
-            declared.connections.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("connections {}", declared.connections.join(", ")),
         );
     }
     if !declared.workflows.is_empty() {
-        println!(
-            "🧭 Declares workflows: {}",
-            declared.workflows.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("workflows {}", declared.workflows.join(", ")),
         );
     }
     if !declared.lifecycle.is_empty() {
-        println!(
-            "\u{23f3} Lifecycle: {}",
-            declared.lifecycle.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("lifecycle {}", declared.lifecycle.join(", ")),
         );
     }
     if !declared.publishes.is_empty() {
-        println!("📡 Publishes: {}", declared.publishes.join(", ").purple());
+        ui::done("Publishes", declared.publishes.join(", "));
     }
     if !declared.receives.is_empty() {
-        println!("📥 Receives: {}", declared.receives.join(", ").purple());
+        ui::done("Receives", declared.receives.join(", "));
     }
     let migrations: Vec<String> = declared
         .databases
@@ -84,15 +78,12 @@ pub fn handle(directory: &str) -> Result<()> {
         .cloned()
         .collect();
     if !migrations.is_empty() {
-        println!(
-            "🗂️ Migrations: {}",
-            migrations
-                .iter()
-                .map(|entry| entry.replacen('=', " from ", 1))
-                .collect::<Vec<_>>()
-                .join(", ")
-                .purple()
-        );
+        let listed = migrations
+            .iter()
+            .map(|entry| entry.replacen('=', " from ", 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ui::done("Migrations", listed);
     }
 
     // Flow cross-references (the sixteenth revision's checkable half):
@@ -194,7 +185,7 @@ pub fn handle(directory: &str) -> Result<()> {
 
     if !flow_errors.is_empty() {
         for error in &flow_errors {
-            println!("❌ {}", error.red());
+            ui::error("check", error);
         }
         return Err(Error::Script(format!(
             "{} contract error(s) in follows, receives, publishes, queues or migrations.",
@@ -205,7 +196,7 @@ pub fn handle(directory: &str) -> Result<()> {
     // Strict types over the whole bundle, with the platform surface shadowed
     // in; diagnostics point at the user's own lines.
     analyze::analyze(&config).map_err(Error::Script)?;
-    println!("{}", "🔎 Types check out (luau-analyze).".green());
+    ui::done("Checked", "types (luau-analyze)");
 
     Ok(())
 }

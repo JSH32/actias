@@ -12,6 +12,7 @@ use crate::{
     },
     errors::{Error, Result, progenitor_error},
     script::ScriptConfig,
+    ui,
     util::get_dir,
 };
 
@@ -42,42 +43,39 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
     // it also catches syntax errors before anything is uploaded.
     let declared = capabilities::extract(&script_config).map_err(Error::Script)?;
     if !declared.kv.is_empty() {
-        println!("📦 Declares kv: {}", declared.kv.join(", ").purple());
+        ui::done("Declares", format!("kv {}", declared.kv.join(", ")));
     }
     if !declared.secrets.is_empty() {
-        println!(
-            "🔐 Declares secrets: {}",
-            declared.secrets.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("secrets {}", declared.secrets.join(", ")),
         );
     }
     if !declared.objects.is_empty() {
-        println!(
-            "🧩 Declares objects: {}",
-            declared.objects.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("objects {}", declared.objects.join(", ")),
         );
     }
     if !declared.databases.is_empty() {
-        println!(
-            "🗄️ Declares databases: {}",
-            declared.databases.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("databases {}", declared.databases.join(", ")),
         );
     }
     if !declared.queues.is_empty() {
-        println!(
-            "📬 Declares queues: {}",
-            declared.queues.join(", ").purple()
-        );
+        ui::done("Declares", format!("queues {}", declared.queues.join(", ")));
     }
     if !declared.connections.is_empty() {
-        println!(
-            "\u{1f50c} Declares connections: {}",
-            declared.connections.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("connections {}", declared.connections.join(", ")),
         );
     }
     if !declared.lifecycle.is_empty() {
-        println!(
-            "\u{23f3} Lifecycle: {}",
-            declared.lifecycle.join(", ").purple()
+        ui::done(
+            "Declares",
+            format!("lifecycle {}", declared.lifecycle.join(", ")),
         );
     }
 
@@ -126,11 +124,7 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
             _ => uploading += 1,
         }
     }
-    println!(
-        "⬆️ Uploading {} of {} files",
-        uploading.to_string().purple(),
-        total.to_string().purple()
-    );
+    ui::step("Uploading", format!("{uploading} of {total} files"));
 
     // Create revision
     let revision = client
@@ -145,18 +139,20 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
         .await
         .map_err(|e| Error::Api(format!("Failed to upload revision: {}", e)))?;
 
-    println!(
-        "🚀 Script published to {} {}",
-        script.public_identifier.purple(),
-        format!("({})", script.id).bright_black(),
+    ui::done(
+        "Published",
+        format!(
+            "{} {}",
+            script.public_identifier,
+            format!("({})", script.id).bright_black()
+        ),
     );
     // The path form works on any worker; a subdomain deployment also
     // serves it at <ident>--r-<revision>.<base>.
-    println!(
-        "📌 Revision {} {}",
-        revision.id.purple(),
+    ui::detail(format!("revision {}", revision.id));
+    ui::detail(
         format!(
-            "(preview: /_rev/{}/{})",
+            "preview  /_rev/{}/{}",
             script.public_identifier, revision.id
         )
         .bright_black(),
@@ -197,10 +193,13 @@ async fn create_new_script(
         .await
         .map_err(progenitor_error)?;
 
-    println!(
-        "📜 Script has been created {} {}",
-        script.public_identifier.purple(),
-        format!("({})", script.id).bright_black()
+    ui::done(
+        "Created",
+        format!(
+            "script {} {}",
+            script.public_identifier,
+            format!("({})", script.id).bright_black()
+        ),
     );
 
     script_config.id = Some(script.id.clone());

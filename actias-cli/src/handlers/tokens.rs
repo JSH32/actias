@@ -7,6 +7,7 @@ use crate::{
     client::{Client, types::CreateServiceTokenDto},
     commands::TokenOperations,
     errors::{Error, Result, progenitor_error},
+    ui,
 };
 
 /// Handle tokens command
@@ -18,7 +19,7 @@ pub async fn handle(client: &Client, project: &str, operation: &TokenOperations)
                 .map(|bit| {
                     bit.to_uppercase()
                         .parse()
-                        .map_err(|_| Error::Command(format!("Unknown access field '{bit}'.")))
+                        .map_err(|_| Error::Command(format!("unknown access field '{bit}'")))
                 })
                 .collect::<Result<Vec<_>>>()?;
 
@@ -30,9 +31,9 @@ pub async fn handle(client: &Client, project: &str, operation: &TokenOperations)
                 .await
                 .map_err(progenitor_error)?;
 
-            println!("🎫 Token {} created.", created.name.purple());
-            println!("{}", created.token.green());
-            println!("{}", "Shown once. Store it now.".yellow());
+            ui::done("Created", format!("token {}", created.name));
+            ui::detail(created.token.green());
+            ui::warn("shown once, store it now");
         }
         TokenOperations::List => {
             let tokens = client
@@ -52,7 +53,7 @@ pub async fn handle(client: &Client, project: &str, operation: &TokenOperations)
                     .map(|at| format!("last used {}", at.format("%Y-%m-%d %H:%M")))
                     .unwrap_or_else(|| "never used".to_owned());
                 println!(
-                    "🎫 {} {} {} {}",
+                    "{} {} {} {}",
                     token.name.purple(),
                     token.token_prefix,
                     token.id.dimmed(),
@@ -69,7 +70,7 @@ pub async fn handle(client: &Client, project: &str, operation: &TokenOperations)
                 .await
                 .map_err(progenitor_error)?;
 
-            println!("🚮 Token {} revoked.", id.purple());
+            ui::done("Revoked", format!("token {id}"));
         }
     }
 

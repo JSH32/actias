@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::{
     commands::SqlOperations,
     errors::{Error, Result},
+    ui,
 };
 
 pub fn handle(database: &str, operation: &SqlOperations) -> Result<()> {
@@ -43,7 +44,7 @@ fn create(database: &str, name: &str, directory: &str) -> Result<()> {
     )
     .map_err(|e| Error::Io(e.to_string()))?;
 
-    println!("📝 {}", file.display().to_string().purple());
+    ui::done("Created", file.display());
     println!(
         "   Applied once declared: {}",
         format!("database \"{database}\" {{ migrations = \"migrations/{database}\" }}").dimmed()
