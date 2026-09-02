@@ -43,7 +43,7 @@ const SERVICE_CONFIG = JSON.stringify({
  *
  * The keepalive and re-resolution numbers matter because all of the
  * services listen on one port number: a connection held to an address
- * whose container has been replaced can reach a DIFFERENT live
+ * whose container has been replaced can reach a different live
  * service, which answers unimplemented rather than refusing. Noticing
  * a dead peer quickly and re-resolving its name keeps that window
  * short.

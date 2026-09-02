@@ -27,8 +27,6 @@ async function bootstrap() {
         for (const error of errors) {
           const key = error.property;
 
-          // Remove the field name from the beginning,
-          // capitalize first letter, add period at the end
           const value =
             Object.values(error.constraints)[0]
               .split(' ')

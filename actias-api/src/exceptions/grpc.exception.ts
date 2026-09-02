@@ -49,7 +49,7 @@ export class GrpcCallException extends HttpException {
    */
   static detailMap: Partial<Record<Status, string>> = {
     // Every platform service listens on the same port number, so a
-    // connection to a stale address reaches a LIVE service that simply
+    // connection to a stale address reaches a live service that simply
     // does not have this method, and tonic answers unimplemented with
     // no message of its own.
     [Status.UNIMPLEMENTED]:

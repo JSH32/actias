@@ -69,7 +69,6 @@ export class AclGuard implements CanActivate {
           typeof aclData.projectFinder === 'string' ||
           aclData.projectFinder instanceof String
         ) {
-          // Create instance and run init hook.
           const instance = await this.moduleRef.create(context.getClass());
           instance.onModuleInit();
 

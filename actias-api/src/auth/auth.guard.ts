@@ -47,10 +47,8 @@ export class AuthGuard implements CanActivate {
       }
 
       const user = await this.authService.getUserFromToken(token);
-      // Assigning the payload to the request object here
       request['user'] = user;
 
-      // If user isn't admin and it's required then we error here.
       if (
         this.reflector.get<boolean>('isAdmin', context.getHandler()) &&
         !user.admin
