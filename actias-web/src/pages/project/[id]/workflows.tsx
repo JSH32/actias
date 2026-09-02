@@ -24,6 +24,14 @@ import classes from '../../../components/inspector.module.css';
 /** Design 11's runs table template. */
 const RUN_COLUMNS = '168px minmax(0, 1fr) 150px 108px 92px';
 
+/** Every name a gate can resolve on, whatever spelling it was written
+ * in: race and all carry an array, a bare await carries one name. The
+ * history renders them joined; a signal carries exactly one, so both
+ * readers come from here rather than from a string cast, which is what
+ * turned a two-name gate into the signal "paid,cancelled". */
+const gateNames = (gate: unknown): string[] =>
+  Array.isArray(gate) ? gate.map(String) : [String(gate)];
+
 /** The pill and dot color each derived status wears. */
 const STATUS_COLORS: Record<string, string> = {
   completed: 'var(--luna)',
@@ -168,11 +176,6 @@ function foldHistory(
     }
     return null;
   };
-
-  /** Every name a gate can resolve on, whatever spelling it was written
-   * in: race and all carry an array, a bare await carries one name. */
-  const gateNames = (gate: unknown): string[] =>
-    Array.isArray(gate) ? gate.map(String) : [String(gate)];
 
   for (let index = 0; index < journal.length; index += 1) {
     const entry = journal[index];
@@ -511,8 +514,15 @@ function RunDrawer({
   const rows = foldHistory(journal, status, statusDetail, stepNames);
   const terminal = status === 'completed' || status === 'cancelled';
   const failed = status === 'failed';
-  const awaited =
-    status === 'awaiting' ? String(statusDetail.signal ?? '') : '';
+  // A gate can await several names at once, and the run resumes on
+  // whichever arrives: the signal carries one name, never the label the
+  // history shows. Sending the label joined the names into
+  // "paid,cancelled", which the replay matched against neither and
+  // parked on again until the gate's timeout.
+  const awaitedNames =
+    status === 'awaiting' ? gateNames(statusDetail.signal ?? '') : [];
+  const [chosen, setChosen] = React.useState<string | null>(null);
+  const awaited = chosen ?? awaitedNames[0] ?? '';
 
   const sendSignal = () => {
     let body: unknown = null;
@@ -686,6 +696,32 @@ function RunDrawer({
               marginTop: 10,
             }}
           >
+            {awaitedNames.length > 1 && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span
+                  style={{
+                    font: '400 11px var(--mono)',
+                    color: 'var(--ink-3)',
+                  }}
+                >
+                  resume with
+                </span>
+                {awaitedNames.map((name) => (
+                  <button
+                    key={name}
+                    className={
+                      name === awaited
+                        ? classes.accentButton
+                        : classes.ghostButton
+                    }
+                    style={{ height: 24, font: '500 11px var(--mono)' }}
+                    onClick={() => setChosen(name)}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            )}
             <input
               style={{
                 height: 28,
@@ -706,7 +742,7 @@ function RunDrawer({
                 style={{ height: 28, font: '650 12px var(--ui)' }}
                 onClick={sendSignal}
               >
-                Send signal
+                Send {awaited || 'signal'}
               </button>
               <button
                 className={classes.ghostButton}
