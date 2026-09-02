@@ -16,6 +16,12 @@ service WorkerData {
     // calling script); a Status means the transport itself failed.
     rpc Dispatch(ObjectCall) returns (CallResult);
 
+    // One shell chunk, run in a fresh vm on this node under the session's
+    // grants: the operator's principal binds what the api says the
+    // operator may open. Prints come back with the value; a failure is
+    // the chunk's own error, addressed to the person typing.
+    rpc RunShell(ShellRun) returns (ShellOutcome);
+
     // One typed read against an object's storage, no vm: queue stats or
     // message rows, a database or user object's overview, or one
     // read-only SQL statement under the script authorizer. Routed to the
@@ -41,6 +47,141 @@ service WorkerData {
     // makes any redelivery skip, so at-least-once stays safe to
     // repeat.
     rpc DeliverReceives(ReceiveBatch) returns (ReceiveReceipts);
+
+    // One listing over a class's directory: the rows every object in
+    // the class contributes, answered from the node's own overlay of
+    // the class's base and deltas. No object is woken and no lease is
+    // taken; the answer trails each object's last settled write.
+    rpc ListDirectory(DirectoryQuery) returns (DirectoryPage);
+
+    // The verified read: the same query, with every candidate checked
+    // against its object's own shipping manifest before it is served.
+    // A row that stopped matching is dropped, a fresher row is served
+    // fresh, and a row that cannot be checked is returned FLAGGED
+    // rather than dropped, because a lost row is the one failure the
+    // directory refuses. Still no waking and no leases: the common
+    // case costs one small manifest read per candidate, never a
+    // restore. Limit bounds candidates EXAMINED, so a page may return
+    // fewer entries than asked plus a cursor.
+    rpc VisitDirectory(DirectoryQuery) returns (VisitPage);
+
+    // Rebuilds one class's index from the placement store's live
+    // identities and each object's shipping manifest, waking nothing.
+    //
+    // Background reconciliation discovers classes by listing the
+    // store, so a class whose prefix is gone entirely cannot be found
+    // at all: nothing names it. A name can always be asked for, which
+    // is why total loss is an operator's verb rather than a timer's
+    // job.
+    rpc RebuildDirectory(DirectoryRebuild) returns (DirectoryRebuilt);
+}
+
+message DirectoryRebuild {
+    string scope_id = 1;
+    string class = 2;
+}
+
+message DirectoryRebuilt {
+    // Identities the placement store still lists as live.
+    uint64 live = 1;
+    // Rows recovered from manifests.
+    uint64 rows = 2;
+    // Live objects whose manifest carries no row yet. Not an error:
+    // nothing has settled to copy, and a backfill is what covers them.
+    uint64 without_row = 3;
+    // Rows retired because the object no longer exists.
+    uint64 tombstones = 4;
+    // Whether this node did the work. False means another node holds
+    // the class's lease and is rebuilding it already.
+    bool held = 5;
+}
+
+// A predicate over one directory field. Values are json-encoded so one
+// shape carries every kind a field may hold, arrays included.
+message DirectoryCondition {
+    // Field name as the class's directory function returned it; nested
+    // tables arrive flattened, so "location.region" is one field.
+    string field = 1;
+    // "eq", "ne", "lt", "lte", "gt", "gte", "one_of", "starts_with",
+    // "contains", "exists". One_of rather than in, because `in` is a
+    // lua keyword and the wire uses the word the author types. Unknown
+    // operators are refused rather than ignored, so a newer caller
+    // never silently loses a filter.
+    string op = 2;
+    // The operand, json-encoded: a scalar, an array for one_of, or a
+    // boolean for "exists".
+    string value_json = 3;
+}
+
+// A conjunction of conditions, with nested combinators. The tree is
+// carried rather than a query string: the worker translates it into
+// parameterized sql, so no caller can shape an identifier.
+message DirectoryWhere {
+    repeated DirectoryCondition conditions = 1;
+    // OR over sub-wheres.
+    repeated DirectoryWhere any = 2;
+    // Explicit AND, for grouping inside an `any`.
+    repeated DirectoryWhere all = 3;
+    // NOT over sub-wheres.
+    repeated DirectoryWhere none = 4;
+}
+
+message DirectoryOrder {
+    string field = 1;
+    bool descending = 2;
+}
+
+message DirectoryQuery {
+    // The project the class belongs to.
+    string scope_id = 1;
+    string class = 2;
+    DirectoryWhere where = 3;
+    repeated DirectoryOrder order = 4;
+    // Rows this page may carry; the worker caps it.
+    int64 limit = 5;
+    // From a previous page; absent starts at the beginning.
+    optional string cursor = 6;
+}
+
+// One object's row.
+message DirectoryEntry {
+    string name = 1;
+    string object_id = 2;
+    // Field name to json-encoded value, for the fields the class
+    // exposes and this object has.
+    map<string, string> fields = 3;
+}
+
+// One verified candidate. Verified entries carry the object's settled
+// row (which may be fresher than what the index held); flagged entries
+// carry the indexed row and say why it could not be checked.
+message VisitEntry {
+    DirectoryEntry entry = 1;
+    // The row could not be verified; it is served anyway, saying so,
+    // because dropping it would manufacture the false negative the
+    // directory exists to refuse.
+    bool unverified = 2;
+    // Why, when unverified; empty otherwise.
+    string reason = 3;
+}
+
+message VisitPage {
+    repeated VisitEntry entries = 1;
+    // Continues where this page's CANDIDATES ended: verification may
+    // drop rows, so a short page with a cursor is normal, not the end.
+    optional string cursor = 2;
+    // Same contract as DirectoryPage.building.
+    repeated string building = 3;
+}
+
+message DirectoryPage {
+    repeated DirectoryEntry entries = 1;
+    // Feeds the next query; absent on the last page.
+    optional string cursor = 2;
+    // Fields still building, if any. A query naming one is refused
+    // outright; this reports the rest so a console can show progress
+    // rather than leaving a column mysteriously missing.
+    repeated string building = 3;
 }
 
 // Due events for the connections one node hosts. The events ride
@@ -143,6 +284,37 @@ message Caller {
 }
 
 // One dispatched call's outcome.
+// A shell chunk and what it may bind. The grants stand in for a
+// contract: a shell session publishes nothing, so the api derives them
+// from what the project holds and the operator may open.
+message ShellRun {
+    string scope_id = 1;
+    // The chunk, as typed or pasted; its return value is the result.
+    string source = 2;
+    repeated string kv = 3;
+    repeated string databases = 4;
+    repeated string objects = 5;
+    // Wall budget for the run; the node caps it.
+    uint64 wall_secs = 6;
+    // Whether the session may write. A read-only chunk still runs: the
+    // vm refuses kv set/delete, database exec and method calls inside
+    // it, which is what makes an ad hoc join safe to type without
+    // ceremony.
+    bool write = 7;
+}
+
+message ShellOutcome {
+    // The chunk's return value as json; "null" for nothing.
+    string value_json = 1;
+    // Every print and log line, in order.
+    repeated string output = 2;
+    // The chunk's own error, when it failed.
+    string error = 3;
+    // Work units and milliseconds the run consumed.
+    uint64 work = 4;
+    uint64 wall_ms = 5;
+}
+
 message CallResult {
     // The method's return value, json-encoded; meaningful only when
     // `error` is empty.

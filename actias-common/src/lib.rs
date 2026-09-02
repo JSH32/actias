@@ -1,5 +1,11 @@
+//! The vocabulary every service speaks: config reading, tracing setup,
+//! log channel names, naming rules, and the spellings two services must
+//! agree on (the directory field set, the identity checksum).
+
 pub mod classes;
 pub mod config;
+pub mod directory_identity;
+pub mod directory_spec;
 pub mod logging;
 pub mod naming;
 #[cfg(feature = "otel")]
@@ -13,6 +19,10 @@ pub use tracing;
 /// default filter, which keeps platform crates at debug and dependency
 /// noise (h2, hyper, the aws sdk) at info. With the `otel` feature and
 /// OTEL_EXPORTER_OTLP_ENDPOINT set, spans also export over OTLP.
+///
+/// # Errors
+/// Returns the exporter's error when the OTLP layer cannot be built, or
+/// the subscriber's when one is already installed for this process.
 pub fn setup_tracing() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;

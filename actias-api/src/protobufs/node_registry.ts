@@ -147,6 +147,30 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<google.protobuf.Empty>;
+        // Takes one undrained departure and the identities the dead node
+    // held, for the crash-scoped directory sweep. A node that exits
+    // cleanly flushed its shipper and syncer to zero and leaves nothing
+    // to repair; a node that DIED may have settled a write whose row
+    // never reached a delta, and leases cascade away with the node row,
+    // so this record is the only durable answer to &quot;what did it hold&quot;.
+    // 
+    // Consuming: the row is deleted as it is handed out, so two sweepers
+    // cannot take the same departure and a taken one is never retried.
+    // That trades a crash mid-sweep (the departure is lost, and the
+    // periodic reconciliation covers those objects later) against
+    // duplicated work on every node, which is the right way round: the
+    // repair is idempotent but not free.
+        takeDeparture(
+            data: google.protobuf.Empty,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Departure>;
+    }
+    // One dead node&#x27;s objects, resolved to identities. Empty &#x60;node_id&#x60;
+    // means there was nothing to take.
+    export interface Departure {
+        nodeId?: string;
+        instances?: node_registry.ObjectInstance[];
     }
     export interface ListInstancesRequest {
         projectIds?: string[];
@@ -166,6 +190,11 @@ export namespace node_registry {
     export interface ClassCount {
         class?: string;
         count?: number;
+        // XOR over a fixed hex prefix of each LIVE identity&#x27;s object id,
+    // which is already a hash of the identity. The directory folds its
+    // own rows the same way and compares: a count cannot see one
+    // missing row against one ghost, and this can.
+        identities?: number;
     }
     export interface CountInstancesResponse {
         // One row per class holding at least one identity, class-ordered.

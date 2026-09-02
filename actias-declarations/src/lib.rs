@@ -12,7 +12,12 @@
 //! the code, whoever published it.
 
 // Arc/Mutex rather than Rc/RefCell: workspace feature unification can
-// switch mlua's send feature on, and these closures must compile either way.
+// switch mlua's send feature on (worker-core and the cli both ask for
+// it), and these closures must compile either way. Building this crate
+// without those members leaves the feature off, and clippy then
+// correctly observes that the synchronisation buys nothing; the allow
+// at the one site holding lua values keeps `-p` builds clean without
+// giving up the workspace one.
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -25,6 +30,7 @@ use serde::{Deserialize, Serialize};
 mod class_spec;
 mod connection_spec;
 pub mod duration;
+pub mod field_kit;
 pub use class_spec::{ClassSpec, RESERVED_METHODS, TopicPolicy, callable_method};
 pub use connection_spec::{CONNECTION_HANDLERS, ConnectionSpec};
 
@@ -57,7 +63,7 @@ pub struct Declarations {
     #[serde(default)]
     pub workflows: Vec<String>,
     /// Step name literals found in the sources (`wf:step("name", ...)`),
-    /// a SUPERSET of what may run: the console's declared-possible
+    /// a superset of what may run: the console's declared-possible
     /// skeleton. Dynamically built names are invisible here and simply
     /// appear as they execute.
     #[serde(default)]
@@ -73,12 +79,13 @@ pub struct Declarations {
     pub receives: Vec<String>,
     /// Follow targets found as source literals
     /// (`state:follow(Class(...), "topic")`), spelled "Class:topic".
-    /// Like workflow_steps, a checker-visible SUPERSET heuristic:
+    /// Like workflow_steps, a checker-visible superset heuristic:
     /// dynamically chosen topics are invisible here.
     #[serde(default)]
     pub follow_sites: Vec<String>,
     /// Class lifecycle declarations: "Class:expire=30d" for a declared
-    /// lifespan, "Class:admit" for a creation gate.
+    /// lifespan, "Class:admit" for a creation gate, "Class:directory"
+    /// for a class that contributes a queryable row.
     #[serde(default)]
     pub lifecycle: Vec<String>,
     /// Connection classes declared with `connection "Class" { ... }`.
@@ -132,7 +139,7 @@ fn scan_step_literals(files: &HashMap<String, String>) -> Vec<String> {
         }
     }
     // The first window precedes any match; splitting yields it too, so
-    // the loop above only ever sees text AFTER a `:step(`.
+    // the loop above only ever sees text after a `:step(`.
     names
 }
 
@@ -213,6 +220,9 @@ pub fn extract(files: HashMap<String, String>, entry_point: &str) -> Result<Decl
     });
 
     install_declarations(&lua, &recorded).map_err(|e| e.to_string())?;
+    // The field kit is data, not a stub: a class body's `directory`
+    // fields ARE these markers, and the pass reads them.
+    field_kit::install(&lua).map_err(|e| e.to_string())?;
     install_stubs(&lua).map_err(|e| e.to_string())?;
     let step_names = scan_step_literals(&files);
     let follow_sites = scan_follow_literals(&files);
@@ -295,6 +305,36 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 }
                 if spec.admits {
                     recorded.lifecycle.push(format!("{class}:admit"));
+                }
+                // The method names, so a shell or a console can offer
+                // what an instance answers to without the source in
+                // hand. Names only: which of them write is not
+                // declarable (a method writes by touching storage), so
+                // a read-only session refuses at the call, never by
+                // hiding the method. Sorted, so the entry is canonical
+                // and a deploy that changes no method changes nothing.
+                if !spec.methods.is_empty() {
+                    let mut methods: Vec<&String> = spec.methods.iter().collect();
+                    methods.sort();
+                    let names: Vec<&str> = methods.iter().map(|m| m.as_str()).collect();
+                    recorded
+                        .lifecycle
+                        .push(format!("{class}:methods={}", names.join(",")));
+                }
+                // The declared field set, at version zero: publish
+                // mints the real version by diffing this payload
+                // against the previous contract's, so a deploy that
+                // changes no field renumbers nothing and rebuilds
+                // nothing.
+                //
+                // The fields belong here rather than being inferred
+                // from rows because absence is a legal value (a nil
+                // field is simply absent), so rows can never say
+                // whether a field was added by a later publish or just
+                // missing from this object. The declaration says
+                // exactly, at the moment the author changes it.
+                if let Some(directory) = &spec.directory {
+                    recorded.lifecycle.push(directory.entry(&class));
                 }
                 drop(recorded);
                 stub(lua)
@@ -481,6 +521,7 @@ fn install_loaders(lua: &Lua, files: HashMap<String, String>) -> mlua::Result<()
         .collect();
 
     let sources = Arc::new(by_key);
+    #[allow(clippy::arc_with_non_send_sync)]
     let loaded = Arc::new(Mutex::new(HashMap::<String, mlua::Value>::new()));
 
     let require_sources = sources.clone();
@@ -725,6 +766,14 @@ mod tests {
                 r#"object "Session" {
                     expire = "30d",
                     admit = function(name) return #name > 3 end,
+                    migrations = "migrations/Session",
+                    directory = {
+                        from = function(state) return state.store:get("card") end,
+                        fields = {
+                            at = f.integer(function(card) return card.at end),
+                            status = f.string,
+                        },
+                    },
                 }
                 on "fetch" (function() end)"#,
             )]),
@@ -733,7 +782,39 @@ mod tests {
         .expect("extraction succeeds");
         assert_eq!(
             declarations.lifecycle,
-            vec!["Session:expire=30d".to_owned(), "Session:admit".to_owned()]
+            vec![
+                "Session:expire=30d".to_owned(),
+                "Session:admit".to_owned(),
+                // At version zero: publish mints the real version by
+                // diffing this payload against the previous contract's.
+                // Fields are sorted, so the entry is canonical.
+                "Session:directory@0=at:integer,status:string".to_owned(),
+            ]
+        );
+    }
+    #[test]
+    fn method_names_are_recorded_sorted() {
+        let declarations = extract(
+            files(&[(
+                "main.lua",
+                r#"object "Room" {
+                    say = function(state, text) return text end,
+                    close = function(state) end,
+                    seats = 4,
+                }
+                on "fetch" (function() end)"#,
+            )]),
+            "main.lua",
+        )
+        .expect("extraction succeeds");
+        // Functions only, in name order: `seats` is a value, not a
+        // method, and a stable order is what keeps the entry canonical.
+        assert!(
+            declarations
+                .lifecycle
+                .contains(&"Room:methods=close,say".to_owned()),
+            "{:?}",
+            declarations.lifecycle
         );
     }
 

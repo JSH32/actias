@@ -23,6 +23,15 @@ export namespace worker_data {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<CallResult>;
+        // One shell chunk, run in a fresh vm on this node under the session&#x27;s
+    // grants: the operator&#x27;s principal binds what the api says the
+    // operator may open. Prints come back with the value; a failure is
+    // the chunk&#x27;s own error, addressed to the person typing.
+        runShell(
+            data: ShellRun,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ShellOutcome>;
         // One typed read against an object&#x27;s storage, no vm: queue stats or
     // message rows, a database or user object&#x27;s overview, or one
     // read-only SQL statement under the script authorizer. Routed to the
@@ -61,6 +70,140 @@ export namespace worker_data {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ReceiveReceipts>;
+        // One listing over a class&#x27;s directory: the rows every object in
+    // the class contributes, answered from the node&#x27;s own overlay of
+    // the class&#x27;s base and deltas. No object is woken and no lease is
+    // taken; the answer trails each object&#x27;s last settled write.
+        listDirectory(
+            data: DirectoryQuery,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<DirectoryPage>;
+        // The verified read: the same query, with every candidate checked
+    // against its object&#x27;s own shipping manifest before it is served.
+    // A row that stopped matching is dropped, a fresher row is served
+    // fresh, and a row that cannot be checked is returned FLAGGED
+    // rather than dropped, because a lost row is the one failure the
+    // directory refuses. Still no waking and no leases: the common
+    // case costs one small manifest read per candidate, never a
+    // restore. Limit bounds candidates EXAMINED, so a page may return
+    // fewer entries than asked plus a cursor.
+        visitDirectory(
+            data: DirectoryQuery,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<VisitPage>;
+        // Rebuilds one class&#x27;s index from the placement store&#x27;s live
+    // identities and each object&#x27;s shipping manifest, waking nothing.
+    // 
+    // Background reconciliation discovers classes by listing the
+    // store, so a class whose prefix is gone entirely cannot be found
+    // at all: nothing names it. A name can always be asked for, which
+    // is why total loss is an operator&#x27;s verb rather than a timer&#x27;s
+    // job.
+        rebuildDirectory(
+            data: DirectoryRebuild,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<DirectoryRebuilt>;
+    }
+    export interface DirectoryRebuild {
+        scopeId?: string;
+        class?: string;
+    }
+    export interface DirectoryRebuilt {
+        // Identities the placement store still lists as live.
+        live?: number;
+        // Rows recovered from manifests.
+        rows?: number;
+        // Live objects whose manifest carries no row yet. Not an error:
+    // nothing has settled to copy, and a backfill is what covers them.
+        withoutRow?: number;
+        // Rows retired because the object no longer exists.
+        tombstones?: number;
+        // Whether this node did the work. False means another node holds
+    // the class&#x27;s lease and is rebuilding it already.
+        held?: boolean;
+    }
+    // A predicate over one directory field. Values are json-encoded so one
+    // shape carries every kind a field may hold, arrays included.
+    export interface DirectoryCondition {
+        // Field name as the class&#x27;s directory function returned it; nested
+    // tables arrive flattened, so &quot;location.region&quot; is one field.
+        field?: string;
+        // &quot;eq&quot;, &quot;ne&quot;, &quot;lt&quot;, &quot;lte&quot;, &quot;gt&quot;, &quot;gte&quot;, &quot;one_of&quot;, &quot;starts_with&quot;,
+    // &quot;contains&quot;, &quot;exists&quot;. One_of rather than in, because &#x60;in&#x60; is a
+    // lua keyword and the wire uses the word the author types. Unknown
+    // operators are refused rather than ignored, so a newer caller
+    // never silently loses a filter.
+        op?: string;
+        // The operand, json-encoded: a scalar, an array for one_of, or a
+    // boolean for &quot;exists&quot;.
+        valueJson?: string;
+    }
+    // A conjunction of conditions, with nested combinators. The tree is
+    // carried rather than a query string: the worker translates it into
+    // parameterized sql, so no caller can shape an identifier.
+    export interface DirectoryWhere {
+        conditions?: worker_data.DirectoryCondition[];
+        // OR over sub-wheres.
+        any?: worker_data.DirectoryWhere[];
+        // Explicit AND, for grouping inside an &#x60;any&#x60;.
+        all?: worker_data.DirectoryWhere[];
+        // NOT over sub-wheres.
+        none?: worker_data.DirectoryWhere[];
+    }
+    export interface DirectoryOrder {
+        field?: string;
+        descending?: boolean;
+    }
+    export interface DirectoryQuery {
+        // The project the class belongs to.
+        scopeId?: string;
+        class?: string;
+        where?: worker_data.DirectoryWhere;
+        order?: worker_data.DirectoryOrder[];
+        // Rows this page may carry; the worker caps it.
+        limit?: number;
+        // From a previous page; absent starts at the beginning.
+        cursor?: string;
+    }
+    // One object&#x27;s row.
+    export interface DirectoryEntry {
+        name?: string;
+        objectId?: string;
+        // Field name to json-encoded value, for the fields the class
+    // exposes and this object has.
+        fields?: { [key: string]: string };
+    }
+    // One verified candidate. Verified entries carry the object&#x27;s settled
+    // row (which may be fresher than what the index held); flagged entries
+    // carry the indexed row and say why it could not be checked.
+    export interface VisitEntry {
+        entry?: worker_data.DirectoryEntry;
+        // The row could not be verified; it is served anyway, saying so,
+    // because dropping it would manufacture the false negative the
+    // directory exists to refuse.
+        unverified?: boolean;
+        // Why, when unverified; empty otherwise.
+        reason?: string;
+    }
+    export interface VisitPage {
+        entries?: worker_data.VisitEntry[];
+        // Continues where this page&#x27;s CANDIDATES ended: verification may
+    // drop rows, so a short page with a cursor is normal, not the end.
+        cursor?: string;
+        // Same contract as DirectoryPage.building.
+        building?: string[];
+    }
+    export interface DirectoryPage {
+        entries?: worker_data.DirectoryEntry[];
+        // Feeds the next query; absent on the last page.
+        cursor?: string;
+        // Fields still building, if any. A query naming one is refused
+    // outright; this reports the rest so a console can show progress
+    // rather than leaving a column mysteriously missing.
+        building?: string[];
     }
     // Due events for the connections one node hosts. The events ride
     // once per batch; each edge names the slice it gets, so the payload
@@ -153,6 +296,35 @@ export namespace worker_data {
         revision?: string;
     }
     // One dispatched call&#x27;s outcome.
+    // A shell chunk and what it may bind. The grants stand in for a
+    // contract: a shell session publishes nothing, so the api derives them
+    // from what the project holds and the operator may open.
+    export interface ShellRun {
+        scopeId?: string;
+        // The chunk, as typed or pasted; its return value is the result.
+        source?: string;
+        kv?: string[];
+        databases?: string[];
+        objects?: string[];
+        // Wall budget for the run; the node caps it.
+        wallSecs?: number;
+        // Whether the session may write. A read-only chunk still runs: the
+    // vm refuses kv set/delete, database exec and method calls inside
+    // it, which is what makes an ad hoc join safe to type without
+    // ceremony.
+        write?: boolean;
+    }
+    export interface ShellOutcome {
+        // The chunk&#x27;s return value as json; &quot;null&quot; for nothing.
+        valueJson?: string;
+        // Every print and log line, in order.
+        output?: string[];
+        // The chunk&#x27;s own error, when it failed.
+        error?: string;
+        // Work units and milliseconds the run consumed.
+        work?: number;
+        wallMs?: number;
+    }
     export interface CallResult {
         // The method&#x27;s return value, json-encoded; meaningful only when
     // &#x60;error&#x60; is empty.

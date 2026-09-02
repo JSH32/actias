@@ -1,3 +1,7 @@
+//! The ScriptService grpc surface: publishing a revision, resolving a
+//! public identifier to the code that runs, and minting the declaration
+//! versions a publish's capability contract carries.
+
 use std::str::FromStr;
 
 use actias_common::logging::{live_log_channel, script_log_channel};
@@ -170,6 +174,74 @@ impl ScriptService {
             .map_err(|e| Status::internal(e.to_string()))
     }
 
+    /// Stamps each declared directory field set with its version.
+    ///
+    /// The declaration pass emits every directory entry at version
+    /// zero, because only the store knows what the class declared
+    /// before. A set identical to the previous publish's keeps its
+    /// version, so an ordinary deploy renumbers nothing and rebuilds
+    /// nothing; a changed set takes the next version, which is what
+    /// tells the directory a backfill is owed and which fields are
+    /// waiting on it.
+    ///
+    /// The version is per class and monotonic. It never resets, even if
+    /// a field is removed and later re-added, because rows derived
+    /// under the old version are still in the index and must not be
+    /// mistaken for rows derived under the new one.
+    async fn mint_directory_versions(
+        &self,
+        script_id: &Uuid,
+        lifecycle: Vec<String>,
+    ) -> Result<Vec<String>, tonic::Status> {
+        use actias_common::directory_spec::DirectorySpec;
+
+        // Nothing to mint: the common case, and it costs no query.
+        if !lifecycle
+            .iter()
+            .any(|entry| DirectorySpec::parse(entry).is_some())
+        {
+            return Ok(lifecycle);
+        }
+
+        let previous: Vec<String> = sqlx::query_scalar(
+            "SELECT jsonb_array_elements_text(
+                 r.script_config->'capabilities'->'lifecycle'
+             )
+             FROM scripts s
+             JOIN revisions r ON r.id = s.current_revision
+             WHERE s.id = $1",
+        )
+        .bind(script_id)
+        .fetch_all(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(lifecycle
+            .into_iter()
+            .map(|entry| {
+                let Some((class, fresh)) = DirectorySpec::parse(&entry) else {
+                    return entry;
+                };
+                let held = previous
+                    .iter()
+                    .find_map(|old| DirectorySpec::parse(old).filter(|(owner, _)| *owner == class));
+
+                let minted = match held {
+                    // Same fields, same kinds: keep the version, so
+                    // nothing downstream reads this deploy as a change.
+                    Some((_, old)) if old.payload() == fresh.payload() => old.dver,
+                    Some((_, old)) => old.dver + 1,
+                    // A class publishing a directory for the first
+                    // time starts at one. Zero is reserved for rows
+                    // derived before any declaration existed, and the
+                    // merge order treats it as the lowest.
+                    None => 1,
+                };
+                DirectorySpec::new(minted, fresh.fields).entry(&class)
+            })
+            .collect())
+    }
+
     /// Refuses a derived contract colliding with a sibling script's
     /// current one: a queue has one consumer (`on "queue:<name>"`) and a
     /// user class one declarer per project. Producers (`queue "name"`)
@@ -291,6 +363,10 @@ impl ScriptService {
         .map_err(|e| Status::internal(e.to_string()))?
         .map_err(Status::invalid_argument)?;
 
+        let lifecycle = self
+            .mint_directory_versions(script_id, derived.lifecycle)
+            .await?;
+
         script_config.capabilities = Some(crate::database_types::Capabilities {
             kv: derived.kv,
             events: derived.events,
@@ -301,7 +377,7 @@ impl ScriptService {
             workflows: derived.workflows,
             workflow_steps: derived.workflow_steps,
             publishes: derived.publishes,
-            lifecycle: derived.lifecycle,
+            lifecycle,
             connections: derived.connections,
         });
 

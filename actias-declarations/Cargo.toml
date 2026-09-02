@@ -5,6 +5,9 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+# The directory codec and its field-name rules: one spelling shared
+# with the worker, so publish refuses exactly what derivation would.
+actias-common = { workspace = true }
 cron = "0.12"
 mlua = { version = "0.11", features = ["luau"] }
 serde = { version = "1.0.152", features = ["derive"] }

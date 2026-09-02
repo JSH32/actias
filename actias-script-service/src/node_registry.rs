@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::proto_node_registry::{
     AcquireLeaseRequest, AlarmRow, ClassCount, ClearAlarmRequest, CountInstancesRequest,
-    CountInstancesResponse, DeleteInstanceRequest, DeleteInstanceResponse, DeletionRow,
+    CountInstancesResponse, DeleteInstanceRequest, DeleteInstanceResponse, DeletionRow, Departure,
     DeregisterRequest, DueAlarmsRequest, DueAlarmsResponse, DueExpiriesRequest,
     DueExpiriesResponse, ExpiryRow, GetLeaseRequest, GetNodeRequest, HeartbeatRequest, Lease,
     ListInstancesRequest, ListInstancesResponse, ListNodesResponse, Node, NodeRegistration,
@@ -165,12 +165,53 @@ impl NodeRegistry {
     /// Deletes every node past the ttl. Ageing out is physical, so the
     /// table never accumulates a graveyard, and lease expiry is the same
     /// deletion through the cascade. Runs on its own timer, never on the
-    /// claim path.
+    /// claim path. Each reaped node leaves an undrained departure record
+    /// first: the cascade erases who held what, and the departure is the
+    /// only durable answer the directory sweep can consume.
+    ///
+    /// # Errors
+    /// Returns [`RegistryError`] with postgres's message. The whole reap is
+    /// one transaction, so a failure leaves the registry untouched.
     pub async fn reap_expired(&self) -> Result<(), RegistryError> {
+        let mut tx = self.database.begin().await?;
+        sqlx::query(
+            "INSERT INTO node_departures (node_id, drained, object_ids)
+             SELECT n.id, false,
+                    COALESCE((SELECT array_agg(l.object_id) FROM leases l
+                              WHERE l.node_id = n.id), '{}')
+             FROM nodes n WHERE n.last_heartbeat <= $1
+             ON CONFLICT (node_id) DO NOTHING",
+        )
+        .bind(self.cutoff())
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM nodes WHERE last_heartbeat <= $1")
             .bind(self.cutoff())
-            .execute(&self.database)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Writes one node's departure record inside the caller's
+    /// transaction, before the node row's deletion cascades its leases
+    /// away. Idempotent: a raced double-exit keeps the first record.
+    async fn record_departure(
+        tx: &mut sqlx::Transaction<'_, Postgres>,
+        node_id: Uuid,
+        drained: bool,
+    ) -> Result<(), RegistryError> {
+        sqlx::query(
+            "INSERT INTO node_departures (node_id, drained, object_ids)
+             SELECT $1, $2,
+                    COALESCE((SELECT array_agg(object_id) FROM leases
+                              WHERE node_id = $1), '{}')
+             ON CONFLICT (node_id) DO NOTHING",
+        )
+        .bind(node_id)
+        .bind(drained)
+        .execute(&mut **tx)
+        .await?;
         Ok(())
     }
 
@@ -207,7 +248,8 @@ impl NodeRegistry {
         // stays instant without a DELETE on every claim. The full sweep
         // runs on its own timer.
         let mut claimed = sqlx::query(
-            "INSERT INTO leases (object_id, node_id) VALUES ($1, $2)
+            "INSERT INTO leases (object_id, node_id, epoch)
+             VALUES ($1, $2, nextval('object_epoch_seq'))
              ON CONFLICT (object_id) DO NOTHING",
         )
         .bind(&request.object_id)
@@ -227,19 +269,26 @@ impl NodeRegistry {
             .fetch_optional(&self.database)
             .await?;
             if let Some(dead) = stale {
+                // An eviction is an unclean exit observed early: the
+                // departure record must capture the dead node's leases
+                // before the cascade frees them, same as the reaper.
+                let mut tx = self.database.begin().await?;
+                Self::record_departure(&mut tx, dead, false).await?;
                 sqlx::query("DELETE FROM nodes WHERE id = $1")
                     .bind(dead)
-                    .execute(&self.database)
+                    .execute(&mut *tx)
                     .await?;
                 // The cascade freed the lease unless the row was already
                 // orphaned; clear it either way before retrying.
                 sqlx::query("DELETE FROM leases WHERE object_id = $1 AND node_id = $2")
                     .bind(&request.object_id)
                     .bind(dead)
-                    .execute(&self.database)
+                    .execute(&mut *tx)
                     .await?;
+                tx.commit().await?;
                 claimed = sqlx::query(
-                    "INSERT INTO leases (object_id, node_id) VALUES ($1, $2)
+                    "INSERT INTO leases (object_id, node_id, epoch)
+                     VALUES ($1, $2, nextval('object_epoch_seq'))
                      ON CONFLICT (object_id) DO NOTHING",
                 )
                 .bind(&request.object_id)
@@ -285,33 +334,17 @@ impl NodeRegistry {
             .await?;
         }
 
-        let holder: Option<Uuid> =
-            sqlx::query_scalar("SELECT node_id FROM leases WHERE object_id = $1")
+        // The lease row answers both questions: who holds it, and under
+        // which epoch. A claim that won minted its own with the insert;
+        // a claim that lost reads the incumbent's, which is what a
+        // re-claim by the holder must get back.
+        let held: Option<(Uuid, i64)> =
+            sqlx::query_as("SELECT node_id, epoch FROM leases WHERE object_id = $1")
                 .bind(&request.object_id)
                 .fetch_optional(&self.database)
                 .await?;
-        let holder = holder.ok_or(RegistryError::ClaimRaced)?;
+        let (holder, epoch) = held.ok_or(RegistryError::ClaimRaced)?;
         let acquired = claimed.rows_affected() == 1 || holder == node_id;
-
-        // A fresh claim advances the object's epoch, which never resets:
-        // it is the fence storage shipping writes into its manifests.
-        let epoch: i64 = if claimed.rows_affected() == 1 {
-            sqlx::query_scalar(
-                "INSERT INTO object_epochs (object_id) VALUES ($1)
-                 ON CONFLICT (object_id)
-                 DO UPDATE SET epoch = object_epochs.epoch + 1
-                 RETURNING epoch",
-            )
-            .bind(&request.object_id)
-            .fetch_one(&self.database)
-            .await?
-        } else {
-            sqlx::query_scalar("SELECT epoch FROM object_epochs WHERE object_id = $1")
-                .bind(&request.object_id)
-                .fetch_optional(&self.database)
-                .await?
-                .unwrap_or(1)
-        };
 
         Ok(Lease {
             object_id: request.object_id.clone(),
@@ -434,7 +467,7 @@ impl NodeRegistryService for NodeRegistry {
         .map_err(RegistryError::Store)?;
         let holder = holder.ok_or(RegistryError::Unheld)?;
 
-        let epoch: i64 = sqlx::query_scalar("SELECT epoch FROM object_epochs WHERE object_id = $1")
+        let epoch: i64 = sqlx::query_scalar("SELECT epoch FROM leases WHERE object_id = $1")
             .bind(&object_id)
             .fetch_optional(&self.database)
             .await
@@ -460,12 +493,19 @@ impl NodeRegistryService for NodeRegistry {
             .map_err(|_| RegistryError::InvalidId("node_id"))?;
 
         // A goodbye is age-out brought forward: the same deletion, the
-        // same lease-freeing cascade, none of the waiting.
+        // same lease-freeing cascade, none of the waiting. The departure
+        // records drained = true, because deregistration only happens at
+        // the end of a graceful stop, after the shippers and the
+        // directory syncer flushed to zero; an unclean death never says
+        // goodbye and gets its record from the reaper instead.
+        let mut tx = self.database.begin().await.map_err(RegistryError::Store)?;
+        Self::record_departure(&mut tx, id, true).await?;
         sqlx::query("DELETE FROM nodes WHERE id = $1")
             .bind(id)
-            .execute(&self.database)
+            .execute(&mut *tx)
             .await
             .map_err(RegistryError::Store)?;
+        tx.commit().await.map_err(RegistryError::Store)?;
 
         Ok(Response::new(()))
     }
@@ -529,7 +569,7 @@ impl NodeRegistryService for NodeRegistry {
         let request = request.get_ref();
         let limit = i64::from(request.limit.clamp(1, 1024));
 
-        // Deliberately NOT filtered by holder liveness: a due alarm on a
+        // Deliberately not filtered by holder liveness: a due alarm on a
         // dead node's object is exactly the row this query exists for.
         let rows: Vec<(String, String, i64)> = sqlx::query_as(
             "SELECT object_id, own_key, due_ms FROM object_alarms
@@ -564,8 +604,14 @@ impl NodeRegistryService for NodeRegistry {
             .filter_map(|id| Uuid::from_str(id).ok())
             .collect();
 
-        // Empty filters match everything, so one query shape serves the
-        // full listing, the class browse and the type-ahead all alike.
+        // An empty class or name prefix matches everything, so one query
+        // shape serves the class browse and the type-ahead alike. An
+        // empty project list does not: `scope_id = ANY('{}')` is false
+        // for every row, so no projects means no rows. That is the safe
+        // default for a multi-tenant listing and it stays deliberate;
+        // an unscoped call must not fall back to every project's
+        // objects. Callers wanting a cluster-wide sweep name their
+        // scopes or use a source that is not this one.
         let class_filter = request.class.clone();
         let prefix = like_prefix(&request.name_prefix);
         let limit = page_size(request.page_size);
@@ -670,8 +716,21 @@ impl NodeRegistryService for NodeRegistry {
             .filter_map(|id| Uuid::from_str(id).ok())
             .collect();
 
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT class, count(*) FROM object_instances
+        // The identity fold rides the same scan the count already
+        // pays for, so exactness is free here: object ids are blake3
+        // hex, so a fixed prefix of one IS a hash of the identity, and
+        // the directory takes the same prefix on its own rows. Live
+        // rows only, because a tombstoned identity's row is a
+        // tombstone in the index too. A row from before the id column
+        // contributes nothing on either side rather than making the
+        // two disagree forever.
+        let rows: Vec<(String, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT class, count(*),
+                    bit_xor(CASE
+                        WHEN deleted_at IS NULL AND length(object_id) >= 15
+                        THEN ('x' || substr(object_id, 1, 15))::bit(60)::bigint
+                        ELSE 0 END)
+             FROM object_instances
              WHERE scope_id = ANY($1)
              GROUP BY class ORDER BY class",
         )
@@ -683,9 +742,10 @@ impl NodeRegistryService for NodeRegistry {
         Ok(Response::new(CountInstancesResponse {
             counts: rows
                 .into_iter()
-                .map(|(class, count)| ClassCount {
+                .map(|(class, count, identities)| ClassCount {
                     class,
                     count: count.max(0) as u64,
+                    identities: identities.unwrap_or(0),
                 })
                 .collect(),
         }))
@@ -750,24 +810,14 @@ impl NodeRegistryService for NodeRegistry {
         }
 
         // Everything after the tombstone happens under a newer epoch
-        // than any pre-deletion holder ever held; the row itself is
-        // kept forever so recreation keeps losing to nothing. A row
-        // from before the hash column (never re-touched) has no hash
-        // to bump; the janitor computes it and the marker still wins.
-        let epoch: i64 = if object_id.is_empty() {
-            1
-        } else {
-            sqlx::query_scalar(
-                "INSERT INTO object_epochs (object_id) VALUES ($1)
-                 ON CONFLICT (object_id)
-                 DO UPDATE SET epoch = object_epochs.epoch + 1
-                 RETURNING epoch",
-            )
-            .bind(&object_id)
+        // than any pre-deletion holder ever held, and a recreation will
+        // take a newer one still: the sequence only moves forward, so
+        // the fence holds without the identity being remembered
+        // anywhere.
+        let epoch: i64 = sqlx::query_scalar("SELECT nextval('object_epoch_seq')")
             .fetch_one(&mut *tx)
             .await
-            .map_err(RegistryError::Store)?
-        };
+            .map_err(RegistryError::Store)?;
         tx.commit().await.map_err(RegistryError::Store)?;
 
         Ok(Response::new(DeleteInstanceResponse {
@@ -787,6 +837,9 @@ impl NodeRegistryService for NodeRegistry {
         // The end of the sequence, idempotent so the janitor can retry
         // it: the lease goes, then the directory row leaves the listing.
         // Alarms go too; a deleted object has no future obligations.
+        // Nothing here has to preserve an epoch: the identity's fence is
+        // the sequence's forward march, so a recreated name claims above
+        // its own tombstone with nothing remembered about it.
         sqlx::query("DELETE FROM leases WHERE object_id = $1")
             .bind(&request.object_id)
             .execute(&self.database)
@@ -812,6 +865,59 @@ impl NodeRegistryService for NodeRegistry {
         Ok(Response::new(()))
     }
 
+    async fn take_departure(&self, _request: Request<()>) -> Result<Response<Departure>, Status> {
+        // Taken and deleted in one statement. SKIP LOCKED is what lets
+        // every node run this loop without coordinating: two sweepers
+        // racing take different departures rather than the same one.
+        let taken: Option<(Uuid, Vec<String>)> = sqlx::query_as(
+            // The locking clause follows LIMIT, which postgres
+            // requires; putting it before is a syntax error.
+            "DELETE FROM node_departures
+             WHERE node_id = (
+                 SELECT node_id FROM node_departures
+                 WHERE NOT drained
+                 ORDER BY departed_at
+                 LIMIT 1
+                 FOR UPDATE SKIP LOCKED
+             )
+             RETURNING node_id, object_ids",
+        )
+        .fetch_optional(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
+
+        let Some((node_id, object_ids)) = taken else {
+            return Ok(Response::new(Departure::default()));
+        };
+
+        // The lease knows only the hash, and a directory delta is
+        // written under the class's prefix, so the identity has to come
+        // back. A hash with no row is an object whose identity was
+        // already purged: nothing to repair, and it simply does not
+        // appear.
+        let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+            "SELECT scope_id, class, name FROM object_instances
+             WHERE object_id = ANY($1)",
+        )
+        .bind(&object_ids)
+        .fetch_all(&self.database)
+        .await
+        .map_err(RegistryError::Store)?;
+
+        Ok(Response::new(Departure {
+            node_id: node_id.to_string(),
+            instances: rows
+                .into_iter()
+                .map(|(scope_id, class, name)| ObjectInstance {
+                    scope_id: scope_id.to_string(),
+                    class,
+                    name,
+                    ..Default::default()
+                })
+                .collect(),
+        }))
+    }
+
     async fn unfinished_deletions(
         &self,
         request: Request<DueExpiriesRequest>,
@@ -819,12 +925,15 @@ impl NodeRegistryService for NodeRegistry {
         let request = request.get_ref();
         let limit = i64::from(request.limit.clamp(1, 1024));
 
-        // Rows the tombstone committed but the purge never removed; the
-        // epoch join carries what the marker manifest must say.
+        // Rows the tombstone committed but the purge never removed. The
+        // marker's epoch is minted here rather than remembered: the
+        // marker only has to outrank everything the identity shipped,
+        // and every value the sequence hands out does. Asking twice
+        // costs two values and writes two markers, which is the same
+        // marker with a higher fence.
         let rows: Vec<(Uuid, String, String, i64)> = sqlx::query_as(
-            "SELECT i.scope_id, i.class, i.name, COALESCE(e.epoch, 1)
+            "SELECT i.scope_id, i.class, i.name, nextval('object_epoch_seq')
              FROM object_instances i
-             LEFT JOIN object_epochs e ON e.object_id = i.object_id
              WHERE i.deleted_at IS NOT NULL
                AND i.deleted_at <= to_timestamp($1 / 1000.0)
              ORDER BY i.deleted_at
@@ -857,10 +966,11 @@ impl NodeRegistryService for NodeRegistry {
         let scope_id =
             Uuid::from_str(&request.scope_id).map_err(|_| RegistryError::InvalidId("scope_id"))?;
 
-        // One transaction, mirroring the claim it unwinds. The epoch
-        // guard is what keeps the fence invariant: epoch 1 means this
-        // claim minted the row and nothing ever shipped under it; a
-        // refused recreation (epoch bumped past 1) keeps its fence.
+        // One transaction, mirroring the claim it unwinds. The lease
+        // carries the epoch, so dropping it drops the residency and its
+        // fence together; the sequence has moved on either way, which is
+        // what keeps a later claim above anything this one could have
+        // shipped.
         let mut tx = self.database.begin().await.map_err(RegistryError::Store)?;
         sqlx::query("DELETE FROM leases WHERE object_id = $1")
             .bind(&request.object_id)
@@ -877,11 +987,6 @@ impl NodeRegistryService for NodeRegistry {
         .execute(&mut *tx)
         .await
         .map_err(RegistryError::Store)?;
-        sqlx::query("DELETE FROM object_epochs WHERE object_id = $1 AND epoch = 1")
-            .bind(&request.object_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(RegistryError::Store)?;
         tx.commit().await.map_err(RegistryError::Store)?;
 
         Ok(Response::new(()))
@@ -1147,24 +1252,34 @@ mod tests {
 
         // First claim wins; re-claiming your own lease stays a success.
         assert!(acquire(holder.clone()).await.acquired);
-        assert!(acquire(holder.clone()).await.acquired);
+        let first = acquire(holder.clone()).await;
+        assert!(first.acquired);
 
         // A second claimant loses while the holder lives, and is told who
-        // holds it.
+        // holds it. It also reads the incumbent's epoch, because that is
+        // the residency's, not the asker's.
         let refused = acquire(claimant.clone()).await;
         assert!(!refused.acquired);
         assert_eq!(refused.node_id, holder);
+        assert_eq!(refused.epoch, first.epoch);
 
         // The holder falls silent past the ttl: its node ages out and the
         // cascade frees the lease, so the claimant now wins, one epoch on.
+        // Relational, not absolute: epochs come from a sequence shared by
+        // every identity, so what matters is that a takeover moves it.
         backdate(&database, &holder, 46).await;
         let won = acquire(claimant.clone()).await;
         assert!(won.acquired, "an expired lease must be claimable");
         assert_eq!(won.node_id, claimant);
-        assert_eq!(won.epoch, 2, "a takeover must advance the epoch");
+        assert!(
+            won.epoch > first.epoch,
+            "a takeover must advance the epoch: {} vs {}",
+            won.epoch,
+            first.epoch
+        );
 
         // Re-claiming keeps the epoch; the fence only moves on takeover.
-        assert_eq!(acquire(claimant).await.epoch, 2);
+        assert_eq!(acquire(claimant).await.epoch, won.epoch);
     }
 
     #[tokio::test]
@@ -1252,6 +1367,95 @@ mod tests {
         assert!(
             freed.is_err_and(|status| status.code() == tonic::Code::NotFound),
             "a dead holder must read as unheld"
+        );
+    }
+
+    /// The gate the directory's reconciliation stands on. The store
+    /// folds identities in SQL and the index folds its rows in rust, so
+    /// this asserts the two spellings agree, and that the fold sees
+    /// what a count cannot: one identity swapped for another.
+    #[tokio::test]
+    async fn identity_checksums_fold_what_counts_cannot_see() {
+        let (registry, database, _guard) = registry(60).await;
+        let project = Uuid::new_v4();
+        let script = Uuid::new_v4();
+
+        let ids = [
+            "4a4e19c3d7b123c9d699716b54e8b1127e13d7f5135c10f0ccbd2d4ec2f1a163",
+            "18f9afd487df8a82e6dbe8ca930fef6fa5e431e422305ec2623cd6c9d44dd3f6",
+            "98631e9a7490b580a26dcdeb18793fff77432272eb5eda36887bf8e4716f7b26",
+        ];
+        for (index, object_id) in ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO object_instances (scope_id, class, name, script_id, object_id)
+                 VALUES ($1, 'Auction', $2, $3, $4)",
+            )
+            .bind(project)
+            .bind(format!("lot-{index}"))
+            .bind(script)
+            .bind(object_id)
+            .execute(&database)
+            .await
+            .expect("seeds an identity");
+        }
+
+        async fn fold(registry: &NodeRegistry, project: Uuid) -> ClassCount {
+            registry
+                .count_instances(Request::new(CountInstancesRequest {
+                    project_ids: vec![project.to_string()],
+                }))
+                .await
+                .expect("counts")
+                .into_inner()
+                .counts
+                .into_iter()
+                .find(|row| row.class == "Auction")
+                .expect("the class is counted")
+        }
+
+        let all = fold(&registry, project).await;
+        assert_eq!(all.count, 3);
+        assert_eq!(
+            all.identities,
+            actias_common::directory_identity::checksum(ids),
+            "the store's SQL fold and the index's rust fold are one value"
+        );
+
+        // Tombstoned identities leave the fold, because the index
+        // retires their rows: the two must agree on which objects the
+        // class has.
+        sqlx::query("UPDATE object_instances SET deleted_at = now() WHERE name = 'lot-2'")
+            .bind(project)
+            .execute(&database)
+            .await
+            .expect("tombstones");
+
+        // ... and one arrives in its place, so the count is unchanged.
+        sqlx::query(
+            "INSERT INTO object_instances (scope_id, class, name, script_id, object_id)
+             VALUES ($1, 'Auction', 'lot-3', $2, $3)",
+        )
+        .bind(project)
+        .bind(script)
+        .bind("c0ffee11d7b123c9d699716b54e8b1127e13d7f5135c10f0ccbd2d4ec2f1a163")
+        .execute(&database)
+        .await
+        .expect("seeds the replacement");
+
+        let swapped = fold(&registry, project).await;
+        assert_eq!(
+            swapped.count,
+            all.count + 1,
+            "the tombstone is still a row until the janitor purges it"
+        );
+        assert_eq!(
+            swapped.identities,
+            actias_common::directory_identity::checksum([
+                ids[0],
+                ids[1],
+                "c0ffee11d7b123c9d699716b54e8b1127e13d7f5135c10f0ccbd2d4ec2f1a163",
+            ]),
+            "a swapped identity changes the fold, which is the whole point"
         );
     }
 
@@ -1370,7 +1574,7 @@ mod tests {
             .expect("re-arms");
 
         // The holder dies. Its lease frees through the cascade; the alarm
-        // row must NOT: firing it is now some survivor's job.
+        // row must not: firing it is now some survivor's job.
         backdate(&database, &holder, 46).await;
         let due = registry
             .due_alarms(Request::new(DueAlarmsRequest {
@@ -1625,8 +1829,9 @@ mod tests {
             "a fresh life starts above every old fence"
         );
 
-        // An admission rollback on a NEVER-lived name leaves nothing,
-        // epoch row included; on a name that lived, the fence stays.
+        // An admission rollback unwinds the claim it refused: the lease
+        // goes with the identity, and the fence needs no cleanup at all
+        // because it was never a row.
         let junk = registry
             .acquire_lease(Request::new(AcquireLeaseRequest {
                 object_id: "hash-junk".to_owned(),
@@ -1640,7 +1845,7 @@ mod tests {
             .await
             .expect("junk claims")
             .into_inner();
-        assert!(junk.fresh && junk.epoch == 1);
+        assert!(junk.fresh && junk.epoch > 0);
         registry
             .rollback_admission(Request::new(PurgeInstanceRequest {
                 scope_id: project.to_string(),
@@ -1651,11 +1856,11 @@ mod tests {
             .await
             .expect("rollback answers");
         let junk_rows: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM object_epochs WHERE object_id = 'hash-junk'")
+            sqlx::query_scalar("SELECT count(*) FROM leases WHERE object_id = 'hash-junk'")
                 .fetch_one(&_database)
                 .await
                 .expect("count reads");
-        assert_eq!(junk_rows, 0, "a refused fresh name leaves no epoch row");
+        assert_eq!(junk_rows, 0, "a refused fresh name leaves no lease behind");
 
         registry
             .rollback_admission(Request::new(PurgeInstanceRequest {
@@ -1666,12 +1871,163 @@ mod tests {
             }))
             .await
             .expect("rollback answers");
-        let lived_rows: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM object_epochs WHERE object_id = 'hash-doomed'",
-        )
-        .fetch_one(&_database)
-        .await
-        .expect("count reads");
-        assert_eq!(lived_rows, 1, "a name that lived keeps its fence");
+        // The name that lived is unwound too, and its next life still
+        // cannot land under the tombstone: the sequence has moved past
+        // everything it ever held.
+        let relived = registry
+            .acquire_lease(Request::new(AcquireLeaseRequest {
+                object_id: "hash-doomed".to_owned(),
+                node_id: node.clone(),
+                scope_id: project.to_string(),
+                class: "Session".to_owned(),
+                name: "doomed".to_owned(),
+                script_id: script.to_string(),
+                ..Default::default()
+            }))
+            .await
+            .expect("the name claims again")
+            .into_inner();
+        assert!(
+            relived.epoch > recreated.epoch,
+            "every life claims above the last: {} vs {}",
+            relived.epoch,
+            recreated.epoch
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reborn_name_claims_above_its_tombstone() {
+        let (registry, database, _guard) = registry(60).await;
+        let node = register(&registry, "10.0.0.9:80").await;
+        let project = Uuid::new_v4();
+
+        let claim = || AcquireLeaseRequest {
+            object_id: "hash-lot42".to_owned(),
+            node_id: node.clone(),
+            scope_id: project.to_string(),
+            class: "Auction".to_owned(),
+            name: "lot42".to_owned(),
+            script_id: Uuid::new_v4().to_string(),
+            ..Default::default()
+        };
+
+        let first = registry
+            .acquire_lease(Request::new(claim()))
+            .await
+            .expect("first claim answers")
+            .into_inner();
+        assert!(first.acquired);
+
+        // Destruction: tombstone plus epoch bump in one transaction,
+        // then the janitor's purge removes lease and directory row.
+        let deleted = registry
+            .delete_instance(Request::new(DeleteInstanceRequest {
+                scope_id: project.to_string(),
+                class: "Auction".to_owned(),
+                name: "lot42".to_owned(),
+                object_id: "hash-lot42".to_owned(),
+                only_if_expired: false,
+            }))
+            .await
+            .expect("delete answers")
+            .into_inner();
+        assert!(deleted.tombstoned);
+        assert!(
+            deleted.epoch > first.epoch,
+            "the tombstone outranks the life before it"
+        );
+
+        registry
+            .purge_instance(Request::new(PurgeInstanceRequest {
+                scope_id: project.to_string(),
+                class: "Auction".to_owned(),
+                name: "lot42".to_owned(),
+                object_id: "hash-lot42".to_owned(),
+            }))
+            .await
+            .expect("purge answers");
+
+        // The purge leaves nothing behind for this identity: no lease,
+        // and no per-name epoch anywhere, because the fence is the
+        // sequence rather than a remembered number.
+        let residue: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM leases WHERE object_id = 'hash-lot42'")
+                .fetch_one(&database)
+                .await
+                .expect("count reads");
+        assert_eq!(residue, 0, "churn must leave no per-name residue");
+
+        // Recreation is a fresh claim of the same name, and it must
+        // outrank the tombstone or the reborn object is invisible to
+        // every directory query forever.
+        let reborn = registry
+            .acquire_lease(Request::new(claim()))
+            .await
+            .expect("reborn claim answers")
+            .into_inner();
+        assert!(reborn.acquired);
+        assert!(
+            reborn.epoch > deleted.epoch,
+            "rebirth must claim above the tombstone: {} vs {}",
+            reborn.epoch,
+            deleted.epoch
+        );
+    }
+
+    #[tokio::test]
+    async fn departures_capture_the_flag_and_the_leases() {
+        let (registry, database, _guard) = registry(45).await;
+
+        let steady = register(&registry, "steady:3000").await;
+        let doomed = register(&registry, "doomed:3000").await;
+
+        let acquire = |node: &str, object: &str| {
+            let request = AcquireLeaseRequest {
+                object_id: object.to_owned(),
+                node_id: node.to_owned(),
+                ..Default::default()
+            };
+            let registry = &registry;
+            async move {
+                registry
+                    .acquire_lease(Request::new(request))
+                    .await
+                    .expect("claim answers")
+                    .into_inner()
+            }
+        };
+        assert!(acquire(&doomed, &"a".repeat(64)).await.acquired);
+        assert!(acquire(&doomed, &"b".repeat(64)).await.acquired);
+        assert!(acquire(&steady, &"c".repeat(64)).await.acquired);
+
+        // Graceful goodbye: drained, with its held objects captured.
+        registry
+            .deregister(Request::new(DeregisterRequest {
+                node_id: steady.clone(),
+            }))
+            .await
+            .expect("deregister answers");
+        let (drained, held): (bool, Vec<String>) =
+            sqlx::query_as("SELECT drained, object_ids FROM node_departures WHERE node_id = $1")
+                .bind(Uuid::from_str(&steady).expect("uuid"))
+                .fetch_one(&database)
+                .await
+                .expect("the goodbye left a record");
+        assert!(drained);
+        assert_eq!(held, vec!["c".repeat(64)]);
+
+        // Unclean death via the reaper: undrained, both leases captured
+        // before the cascade erased them.
+        backdate(&database, &doomed, 46).await;
+        registry.reap_expired().await.expect("the reap runs");
+        let (drained, mut held): (bool, Vec<String>) =
+            sqlx::query_as("SELECT drained, object_ids FROM node_departures WHERE node_id = $1")
+                .bind(Uuid::from_str(&doomed).expect("uuid"))
+                .fetch_one(&database)
+                .await
+                .expect("the reap left a record");
+        assert!(!drained);
+        held.sort();
+        assert_eq!(held, vec!["a".repeat(64), "b".repeat(64)]);
     }
 }

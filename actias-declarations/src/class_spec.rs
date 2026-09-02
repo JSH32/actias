@@ -12,8 +12,15 @@ use mlua::Table;
 /// as `__`-prefixed internal methods) and their public spellings, which
 /// handles refuse outright so a `__`-method arriving at dispatch is
 /// provably platform-originated.
-pub const RESERVED_METHODS: [&str; 7] = [
-    "init", "alarm", "receive", "receives", "follow", "hooks", "admit",
+pub const RESERVED_METHODS: [&str; 8] = [
+    "init",
+    "alarm",
+    "receive",
+    "receives",
+    "follow",
+    "hooks",
+    "admit",
+    "directory",
 ];
 
 /// Whether a method name may travel through a handle.
@@ -60,12 +67,29 @@ pub struct ClassSpec {
     pub expire_secs: Option<u64>,
     /// Whether the class gates creation with an `admit` function.
     pub admits: bool,
+    /// The directory field set the class declares, at version zero:
+    /// publish mints the real version by comparing this set against
+    /// the previous contract's. [`None`] for a class with no directory.
+    ///
+    /// Declared rather than discovered. A field set inferred from
+    /// derived rows cannot distinguish "this field was added in a later
+    /// publish" from "this row simply has no value for it", because a
+    /// nil is absence, so a field's first-seen version would depend on
+    /// which delta happened to fold first. A declaration answers
+    /// exactly, at the moment the author changes it.
+    pub directory: Option<actias_common::directory_spec::DirectorySpec>,
 }
 
 impl ClassSpec {
     /// Parses a class body. Validation lives here so extraction and
     /// runtime refuse identically: the dead `hooks.receive` spelling,
     /// and malformed `receives` entries.
+    ///
+    /// # Errors
+    /// Returns [`mlua::Error::RuntimeError`] naming the offending
+    /// declaration: the dead `hooks.receive` spelling, a malformed
+    /// `receives` entry, a lifespan under a second, a gate that is not a
+    /// function, or a directory field the codec refuses.
     pub fn parse(name: &str, body: &Table) -> mlua::Result<Self> {
         if let Ok(hooks) = body.get::<Table>("hooks")
             && hooks.contains_key("receive").unwrap_or(false)
@@ -153,10 +177,9 @@ impl ClassSpec {
             }
         }
 
-        // The lifecycle declarations (docs/OBJECT-LIFECYCLE.md): a
-        // lifespan must be a duration of at least a second, a gate must
-        // be a function, and both refuse here so check and the runtime
-        // refuse identically.
+        // The lifecycle declarations: a lifespan must be a duration of
+        // at least a second, a gate must be a function, and both refuse
+        // here so check and the runtime refuse identically.
         let expire = body.get::<mlua::Value>("expire")?;
         let (expire_raw, expire_secs) = match &expire {
             mlua::Value::Nil => (None, None),
@@ -186,6 +209,53 @@ impl ClassSpec {
                 )));
             }
         };
+        // The directory row: a function of state alone, so it can be
+        // re-derived from any restored copy without a lease. A class
+        // with no storage has no state to derive from, which is a
+        // declaration mistake worth naming at check rather than at the
+        // first write.
+        let directory = match body.get::<mlua::Value>("directory")? {
+            mlua::Value::Nil => None,
+            mlua::Value::Table(table) => {
+                // init lives in `hooks` canonically; the flat spelling
+                // is the deprecated long form. Both count as storage,
+                // and checking only one wrongly refuses every class
+                // written the canonical way.
+                let has_init = body
+                    .get::<Table>("hooks")
+                    .ok()
+                    .and_then(|hooks| hooks.get::<mlua::Value>("init").ok())
+                    .is_some_and(|init| init.is_function())
+                    || body
+                        .get::<mlua::Value>("init")
+                        .is_ok_and(|init| init.is_function());
+                if body.get::<String>("migrations").is_err() && !has_init {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "'{name}' declares a directory but has no storage: \
+                         a directory row derives from state, so the class \
+                         needs migrations or an init that creates its schema."
+                    )));
+                }
+                Some(Self::directory_spec(name, &table)?)
+            }
+            mlua::Value::Function(_) => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "'{name}' directory is a function; it is a table naming \
+                     the fields it exposes and where they come from:\n  \
+                     directory = {{\n    \
+                     from = function(state) return state.sql:query_one(\"SELECT * FROM lot\") end,\n    \
+                     fields = {{ status = f.string, high_bid = f.integer }},\n  }}\n\
+                     Declared fields are what let a query know a field is \
+                     on every row rather than guessing from the rows it \
+                     happens to see."
+                )));
+            }
+            _ => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "'{name}' directory must be a table with `from` and `fields`."
+                )));
+            }
+        };
 
         Ok(ClassSpec {
             name: name.to_owned(),
@@ -197,7 +267,40 @@ impl ClassSpec {
             expire_raw,
             expire_secs,
             admits,
+            directory,
         })
+    }
+
+    /// Reads one `directory = { from = ..., fields = ... }` table into
+    /// the field set the contract records.
+    ///
+    /// The reading itself is [`crate::field_kit::plan`], shared with the
+    /// runtime that fills the row, so a class publishing clean is a
+    /// class the worker can derive.
+    fn directory_spec(
+        class: &str,
+        table: &Table,
+    ) -> mlua::Result<actias_common::directory_spec::DirectorySpec> {
+        use actias_common::directory_spec::DirectorySpec;
+
+        let declared: Vec<(String, String)> = crate::field_kit::plan(class, table)?
+            .fields
+            .into_iter()
+            .map(|field| (field.name, field.kind))
+            .collect();
+
+        if declared.is_empty() {
+            return Err(mlua::Error::RuntimeError(format!(
+                "'{class}' directory declares no fields; a directory with \
+                 nothing to query is a listing of names, which every class \
+                 already has."
+            )));
+        }
+
+        // Version zero: unminted. Publish compares this set against the
+        // previous contract's and stamps the version, so a deploy that
+        // changes no field renumbers nothing.
+        Ok(DirectorySpec::new(0, declared))
     }
 
     pub fn topic_policy(&self, topic: &str) -> TopicPolicy {
@@ -212,6 +315,124 @@ impl ClassSpec {
 mod tests {
     use super::*;
     use mlua::Lua;
+
+    /// Parses a class body written as a Lua table literal, with the
+    /// field kit installed the way every vm that runs a class body has
+    /// it.
+    fn parse(name: &str, source: &str) -> mlua::Result<ClassSpec> {
+        let lua = Lua::new();
+        crate::field_kit::install(&lua).expect("the kit installs");
+        let body: Table = lua.load(source).eval().expect("body evaluates");
+        ClassSpec::parse(name, &body)
+    }
+
+    #[test]
+    fn a_directory_is_recorded_with_its_declared_fields() {
+        let spec = parse(
+            "Auction",
+            r#"{
+                migrations = "migrations/Auction",
+                directory = {
+                    from = function(state) return state.sql:query_one("SELECT * FROM lot") end,
+                    fields = {
+                        status = f.string,
+                        high_bid = f.integer(function(lot) return tonumber(lot.high_bid) end),
+                    },
+                },
+                bid = function(state, amount) end,
+            }"#,
+        )
+        .expect("parses");
+        let directory = spec.directory.as_ref().expect("declares a directory");
+        // Sorted, so the contract entry is canonical and two publishes
+        // of the same set compare equal as strings.
+        assert_eq!(
+            directory.fields,
+            vec![
+                ("high_bid".to_owned(), "integer".to_owned()),
+                ("status".to_owned(), "string".to_owned()),
+            ]
+        );
+        // Unminted: publish stamps the version after diffing against
+        // the previous contract.
+        assert_eq!(directory.dver, 0);
+        assert!(
+            !spec.methods.contains("directory"),
+            "the directory hook is not callable through a handle"
+        );
+        assert!(spec.methods.contains("bid"));
+
+        let plain = parse("Viewer", "{}").expect("parses");
+        assert!(plain.directory.is_none());
+    }
+
+    #[test]
+    fn a_directory_refuses_without_storage_or_when_it_is_malformed() {
+        let directory = r#"directory = {
+            from = function(state) return state end,
+            fields = { status = f.string },
+        }"#;
+
+        let error = parse("Viewer", &format!("{{ {directory} }}"))
+            .expect_err("a class with no storage has no state to derive from");
+        assert!(error.to_string().contains("no storage"), "{error}");
+
+        // init counts as storage: a class may create its own schema.
+        parse(
+            "Counter",
+            &format!("{{ init = function(state) end, {directory} }}"),
+        )
+        .expect("the flat init spelling satisfies the storage requirement");
+
+        // The canonical spelling puts init in `hooks`; missing it here
+        // refused every class written the documented way.
+        parse(
+            "Auction",
+            &format!("{{ hooks = {{ init = function(state) end }}, {directory} }}"),
+        )
+        .expect("hooks.init satisfies it too");
+
+        // The bare function form names its replacement rather than
+        // failing with a type error: it was the documented spelling
+        // until fields became declared.
+        let error = parse(
+            "Auction",
+            r#"{ migrations = "m", directory = function(state) return {} end }"#,
+        )
+        .expect_err("the function form is gone");
+        assert!(error.to_string().contains("fields ="), "{error}");
+
+        let error = parse(
+            "Auction",
+            r#"{ migrations = "m", directory = { from = function(s) return s end } }"#,
+        )
+        .expect_err("a from with no fields exposes nothing queryable");
+        assert!(error.to_string().contains("fields"), "{error}");
+
+        // A class declaring nothing but an empty set is a listing of
+        // names, which every class already has.
+        let error = parse(
+            "Auction",
+            r#"{ migrations = "m", directory = {
+                from = function(s) return s end,
+                fields = {},
+            } }"#,
+        )
+        .expect_err("an empty set is not a directory");
+        assert!(error.to_string().contains("no fields"), "{error}");
+
+        // The grammar owns `any`, `all`, `none` and `name`; publish
+        // refuses them here exactly as derivation would.
+        let error = parse(
+            "Auction",
+            r#"{ migrations = "m", directory = {
+                from = function(s) return s end,
+                fields = { name = f.string },
+            } }"#,
+        )
+        .expect_err("reserved");
+        assert!(error.to_string().contains("reserved"), "{error}");
+    }
 
     #[test]
     fn a_class_body_normalizes_into_its_spec() {

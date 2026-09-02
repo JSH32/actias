@@ -90,6 +90,28 @@ service NodeRegistryService {
     // hammered junk name leaves nothing while any identity that ever
     // lived keeps its fence.
     rpc RollbackAdmission(PurgeInstanceRequest) returns (google.protobuf.Empty);
+
+    // Takes one undrained departure and the identities the dead node
+    // held, for the crash-scoped directory sweep. A node that exits
+    // cleanly flushed its shipper and syncer to zero and leaves nothing
+    // to repair; a node that DIED may have settled a write whose row
+    // never reached a delta, and leases cascade away with the node row,
+    // so this record is the only durable answer to "what did it hold".
+    //
+    // Consuming: the row is deleted as it is handed out, so two sweepers
+    // cannot take the same departure and a taken one is never retried.
+    // That trades a crash mid-sweep (the departure is lost, and the
+    // periodic reconciliation covers those objects later) against
+    // duplicated work on every node, which is the right way round: the
+    // repair is idempotent but not free.
+    rpc TakeDeparture(google.protobuf.Empty) returns (Departure);
+}
+
+// One dead node's objects, resolved to identities. Empty `node_id`
+// means there was nothing to take.
+message Departure {
+    string node_id = 1;
+    repeated ObjectInstance instances = 2;
 }
 
 message ListInstancesRequest {
@@ -112,6 +134,11 @@ message CountInstancesRequest {
 message ClassCount {
     string class = 1;
     uint64 count = 2;
+    // XOR over a fixed hex prefix of each LIVE identity's object id,
+    // which is already a hash of the identity. The directory folds its
+    // own rows the same way and compares: a count cannot see one
+    // missing row against one ghost, and this can.
+    int64 identities = 3;
 }
 
 message CountInstancesResponse {
