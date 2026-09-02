@@ -1,0 +1,215 @@
+---
+title: The shell
+lead: One statement against the project's classes, kv and databases, spelled as a script spells it, with an immediate answer.
+order: 12
+---
+
+## Where it is
+
+The project has one shell: the **Shell** entry in the console's
+sidebar, or `actias shell <project>` in the cli. Every class page's
+**open the shell** lands there with that class filled in.
+
+```lua
+Auction:find { status = "open", high_bid = { gt = 100 } }
+```
+
+```
+  3 entries · 41 ms
+  name       status  high_bid  closes_at
+  lot-42     open    120       1788292618009
+  lot-57     open    340       1788292700114
+  lot-61     open    105       1788293001922
+```
+
+The line is typed by the analyser that checks a script: a misspelled
+field underlines before anything is sent, and after
+`page = Auction:find { ... }` the next line completes `page.entries`.
+Names complete from what the project holds, inside the quotes of
+`kv("` and `database("`.
+
+## What binds
+
+<table>
+  <thead>
+    <tr><th>Binding</th><th>Spelled</th><th>Resolves into</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>a class with a directory</td><td><code>Auction:list {'{…}'}</code>, <code>Auction:find {'{…}'}</code>, <code>Auction:visit {'{…}'}</code></td><td>the class page's directory query</td></tr>
+    <tr><td>an instance</td><td><code>Auction("lot-42"):bid("ada", 120)</code></td><td>one call through the object's own lane (write mode)</td></tr>
+    <tr><td>a kv namespace</td><td><code>kv("users"):get("ada")</code>, <code>:list()</code>, <code>:set("k", v)</code>, <code>:delete("k")</code></td><td>the KV page's requests</td></tr>
+    <tr><td>a database</td><td><code>database("main"):query(sql, params)</code>, <code>:exec(sql, params)</code></td><td>the database page's query and execute</td></tr>
+  </tbody>
+</table>
+
+Each of those is **one statement**: it resolves where you typed it
+into the request the corresponding console page already makes, and
+nothing is woken. `\resources` lists what the project holds;
+`\fields Auction` lists a class's declared fields and methods.
+
+```lua
+kv("presence"):list()
+kv("presence"):get("ada")
+database("directory"):query("select name from handles limit 3")
+Auction:list { where = { status = "open" }, order = { high_bid = "desc" }, limit = 20 }
+Auction:visit { where = { status = "open" } }     -- every row checked against its object
+```
+
+## Read-only and write mode
+
+A session starts read-only. `\write` lifts it; `\read` puts it back.
+
+<table>
+  <thead>
+    <tr><th>Runs read-only</th><th>Needs <code>\write</code></th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>list</code>, <code>find</code>, <code>visit</code>; kv <code>get</code>, <code>list</code>; database <code>query</code></td><td>kv <code>set</code>, <code>delete</code>; database <code>exec</code>; every method call</td></tr>
+  </tbody>
+</table>
+
+A method call goes through the object's own lane, serialized with
+every other call, exactly as a script's call would. Nothing declares
+which methods write, so a read-only session refuses a call rather
+than hiding it. Naming an instance that does not exist creates it,
+admission permitting.
+
+In write mode every call and every chunk is logged by the api against
+your account, one line per action:
+
+```
+shell call by ada on 3f2de568-…: Auction("lot-42"):bid
+shell run by ada on 3f2de568-…: 95 chars, write
+```
+
+## Chunks
+
+A loop, an expression, a value used as an argument: those are not one
+statement, and the shell does not pretend otherwise. Such a line runs
+as a **chunk**, in a fresh vm on a worker, under your grants. So does
+anything you give to `\run` or `\paste`.
+
+```lua
+Auction:get(Auction:find().entries[1].name)     -- a nested call: a chunk
+```
+
+```lua
+-- \run, then paste; an impromptu join across a class and a namespace
+local presence = kv "presence"
+local rows = {}
+for _, e in Auction:find({ status = "open" }).entries do
+    table.insert(rows, { lot = e.name, seen = presence:get("lot:" .. e.name) ~= nil })
+end
+return rows
+```
+
+<table>
+  <thead>
+    <tr><th>In a chunk</th><th>What it is</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>kv "…"</code>, <code>database "…"</code>, <code>objects "…"</code></td><td>the bindings a script has, scoped to every namespace, database and class the project holds</td></tr>
+    <tr><td><code>Auction</code>, every class by name</td><td>pre-bound class handles</td></tr>
+    <tr><td><code>Auction:get("lot-42")</code></td><td>a handle to call, as in a script; the row is <code>Auction:find({'{ name = "lot-42" }'}).entries[1]</code></td></tr>
+    <tr><td>a bare expression</td><td>returned, the way a repl does</td></tr>
+    <tr><td><code>print</code> and <code>log.*</code></td><td>captured and shown in order with the value</td></tr>
+    <tr><td>the budget</td><td>a request's work budget, and 30 seconds of wall time (60 at most)</td></tr>
+    <tr><td>errors</td><td>reported with the line number in what you pasted</td></tr>
+  </tbody>
+</table>
+
+The session's mode travels with the chunk. In a read-only session the
+vm refuses kv `set`, `set_batch` and `delete`, database `exec` and
+every method call inside the chunk, naming `\write`:
+
+```
+runtime error: kv set is a write, and this shell session is read-only; \write allows it
+```
+
+A chunk is possible and not encouraged: the one-statement forms are
+what the shell is for, and a chunk you would run twice is a script.
+
+## Commands
+
+<table>
+  <thead>
+    <tr><th>Command</th><th>Does</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>\write</code>, <code>\read</code></td><td>switch the session's mode</td></tr>
+    <tr><td><code>\fields Auction</code></td><td>the class's declared fields and methods</td></tr>
+    <tr><td><code>\resources</code></td><td>the classes, kv namespaces and databases the project holds</td></tr>
+    <tr><td><code>\run</code> (console)</td><td>open a buffer for a chunk; ctrl+enter runs it</td></tr>
+    <tr><td><code>\run &lt;path&gt;</code> (cli)</td><td>run a file as a chunk</td></tr>
+    <tr><td><code>\paste</code> … <code>\end</code> (cli)</td><td>read lines until <code>\end</code>, then run them as a chunk</td></tr>
+    <tr><td><code>\clear</code></td><td>forget the history and the names it bound</td></tr>
+    <tr><td><code>\help</code>, <code>\quit</code></td><td>as named</td></tr>
+  </tbody>
+</table>
+
+A line starting with `--` is a comment and does nothing.
+
+## From a pipe
+
+The cli shell reads statements from stdin when it is not a terminal,
+one per line, and prints each answer, so a scripted check is a
+heredoc:
+
+```sh
+actias shell 3f2de568-f50b-4bcd-8877-a9c8a1f58797 <<'EOF'
+\resources
+Auction:find { status = "open" }
+kv("presence"):list()
+\quit
+EOF
+```
+
+Completions come from the language service when `actias-luau` is
+beside the binary or on your PATH, and from the project's contract
+otherwise; the banner says which.
+
+## Access
+
+<table>
+  <thead>
+    <tr><th>Statement</th><th>Needs on the project</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>directory reads, database <code>query</code></td><td>database read</td></tr>
+    <tr><td>kv <code>get</code>, <code>list</code></td><td>kv read</td></tr>
+    <tr><td>kv <code>set</code>, <code>delete</code></td><td>kv write</td></tr>
+    <tr><td>database <code>exec</code>, method calls, chunks</td><td>database write, whatever the session's mode</td></tr>
+  </tbody>
+</table>
+
+## Limits
+
+<table>
+  <thead>
+    <tr><th>Limit</th><th>Value</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>rows per directory page</td><td>500, whatever the statement asks for; the cursor is how to have more</td></tr>
+    <tr><td>kv <code>list</code> page</td><td>100 by default, 1000 at most</td></tr>
+    <tr><td>chunk wall time</td><td>30 seconds by default, 60 at most</td></tr>
+    <tr><td>chunk work</td><td>a request's budget</td></tr>
+    <tr><td>history</td><td>the session's; <code>\clear</code> forgets it</td></tr>
+  </tbody>
+</table>
+
+### Gotchas
+
+- `Auction:get("lot-42")` in a chunk is a handle, not the row. In a
+  statement, the same spelling reads the row.
+- A bare `name` in `{ name = name }` is a variable, and an undefined
+  one: the analyser says so before enter, and a chunk sees `nil`.
+- `order` takes one field, as everywhere.
+- The shell is per project. A class, namespace or database another
+  project holds is "not in this project".
+
+## Related
+
+- [Directory](/docs/runtime/directory): the reads the shell resolves.
+- [kv](/docs/reference/kv) and [database](/docs/reference/database):
+  the verbs and their pages.
+- [Objects](/docs/runtime/objects): what a method call does.

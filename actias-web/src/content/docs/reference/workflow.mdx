@@ -19,19 +19,34 @@ Referencing one declared elsewhere:
 local settle = workflows "settle-sale"
 ```
 
+One script per project declares a name; a second declaration is
+refused at publish.
+
 ## Starting and addressing runs
 
 ```lua
 local run = settle:start(input, { id = "sale-lot-42" })
 local run = settle:get("sale-lot-42")
 
+run.started                 -- true when start created the run
 run:signal("paid", { by = "ada" })
 run:cancel("no longer needed")
-run:status()
+run:status()                -- { kind, seq, at } of the newest journal entry
 ```
 
-Run ids are yours. A deterministic id (`"sale-" .. lot`) lets routes
-address a run without a lookup table.
+<table>
+  <thead>
+    <tr><th>Rule</th><th>Refusal</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>start</code> takes the input and <code>{'{ id = "…" }'}</code></td><td><code>start takes the input and {'{ id = "..." }'}; the id is the run's identity, so a retried start joins it.</code></td></tr>
+    <tr><td>an id is a non-empty string without <code>/</code></td><td><code>A run id is a non-empty string without '/'.</code></td></tr>
+  </tbody>
+</table>
+
+A deterministic id (`"sale-" .. lot`) lets routes address a run
+without a lookup table. `cancel` propagates to every run this one
+spawned.
 
 ## wf verbs
 
@@ -42,7 +57,7 @@ wf:sleep(duration)
 wf:await(name, { timeout = duration })
 wf:race({ "a", "b" }, { timeout = duration })
 wf:all({ "a", "b" }, { timeout = duration })
-wf:spawn(definition, input)
+wf:spawn("definition-name", input)
 ```
 
 <table>
@@ -53,9 +68,9 @@ wf:spawn(definition, input)
     <tr><td><code>step</code></td><td>whatever the body returned, recorded on first run</td></tr>
     <tr><td><code>sleep</code></td><td>nothing, after the duration</td></tr>
     <tr><td><code>await</code></td><td>the signal payload, or <code>nil</code> on timeout</td></tr>
-    <tr><td><code>race</code></td><td>payload, name of the first to arrive; <code>nil, nil</code> on timeout</td></tr>
-    <tr><td><code>all</code></td><td>payloads in argument order; <code>nil</code> per timed-out entry</td></tr>
-    <tr><td><code>spawn</code></td><td>a job handle whose completion <code>all</code> and <code>race</code> accept</td></tr>
+    <tr><td><code>race</code></td><td>payload, name of the first to arrive; <code>nil, nil</code> on timeout. Losers keep running and their signals stay consumable; an empty set is refused</td></tr>
+    <tr><td><code>all</code></td><td>payloads in argument order; <code>nil</code> per timed-out entry. The timeout applies to each entry in turn, not to the whole</td></tr>
+    <tr><td><code>spawn</code></td><td>a job handle whose completion <code>all</code> and <code>race</code> accept; takes the definition's name, not its handle</td></tr>
   </tbody>
 </table>
 
@@ -66,25 +81,36 @@ wf:spawn(definition, input)
     <tr><th>Option</th><th>Default</th><th>Means</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>retries</code></td><td>1</td><td>total attempts, not attempts after the first</td></tr>
-    <tr><td><code>backoff</code></td><td>2s</td><td>wait before attempt 2, doubling after that</td></tr>
+    <tr><td><code>retries</code></td><td>1</td><td>total attempts, not attempts after the first; 0 is read as 1</td></tr>
+    <tr><td><code>backoff</code></td><td>2s</td><td>wait before attempt 2, doubling after that, uncapped</td></tr>
     <tr><td><code>timeout</code></td><td>none</td><td>how long one attempt may run</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Failure</th><th>Text</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>an attempt runs past <code>timeout</code></td><td><code>step 'name' timed out after Nms</code></td></tr>
+    <tr><td>the last attempt throws</td><td><code>step 'name' failed after N attempts: …</code>; the run parks as failed</td></tr>
+    <tr><td>replay meets code that differs from the journal</td><td><code>journal divergence: expected step, code reached step 'name'</code></td></tr>
   </tbody>
 </table>
 
 ### wf.step_id
 
 The executing effect's name, for anything outside the platform that
-deduplicates: an `Idempotency-Key` header, a row id, an object key.
+deduplicates: an idempotency key, a row id, an object key.
 
 ```lua
 wf:step("charge", function()
-    return charge(order.total, wf.step_id)
+    return Payments("desk"):charge(sale.price, wf.step_id)
 end)
 ```
 
 The value reads `<run>/<step>#<occurrence>.<try>`, for example
-`order-fulfillment/order:42/charge#1.1`.
+`settle-sale/sale-lot-42/charge#1.1`.
 
 <table>
   <thead>
@@ -95,7 +121,7 @@ The value reads `<run>/<step>#<occurrence>.<try>`, for example
     <tr><td>a retry after a recorded failure</td><td>changes, because that attempt is a new effect</td></tr>
     <tr><td>the same step name reached again (a loop)</td><td>changes, because each pass is its own effect</td></tr>
     <tr><td>a replay of an already-recorded step</td><td>never runs the body at all</td></tr>
-    <tr><td>outside a step body</td><td>is an error; there is no effect to name</td></tr>
+    <tr><td>outside a step body</td><td>an error: <code>wf.step_id names the effect a step is performing; it exists only inside a step body.</code></td></tr>
   </tbody>
 </table>
 
@@ -104,17 +130,25 @@ The value reads `<run>/<step>#<occurrence>.<try>`, for example
 Run code replays from the journal after every park, crash or deploy.
 It must take the same path given the same journal.
 
-- Put effects inside `wf:step`. The step result is journaled and
-  reused on replay.
-- Do not branch on wall-clock time, randomness, or anything read
-  outside a step.
-- `http`, `crypto` and `Jwt` do not exist in a workflow environment.
-  Reach them by calling an [object](/docs/reference/objects) from
-  inside a step.
+<table>
+  <thead>
+    <tr><th>In run code</th><th>Behaviour</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>os.time()</code>, <code>os.clock()</code>, <code>math.random()</code>, <code>uuid.v4()</code></td><td>journaled, replayed identically</td></tr>
+    <tr><td><code>secret "name"</code></td><td>pinned to the version the run first resolved</td></tr>
+    <tr><td><code>os.date</code>, <code>math.randomseed</code></td><td>refused</td></tr>
+    <tr><td>kv, database and object calls outside a step</td><td>refused: <code>not available in workflow code, perform effects inside wf:step</code></td></tr>
+    <tr><td><code>http</code>, <code>crypto</code>, <code>Jwt</code></td><td>absent, step bodies included; call an [object](/docs/reference/objects) from a step</td></tr>
+  </tbody>
+</table>
 
 ## Example
 
 ```lua
+local sales = database "sales" { migrations = "migrations/sales" }
+local Account = objects "Account"
+
 local settle = workflow "settle-sale" (function(wf, sale)
     wf:step("notify", { retries = 3 }, function()
         Account(sale.winner):notify("pay-up", { price = sale.price })
@@ -131,7 +165,7 @@ local settle = workflow "settle-sale" (function(wf, sale)
     end
 
     wf:step("settle", { retries = 3 }, function()
-        db:exec("UPDATE sales SET state = 'settled' WHERE id = ?", { sale.id })
+        sales:exec("UPDATE sales SET state = 'settled' WHERE id = ?", { sale.id })
     end)
     return { outcome = "settled" }
 end)

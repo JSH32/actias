@@ -10,6 +10,7 @@ An object declares its topics and publishes events on them.
 
 ```lua
 local Auction = object "Auction" {
+    migrations = "migrations/Auction",
     publishes = { "bid", "closed" },
 
     bid = function(state, user, amount)
@@ -27,15 +28,23 @@ write that did not happen.
 Delivery runs after the call commits, along whatever edges exist.
 Publishing an undeclared topic is an error.
 
+```mermaid
+flowchart LR
+    log[(publisher's log<br/>and edge table)] --> lo[local object edge:<br/>routed receive call, cursor,<br/>retried 8 times]
+    log --> lc[local connection edge:<br/>pushed into the 256-item inbox,<br/>at-most-once]
+    log --> ro[remote object edge:<br/>one delivery per edge<br/>to its home node]
+    log --> rc[remote connection edges:<br/>the events once per node,<br/>sliced there per edge]
+```
+
 ## Who may follow
 
 An edge exists only if the publisher accepted it.
 
 ```lua
 publishes = {
-    "bid",               -- the follow hook decides
-    events = "self",     -- only this instance's own identity
-    tick = "public",     -- any identity
+    "bid",                  -- the follow hook decides
+    events = "self",        -- only this instance's own identity
+    closed = "public",      -- any identity
 }
 ```
 
@@ -54,7 +63,8 @@ publishes = {
 Use the hook when the answer depends on state:
 
 ```lua
-local Server = object "Server" {
+local Guild = object "Guild" {
+    migrations = "migrations/Guild",
     publishes = { "activity" },
     hooks = {
         follow = function(state, topic, follower)
@@ -66,25 +76,22 @@ local Server = object "Server" {
 ```
 
 The follower argument is data, not a live handle: `follower.name`,
-`follower.id`, and `follower:is(SomeClass)` for its class.
+`follower.id`, `follower.transport` (`"object"` or `"connection"`),
+and `follower:is(SomeClass)` for its class.
 
 ### When to use "self"
 
 `"self"` is the personal stream: a user's own notifications, reaching
-whichever of their devices is connected.
-
-A websocket's identity is minted server-side after authentication, so
-a connection following `Account("ada"):events` genuinely is
-`Account/ada`. Anyone speaking as someone else is refused.
-
-It replaces writing
-`follower:is(Account) and follower.name == state.name` on every class
-that has a per-user stream.
+whichever of their devices is connected. A websocket's identity is
+minted server-side after authentication, so a connection following
+`Account("ada"):events` genuinely is `Account/ada`; anyone speaking as
+someone else is refused.
 
 ## Following and receiving
 
 ```lua
 local Account = object "Account" {
+    migrations = "migrations/Account",
     receives = {
         ["Auction:closed"] = function(state, event)
             state.sql:exec("INSERT INTO notifications VALUES (?, ?)",
@@ -106,10 +113,10 @@ top of a class show both directions of its data flow.
     <tr><th>Verb</th><th>Does</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>state:follow(handle, topic, filter?)</code></td><td>creates the edge</td></tr>
+    <tr><td><code>state:follow(handle, topic, filter?)</code></td><td>creates the edge; returns nothing, and raises <code>follow refused</code> when the publisher declines</td></tr>
     <tr><td><code>state:unfollow(handle, topic)</code></td><td>removes it</td></tr>
     <tr><td><code>state:drop_followers(Account(name))</code></td><td>removes every edge that identity holds</td></tr>
-    <tr><td><code>state:followers(topic)</code></td><td>lists current followers</td></tr>
+    <tr><td><code>state:followers(topic?)</code></td><td>lists current followers, every topic when none is named; rows carry <code>name</code>, <code>id</code>, <code>topic</code> and <code>transport</code></td></tr>
   </tbody>
 </table>
 
@@ -120,11 +127,17 @@ event data, so one filtered edge replaces many topic-specific ones.
 
 Events reach a sleeping object. The publisher's log keeps them, the
 edge tracks how far the follower has read, and delivery wakes the
-follower.
+follower. An account with nothing running receives every event for
+what it follows, in order.
 
-An account with nothing running receives every event for what it
-follows, in order. Unread counts accrue while a user is away, and there
-is no catch-up protocol to write.
+A new edge starts at the log's head: history is the publisher's state,
+reached by an ordinary method, never replayed down a fresh edge.
+Re-following an existing edge keeps its cursor.
+
+The follower records the event's position in the same transaction as
+its handler's writes, so a redelivered event is skipped, not re-run.
+An event whose `"Class:topic"` has no `receives` entry is consumed and
+discarded without error.
 
 ## Delivery to browsers
 
@@ -135,8 +148,7 @@ at-most-once, no retry, and the edge dies with the tab. See
 A connection that declares an `event` handler shapes each delivered
 event into its own frame. One that declares `event = "forward"` sends
 the platform envelope, `{ type = "event", topic, from, data }`,
-without running any code, so a socket that exists only to relay what
-it follows costs a write per event and nothing else.
+without running any code.
 
 Keep anything that must survive on an object edge, one hop back from
 the connection. A device may miss a frame; the object does not miss the
@@ -144,13 +156,16 @@ event.
 
 ### Gotchas
 
-- Delivery to objects is at-least-once. A machine failure at the wrong
-  moment repeats an event, so a `receives` handler must tolerate
-  running twice on the same one.
+- Delivery to objects is at-least-once, with the follower's own
+  writes protected by the cursor. Effects that leave the follower's
+  transaction, a call to a third object or a kv write, can repeat
+  after a crash mid-handler; make those safe to run twice.
 - Order holds per publisher, not across publishers. If order matters
   across sources, put a sequence number in the data.
-- An edge that keeps failing is dropped after 8 attempts. It is not
-  retried forever and it does not resume by itself.
+- An edge that keeps failing is dropped after 8 attempts, 500 ms
+  doubling to 32 s. It is not retried forever and it does not resume
+  by itself.
+- A delivery that runs past 10 seconds counts as a failed attempt.
 
 ## Related
 

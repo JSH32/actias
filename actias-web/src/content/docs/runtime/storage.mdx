@@ -11,8 +11,10 @@ order: 2
 ```lua
 local cache = kv "cache"
 
-cache:set("banner", { text = "back at 09:00" })
-local banner = cache:get("banner")
+on "fetch" (function(request)
+    cache:set("banner", { text = "back at 09:00" })
+    return { body = cache:get("banner").text }
+end)
 ```
 
 Use it for small values read by name: flags, counters, cached
@@ -27,13 +29,16 @@ migrations.
 ```lua
 local db = database "catalog" { migrations = "migrations/catalog" }
 
-db:exec("INSERT INTO listings (id, title, seller) VALUES (?, ?, ?)",
-    { id, title, seller })
+on "fetch" (function(request)
+    db:exec("INSERT INTO listings (id, title, seller) VALUES (?, ?, ?)",
+        { uuid.v4(), "vase", "ada" })
 
-local top = db:read(
-    "SELECT category, COUNT(*) AS sold FROM sales \
-     JOIN listings ON listings.id = sales.listing_id \
-     GROUP BY category ORDER BY sold DESC LIMIT 5")
+    local top = db:read(
+        "SELECT category, COUNT(*) AS sold FROM sales \
+         JOIN listings ON listings.id = sales.listing_id \
+         GROUP BY category ORDER BY sold DESC LIMIT 5")
+    return { body = json.stringify(top) }
+end)
 ```
 
 Use it for questions spanning many rows: joins, aggregates, filtered
@@ -58,7 +63,10 @@ local Auction = object "Auction" {
     end,
 }
 
-Auction("lot-42"):bid("ada", 25)
+on "fetch" (function(request)
+    Auction("lot-42"):bid("ada", 25)
+    return { status_code = 204 }
+end)
 ```
 
 Use it when state belongs to one entity, and when concurrent changes
@@ -80,7 +88,7 @@ to that entity must not interleave.
 
 Using both an object and a database is normal. An auction keeps its
 bid history in its own object and writes a row to a shared `sales`
-database when it closes, because "what sold this week" spans lots.
+database when it closes. "What sold this week" spans lots.
 
 All three are durable, scoped to the project, declared in code, and
 browsable in the console.

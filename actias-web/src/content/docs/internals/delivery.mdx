@@ -13,49 +13,53 @@ recording the node its follower lives on.
 
 The edge list is the access control, computed once: the `follow` hook
 runs when the edge is created, never during delivery. Delivery walks
-rows.
+rows. A new edge starts at the log's head; nothing is replayed down it.
 
 ## Fan-out by node
 
 Between the publisher's calls, its **pump** partitions due edges by
 the follower's node. Local edges deliver directly. Remote edges batch
-into one call per node, whatever the follower count there.
+into one call per node.
 
 ```mermaid
 flowchart LR
-    P[Publisher<br/>node A] -- "1 call" --> B[node B]
-    P -- "1 call" --> C[node C]
+    P[Publisher<br/>node A] -- "1 call, events once" --> B[node B]
+    P -- "1 call per edge" --> C[node C]
     P --> L[local followers<br/>on node A]
     B --> s1([socket]) & s2([socket]) & s3([socket])
     C --> o1[follower object] & o2[follower object]
 ```
 
-Publish cost is the number of nodes holding followers, not the number
-of followers. A channel with 5,000 live watchers spread over 8 nodes
-costs 8 sends per message.
+<table>
+  <thead>
+    <tr><th>Edge kind</th><th>What a remote batch carries</th><th>Publish cost</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>connection</td><td>the due events once, in publish order, beside every edge on that node with its topic, cursor and filter; the receiving node slices</td><td>one call and one copy per node holding sockets</td></tr>
+    <tr><td>object</td><td>one delivery per edge, with that edge's events inline up to 32 KB, else the sequence range</td><td>one call per follower object</td></tr>
+  </tbody>
+</table>
 
-The payload does not multiply either. A node's batch carries the due
-events **once**, in publish order, beside a list naming each edge and
-the slice it is owed: its topic, how far it has already heard, and its
-filter. The receiving node does the slicing. So the 5,000 watchers
-above move one copy of a message per node, not 5,000, and the
-publisher reads its own log once per topic in the batch rather than
-once per edge.
+A channel with 5,000 live watchers spread over 8 nodes costs 8 sends
+per message. A publisher with 50 object followers costs 50, because
+each follower's cursor is its own.
 
 ## Connection edges
 
 Connection edges promise at-most-once. A local follower's events are
-pushed into its connection inbox; a full inbox (256 items) closes the
-connection. Remote batches fan out to the receiving node's own
-inboxes, which reports sockets that are gone so the publisher prunes
-every edge that connection held.
+pushed into its connection inbox of 256 items. Remote batches fan out
+to the receiving node's own inboxes.
 
-From the inbox, what happens next depends on the program: a class
-declaring an `event` handler runs it, in a vm built or woken for the
-purpose; a class declaring `event = "forward"` has the platform write
-the envelope itself, which costs a serialize and a send with no vm
-involved. That is what lets a hibernated connection stay hibernated
-while still receiving what it follows.
+<table>
+  <thead>
+    <tr><th>On the receiving node</th><th>Effect</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>the inbox has room</td><td>the item lands; the program's <code>event</code> handler runs, or the platform writes the forward envelope with no vm</td></tr>
+    <tr><td>the inbox is full</td><td>the delivery is refused and the publisher prunes every edge that connection holds; the socket stays open</td></tr>
+    <tr><td>the socket is gone</td><td>reported back; the publisher prunes its edges</td></tr>
+  </tbody>
+</table>
 
 The edge cursor advances whether or not the push landed. A miss is
 not retried: anything that must survive a tab closing belongs on the
@@ -63,54 +67,53 @@ durable object one hop back.
 
 ## Durable edges
 
-Object edges promise at-least-once delivery with exactly-once effect.
-The follower keeps its own **receive cursor** per publisher and topic,
-checked before the handler runs and advanced inside the handler's own
-transaction.
+Object edges promise at-least-once delivery with exactly-once effect
+on the follower's own storage. The follower keeps a **receive cursor**
+per publisher and topic, checked before the handler runs and advanced
+inside the handler's own transaction.
 
 ```mermaid
 sequenceDiagram
     participant P as Publisher (node A)
     participant F as Follower (node B)
-    P->>F: delivery batch (all edges on B, one call)
+    P->>F: delivery for one edge (events inline, or a range)
     loop each event, in order
         F->>F: seq at or below cursor? skip
         F->>F: run receives handler + advance cursor, one transaction
     end
-    F-->>P: per-follower outcomes
+    F-->>P: outcome
     P->>P: advance edge cursor, or back off and retry
 ```
 
 A handler that committed never runs again for that event: redelivery
-after a crash skips instead of repeating. The handler-side idempotence
-asked for in [guarantees](/docs/runtime/guarantees) covers the one
-remaining window, a crash after the handler's commit but before the
-publisher hears about it, which redelivers and skips.
+after a crash skips instead of repeating. Effects that leave the
+follower's transaction, a call to a third object or a kv write, are
+the window the handler-side idempotence in
+[guarantees](/docs/runtime/guarantees) covers.
 
-Failure keeps its per-edge shape inside a batch: each follower's
-outcome maps to a cursor advance or a backoff (500 ms doubling to
-60 s, 8 attempts, then the edge is dropped). A failed batch call backs
-off every edge in it.
-
-A recorded node that no longer exists is not a failure. Node ids
-never return, so connection edges batched to one prune outright, and
-a durable edge's stale home clears: delivery falls back to routing
-the follower's identity, which finds wherever it rehomed. A follower
-never loses its subscription to its node dying.
+<table>
+  <thead>
+    <tr><th>Failure</th><th>Effect</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>the handler throws, or runs past 10 seconds</td><td>a failed attempt; the edge backs off 500 ms, doubling</td></tr>
+    <tr><td>8 failed attempts (the last wait is 32 s)</td><td>the edge is dropped</td></tr>
+    <tr><td>the follower's recorded node no longer exists</td><td>not a failure: delivery routes the follower's identity to wherever it rehomed</td></tr>
+    <tr><td>a connection's recorded node no longer exists</td><td>its edges are pruned; node ids never return</td></tr>
+  </tbody>
+</table>
 
 ## Large payloads
 
-Events ride inline in a durable edge's batch up to 32 KB. Past that,
-the batch
-carries only the sequence range and the edge's filter; the receiving
-node materializes the events through the platform read path from
-[placement](/docs/internals/placement): its own copy of the
-publisher's file, else the holder, else the shipped replica.
+Events ride inline in a durable delivery up to 32 KB. Past that, the
+delivery carries only the sequence range and the edge's filter, and
+the receiving node materializes the events through the platform read
+path: its own copy of the publisher's file, else the holder, else the
+shipped replica.
 
-Bytes come from the nearest copy. The publisher's node sends sequence
-numbers, not payloads, for heavy traffic. Connection batches have no
-such range form and always ride inline, which they can afford because
-a node's copy is one per event however many sockets are owed it.
+Connection batches have no range form and always ride inline, which
+they can afford because a node's copy is one per event however many
+sockets are owed it.
 
 ## Ordering
 

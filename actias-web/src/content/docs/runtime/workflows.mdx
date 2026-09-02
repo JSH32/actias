@@ -11,6 +11,9 @@ for days and resume where it stopped, including across crashes and
 deploys.
 
 ```lua
+local sales = database "sales" { migrations = "migrations/sales" }
+local Account = objects "Account"
+
 local settle = workflow "settle-sale" (function(wf, sale)
     wf:step("notify", { retries = 3 }, function()
         Account(sale.winner):notify("pay-up", { price = sale.price })
@@ -20,20 +23,21 @@ local settle = workflow "settle-sale" (function(wf, sale)
 
     if which ~= "paid" then
         wf:step("void", { retries = 3 }, function()
-            db:exec("UPDATE sales SET state = 'void' WHERE id = ?", { sale.id })
+            sales:exec("UPDATE sales SET state = 'void' WHERE id = ?", { sale.id })
         end)
         return { outcome = "void" }
     end
 
     wf:step("settle", { retries = 3 }, function()
-        db:exec("UPDATE sales SET state = 'settled' WHERE id = ?", { sale.id })
+        sales:exec("UPDATE sales SET state = 'settled' WHERE id = ?", { sale.id })
     end)
 
     return { outcome = "settled" }
 end)
 ```
 
-Start a run with an id you choose:
+Start a run with an id you choose. The id is the run's identity, so a
+retried start joins the run instead of making a second one:
 
 ```lua
 settle:start({ id = "lot-42", winner = "ada", price = 25 },
@@ -42,34 +46,50 @@ settle:start({ id = "lot-42", winner = "ada", price = 25 },
 
 ## Replay
 
+```mermaid
+stateDiagram-v2
+    [*] --> running: start
+    running --> sleeping: wf:sleep
+    running --> awaiting: wf:await, race, all
+    sleeping --> running: timer due
+    awaiting --> running: signal or timeout
+    running --> failed: a step exhausts its attempts
+    failed --> running: resume from the console
+    running --> completed: the function returns
+    running --> cancelled: run:cancel
+    completed --> [*]
+    cancelled --> [*]
+```
+
 Each step, signal and timer is journaled before it takes effect. A
 resuming run replays the function from the top, and steps that already
 ran return their recorded results instead of running again.
 
-This requires the run's own code to be deterministic: given the same
-journal it must take the same path. Effects belong inside steps.
+Run code must take the same path given the same journal. The platform
+makes the usual sources of drift deterministic and refuses the rest:
 
-```lua
--- Wrong: replay can take a different branch
-if os.time() % 2 == 0 then ... end
+<table>
+  <thead>
+    <tr><th>In run code</th><th>Behaviour</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>os.time()</code>, <code>os.clock()</code>, <code>math.random()</code>, <code>uuid.v4()</code></td><td>journaled on first run, replayed identically</td></tr>
+    <tr><td><code>secret "name"</code></td><td>pinned to the version the run first resolved</td></tr>
+    <tr><td><code>os.date</code>, <code>math.randomseed</code></td><td>refused</td></tr>
+    <tr><td>kv, database and object calls outside a step</td><td>refused: effects belong inside <code>wf:step</code></td></tr>
+    <tr><td><code>http</code>, <code>crypto</code>, <code>Jwt</code></td><td>absent, inside step bodies too</td></tr>
+  </tbody>
+</table>
 
--- Right: the step result is journaled
-local now = wf:step("stamp", function() return os.time() end)
-if now % 2 == 0 then ... end
-```
-
-Workflow environments do not include `http`, `crypto` or `Jwt`, even
-inside step bodies. Reach effects by calling an
-[object](/docs/runtime/objects) from a step:
+Reach the network by calling an [object](/docs/runtime/objects) from a
+step. The step records what the object returned, so replay does not
+call again:
 
 ```lua
 local receipt = wf:step("sign", function()
     return Registrar("desk"):sign(payload)
 end)
 ```
-
-The step records what the object returned, so replay does not sign
-again.
 
 ## Steps
 
@@ -83,51 +103,54 @@ wf:step("name", { retries = 3, backoff = "5s", timeout = "30s" }, function() ...
     <tr><th>Option</th><th>Default</th><th>Means</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>retries</code></td><td>1</td><td>total attempts, not attempts after the first</td></tr>
-    <tr><td><code>backoff</code></td><td>2s</td><td>wait before attempt 2, doubling after that</td></tr>
-    <tr><td><code>timeout</code></td><td>none</td><td>how long one attempt may run</td></tr>
+    <tr><td><code>retries</code></td><td>1</td><td>total attempts, not attempts after the first; 0 is read as 1</td></tr>
+    <tr><td><code>backoff</code></td><td>2s</td><td>wait before attempt 2, doubling after that, with no cap</td></tr>
+    <tr><td><code>timeout</code></td><td>none</td><td>how long one attempt may run; past it the attempt fails with <code>step 'name' timed out after Nms</code></td></tr>
   </tbody>
 </table>
 
-Step names must be stable across revisions, because replay matches
-recorded results to them by name.
+```mermaid
+flowchart LR
+    intent[journal: intent] --> body[run the body]
+    body -- returns --> result[journal: result]
+    body -- throws, attempts left --> park[journal: failed<br/>park for backoff]
+    park --> replay[replay reaches the step again] --> intent
+    body -- throws, last attempt --> failed[journal: failed, final<br/>the run parks as failed]
+```
 
-When a step exhausts its attempts the run parks as failed and stops
-there. The journal keeps everything up to that point, and the console
-can resume it.
+Step names must be stable across revisions, because replay matches
+recorded results to them by name. When a step exhausts its attempts
+the run parks as failed with `step 'name' failed after N attempts`,
+keeps its journal, and the console can resume it.
 
 ### Making an effect safe to repeat
 
 A step records its result after the body returns, so a crash in
 between leaves the platform unable to know whether the effect
-happened. It cannot: that gap belongs to the outside world. What it
-can do is tell you the effect's name, so the outside world can
-recognise a repeat.
+happened. `wf.step_id` names the effect the body is performing, so the
+outside world can recognise a repeat:
 
 ```lua
 wf:step("charge", { retries = 3 }, function()
-    return http.make_request({
-        uri = "https://api.example.com/charges",
-        method = "POST",
-        headers = { ["Idempotency-Key"] = wf.step_id },
-        body = json.encode({ amount = order.total }),
-    })
+    return Payments("desk"):charge(sale.price, wf.step_id)
 end)
 ```
 
-`wf.step_id` names the effect the body is performing, and it holds
-still exactly where that matters. A run resumed after a crash calls
-the body again with the same `wf.step_id`, so a provider keyed on it
-returns the original charge instead of making a second one. A retry
-after a failure the platform actually recorded gets a new
-`wf.step_id`, because that attempt is a new effect and you want it to
-go through. So does each pass of a loop: calling the same step name
-for every item in an order is one effect per item, and they are named
-apart.
+<table>
+  <thead>
+    <tr><th>Across</th><th><code>wf.step_id</code></th></tr>
+  </thead>
+  <tbody>
+    <tr><td>a crash between the effect and its recorded result</td><td>stays the same, so the repeat is recognised</td></tr>
+    <tr><td>a retry after a recorded failure</td><td>changes, because that attempt is a new effect</td></tr>
+    <tr><td>the same step name reached again, in a loop</td><td>changes, because each pass is its own effect</td></tr>
+    <tr><td>outside a step body</td><td>an error; there is no effect to name</td></tr>
+  </tbody>
+</table>
 
 The same string works anywhere a repeat needs recognising: a row id,
-an object key, a filename. Reading it outside a step body is an
-error, since there is no effect to name there.
+an object key, a filename. The [reference](/docs/reference/workflow)
+has its shape.
 
 ## Waiting
 
@@ -145,8 +168,8 @@ wf:all({ "shipped", "received" }, { timeout = "7d" })
   <tbody>
     <tr><td><code>sleep</code></td><td>nothing; resumes after the duration</td></tr>
     <tr><td><code>await</code></td><td>the signal payload, or nil on timeout</td></tr>
-    <tr><td><code>race</code></td><td>the payload and the name that arrived first</td></tr>
-    <tr><td><code>all</code></td><td>payloads in argument order; a timed-out entry is nil</td></tr>
+    <tr><td><code>race</code></td><td>the payload and the name that arrived first; the others keep their signals consumable</td></tr>
+    <tr><td><code>all</code></td><td>payloads in argument order; a timed-out entry is nil. The timeout is per entry, waited in order</td></tr>
   </tbody>
 </table>
 
@@ -154,17 +177,23 @@ A parked run holds no resources. It is journal rows and a timer.
 
 ## Signals
 
-Signals come from outside the run:
+Signals come from outside the run, addressed by the run id:
 
 ```lua
-routes["POST /api/sale/pay"] = function(request, body, user)
-    settle:get("sale-" .. body.id):signal("paid", { by = user })
-    return reply(200, {})
-end
+local settle = workflows "settle-sale"
+
+on "fetch" (function(request)
+    if request.method == "POST" and request.path == "/api/sale/pay" then
+        local body = json.parse(request.body)
+        settle:get("sale-" .. body.id):signal("paid", { by = body.user })
+        return { status_code = 200, body = "" }
+    end
+    return { status_code = 404, body = "" }
+end)
 ```
 
-Run ids are yours to choose, so a route can address a run without a
-lookup table.
+A run id is a non-empty string without `/`. Choose it so a route can
+address the run without a lookup table.
 
 Duplicate signals are safe. An unconsumed extra is set aside rather
 than breaking replay, which matters because buttons get clicked twice.
@@ -172,7 +201,8 @@ than breaking replay, which matters because buttons get clicked twice.
 ## Inspecting
 
 The console lists runs with status and current step, shows the journal
-as a timeline, and offers resume for failed runs.
+as a timeline, and offers resume for failed runs and cancel for the
+rest. Cancelling a run cancels the runs it spawned.
 
 ## Workflow or queue
 
@@ -190,9 +220,10 @@ turns out to need one.
   body is an error.
 - Renaming a step breaks runs already in flight. Replay compares the
   journal against the code it re-executes, and a mismatch fails the
-  run with a journal divergence rather than guessing.
-- `http`, `crypto` and `Jwt` are absent from a workflow environment,
-  step bodies included. Call an object to reach them.
+  run with `journal divergence: expected step, code reached step
+  'other'` rather than guessing.
+- One script per project declares a given workflow. A second script
+  publishing the same name is refused; reach it with `workflows`.
 
 ## Related
 

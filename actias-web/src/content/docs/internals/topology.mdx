@@ -24,8 +24,9 @@ promises in [guarantees](/docs/runtime/guarantees).
 </table>
 
 Services speak gRPC to each other. Workers also speak gRPC among
-themselves: forwarded object calls, delivery batches, and replica
-reads all travel node to node without a coordinator.
+themselves: forwarded object calls, delivery batches, directory hops
+and holder reads travel node to node without a coordinator. Replicas
+come from blob storage, not from a peer.
 
 ```mermaid
 flowchart LR
@@ -36,6 +37,7 @@ flowchart LR
     w1 --> ss[script service]
     w1 --> kv[kv service]
     w1 --> sec[secret service]
+    w1 --> blob[(blob storage)]
     api[api gateway] --> ss
     api --> kv
     dash([Dashboard / CLI]) --> api
@@ -70,9 +72,9 @@ the interpreter; everything durable lives behind a platform surface
     <tr><th>Cache</th><th>Maps</th><th>Bounded by</th><th>Staleness cost</th></tr>
   </thead>
   <tbody>
-    <tr><td>pointers</td><td>public identifier to script row</td><td>time</td><td>a publish becomes visible within the TTL</td></tr>
-    <tr><td>revisions</td><td>revision id to prepared program</td><td>bytes</td><td>none, revisions are immutable</td></tr>
-    <tr><td>blobs</td><td>blake3 hash to bytes</td><td>bytes</td><td>none, content-addressed</td></tr>
+    <tr><td>pointers</td><td>public identifier to script row</td><td>5 s (<code>POINTER_TTL_SECS</code>)</td><td>a publish becomes visible within the TTL</td></tr>
+    <tr><td>revisions</td><td>revision id to prepared program</td><td>128 MB (<code>REVISION_CACHE_MB</code>)</td><td>none, revisions are immutable</td></tr>
+    <tr><td>blobs</td><td>blake3 hash to bytes</td><td>256 MB (<code>BLOB_CACHE_MB</code>)</td><td>none, content-addressed</td></tr>
   </tbody>
 </table>
 
@@ -83,13 +85,28 @@ pointer expires.
 
 ## Node membership
 
-Every worker registers with the placement store at boot and proves
-liveness by heartbeat. Each beat carries the node's in-flight request
-count. Missing several beats in a row ages the node out.
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant R as Placement store
+    W->>R: register at boot
+    R-->>W: node id, beat every 15 s
+    loop every 15 s
+        W->>R: heartbeat, with in-flight request count
+    end
+    alt graceful stop
+        W->>R: deregister at the signal (5 s timeout)
+    else crash
+        Note over R: 45 s of silence (NODE_TTL_SECS): the reaper removes the node
+    end
+    R->>R: departure record, then every lease the node held is freed
+    W->>R: a beat answered NOT_FOUND re-registers
+```
 
 Membership is the root fact of the cluster: object leases and alarm
-rows hang off it. A graceful shutdown deregisters immediately, freeing
-everything the node held; a crash waits for age-out.
+rows hang off it. Every departure, graceful or reaped, writes a record
+of what the node held before its leases are freed, which is what the
+directory's crash sweep and the placement fence read.
 
 ## Related
 

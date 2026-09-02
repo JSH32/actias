@@ -1,8 +1,7 @@
 ---
 title: What Actias is
-lead: A serverless platform for Luau with storage, durable objects, queues, workflows and streams built in.
+lead: One Lua file, published, answering requests, with the platform's storage and work surfaces declared inside it.
 order: 1
-navLabel: What Actias is
 ---
 
 You write a Lua file and publish it. It answers HTTP requests.
@@ -20,9 +19,8 @@ on "fetch" (function(request)
 end)
 ```
 
-That is the whole program. No package file, no database setup, no
-connection string: storage, background jobs, scheduled work and live
-updates are part of the runtime, not services you attach.
+That is the whole program. Storage, background work, scheduled work
+and live updates are declared in the file, never attached to it.
 
 ## Declarations
 

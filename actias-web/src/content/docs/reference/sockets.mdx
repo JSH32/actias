@@ -11,13 +11,14 @@ local Session = connection "Session" {
     open = function(conn) end,
     frame = function(conn, data) end,
     event = function(conn, event) end,
-    close = function(conn, reason) end,
+    timer = { every = "30s", run = function(conn, missed) end },
+    close = function(conn) end,
 }
 ```
 
-Each handler is optional; a key outside these four refuses at
+Each handler is optional; a key outside these five refuses at
 declaration. Nothing calls a connection, so there are no methods:
-handlers run when the wire or an edge delivers.
+handlers run when the wire, an edge or the timer delivers.
 
 <table>
   <thead>
@@ -25,14 +26,16 @@ handlers run when the wire or an edge delivers.
   </thead>
   <tbody>
     <tr><td><code>open(conn)</code></td><td>once, before any item; the follow calls usually live here</td></tr>
-    <tr><td><code>frame(conn, data)</code></td><td>per json frame the client sent</td></tr>
+    <tr><td><code>frame(conn, data)</code></td><td>per JSON text frame the client sent; binary and non-JSON frames are dropped</td></tr>
     <tr><td><code>event(conn, event)</code></td><td>per delivered edge event; takes a policy instead of a function (below)</td></tr>
-    <tr><td><code>close(conn, reason)</code></td><td>after the wire ends, either side; edges sever after it returns</td></tr>
+    <tr><td><code>timer.run(conn, missed)</code></td><td>every <code>timer.every</code>, one second or more; <code>missed</code> counts ticks that fell during a previous run</td></tr>
+    <tr><td><code>close(conn)</code></td><td>after the wire ends, either side; edges sever after it returns</td></tr>
   </tbody>
 </table>
 
 Handlers for one connection run one at a time, in arrival order, each
-under the per-call budget.
+under the per-call budget. A tick is never queued behind the inbox,
+and a connection with a timer never hibernates.
 
 ## The forward policy
 
@@ -40,7 +43,9 @@ under the per-call budget.
 shape `publishes` uses for topics:
 
 ```lua
-local Device = connection "Device" {
+local Account = objects "Account"
+
+local Feed = connection "Feed" {
     open = function(conn) conn:follow(Account(conn.name), "events") end,
     event = "forward",
 }
@@ -74,6 +79,19 @@ fetch handler should return. The seed becomes the initial
 `conn.state`; the identity is an object handle the connection speaks
 as for the rest of its life. Two arguments means no seed.
 
+<table>
+  <thead>
+    <tr><th>Refused</th><th>Text</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>a class that is not a declared connection</td><td><code>upgrade takes a declared connection class</code></td></tr>
+    <tr><td>a connection declared in another script</td><td><code>Connection 'X' is not declared in this script.</code></td></tr>
+    <tr><td>an identity that is not an object handle</td><td>refused; a platform class refuses with <code>a connection cannot speak as a platform class.</code></td></tr>
+    <tr><td>a seed over 64 KB serialized</td><td>refused at upgrade</td></tr>
+    <tr><td>a second upgrade in one request</td><td><code>one upgrade per request.</code></td></tr>
+  </tbody>
+</table>
+
 ## conn
 
 <table>
@@ -81,11 +99,11 @@ as for the rest of its life. Two arguments means no seed.
     <tr><th>Field</th><th>Meaning</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>conn.state</code></td><td>json-serializable session table, seeded at upgrade, kept across handlers, 64 KB cap</td></tr>
+    <tr><td><code>conn.state</code></td><td>json-serializable session table, seeded at upgrade, kept across handlers; past 64 KB the handler raises and the connection ends</td></tr>
     <tr><td><code>conn.name</code></td><td>the identity's instance name</td></tr>
     <tr><td><code>conn.class</code></td><td>the identity's class</td></tr>
-    <tr><td><code>conn:send(value)</code></td><td>writes one json frame</td></tr>
-    <tr><td><code>conn:follow(target, topic, filter?)</code></td><td>makes a connection edge</td></tr>
+    <tr><td><code>conn:send(value)</code></td><td>writes one JSON text frame</td></tr>
+    <tr><td><code>conn:follow(target, topic, filter?)</code></td><td>makes a connection edge; returns true</td></tr>
     <tr><td><code>conn:unfollow(target, topic)</code></td><td>removes it</td></tr>
     <tr><td><code>conn:close()</code></td><td>ends the connection</td></tr>
   </tbody>
@@ -97,7 +115,10 @@ The event a handler receives is shaped
 ## Example
 
 ```lua
-local Watcher = connection "Watcher" {
+local Account = objects "Account"
+local Auction = objects "Auction"
+
+local Feed = connection "Feed" {
     open = function(conn)
         conn:follow(Account(conn.name), "events")
     end,
@@ -117,9 +138,10 @@ local Watcher = connection "Watcher" {
 }
 
 on "fetch" (function(request)
-    if request.upgrade then
-        return request:upgrade(Watcher, nil, Account(authed(request)))
+    if request.upgrade and request.query.user then
+        return request:upgrade(Feed, nil, Account(request.query.user))
     end
+    return { status_code = 404, body = "" }
 end)
 ```
 
@@ -130,8 +152,9 @@ end)
 - `conn.state` dies with the connection on purpose. Anything that must
   survive belongs on an object one hop back.
 - Connection edges are at-most-once and die with the connection.
-- The inbox holds 256 items. A connection whose handlers cannot keep
-  up closes rather than buffering.
+- The inbox holds 256 items. Deliveries that overflow it sever every
+  edge the connection holds and leave the socket open; client frames
+  that overflow it close the wire.
 - The only frame the platform defines is the forwarded event envelope
   above, and declaring an `event` handler replaces it. Every other
   frame on the wire is one your handlers send or interpret, so follow

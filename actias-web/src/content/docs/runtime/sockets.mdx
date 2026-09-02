@@ -10,6 +10,8 @@ A connection's program is a top-level declaration, the same shape as
 an object class: named handlers for the wire's stimuli.
 
 ```lua
+local Room = objects "Room"
+
 local Session = connection "Session" {
     -- Runs once per connection, before any item. conn.state was
     -- seeded by the upgrade call.
@@ -29,14 +31,19 @@ local Session = connection "Session" {
         conn:send({ event = "message", text = event.data.text })
     end,
 
+    -- A heartbeat on the connection's own clock.
+    timer = { every = "30s", run = function(conn, missed)
+        conn:send({ event = "ping" })
+    end },
+
     -- The wire ended, either side. Edges are severed by the platform
     -- after this returns; cleanup here is app-level courtesy.
-    close = function(conn, reason) end,
+    close = function(conn) end,
 }
 ```
 
-Nothing calls a connection, so a body declares handlers, not methods;
-a key outside `open`, `frame`, `event` and `close` refuses at
+Nothing calls a connection, so a body declares handlers, not methods.
+A key outside `open`, `frame`, `event`, `timer` and `close` refuses at
 declaration, and `actias check` verifies the shapes.
 
 ## Upgrading
@@ -45,35 +52,36 @@ A websocket handshake arrives as an HTTP request, so it authenticates
 in the same router as everything else.
 
 ```lua
+local User = objects "User"
+
 on "fetch" (function(request)
     if request.upgrade and request.path == "/ws" then
-        local user = authed(request)
-        if user == nil then
+        local name = request.query.user
+        if name == nil then
             return { status_code = 401, body = "log in first" }
         end
 
-        return request:upgrade(Session, { room = "lobby" }, User(user))
+        return request:upgrade(Session, { room = "lobby" }, User(name))
     end
 
-    -- ordinary routes
+    return { status_code = 404, body = "" }
 end)
 ```
 
 `request.upgrade` is present only when the request is a real
 handshake. `request:upgrade(Class, seed?, identity)` names the
 declared connection class, optionally seeds `conn.state`, and fixes
-the identity the connection speaks as. The request ends like any
-other; whatever the handler computed travels only through the seed.
+the identity the connection speaks as. Whatever the handler computed
+travels only through the seed.
 
 ## conn.state
 
 A json-serializable table, alive exactly as long as the connection:
 seeded at upgrade, visible to every handler, written back after each
-one returns. It caps at 64 KB serialized; a session worth more
-belongs in an object.
+one returns. The seed and every later write cap at 64 KB serialized;
+past it the handler raises and the connection ends.
 
 It is not durable storage. A connection dying with its node loses it,
-which is correct: the connection identity and its follows die too,
 and the client's reconnect path re-reads real state from objects.
 
 ## Identity
@@ -85,13 +93,16 @@ The identity argument is an object handle: `User(name)`,
 Mint it after authenticating. It is fixed for the life of the
 connection and cannot be changed by anything the client sends.
 
-## Sending
+## Sending and receiving frames
 
-`conn:send(value)` writes one JSON frame. Apart from the envelope a
-class asks for with `event = "forward"`, there is no platform wire
-protocol: the frames on the wire are the ones your handlers send.
+`conn:send(value)` writes one JSON text frame. The wire carries JSON
+text only: a binary frame, or text that does not parse as JSON, is
+dropped without reaching `frame`.
 
-To let clients change subscriptions, define a frame for it:
+Apart from the envelope a class asks for with `event = "forward"`,
+there is no platform wire protocol: the frames on the wire are the
+ones your handlers send. To let clients change subscriptions, define a
+frame for it:
 
 ```lua
 frame = function(conn, data)
@@ -104,6 +115,15 @@ frame = function(conn, data)
     end
 end,
 ```
+
+## Timers
+
+`timer = { every = "30s", run = function(conn, missed) end }` runs on
+the connection's own clock, one second or longer. `missed` counts
+ticks that fell during a previous run; the next deadline realigns to
+the grid rather than drifting. A tick never queues behind the inbox,
+so a heartbeat cannot overflow it. A connection with a timer never
+hibernates.
 
 ## Connection edges
 
@@ -123,22 +143,29 @@ promises:
 </table>
 
 A tab that closes takes its edges with it. Nothing accumulates for
-dead connections.
-
-Put durability one hop back. The account object follows what must not
-be missed; the connection follows the account for live updates. On
-reconnect the client reads the object's state and continues.
+dead connections. Put durability one hop back: the account object
+follows what must not be missed; the connection follows the account
+for live updates.
 
 ## Warm, hibernated, gone
 
-A connection's vm is rebuildable, so an idle one does not keep it:
+```mermaid
+flowchart TD
+    hs([handshake]) --> reg[register the connection id] --> open[open handler]
+    open --> loop{next inbox item<br/>wire frame, edge delivery, tick, close}
+    loop -- declared handler --> vm[build the vm if it is gone,<br/>run the handler, write back conn.state] --> loop
+    loop -- event = forward --> fwd[platform writes the envelope,<br/>no vm] --> loop
+    loop -- no handler declared --> loop
+    loop -- idle 300 s --> hib[drop the vm; keep the socket,<br/>the inbox, conn.state, the follows] --> loop
+    loop -- wire closed, conn:close, a handler threw --> close[close handler] --> sever[sever follows,<br/>unregister] --> gone([gone])
+```
 
 <table>
   <thead>
     <tr><th>State</th><th>Holds</th><th>Cost</th><th>Leaves it</th></tr>
   </thead>
   <tbody>
-    <tr><td>warm</td><td>a vm and everything below</td><td>a vm</td><td>idle past the threshold drops the vm</td></tr>
+    <tr><td>warm</td><td>a vm and everything below</td><td>a vm</td><td>300 s idle drops the vm (<code>CONNECTION_HIBERNATE_SECS</code>; 0 disables)</td></tr>
     <tr><td>hibernated</td><td>the socket, the inbox, <code>conn.state</code>, the follows</td><td>about a file descriptor</td><td>anything with a declared handler to run rebuilds the vm</td></tr>
     <tr><td>gone</td><td>nothing</td><td>zero</td><td>is the end</td></tr>
   </tbody>
@@ -146,25 +173,28 @@ A connection's vm is rebuildable, so an idle one does not keep it:
 
 Hibernation is invisible from both ends of the wire: the socket stays
 open, deliveries land in the inbox, and `conn.state` is exactly what
-the last handler left. It is a memory economy, not durability; a node
-dying still drops its sockets, and reconnect-with-catch-up is still
-the recovery story.
+the last handler left. It is a memory economy, not durability.
 
-What a hibernated connection pays depends on what it declared. An
-undeclared handler costs nothing at all: a `close` with no `close`
+An undeclared handler costs nothing at all: a close with no `close`
 handler never builds a vm to discover there is nothing to run. Neither
 does a delivery to a class that declared `event = "forward"`, since
-the platform writes that frame itself. A connection that only relays
-what it follows therefore stays hibernated for its whole life, which
-is what makes many thousands of them per node ordinary rather than
-notable.
+the platform writes that frame itself.
 
 ## Backpressure and limits
 
 Handlers for one connection run one at a time, in arrival order, each
 as one platform call under the call budget. Each connection has an
-inbox of 256 items; a connection whose handlers cannot keep up fills
-it, and the connection closes rather than buffering without limit.
+inbox of 256 items.
+
+<table>
+  <thead>
+    <tr><th>Inbox full because of</th><th>What happens</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>edge deliveries the handlers cannot keep up with</td><td>the delivery is refused and every edge the connection holds is severed; the socket stays open, silent</td></tr>
+    <tr><td>client frames arriving faster than the handlers run</td><td>the wire is closed</td></tr>
+  </tbody>
+</table>
 
 A handler throwing, `conn:close()`, or the peer disconnecting all end
 the connection and remove the edges it made.
@@ -177,6 +207,8 @@ the connection and remove the edges it made.
 - A dropped frame is not reported. At-most-once means the client can
   miss one and never learn that it did, which is why reconnect should
   re-read state rather than resume.
+- A connection whose edges were severed for overflow learns nothing
+  either. A client that stops receiving should reconnect.
 - The identity is fixed at upgrade. Nothing the client sends later can
   change what the connection speaks as.
 - Locals captured in the fetch handler do not reach the handlers;

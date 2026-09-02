@@ -15,7 +15,7 @@ order: 7
     <tr><td><code>request.path</code></td><td>string</td><td>relative to your script</td></tr>
     <tr><td><code>request.query</code></td><td>table</td><td>decoded query parameters</td></tr>
     <tr><td><code>request.headers</code></td><td>table</td><td>lowercase keys</td></tr>
-    <tr><td><code>request.body</code></td><td>string</td><td>raw body</td></tr>
+    <tr><td><code>request.body</code></td><td>string, or a byte array</td><td>raw body; a body that is not valid UTF-8 arrives as an array of bytes. Bodies over 10 MB are refused with 413</td></tr>
     <tr><td><code>request.uri</code></td><td>string</td><td>full uri</td></tr>
     <tr><td><code>request.upgrade</code></td><td>function or nil</td><td>present on websocket handshakes</td></tr>
   </tbody>
@@ -50,7 +50,7 @@ local response = http.make_request({
 
 response.status_code
 response.headers
-response.body
+response.body      -- a string, or a byte array when not valid UTF-8
 ```
 
 Outbound calls go through a guarded client. A refused or unreachable
@@ -60,11 +60,14 @@ host raises an error, so wrap calls that may fail in `pcall` or let a
 ## Uri
 
 ```lua
-local uri = Uri.parse("https://example.com/a?b=c")
-uri.scheme    -- "https"
-uri.path      -- "/a"
-uri.query     -- "b=c"
+local uri = Uri.parse("https://example.com/a?b=c")   -- also http.Uri.parse
+uri.scheme       -- "https"
+uri.authority    -- "example.com"
+uri.path         -- "/a"
+uri.query        -- "b=c"
 uri:tostring()
+
+Uri.new({ scheme = "https", authority = "example.com", path = "/a" })
 ```
 
 ### Gotchas
@@ -73,8 +76,8 @@ uri:tostring()
   environment, step bodies included. Call an object from a step to
   reach the network.
 - Waiting on a response spends no work budget, but it does spend the
-  request's ten second wall backstop. A slow host takes the whole
-  request down with it.
+  request's ten second wall backstop and its 30 second deadline. A
+  slow host takes the whole request down with it.
 - `request.headers` keys are lowercase. `request.headers["Content-Type"]`
   is nil.
 

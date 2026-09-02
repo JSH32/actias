@@ -30,9 +30,9 @@ end)
   </tbody>
 </table>
 
-The event carries `event.cron`, the expression that fired, and
-`event.scheduled_at`, the platform clock in milliseconds when the run
-started.
+The event carries `event.cron`, the handler's full name including the
+prefix (`"cron:*/2 * * * *"`), and `event.scheduled_at`, the platform
+clock in milliseconds when the run started.
 
 The schedule arms itself the first time a worker touches the revision.
 The next occurrence is armed before your handler runs, so nothing the

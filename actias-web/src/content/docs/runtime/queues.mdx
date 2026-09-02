@@ -30,21 +30,32 @@ end)
 ```
 
 The handler is declared with `on "queue:<name>"` matching the queue's
-name.
+name. `actias check` refuses a queue nothing handles, and a handler
+for a queue nothing declares.
 
-## Guarantees
+## Delivery
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: send
+    pending --> handler: due, 16 per firing, in order
+    handler --> [*]: returned (journal delivered)
+    handler --> pending: threw, attempts left (journal retried, next_at = now + backoff)
+    handler --> dead: threw on attempt 5 (journal dead-lettered)
+    dead --> pending: requeue from the console, attempts reset, new id
+    dead --> [*]: drop from the console
+```
 
 **At-least-once delivery.** A handler that throws gets the message
 again after a delay, then a longer one. Make a second run harmless:
 check an id, or write `INSERT OR IGNORE` and `UPDATE ... WHERE state = 'pending'`.
 
 **One message, one handler run.** Queues distribute work, they do not
-broadcast. Ten workers draining a thousand messages produce a thousand
-handler runs.
+broadcast. A queue drains on one node, in order, one message at a
+time; a thousand messages are a thousand handler runs, never more.
 
 **Bounded retries.** A message gets 5 attempts by default. The first
 retry waits 2 seconds and each further one doubles, capped at an hour.
-Operators tune both numbers.
 
 <table>
   <thead>
@@ -61,7 +72,8 @@ Operators tune both numbers.
 
 After the last one the message moves to the dead-letter list. It stops
 retrying, does not block the queue, and stays there until you look at
-it. The console lists dead letters and can requeue them.
+it. Operators tune the two numbers with `QUEUE_MAX_ATTEMPTS` and
+`QUEUE_BACKOFF_BASE_MS`.
 
 ## What belongs in a queue
 
@@ -80,8 +92,10 @@ anonymous, so a queue cannot answer "how is that one doing".
 
 ## Inspecting
 
-The console shows depth, in-flight count, the delivery journal, dead
-letters, and a retry action.
+The console shows the depth, the messages due now, the delivery
+journal (the last 300 entries, payloads kept to 32 KB), the dead
+letters, and requeue and drop actions. A requeued message starts its
+attempts over under a new id.
 
 ### Gotchas
 
@@ -91,6 +105,8 @@ letters, and a retry action.
   behind it; it dead-letters and the queue keeps draining.
 - The handler name must match the queue name exactly.
   `on "queue:mailroom"` serves `queue "mailroom"` and nothing else.
+- One script per project handles a given queue. Any script in the
+  project may send to it.
 
 ## Related
 

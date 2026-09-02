@@ -29,9 +29,9 @@ ns:list({ limit = 100 })                -- one page, ascending by key
   </thead>
   <tbody>
     <tr><td><code>get(key)</code></td><td>the value, or nil</td></tr>
-    <tr><td><code>set(key, value)</code></td><td>nothing</td></tr>
+    <tr><td><code>set(key, value)</code></td><td>nothing; a nil value is a delete</td></tr>
     <tr><td><code>set_batch(table)</code></td><td>nothing; writes every pair, deletes the nil ones</td></tr>
-    <tr><td><code>delete(...keys)</code></td><td>nothing</td></tr>
+    <tr><td><code>delete(...keys)</code></td><td>nothing; several keys go in one call</td></tr>
     <tr><td><code>list(options?)</code></td><td>one page: <code>{'{ entries, cursor }'}</code></td></tr>
   </tbody>
 </table>
@@ -40,7 +40,8 @@ ns:list({ limit = 100 })                -- one page, ascending by key
 
 One page per call, in ascending key order. `entries` is an array of
 `{ key, value }`; `cursor` names where the next page starts, and a
-page without one is the last. `limit` defaults to 100, capped at 1000.
+page without one is the last. `limit` defaults to 100; a value outside
+1 to 1000 is refused, not clamped. The options are `{ limit, cursor }`.
 
 ```lua
 local cursor
@@ -91,7 +92,11 @@ end)
   richer than a key range wants a [database](/docs/reference/database).
 - Functions and userdata cannot be stored. Tables go through JSON, so
   what comes back is a copy, not the table you put in.
-- A nil value in `set_batch` is a delete, not a stored nil.
+- A nil value in `set` or `set_batch` is a delete, not a stored nil.
+- A value has no fixed size limit. `state.store` on an object caps at
+  64 KB; kv does not.
+- A namespace name starting with `__` is reserved for the platform
+  and refused.
 
 ## Related
 

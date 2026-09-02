@@ -32,8 +32,9 @@ the next touch.
 ## Query
 
 ```lua
-db:exec("INSERT INTO listings (id, title) VALUES (?, ?)", { id, title })
-local row = db:read_one("SELECT * FROM listings WHERE id = ?", { id })
+local id = uuid.v4()
+db:exec("INSERT INTO listings (id, title) VALUES (?, ?)", { id, "vase" })
+local row = db:query_one("SELECT * FROM listings WHERE id = ?", { id })
 local rows = db:read("SELECT id, title FROM listings LIMIT 50")
 ```
 
@@ -45,16 +46,18 @@ local rows = db:read("SELECT id, title FROM listings LIMIT 50")
     <tr><td><code>exec(sql, params?)</code></td><td>rows affected</td></tr>
     <tr><td><code>query(sql, params?)</code></td><td>rows</td></tr>
     <tr><td><code>query_one(sql, params?)</code></td><td>first row, or nil</td></tr>
-    <tr><td><code>read(sql, params?)</code></td><td>rows, from the nearest copy</td></tr>
-    <tr><td><code>read_one(sql, params?)</code></td><td>first row, or nil</td></tr>
-    <tr><td><code>batch(statements)</code></td><td>several statements together</td></tr>
+    <tr><td><code>read(sql, params?)</code></td><td>rows, from the nearest copy, up to 30 seconds behind the last write</td></tr>
+    <tr><td><code>read_one(sql, params?)</code></td><td>first row, or nil, from the nearest copy</td></tr>
+    <tr><td><code>batch(statements)</code></td><td>several statements in one transaction; each entry is <code>{'{ sql, params }'}</code>; returns the rows affected per statement</td></tr>
   </tbody>
 </table>
 
 Parameters are bound, never interpolated.
 
-Use `read` and `read_one` for queries. Use `query` when the same call
-wrote the rows you are reading back.
+Use `read` and `read_one` for queries that can trail a write by up to
+30 seconds; they answer from a replica on the node that asked. Use
+`query` and `query_one` for the truth, which lives at the database's
+home.
 
 ## Migrations
 

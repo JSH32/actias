@@ -71,8 +71,19 @@ table. Every field is in the [http reference](/docs/reference/http).
 
 A request is bounded by work, not by time: waiting on io costs nothing,
 computing costs. The ceiling is about a second of solid computation,
-which no ordinary handler comes near. A wall clock sits behind it at ten
-seconds, for code stuck inside a host call that never returns to the vm.
+which no ordinary handler comes near.
+
+<table>
+  <thead>
+    <tr><th>Bound</th><th>Value</th><th>Covers</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>work budget</td><td>5,000,000 work units</td><td>computation in the vm</td></tr>
+    <tr><td>wall backstop</td><td>10 seconds</td><td>code stuck inside a host call that never returns to the vm</td></tr>
+    <tr><td>request deadline</td><td>30 seconds</td><td>the whole request, waiting included</td></tr>
+    <tr><td>request body</td><td>10 MB</td><td>larger bodies are refused with 413</td></tr>
+  </tbody>
+</table>
 
 Work that does not fit belongs in a [queue](/docs/runtime/queues) or a
 [workflow](/docs/runtime/workflows).

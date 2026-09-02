@@ -25,14 +25,24 @@ journaled so replay reproduces them.
 ## log
 
 ```lua
-log.debug(value)
-log.info(value)
-log.warn(value)
-log.error(value)
+log.debug(value, ...)
+log.info(value, ...)
+log.warn(value, ...)
+log.error(value, ...)
 ```
 
+Several arguments are joined with spaces; a table is rendered as JSON.
 Lines appear in the console's live log for the script, and in
 `actias dev` sessions.
+
+## require and dofile
+
+```lua
+local helpers = require("lib/helpers")   -- a module in the bundle
+dofile("setup.lua")                      -- run a bundled file for its effects
+```
+
+Both resolve against the published bundle, never the filesystem.
 
 ## getfile
 
@@ -64,20 +74,28 @@ local hash = argon:hash(password)
 argon:verify(hash, password)   -- boolean
 
 local key = crypto.RsaPrivateKey.new(2048)
-key:to_pem()
-key:public_key():encrypt(bytes)
+key:to_pem()                         -- also to_pem("PKCS1") or ("PKCS8")
+crypto.RsaPrivateKey.from_pem(pem)
+local sealed = key:public_key():encrypt({ 104, 105 })   -- a byte array
+key:decrypt(sealed)
 ```
 
 ## Jwt
 
 ```lua
-local signer = Jwt.new("HS256", secret "jwt-signing-key")
-local token = signer:encode({ sub = "ada", exp = os.time() + 3600 })
-local claims = signer:decode(token)   -- nil when invalid
+local signing = secret "jwt-signing-key"      -- top level
+
+on "fetch" (function(request)
+    local signer = Jwt.new("HS256", signing)
+    local token = signer:encode({ sub = "ada", exp = os.time() + 3600 })
+    local claims = signer:decode(token)       -- nil when invalid or expired
+    return { body = token }
+end)
 ```
 
-Algorithms: HS256/384/512, RS256/384/512, PS256/384/512, ES256/384,
-EdDSA.
+Algorithms: `HS256`, `HS384`, `HS512`. The key is a shared secret, so
+the public-key families are refused. `decode` requires an `exp` claim
+and checks it; a token without one decodes to nil.
 
 ## script
 

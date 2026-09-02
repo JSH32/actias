@@ -1,6 +1,6 @@
 ---
 title: Object placement
-lead: How an object gets a home, survives its node dying, and serves reads from anywhere.
+lead: How an object gets a home, survives its node dying, and serves database reads from anywhere.
 order: 2
 ---
 
@@ -24,71 +24,101 @@ flowchart TD
     got -- "no, an incumbent holds it" --> fwd[Forward one hop<br/>to the holder]
 ```
 
-## Lease rules
+## Leases and epochs
 
-- A lease lives exactly as long as its holder stays in the node
-  registry. There is no per-lease clock to renew.
-- A claim against a dead holder frees the lease and wins. Recovery is
-  the same code path as first placement.
-- Graceful shutdown deregisters the node, freeing every lease it held
-  at once. A crash waits for heartbeat age-out; calls forwarded to the
-  dead node fail until then.
-- Every successful claim increments the object's **epoch**, a
-  monotonic per-object counter.
+<table>
+  <thead>
+    <tr><th>Rule</th><th>Number</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>a lease lives exactly as long as its holder stays in the node registry; there is no per-lease clock</td><td>a node ages out after 45 s without a heartbeat (<code>NODE_TTL_SECS</code>)</td></tr>
+    <tr><td>a claim against a dead holder frees the lease and wins; recovery is the same path as first placement</td><td></td></tr>
+    <tr><td>a graceful shutdown deregisters at the signal, freeing every lease at once; a crash waits for age-out, and calls forwarded to the dead node fail until then</td><td>45 s at most</td></tr>
+    <tr><td>a resident object refreshes its claim on a call, throttled</td><td>once per 10 minutes</td></tr>
+    <tr><td>every claim draws the object's <b>epoch</b> from one cluster-wide sequence; a delete takes the next value with its tombstone</td><td></td></tr>
+  </tbody>
+</table>
+
+```mermaid
+sequenceDiagram
+    participant A as node A (holder)
+    participant R as placement store
+    participant B as node B
+    A--xR: heartbeats stop
+    Note over R: 45 s later, or at B's stale-incumbent check
+    R->>R: departure record, leases freed
+    B->>R: claim Auction/vase-7
+    R-->>B: lease, epoch = next in sequence
+    B->>B: compare the manifest's epoch with its sidecar,<br/>restore base + segments or the snapshot
+    B->>B: spawn the task, serve
+    A->>R: zombie ship at the old epoch
+    R-->>A: fenced
+```
 
 ## Durability
 
 Writes mark the object dirty and one background flight per object
-ships to blob storage, coalescing bursts; a graceful stop flushes
-every dirty object before the process leaves. Small objects ship as
-a whole snapshot. Past a size threshold the flight ships only the
-write-ahead log frames committed since the last one, against a base
-laid down at a checkpoint, so the cost of a ship follows the delta,
-not the database; the log folds into a fresh base when it grows. The
-epoch fences these ships either way: a zombie ex-holder's upload
-loses to any newer epoch.
+ships to blob storage, coalescing bursts.
+
+<table>
+  <thead>
+    <tr><th>What ships</th><th>When</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>the whole file</td><td>the object is under 256 KB (<code>OBJECT_SHIP_WHOLE_MAX_KB</code>)</td></tr>
+    <tr><td>the write-ahead log frames since the last flight, against a base laid down at a checkpoint</td><td>larger objects; the cost follows the delta, not the database</td></tr>
+    <tr><td>a fresh base</td><td>the log passes 4 MB or 64 segments (<code>OBJECT_WAL_ROTATE_KB</code>, <code>OBJECT_MAX_SEGMENTS</code>)</td></tr>
+  </tbody>
+</table>
+
+The epoch fences every ship: a zombie ex-holder's upload loses to any
+newer epoch. A graceful stop flushes dirty objects before the process
+leaves, within a budget of 50 ms per dirty object; whatever the budget
+leaves behind is covered by the fence and the next holder's restore.
 
 A claim restores the last shipped state whenever the store's copy is
 newer than the node's own file: the base plus its shipped segments
-replayed by SQLite itself, or the snapshot directly. A sidecar
-records the epoch of the node's last residency, so a node returning
-to an object it hosted long ago cannot serve stale state. A failed
-ship is logged and retried by the next write; local durability holds
-regardless.
+replayed by SQLite itself, or the snapshot directly. A sidecar records
+the epoch of the node's last residency, so a node returning to an
+object it hosted long ago cannot serve stale state.
 
-## Reads from anywhere
+## Database reads from anywhere
 
-A read-only call does not need the home. Any node answers it from the
-nearest copy, in this order:
+`db:read` and `db:read_one` on a [database](/docs/reference/database)
+do not need the home. Every object method, and every `query`, goes to
+the home. A read is answered from the nearest copy, in this order:
 
 ```mermaid
 flowchart LR
-    read([Read]) --> a{Resident here?}
+    read([db:read]) --> a{Resident here,<br/>file on disk?}
     a -- yes --> live[Live file]
-    a -- no --> b{Holder alive?}
-    b -- yes --> hop[One hop to the holder]
-    b -- no --> c{Fresh replica on disk?}
+    a -- no --> c{Replica on disk<br/>under 30 s old?}
     c -- yes --> rep[Replica file]
-    c -- no --> pull[Restore shipped state,<br/>then the replica file]
+    c -- no --> pull[Restore shipped state<br/>into a replica, then read it]
+    pull -. nothing shipped yet .-> home[Ask the home]
 ```
 
 A **replica** is the last shipped state restored beside the node's
-own data, reused until it ages past its TTL. Reads scale with the
-number of nodes; writes serialize at the one home.
+own data, reused for 30 seconds (`OBJECT_REPLICA_TTL_SECS`). Reads
+scale with the number of nodes and trail writes by up to the ship
+interval plus the TTL; writes serialize at the one home.
 
 ## Serialized calls
 
 One task per resident object runs its calls one at a time, in arrival
-order. That is the "exactly once, serialized" promise in
-[guarantees](/docs/runtime/guarantees). Between calls, the object's
-delivery pump runs; see [event delivery](/docs/internals/delivery).
+order, with a mailbox of 128 waiting calls behind it. That is the
+"once, serialized" promise in [guarantees](/docs/runtime/guarantees).
+Between calls, the object's delivery pump runs; see
+[event delivery](/docs/internals/delivery).
 
 ## Alarms
 
 An armed alarm is mirrored to the placement store off the call's
-transaction. Every node sweeps the mirror for due alarms; waking an
-object is claiming it, so an alarm whose home died fires on whichever
-node sweeps it first.
+transaction, retried three times. Every node sweeps the mirror every
+30 seconds (`OBJECT_SWEEP_SECS`), 256 rows per pass, and re-mirrors
+every alarm on its own disk once at boot. Waking an object is claiming
+it, so an alarm whose home died fires on whichever node sweeps it
+first.
 
 Because the mirror write is asynchronous, a rolled-back arm can leave
 a spurious row. The cost is one wasted wake: the object's own storage

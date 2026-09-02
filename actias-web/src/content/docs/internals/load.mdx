@@ -12,12 +12,13 @@ order: 4
   </thead>
   <tbody>
     <tr><td>HTTP request</td><td>worker count, stateless</td><td>nothing</td></tr>
-    <tr><td>Object write</td><td>instance count</td><td>the instance's home task</td></tr>
+    <tr><td>Object call</td><td>instance count</td><td>the instance's home task</td></tr>
     <tr><td>Object first touch</td><td>one placement-store claim</td><td>the placement store; the holder cache absorbs repeats</td></tr>
-    <tr><td>Object read</td><td>worker count, via replicas</td><td>nothing</td></tr>
-    <tr><td>Publish</td><td>nodes holding followers</td><td>the publisher's pump</td></tr>
+    <tr><td>Database <code>read</code>, <code>read_one</code></td><td>worker count, via replicas</td><td>nothing</td></tr>
+    <tr><td>Directory query</td><td>class count; one reader per class</td><td>the class's reader node</td></tr>
+    <tr><td>Publish</td><td>nodes holding followers, plus one per object follower</td><td>the publisher's pump</td></tr>
     <tr><td>KV</td><td>the kv store (Postgres, or ScyllaDB at volume)</td><td>nothing</td></tr>
-    <tr><td>Queue message</td><td>consumer instance count</td><td>the consumer's home task</td></tr>
+    <tr><td>Queue message</td><td>queue count</td><td>the queue's home task, 16 messages per firing</td></tr>
   </tbody>
 </table>
 
@@ -34,29 +35,46 @@ global counter.
 
 ## What one node absorbs
 
-- Followers: delivery cost is per node, so co-located followers are
-  nearly free. See [event delivery](/docs/internals/delivery).
-- Reads: replicas answer read-only calls without touching the home.
-  See [placement](/docs/internals/placement).
+- Followers: delivery cost is per node for sockets, so co-located
+  sockets are nearly free. See [event delivery](/docs/internals/delivery).
+- Database reads: `read` and `read_one` answer from a replica without
+  touching the home. Every object method reaches the home. See
+  [placement](/docs/internals/placement).
 - Scripts: pointer and blob caches keep the steady state node-local.
   See [the cluster](/docs/internals/topology).
 - Misrouted object calls: the holder cache forwards them from memory;
   the placement store is consulted on first touch and after a home
   moves, not per call.
 
-## What backpressure looks like
+## Where each queue is bounded
 
-The platform sheds load at edges, not in the middle:
+```mermaid
+flowchart LR
+    call([call]) --> mb[object mailbox<br/>128 deep: the caller waits]
+    mb --> gate[ack gate<br/>10 s: then the answer is unknown]
+    gate --> ship[ship flights<br/>32 at once, 8 reserved for gated writes]
+    ev([publish]) --> inbox[connection inbox<br/>256: refuse and sever the edges]
+    ev --> edge[object edge<br/>8 attempts: drop the edge]
+    msg([send]) --> q[queue message<br/>5 attempts: dead-letter]
+```
 
-- A connection that stops draining is closed at 256 queued items,
-  rather than buffered without bound.
-- A durable edge that keeps failing backs off and is dropped after 8
-  attempts, rather than wedging the publisher's pump.
-- A queue message that keeps failing is dead-lettered, rather than
-  retried forever.
+<table>
+  <thead>
+    <tr><th>Bound</th><th>At</th><th>Behaviour</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>object mailbox</td><td>128 calls</td><td>backpressure: the caller waits, nothing is dropped</td></tr>
+    <tr><td>ack gate</td><td>10 s (<code>OBJECT_ACK_GATE_MS</code>)</td><td>a written call answers "outcome unknown"; the write keeps trying to ship</td></tr>
+    <tr><td>ship concurrency</td><td>32 flights, 8 reserved (<code>OBJECT_SHIP_CONCURRENCY</code>, <code>OBJECT_SHIP_RESERVED</code>)</td><td>flights a caller is waiting on always find a slot</td></tr>
+    <tr><td>connection inbox</td><td>256 items</td><td>deliveries: refused and the edges severed; client frames: the wire closes</td></tr>
+    <tr><td>object edge</td><td>8 attempts, 500 ms doubling</td><td>the edge is dropped</td></tr>
+    <tr><td>queue message</td><td>5 attempts, 2 s doubling to 1 h</td><td>dead-lettered</td></tr>
+  </tbody>
+</table>
 
-Every threshold and budget is listed with its number in
-[guarantees and limits](/docs/runtime/guarantees).
+The platform sheds at the edges and blocks in the middle: the one
+bound that waits rather than drops is the mailbox, because a call has
+a caller to answer.
 
 ## Related
 
@@ -64,6 +82,3 @@ Every threshold and budget is listed with its number in
 - [Object placement](/docs/internals/placement): homes, replicas, and
   recovery.
 - [Guarantees and limits](/docs/runtime/guarantees): the numbers.
-
-{/* If that's what they did, then that's what we'd do. Actias is web
-scale. */}

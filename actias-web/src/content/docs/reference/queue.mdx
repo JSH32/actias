@@ -14,7 +14,9 @@ on "queue:mailroom" (function(job)
 end)
 ```
 
-Top level only. The handler name must match the queue name exactly.
+Top level only. The handler name must match the queue name exactly,
+and `actias check` refuses a queue with no handler or a handler with
+no queue.
 
 ## Methods
 
@@ -23,14 +25,25 @@ Top level only. The handler name must match the queue name exactly.
     <tr><th>Method</th><th>Returns</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>send(payload)</code></td><td>true, as soon as the message is durable</td></tr>
+    <tr><td><code>send(payload)</code></td><td>true once the message is durable; a queue that cannot store it raises</td></tr>
     <tr><td><code>stats()</code></td><td><code>depth</code>, <code>in_flight</code>, <code>oldest_pending</code>, <code>dead_letters</code></td></tr>
   </tbody>
 </table>
 
-`depth` counts everything still queued, in-flight messages included.
+<table>
+  <thead>
+    <tr><th>Field</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>depth</code></td><td>every message still queued</td></tr>
+    <tr><td><code>in_flight</code></td><td>messages due now, attempted or not</td></tr>
+    <tr><td><code>oldest_pending</code></td><td>when the oldest queued message was sent, platform clock in milliseconds</td></tr>
+    <tr><td><code>dead_letters</code></td><td>messages on the dead-letter list</td></tr>
+  </tbody>
+</table>
+
 The payload must be JSON-representable, since a message can cross
-machines.
+machines. A queue is one 64 MB file; a send past that raises.
 
 ## Delivery
 
@@ -40,7 +53,7 @@ machines.
   </thead>
   <tbody>
     <tr><td>at-least-once</td><td>tolerate running twice on one message</td></tr>
-    <tr><td>one message, one run</td><td>nothing; queues distribute, they do not broadcast</td></tr>
+    <tr><td>one message, one run, in order on one node</td><td>nothing; queues distribute, they do not broadcast</td></tr>
     <tr><td>5 attempts, then dead-lettered</td><td>throw when the input can never work</td></tr>
   </tbody>
 </table>
@@ -52,18 +65,19 @@ waits in the console until you requeue or drop it.
 ## Example
 
 ```lua
+local catalog = database "catalog" { migrations = "migrations/catalog" }
 local mailroom = queue "mailroom"
 
 on "queue:mailroom" (function(job)
     if job.kind == "thumbnail" then
         local response = http.make_request({ uri = job.url, method = "GET" })
-        db:exec("UPDATE listings SET preview = ? WHERE id = ?",
+        catalog:exec("UPDATE listings SET preview = ? WHERE id = ?",
             { response.status_code == 200 and "ok" or "unavailable", job.id })
     end
 end)
 
 on "fetch" (function(request)
-    mailroom:send({ kind = "thumbnail", id = "lot-1", url = "https://..." })
+    mailroom:send({ kind = "thumbnail", id = "lot-1", url = "https://images.example.com/lot-1.jpg" })
     return { status_code = 202, body = "queued" }
 end)
 ```
@@ -74,8 +88,8 @@ end)
   never work should throw rather than silently succeed.
 - `send` returns before the handler runs, so a handler failure never
   surfaces at the call site. The console is where you see it.
-- A queue with no matching handler accepts sends and never delivers
-  them. Nothing warns you, so check the name.
+- A message delivered while its handler's script is unpublished counts
+  as a failed attempt and dead-letters after five; it is not held.
 
 ## Related
 

@@ -10,9 +10,13 @@ order: 3
 local Auction = object "Auction" {
     migrations = "migrations/Auction",
     publishes = { "bid", events = "self" },
-    receives = { ["Floor:tick"] = function(state, event) end },
+    receives = { ["Account:flagged"] = function(state, event) end },
     expire = "30d",
     admit = function(name) return #name > 3 end,
+    directory = {
+        from = function(state) return state.store:get("lot") end,
+        fields = { status = f.string },
+    },
     hooks = {
         init = function(state) end,
         alarm = function(state) end,
@@ -23,7 +27,7 @@ local Auction = object "Auction" {
 }
 ```
 
-Six reserved keys; every other key is a method.
+Seven reserved keys; every other key is a method.
 
 <table>
   <thead>
@@ -32,14 +36,16 @@ Six reserved keys; every other key is a method.
   <tbody>
     <tr><td><code>migrations</code></td><td>directory of <code>.sql</code> files that build each instance's schema</td></tr>
     <tr><td><code>publishes</code></td><td>topics this class emits; <code>name = "self"</code> or <code>= "public"</code> sets a policy instead of using the hook</td></tr>
-    <tr><td><code>receives</code></td><td><code>["Class:topic"] = handler</code> for streams it consumes</td></tr>
-    <tr><td><code>expire</code></td><td>a duration; an instance untouched that long is deleted. Touch renews it, a pending alarm postpones it</td></tr>
+    <tr><td><code>receives</code></td><td><code>["Class:topic"] = handler</code> for streams it consumes; the class must be declared in the project</td></tr>
+    <tr><td><code>expire</code></td><td>a duration string; an instance untouched that long is deleted. Touch renews it, a pending alarm postpones it</td></tr>
     <tr><td><code>admit</code></td><td><code>function(name)</code>, decides whether a NEW instance may exist; truthy admits. A refused name leaves nothing behind</td></tr>
+    <tr><td><code>directory</code></td><td><code>{'{ from, fields }'}</code>: one queryable row per instance; see <a href="/docs/runtime/directory">Directory</a></td></tr>
     <tr><td><code>hooks</code></td><td><code>init</code>, <code>alarm</code>, <code>follow</code></td></tr>
   </tbody>
 </table>
 
-Referencing a class declared elsewhere:
+A class name starting with `__` is reserved for the platform and
+refused. Referencing a class declared elsewhere:
 
 ```lua
 local Auction = objects "Auction"
@@ -54,6 +60,18 @@ Auction:get("lot-42"):bid("ada", 25) -- same thing
 
 Arguments and return values must be JSON-representable.
 
+## Class verbs
+
+```lua
+Auction:list { where = { status = "open" }, order = { closes_at = "asc" }, limit = 50 }
+Auction:find { status = "open" }
+Auction:visit { where = { status = "open" }, limit = 50 }
+```
+
+All three read the class's [directory](/docs/runtime/directory) and
+wake nothing. A class without a `directory` declaration has no rows to
+read.
+
 ## state
 
 <table>
@@ -67,17 +85,18 @@ Arguments and return values must be JSON-representable.
     <tr><td><code>state.now()</code></td><td>platform clock, milliseconds</td></tr>
     <tr><td><code>state:set_alarm(duration)</code></td><td>schedule the <code>alarm</code> hook</td></tr>
     <tr><td><code>state:destroy()</code></td><td>ends this instance after the current call replies: storage, snapshot and edges reclaimed, the name recreatable fresh</td></tr>
-    <tr><td><code>state:publish(topic, event)</code></td><td>emit on a declared topic</td></tr>
-    <tr><td><code>state:follow(handle, topic, filter?)</code></td><td>follow another object</td></tr>
+    <tr><td><code>state:publish(topic, event)</code></td><td>emit on a declared topic; an undeclared topic raises</td></tr>
+    <tr><td><code>state:follow(handle, topic, filter?)</code></td><td>follow another object; returns nothing, raises <code>follow refused</code> when the publisher declines</td></tr>
     <tr><td><code>state:unfollow(handle, topic)</code></td><td>drop that edge</td></tr>
-    <tr><td><code>state:followers(topic?)</code></td><td>current followers</td></tr>
+    <tr><td><code>state:followers(topic?)</code></td><td>current followers, every topic when none is named</td></tr>
     <tr><td><code>state:drop_followers(handle)</code></td><td>drop every edge an identity holds</td></tr>
+    <tr><td><code>state:method(...)</code></td><td>a sibling method of this class, run directly in this call</td></tr>
     <tr><td>any other key</td><td>in-memory scratch, lost when the object sleeps</td></tr>
   </tbody>
 </table>
 
-`state.sql` takes the same `exec` / `query` / `query_one` as a
-[database](/docs/reference/database), minus the read variants.
+`state.sql` takes the same `exec` / `query` / `query_one` / `batch` as
+a [database](/docs/reference/database), minus the read variants.
 
 ## state.store
 
@@ -104,7 +123,7 @@ The verbs are [kv](/docs/reference/kv)'s, page shape included:
     <tr><td><code>get(key)</code></td><td>the value, or nil</td></tr>
     <tr><td><code>set(key, value)</code></td><td>nothing; a nil value is a delete</td></tr>
     <tr><td><code>set_batch(table)</code></td><td>nothing; writes every pair, deletes the nil ones</td></tr>
-    <tr><td><code>delete(key)</code></td><td>nothing</td></tr>
+    <tr><td><code>delete(key)</code></td><td>nothing; one key, where kv takes several</td></tr>
     <tr><td><code>list(options?)</code></td><td>one page: <code>{'{ entries, cursor }'}</code></td></tr>
   </tbody>
 </table>
@@ -112,10 +131,12 @@ The verbs are [kv](/docs/reference/kv)'s, page shape included:
 - One transaction. A call that touches `state.store` and `state.sql`
   commits once; the two faces are one file and can never disagree.
 - Values are JSON-representable and at most 65,536 bytes each as
-  stored text. Past that, the state wants a table in `state.sql`.
+  stored text. Past that, the write is refused naming the key, and the
+  state wants a table in `state.sql`.
 - `list` takes `{ prefix?, limit?, cursor? }`; entries are
   `{ key, value }` in ascending key order, `limit` defaults to 100
-  and caps at 1000, and a page without a `cursor` is the last.
+  and a value outside 1 to 1000 is refused, and a page without a
+  `cursor` is the last.
 - The pairs live in a reserved table that SQL cannot see, from
   methods and the console alike. Listing them is what `list` is for.
 
@@ -140,8 +161,8 @@ hooks = {
   </tbody>
 </table>
 
-Hooks are called by the platform. They cannot be invoked through a
-handle.
+Hooks are called by the platform. Calling one through a handle is
+refused: `'init' is a platform hook; only the platform calls it.`
 
 With `migrations` declared, the files apply before `init`, so `init`
 only ever seeds rows. Without it, `init` is where the tables get
@@ -163,17 +184,22 @@ The identity a `follow` hook receives:
   </tbody>
 </table>
 
+Rows from `state:followers` carry the same fields plus `topic`.
+
 ## Durations
 
-`set_alarm`, `expire` and workflow timeouts take `"500ms"`, `"30s"`,
-`"10m"`, `"24h"`, `"7d"`, or a bare number of seconds; `expire` wants
-at least a second.
+`set_alarm` and workflow timeouts take `"500ms"`, `"30s"`, `"10m"`,
+`"24h"`, `"7d"`, or a bare number of seconds. `expire` takes the string
+form only, and wants at least a second.
 
 ### Gotchas
 
 - A method cannot be named `init`, `alarm`, `follow`, `receive`,
-  `receives`, `hooks` or `admit`, and a name starting with `_` is not
-  callable through a handle either.
+  `receives`, `hooks`, `admit` or `directory`, and a name starting
+  with `_` is not callable through a handle either.
+- `hooks.receive` is not a hook. Stream handlers live under
+  `receives`, keyed by `"Class:topic"`; the old spelling is refused
+  with a message saying so.
 - Scratch keys on `state` look durable and are not. Anything needed
   after the object sleeps goes in `state.store` or `state.sql`.
 - `state.sql` has no `read` variants. An object's storage has no
@@ -182,5 +208,7 @@ at least a second.
 ## Related
 
 - [Objects](/docs/runtime/objects): serialization, alarms, placement.
+- [Directory](/docs/runtime/directory): the `directory` key and the
+  class verbs.
 - [Streams](/docs/runtime/streams): what `publishes` and `receives`
   do.
