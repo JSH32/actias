@@ -156,7 +156,7 @@ class LuauChecker {
     const id = this.nextId;
     this.newestCheck = id;
     this.checkIds.add(id);
-    // Older CHECKS can never be the newest again, so they resolve
+    // Older checks can never be the newest again, so they resolve
     // empty rather than linger. Only checks: a pending completion or
     // hover is still wanted, and evicting one answers the editor with
     // nothing.

@@ -331,7 +331,7 @@ export function registerLuauProviders(monaco: MonacoApi) {
                 : ':'
               : null;
           // Accepting a function completes the call: parens in, cursor
-          // between them, parameter hints up. A function TYPE starts
+          // between them, parameter hints up. A function type starts
           // with its argument list (or generics); a table containing
           // functions merely mentions `->` and is not itself callable.
           const callable =

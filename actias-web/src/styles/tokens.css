@@ -1,7 +1,6 @@
 /*
- * The design system's token sheet, from the Foundations design document
- * (claude design output 01, backed by docs/UI-DESIGN.md) with the night
- * ramp and shape scale taken from the v8 landing concept.
+ * The design system's token sheet: every colour, ramp and shape scale
+ * the ui primitives read.
  *
  * Surfaces separate by line, not shadow: three night levels and three
  * border weights. Luna is a state, not a fill: solid luna is reserved

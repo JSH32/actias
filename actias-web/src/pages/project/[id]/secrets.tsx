@@ -1,6 +1,6 @@
 /**
  * The secrets screen per the revised design 07: not about values, which
- * never come back out, but about REACH (which revisions can resolve each
+ * never come back out, but about reach (which revisions can resolve each
  * name), rotation history, and what breaks on delete. Roster left; the
  * panel owns the value-withheld story, the declarers, the history and
  * every action.

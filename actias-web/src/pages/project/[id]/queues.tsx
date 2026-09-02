@@ -232,7 +232,7 @@ function Queues({ project, write }: { project: ProjectDto; write: boolean }) {
   const journal = React.useMemo(() => collectJournal(events), [events]);
 
   const rows: Row[] = React.useMemo(() => {
-    // A live row's history is its id's LATEST generation; older
+    // A live row's history is its id's latest generation; older
     // generations belong to earlier messages that happened to share a
     // rowid (v1 files) and stay their own rows.
     const live: Row[] = (messages ?? []).map((message: QueueMessageDto) => {

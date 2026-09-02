@@ -8,7 +8,7 @@ import Document, { Head, Html, Main, NextScript } from 'next/document';
  * "that editor is gone", but the dev overlay treats any window error as
  * a crash.
  *
- * Suppression must be the FIRST registered listener to work: later
+ * Suppression must be the first registered listener to work: later
  * listeners still run after preventDefault, so a component-level guard
  * can never shield the overlay. An inline document script runs before
  * the app bundle registers anything, and stopImmediatePropagation keeps

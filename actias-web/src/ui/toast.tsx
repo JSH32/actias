@@ -1,8 +1,8 @@
 /**
  * Toasts on the token sheet: a module-level queue so any code can raise
- * one, rendered by the single Toaster in the shell. Drop-in for the old
- * notification bridge: `toast({ title, message, color })`, where the only
- * color that means anything is 'red'.
+ * one, rendered by the single Toaster in the shell. The call is
+ * `toast({ title, message, color })`, where the only color that means
+ * anything is 'red'.
  */
 import React from 'react';
 import classes from './toast.module.css';

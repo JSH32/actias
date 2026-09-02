@@ -137,9 +137,8 @@
   border-bottom-color: var(--luna);
 }
 
-/* Deliberately frameless (owner ruling 2026-08-21): when the resource
- * does not exist there is nothing to frame, so the moth and the words
- * just sit in the dark. */
+/* Deliberately frameless: when the resource does not exist there is
+ * nothing to frame, so the moth and the words just sit in the dark. */
 .emptyState {
   min-height: 320px;
   display: flex;

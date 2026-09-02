@@ -418,7 +418,7 @@ function Workbench() {
   const { monacoRef, paneEditors, observeHost, onEditorMount, suppressChange } =
     usePaneEditors({ layout, files, filesRef, onCursor });
 
-  // The type check runs against the ACTIVE file only: it is the one with
+  // The type check runs against the active file only: it is the one with
   // markers on screen, and checking every file per keystroke would buy
   // nothing visible.
   const activePathRef = React.useRef('main.lua');

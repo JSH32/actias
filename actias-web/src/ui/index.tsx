@@ -1,8 +1,7 @@
 /**
- * Base primitives of the design system (docs/UI-DESIGN.md, foundations
- * design doc). Everything here styles with the token sheet and CSS
- * modules; components needing focus, keyboard or overlay behavior build
- * on Radix primitives, never hand-rolled a11y.
+ * Base primitives of the design system. Everything here styles with the
+ * token sheet and CSS modules; components needing focus, keyboard or
+ * overlay behavior build on Radix primitives, never hand-rolled a11y.
  */
 import React from 'react';
 import * as RadixTabs from '@radix-ui/react-tabs';
