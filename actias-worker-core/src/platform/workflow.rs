@@ -587,7 +587,7 @@ mod tests {
             .expect("racer starts");
             assert_eq!(parked["status"], "parked", "{parked}");
 
-            // The SECOND listed name arrives first and wins.
+            // The second listed name arrives first and wins.
             router(crate::extensions::objects::ObjectTarget {
                 class: actias_common::classes::WORKFLOW_CLASS.to_owned(),
                 name: "racer/r1".to_owned(),
@@ -736,7 +736,7 @@ mod tests {
         }
 
         /// The effect identity, both halves of its contract. A crash
-        /// between the effect and its verdict replays under the SAME id,
+        /// between the effect and its verdict replays under the same id,
         /// because nobody can know whether that effect landed and the
         /// retry has to reach the outside world under the key it already
         /// used. A recorded failure is the opposite case: the outcome is
@@ -1541,6 +1541,10 @@ impl SecretPins {
 
 /// Refuses effects outside step bodies in workflow vms; a no-op in
 /// every other vm. The gate teaching text is the determinism module's.
+///
+/// # Errors
+/// Returns [`mlua::Error::RuntimeError`] when an effect is attempted
+/// outside a step.
 pub fn assert_effects_allowed(lua: &mlua::Lua) -> mlua::Result<()> {
     if let Some(shared) = lua.app_data_ref::<std::sync::Arc<WfShared>>()
         && !shared.effects_allowed()
@@ -1681,7 +1685,7 @@ struct Attempt {
     /// True for exactly one attempt after a resume dispatch: the step
     /// whose final failure blocks the run consumes it and retries.
     resume: bool,
-    /// How many times each step name has been reached so far in THIS
+    /// How many times each step name has been reached so far in this
     /// execution of the run function. A name used in a loop is several
     /// effects, and they must not share an identity; replay walks the
     /// same code in the same order, so this counts the same either way.
@@ -1787,8 +1791,8 @@ impl WfShared {
 }
 
 /// Rotates signals nobody has consumed yet from the replay tail's
-/// front to its back. Signals journal on ARRIVAL (a double-clicked
-/// button, an early child completion), awaits consume them BY NAME
+/// front to its back. Signals journal on arrival (a double-clicked
+/// button, an early child completion), awaits consume them by name
 /// from anywhere in the tail, and every other verb replays effects in
 /// strict order; without this, one unconsumed duplicate wedges the run
 /// at the next verb ("journal divergence: expected Signal"), which a
@@ -1914,7 +1918,7 @@ fn signal_names(jobs: &mlua::Table) -> mlua::Result<Vec<String>> {
 /// One gate over a set of signals: `await` is the one-name form, `race`
 /// the many. The gate row keeps the bare-string shape for a single name
 /// (the shape every existing journal holds) and an array for several.
-/// The answer is the FIRST matching signal after the gate in journal
+/// The answer is the first matching signal after the gate in journal
 /// order, which is completion order, which is deterministic; the
 /// returned name says which one it was. A timeout returns (nil, None).
 fn await_signals(
@@ -2151,7 +2155,7 @@ impl mlua::UserData for WfHandle {
                     };
 
                     let mut attempts_seen: i64 = 0;
-                    // Recorded OUTCOMES, which is a different count from
+                    // Recorded outcomes, which is a different count from
                     // attempts and the one the effect id rides. An attempt
                     // interrupted by a crash journals its INTENT and no
                     // verdict, so it raises attempts_seen (it spent a
@@ -2437,7 +2441,7 @@ impl mlua::UserData for WfHandle {
         );
 
         // all { a, b, ... }: joins every entry (a spawned job or a bare
-        // signal name), returning payloads in ARGUMENT order however the
+        // signal name), returning payloads in argument order however the
         // completions arrive. A timeout applies per join; an entry that
         // times out reads as nil in the results.
         methods.add_method(
@@ -2614,7 +2618,7 @@ async fn notify_parent(
         return;
     };
     let signal_name = format!("__child:{own_name}");
-    // Fire and forget: a child completing INSIDE its parent's spawn call
+    // Fire and forget: a child completing inside its parent's spawn call
     // would deadlock the parent's mailbox if this awaited inline. The
     // signal row is the durable handoff; delivery drives the wake.
     tokio::spawn(async move {

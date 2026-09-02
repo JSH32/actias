@@ -102,7 +102,7 @@ pub enum PlatformRead {
     /// typed read is the pairs' only way out.
     StateStore,
     /// One topic's events in (after, upto], for batched durable
-    /// delivery reading a RANGE from the nearest copy of the log
+    /// delivery reading a range from the nearest copy of the log
     /// instead of shipping the bytes inline.
     StreamEvents {
         topic: String,
@@ -215,7 +215,7 @@ pub(crate) async fn dispatch(
     // listener's outbound calls read this.
     runtime.set_app_data(CallChain(call.chain.clone()));
 
-    // The DECLARATION decides, not the stored contract: a live session
+    // The declaration decides, not the stored contract: a live session
     // without a contract still gets its declared schema.
     let migrations_dir = runtime
         .app_data_ref::<crate::runtime::Declarations>()

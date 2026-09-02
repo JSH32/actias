@@ -52,6 +52,10 @@ impl EgressPolicy {
     ///
     /// Hostnames are re-checked at resolution time; literal ips only pass
     /// through here, because they never reach dns.
+    ///
+    /// # Errors
+    /// Returns [`EgressDenied`] when the url carries no host, or when its
+    /// host or address is one the policy denies.
     pub fn check_url(&self, url: &url::Url) -> Result<(), EgressDenied> {
         match url.host() {
             Some(url::Host::Domain(host)) => self.check_host(host),
@@ -62,6 +66,9 @@ impl EgressPolicy {
     }
 
     /// Checks a hostname against the denied list.
+    ///
+    /// # Errors
+    /// Returns [`EgressDenied`] naming the host when the policy denies it.
     pub fn check_host(&self, host: &str) -> Result<(), EgressDenied> {
         if self.denied_hosts.contains(&host.to_ascii_lowercase()) {
             return Err(EgressDenied(format!("'{host}' is not reachable")));
@@ -71,6 +78,10 @@ impl EgressPolicy {
     }
 
     /// Checks one concrete address, wherever it came from.
+    ///
+    /// # Errors
+    /// Returns [`EgressDenied`] naming the address when private and local
+    /// addresses are not allowed.
     pub fn check_ip(&self, ip: IpAddr) -> Result<(), EgressDenied> {
         if !self.allow_private && ip_is_local(ip) {
             return Err(EgressDenied(format!(

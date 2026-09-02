@@ -1,3 +1,7 @@
+//! The `crypto` surface: hashes, password hashing, and RSA key
+//! handling, registered by name. A table of registrations, so the
+//! spellings here are the contract.
+
 use argon2::{
     Algorithm, Argon2, PasswordHash, PasswordHasher, PasswordVerifier, Version,
     password_hash::{SaltString, rand_core::OsRng},

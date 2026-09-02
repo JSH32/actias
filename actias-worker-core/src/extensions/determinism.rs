@@ -2,7 +2,7 @@
 //!
 //! Workflow code must replay to the same result forever, so the ambient
 //! nondeterminism our own extension set provides is either journaled or
-//! refused here. Time and uuids WORK: each read consults a
+//! refused here. Time and uuids work: each read consults a
 //! [`Determinism`] source that records on first execution and replays
 //! identically (W3 backs it with the journal cursor). Effects (http, kv,
 //! objects, secrets, jwt, crypto) are refused by name with the one error

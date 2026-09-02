@@ -7,13 +7,13 @@
 //! `connection "Class" { handlers }` declares the program at the top
 //! level, the same curried shape as `object`; the registry below holds
 //! the bodies and their specs in each vm that ran the entry point,
-//! which is what lets a FRESH vm of the same revision reach the
+//! which is what lets a fresh vm of the same revision reach the
 //! program. That reachability is the whole design: the handlers run in
 //! [`crate::connections::actor::ConnectionTask`], one invocation per
 //! inbox item under the per-call budget, and the vm is rebuildable
 //! rather than captured.
 //!
-//! The one-key trick: `request.upgrade` is armed with a FUNCTION only
+//! The one-key trick: `request.upgrade` is armed with a function only
 //! when the request actually carries a websocket handshake, so the
 //! doc's two spellings share a mechanism: `if request.upgrade` is the
 //! capability test, `request:upgrade(Class, seed?, identity)` is the
@@ -22,22 +22,20 @@
 //! returns, completes the handshake, and spawns the actor. Nothing
 //! pins the request vm.
 //!
-//! There is deliberately NO stdlib connection program (a
-//! `sockets.forward` existed briefly and was retracted in owner
-//! review): a shipped forwarder would have let the platform's
-//! internal envelope escape as a wire protocol nobody declared. The
-//! app writes every handler that touches the wire, and the handlers
-//! are named instead of inlined, which is what lets them survive the
-//! vm.
+//! There is deliberately no stdlib connection program: a shipped
+//! forwarder would let the platform's internal envelope escape as a
+//! wire protocol nobody declared. The app writes every handler that
+//! touches the wire, and the handlers are named instead of inlined,
+//! which is what lets them survive the vm.
 //!
 //! The one platform-defined frame is [`event_frame`], sent for a
-//! class that declares `event = "forward"`. It is the same fast path
-//! that retraction named its terms for, spelled as the policy a body
-//! declares rather than a helper it calls: following something
+//! class that declares `event = "forward"`. The fast path is spelled
+//! as the policy a body declares rather than a helper it calls:
+//! following something
 //! without reshaping it costs no vm, so a hibernated connection stays
 //! down.
 //!
-//! The conn is a plain Lua TABLE whose verb fields are async
+//! The conn is a plain Lua table whose verb fields are async
 //! functions, exactly the instance-handle pattern: Luau cannot yield
 //! across a metamethod boundary, so userdata async methods are
 //! structurally wrong here and a table of closures is the shape that
@@ -168,14 +166,18 @@ pub struct PendingUpgrade {
     pub spec: Arc<ConnectionSpec>,
     /// The initial `conn.state`, json the moment it leaves the vm.
     pub seed: serde_json::Value,
-    /// The identity the connection speaks AS, minted after auth.
+    /// The identity the connection speaks as, minted after auth.
     pub class: String,
     pub name: String,
 }
 
 /// Arms `request.upgrade` on an upgradable request's table. Call this
-/// ONLY when the underlying request can actually complete a websocket
+/// only when the underlying request can actually complete a websocket
 /// handshake; absence of the key is the "cannot upgrade" signal.
+///
+/// # Errors
+/// Returns [`mlua::Error`] when the key cannot be set on the request
+/// table.
 pub fn arm_request(lua: &Lua, request: &Table) -> mlua::Result<()> {
     request.set(
         "upgrade",
@@ -382,6 +384,10 @@ fn target_of(handle: &Table) -> mlua::Result<(String, String)> {
 /// Builds the verb half of the conn table a handler receives: follow,
 /// unfollow, send and close. The actor lays `state`, `name` and
 /// `class` over it per invocation.
+///
+/// # Errors
+/// Returns [`mlua::Error`] when the surface's tables or functions cannot
+/// be built.
 pub fn conn_surface(lua: &Lua, shared: Arc<SockShared>) -> mlua::Result<Table> {
     let conn = lua.create_table()?;
 

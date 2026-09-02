@@ -1,3 +1,6 @@
+//! The capability surface a script can reach, one module per
+//! capability. Each implements [`crate::runtime::extension::LuaExtension`].
+
 pub mod crypto;
 pub mod determinism;
 pub mod http;

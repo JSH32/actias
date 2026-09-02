@@ -1,15 +1,19 @@
-/// Descriptions for a native based extension.
+//! The trait every capability implements to reach a vm, and how one
+//! names itself. Every new capability is an extension; nothing is
+//! bolted onto the runtime directly.
+
+/// How one native extension names itself to the runtime.
 pub struct ExtensionInfo<'a> {
-    /// Name of the extension
     pub name: &'a str,
-    /// Description of the extension.
     pub description: &'a str,
-    /// Should the extension be registered as a global by default.
+    /// Whether the runtime installs this extension as a global
+    /// without the script asking for it.
     pub default: bool,
 }
 
 pub trait LuaExtension {
-    /// Create the extension and return a corresponding value.
+    /// Creates the extension's Lua value, installed under
+    /// [`ExtensionInfo::name`].
     fn create_extension(&self, lua: &mlua::Lua) -> mlua::Result<mlua::Value>;
 
     /// Returns the name of the extension

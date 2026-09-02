@@ -7,6 +7,10 @@
 /// Milliseconds until a cron event's next occurrence. The expression is
 /// whatever follows `cron:`; classic five-field expressions gain a seconds
 /// column, since the parser wants six.
+///
+/// # Errors
+/// Returns text when the expression does not parse, or when it names a
+/// time that never occurs.
 pub fn cron_delay_ms(event: &str) -> Result<i64, String> {
     use std::str::FromStr;
 

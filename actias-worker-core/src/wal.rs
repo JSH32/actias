@@ -1,4 +1,4 @@
-//! Reading sqlite's write-ahead log, for shipping (docs/WAL-SHIPPING.md).
+//! Reading sqlite's write-ahead log, for shipping.
 //!
 //! The shipper needs one answer from a live `-wal` file: how many bytes
 //! from the start form a checksum-valid sequence of whole frames ending
@@ -52,6 +52,11 @@ pub enum WalError {
 /// The checksum-valid committed prefix of `wal`. Frames past the last
 /// commit, torn tails and checksum mismatches end the scan; they are
 /// the writer's business, not the shipper's.
+///
+/// # Errors
+/// Returns [`WalError::NotAWal`] for bytes too short to be a WAL or
+/// carrying neither magic, and [`WalError::BadHeader`] when the header's
+/// own checksum fails.
 pub fn committed_prefix(wal: &[u8]) -> Result<CommittedPrefix, WalError> {
     if wal.len() < WAL_HEADER {
         return Err(WalError::NotAWal);

@@ -4,12 +4,12 @@
 //!
 //! # The model
 //!
-//! A websocket upgrade happens INSIDE fetch: the handler authenticates
+//! A websocket upgrade happens inside fetch: the handler authenticates
 //! like any request, then returns `request:upgrade(Class, seed?,
 //! identity)` naming a declared connection class. The request's vm is
 //! released like any response; the class's handlers run in
 //! [`actor::ConnectionTask`], one invocation per inbox item. The
-//! connection SPEAKS AS the minted identity; `transport =
+//! connection speaks as the minted identity; `transport =
 //! "connection"` decides only the edge kind. No stdlib connection
 //! program exists, and the app's own frames are the only ones the
 //! wire carries in either direction, with one exception a class asks
@@ -97,6 +97,10 @@ pub fn inbox() -> (InboxSender, InboxReceiver) {
 impl InboxSender {
     /// Non-blocking on purpose: a publisher's pump never waits on a
     /// connection. Full means the connection has chosen to fall behind.
+    ///
+    /// # Errors
+    /// Returns [`DeliveryRefused::Gone`] when the inbox is closed and
+    /// [`DeliveryRefused::Overflow`] when it is full.
     pub fn push(&self, item: InboxItem) -> Result<(), DeliveryRefused> {
         self.tx.try_send(item).map_err(|error| match error {
             tokio::sync::mpsc::error::TrySendError::Full(_) => DeliveryRefused::Overflow,
@@ -112,7 +116,7 @@ impl InboxReceiver {
     }
 }
 
-/// Node-local connections by id: who can still be delivered to HERE.
+/// Node-local connections by id: who can still be delivered to on this node.
 /// An id that is not present is Gone, and Gone prunes edges; after a
 /// failover every edge pointing at this node's old connections prunes
 /// on first delivery, which is the expected-stale story.
@@ -141,6 +145,10 @@ impl ConnectionRegistry {
     /// Delivers one item to a connection, or says why not. Overflow
     /// also unregisters: the connection is closing, so subsequent
     /// deliveries see Gone instead of racing a dying inbox.
+    ///
+    /// # Errors
+    /// Returns [`DeliveryRefused::Gone`] for an id this node does not hold,
+    /// otherwise whatever [`InboxSender::push`] returns.
     pub fn deliver(&self, id: &str, item: InboxItem) -> Result<(), DeliveryRefused> {
         let mut inner = self.inner.lock().expect("no panics hold the registry");
         let Some(sender) = inner.get(id) else {

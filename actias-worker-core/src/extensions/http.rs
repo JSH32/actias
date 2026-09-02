@@ -1,3 +1,7 @@
+//! Outbound http for scripts. Every request and every redirect hop
+//! passes the egress policy, so a script cannot reach the cluster's own
+//! network by following a redirect it did not write.
+
 use crate::egress::EgressClient;
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 use actias_common::tracing::debug;

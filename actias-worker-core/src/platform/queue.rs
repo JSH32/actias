@@ -493,6 +493,9 @@ fn drop_message(
 /// (a fresh object, an old snapshot, a replica) reads as an empty queue,
 /// decided by probing for the tables rather than classifying errors, so
 /// the accessor is safe on read-only connections too.
+///
+/// # Errors
+/// Returns SQLite's message.
 pub fn read_stats(storage: &mut crate::storage::SqliteStorage) -> Result<Stats, String> {
     let (depth, in_flight, oldest_pending) = if storage.table_exists(MESSAGES_TABLE)? {
         storage
@@ -536,6 +539,9 @@ fn stats(context: &super::PlatformContext<'_>) -> Result<serde_json::Value, Stri
 /// Live and dead message rows for the inspector's table, newest first;
 /// delivered messages live in the journal, not here. Reusable by any read
 /// path that can open the file.
+///
+/// # Errors
+/// Returns SQLite's message.
 pub fn read_messages(storage: &mut crate::storage::SqliteStorage) -> Result<Vec<Message>, String> {
     let mut rows = Vec::new();
     let now = unix_now_ms();

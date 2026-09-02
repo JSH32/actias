@@ -3,7 +3,7 @@
 //! [`ConnectionTask`] owns everything one connection holds for its
 //! life: the inbox receiver, the wire and edge state in
 //! [`SockShared`], the declared program's spec, and the `conn.state`
-//! blob. The vm is the ONE droppable part: built from the factory
+//! blob. The vm is the one droppable part: built from the factory
 //! when a handler needs it, dropped again after `hibernate_after` of
 //! silence. Hibernated, the connection costs about a file
 //! descriptor; an inbox item whose handler is declared rebuilds the
@@ -103,6 +103,10 @@ impl ConnectionTask {
     /// per inbox item, `close` after the wire ends, then the polite
     /// unfollow walk. Handler errors end the connection; the pump's
     /// deliver-or-prune covers whatever the walk misses.
+    ///
+    /// # Errors
+    /// Returns the first failure among `open`, an inbox item's handler and
+    /// `close`. The wire is closed and the follows severed either way.
     pub async fn run(mut self) -> Result<(), String> {
         let outcome = self.serve().await;
         // The close handler still runs on an erroring connection: the
@@ -248,7 +252,7 @@ impl ConnectionTask {
 
     /// Runs one declared handler with a fresh conn surface over the
     /// current state blob. An undeclared handler ignores the item
-    /// BEFORE any vm exists, so a Closed at a hibernated connection
+    /// before any vm exists, so a Closed at a hibernated connection
     /// with no close handler never pays a wake.
     async fn invoke(
         &mut self,
@@ -320,7 +324,7 @@ impl ConnectionTask {
         };
 
         // The dispatch shape on purpose: an async C closure on the
-        // outside, the handler call_async'd INSIDE its future, so
+        // outside, the handler call_async'd inside its future, so
         // nested async calls suspend in the inner future instead of
         // yielding through the handler's Lua frames (which Luau
         // refuses).
@@ -404,6 +408,9 @@ impl SockShared {
     }
 
     /// Tells the wire task to close the socket.
+    ///
+    /// # Errors
+    /// Returns text when the wire task is already gone.
     pub async fn send_close(&self) -> Result<(), String> {
         self.outbound_sender()
             .send(OutboundFrame::Close)
