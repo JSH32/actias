@@ -1,7 +1,13 @@
-// The workbench's Luau language service: the analysis half of upstream's
+// Actias's Luau language service: the analysis half of upstream's
 // CLI/src/Web.cpp, rebuilt for an editor rather than a demo page.
 //
-// Differences from upstream, each one a workbench requirement:
+// One source, two builds, because the two must never disagree: the
+// workbench loads it as wasm, and `actias check` links it as a static
+// library. A question answered here is answered the same way in the
+// editor and on the command line, which is the whole point; the cli
+// used to shell out to stock luau-analyze and get different answers.
+//
+// Differences from upstream, each one a language-service requirement:
 //   - a project, not a file: the caller feeds every module through
 //     setFile and requires resolve across them, so a symbol defined in
 //     lib/domain.lua is typed and jumpable from main.lua;
@@ -108,6 +114,13 @@ static void ensureFrontend()
     if (frontend)
         return;
 
+    // Error messages build their own stringifier options, so displayOptions
+    // below cannot reach them; these two globals can. Tables default to no
+    // limit at all, which is how a mismatch on an object instance prints
+    // its whole method list before saying what was wrong.
+    FInt::LuauTableTypeMaximumStringifierLength.value = 120;
+    FInt::LuauTypeMaximumStringifierLength.value = 300;
+
     fileResolver = new BenchFileResolver();
     configResolver = new BenchConfigResolver();
 
@@ -120,9 +133,6 @@ static void ensureFrontend()
     frontend = new Luau::Frontend(fileResolver, configResolver, options);
     // The new solver, which is what luau-analyze defaults to (and so
     // what `actias check` actually runs: the cli passes no --solver).
-    // It also carries the bidirectional inference that types class-body
-    // method parameters from ClassBody's indexer, which the old solver
-    // never propagates.
     frontend->setLuauSolverMode(Luau::SolverMode::New);
 
     Luau::unfreeze(frontend->globals.globalTypes);
@@ -204,14 +214,18 @@ static void appendDiagnostic(std::string& out, const Luau::Location& location, c
     out += "\"}";
 }
 
-// How types read in hovers and completion details: structural for
-// anonymous tables (a synthetic name like `visits` says nothing), with
-// argument names kept on function signatures.
+// How types read in hovers and completion details: named wherever a name
+// exists, with argument names kept on function signatures.
 static Luau::ToStringOptions displayOptions()
 {
     Luau::ToStringOptions options;
-    options.ignoreSyntheticName = true;
     options.functionTypeArguments = true;
+    // An object instance is an intersection of aliases, and ObjectState's
+    // methods take `self: ObjectState`. Expanded, that is hundreds of
+    // characters ending in `*CYCLE*`; named, it is `ObjectState`. This is
+    // also why synthetic names are no longer ignored here: suppressing
+    // them was what forced the expansion.
+    options.hideTableAliasExpansions = true;
     return options;
 }
 

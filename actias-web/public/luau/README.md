@@ -5,7 +5,7 @@ The workbench's Luau language service: Luau's own analysis library
 root. Vendored so the app builds hermetically; regenerate with
 `nix develop -c ./build.sh` in that directory.
 
-- sha256: `e5f090ddedbfbb7e4ba34d67f26ac93ed6a321be560e4d294813e2f8208ddb22`
+- sha256: `402cebb2e13839943885c213771ade4c58975defa7d9a11688d00ec724cecee5`
 
 The build runs the new solver, which is what `luau-analyze` defaults
 to and therefore what `actias check` runs; the editor must never
