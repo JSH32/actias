@@ -42,4 +42,4 @@ declare uuid: { v4: () -> string }
 declare getfile: (path: string) -> { number }?
 declare dofile: (path: string) -> any
 declare require: (path: string) -> any
-declare script: { identifier: string }
+declare script: { identifier: string, project_id: string }

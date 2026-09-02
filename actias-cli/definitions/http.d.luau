@@ -30,7 +30,7 @@ type ConnectionBody = {
     -- "forward" sends it as { type = "event", topic, from, data }
     -- without building a vm. Declared as neither, deliveries drop.
     event: (((conn: Conn, event: StreamEvent) -> ()) | "forward")?,
-    close: ((conn: Conn, reason: any?) -> ())?,
+    close: ((conn: Conn) -> ())?,
     -- The connection's own heartbeat, gone with the wire; `missed`
     -- counts ticks that fired while a previous run was still going.
     timer: { every: string, run: (conn: Conn, missed: number) -> () }?,
@@ -76,11 +76,7 @@ type HttpModule = {
     Uri: { parse: (uri: string) -> Uri, new: (parts: any) -> Uri },
 }
 
-type JwtAlgorithm =
-    "HS256" | "HS384" | "HS512"
-    | "RS256" | "RS384" | "RS512"
-    | "PS256" | "PS384" | "PS512"
-    | "ES256" | "ES384" | "EdDSA"
+type JwtAlgorithm = "HS256" | "HS384" | "HS512"
 
 type JwtSigner = {
     encode: (self: JwtSigner, claims: { [string]: any }) -> string,
