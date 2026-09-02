@@ -3,7 +3,7 @@
 /* eslint-disable */
 import type { CreateUserDto } from '../models/CreateUserDto';
 import type { MessageResponseDto } from '../models/MessageResponseDto';
-import type { PaginatedResponseDto } from '../models/PaginatedResponseDto';
+import type { PublicUserDto } from '../models/PublicUserDto';
 import type { RegistrationConfigDto } from '../models/RegistrationConfigDto';
 import type { UpdatePasswordDto } from '../models/UpdatePasswordDto';
 import type { UpdateUserDto } from '../models/UpdateUserDto';
@@ -30,26 +30,6 @@ export class UsersService {
             url: '/api/users',
             body: requestBody,
             mediaType: 'application/json',
-        });
-    }
-
-    /**
-     * @param name
-     * @param page
-     * @returns any
-     * @throws ApiError
-     */
-    public searchUsers(
-        name: string,
-        page: number,
-    ): CancelablePromise<PaginatedResponseDto> {
-        return this.httpRequest.request({
-            method: 'GET',
-            url: '/api/users',
-            query: {
-                'name': name,
-                'page': page,
-            },
         });
     }
 
@@ -107,6 +87,26 @@ export class UsersService {
             url: '/api/users/@me/password',
             body: requestBody,
             mediaType: 'application/json',
+        });
+    }
+
+    /**
+     * Resolve one account by its exact email or username, for adding a
+     * member to a project. Nothing here lists or matches loosely: browsing
+     * the user table is an admin capability, at `GET /admin/users`.
+     * @param identifier
+     * @returns PublicUserDto
+     * @throws ApiError
+     */
+    public lookupUser(
+        identifier: string,
+    ): CancelablePromise<PublicUserDto> {
+        return this.httpRequest.request({
+            method: 'GET',
+            url: '/api/users/lookup',
+            query: {
+                'identifier': identifier,
+            },
         });
     }
 

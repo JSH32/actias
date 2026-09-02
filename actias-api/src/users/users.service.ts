@@ -4,7 +4,6 @@ import { Users } from 'src/entities/Users';
 import { CreateUserDto, UpdateUserDto } from './dto/requests.dto';
 import * as argon2 from 'argon2';
 import { UserAuthMethod, AuthMethod } from 'src/entities/UserAuthMethod';
-import { PaginatedResponseDto } from 'src/shared/dto/paginated';
 import { ConfigService } from '@nestjs/config';
 import { RegistrationCodes } from 'src/entities/RegistrationCode';
 
@@ -61,27 +60,23 @@ export class UsersService {
     await this.em.persistAndFlush(user);
   }
 
-  async searchByQuery(
-    page: number,
-    pageSize: number,
-    query: string,
-  ): Promise<PaginatedResponseDto<Users>> {
-    const [users, count] = await this.em.findAndCount(
-      Users,
-      {
-        $or: [
-          { email: { $like: `%${query}%` } },
-          { username: { $like: `%${query}%` } },
-        ],
-      },
-      { limit: pageSize, offset: (page - 1) * pageSize },
-    );
+  /**
+   * The one account whose address or username IS what was typed, or null.
+   *
+   * Exact by construction: the identifier is escaped before it reaches
+   * `$ilike`, so a caller cannot pass `%` and turn a lookup back into a
+   * listing. Case is ignored because neither column is normalized on
+   * the way in, and an inviter types what they were told, not what was
+   * stored.
+   */
+  async findByIdentifier(identifier: string): Promise<Users | null> {
+    const wanted = identifier.trim();
+    if (!wanted) return null;
 
-    return {
-      items: users,
-      lastPage: Math.ceil(count / pageSize),
-      page,
-    };
+    const literal = wanted.replace(/[\\%_]/g, (char) => `\\${char}`);
+    return await this.em.findOne(Users, {
+      $or: [{ email: { $ilike: literal } }, { username: { $ilike: literal } }],
+    });
   }
 
   async findById(id: string): Promise<Users> {

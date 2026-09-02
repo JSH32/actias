@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  NotFoundException,
   Post,
   Put,
   Query,
@@ -13,14 +14,10 @@ import {
   UpdatePasswordDto,
   UpdateUserDto,
 } from './dto/requests.dto';
-import { UserDto } from './dto/user.dto';
+import { PublicUserDto, UserDto } from './dto/user.dto';
 import { UsersService } from './users.service';
 import { User } from 'src/auth/user.decorator';
 import { AuthGuard, Public } from 'src/auth/auth.guard';
-import {
-  ApiOkResponsePaginated,
-  PaginatedResponseDto,
-} from 'src/shared/dto/paginated';
 import { MessageResponseDto } from 'src/shared/dto/message';
 import { RegistrationConfigDto } from './dto/responses.dto';
 
@@ -85,19 +82,20 @@ export class UsersController {
     return new UserDto(await this.userService.updateUser(user, updateUser));
   }
 
-  @Get()
-  @ApiOkResponsePaginated(UserDto)
+  /**
+   * Resolve one account by its exact email or username, for adding a
+   * member to a project. Nothing here lists or matches loosely: browsing
+   * the user table is an admin capability, at `GET /admin/users`.
+   */
+  @Get('lookup')
   @ApiBearerAuth()
-  async searchUsers(
-    @Query('name') name: string,
-    @Query('page') page: number,
-  ): Promise<PaginatedResponseDto<UserDto>> {
-    const paginated = await this.userService.searchByQuery(page, 10, name);
-
-    return {
-      page: paginated.page,
-      lastPage: paginated.lastPage,
-      items: paginated.items.map((item) => new UserDto(item)),
-    };
+  async lookupUser(
+    @Query('identifier') identifier: string,
+  ): Promise<PublicUserDto> {
+    const user = await this.userService.findByIdentifier(identifier ?? '');
+    if (!user) {
+      throw new NotFoundException('No account with that email or username.');
+    }
+    return new PublicUserDto(user);
   }
 }

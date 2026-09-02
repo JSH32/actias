@@ -39,3 +39,28 @@ export class UserDto {
     });
   }
 }
+
+/**
+ * A user as somebody who is not that user may see them: enough to
+ * confirm you found the right person and to hand to an acl, and
+ * nothing more. Addresses and the admin flag are deliberately absent,
+ * so resolving an invitee never discloses either.
+ */
+export class PublicUserDto {
+  /**
+   * Users ID.
+   */
+  id!: string;
+
+  /**
+   * Users username.
+   */
+  username!: string;
+
+  constructor(entity: Users) {
+    return Object.assign(this, {
+      id: entity.id,
+      username: entity.username,
+    });
+  }
+}
