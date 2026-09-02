@@ -63,6 +63,9 @@ impl BlobCache {
     ///
     /// Concurrent misses of one hash collapse into a single fetch; a failed
     /// fetch is not cached, so a flaky store costs retries, not poisoning.
+    ///
+    /// # Errors
+    /// Returns the store's message, tagged with the hash that was asked for.
     pub async fn get(&self, hash: &str) -> anyhow::Result<Arc<Vec<u8>>> {
         self.cache
             .try_get_with(hash.to_owned(), {
