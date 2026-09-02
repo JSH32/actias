@@ -1,5 +1,5 @@
-//! The key-value face on an object's storage (docs/OBJECT-STATE.md):
-//! one reserved table in the object's own file, written in the call's
+//! The key-value face on an object's storage: one reserved table in
+//! the object's own file, written in the call's
 //! own transaction. The verbs are the only door; the authorizer denies
 //! the table to raw sql from scripts and the console alike, so this
 //! module owns the representation completely.
@@ -44,6 +44,10 @@ fn ensure_table(storage: &mut SqliteStorage) -> Result<(), String> {
 }
 
 /// One key's typed pair, or [`None`] where nothing is stored.
+///
+/// # Errors
+/// Returns SQLite's message. A file with no reserved table reads as no
+/// value, not as an error.
 pub fn get(storage: &mut SqliteStorage, key: &str) -> Result<Option<Pair>, String> {
     ensure_table(storage)?;
     storage
@@ -71,6 +75,7 @@ pub fn get(storage: &mut SqliteStorage, key: &str) -> Result<Option<Pair>, Strin
 /// # Errors
 /// Refuses a value past [`VALUE_CAP_BYTES`], naming the key.
 pub fn set(storage: &mut SqliteStorage, key: &str, kind: &str, value: &str) -> Result<(), String> {
+    storage.refuse_if_read_only("Writing object state")?;
     if value.len() > VALUE_CAP_BYTES {
         return Err(format!(
             "Value for key '{key}' is {} bytes; the store caps at {VALUE_CAP_BYTES}. \
@@ -91,7 +96,11 @@ pub fn set(storage: &mut SqliteStorage, key: &str, kind: &str, value: &str) -> R
 }
 
 /// Removes one key; absent is fine.
+///
+/// # Errors
+/// Returns SQLite's message.
 pub fn delete(storage: &mut SqliteStorage, key: &str) -> Result<(), String> {
+    storage.refuse_if_read_only("Deleting object state")?;
     ensure_table(storage)?;
     storage
         .platform()
@@ -103,6 +112,9 @@ pub fn delete(storage: &mut SqliteStorage, key: &str) -> Result<(), String> {
 /// Every pair in key order: the console's State tab, over a file opened
 /// read-only. A file the verbs never touched has no table, which reads
 /// as no keys, not an error, so this never creates anything.
+///
+/// # Errors
+/// Returns SQLite's message.
 pub fn read_all(storage: &mut SqliteStorage) -> Result<Vec<Pair>, String> {
     let connection = storage.platform();
     let mut statement = match connection

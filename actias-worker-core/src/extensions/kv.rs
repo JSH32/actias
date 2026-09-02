@@ -1,3 +1,6 @@
+//! The `kv` surface: a thin binding over the kv service's typed pairs,
+//! scoped to the namespaces the script's contract declares.
+
 use mlua::{IntoLua, LuaSerdeExt, UserData};
 use tonic::Code;
 
@@ -139,6 +142,7 @@ impl UserData for KvNamespace {
             "set",
             |lua, mut this, (key, value): (String, mlua::Value)| async move {
                 crate::platform::workflow::assert_effects_allowed(&lua)?;
+                crate::runtime::ActiasRuntime::assert_writes_allowed(&lua, "kv set")?;
                 match value.into_service_value()? {
                     Some((val_type, val)) => {
                         let request = SetPairsRequest {
@@ -182,6 +186,7 @@ impl UserData for KvNamespace {
             "set_batch",
             |lua, mut this, values: mlua::Table| async move {
                 crate::platform::workflow::assert_effects_allowed(&lua)?;
+                crate::runtime::ActiasRuntime::assert_writes_allowed(&lua, "kv set_batch")?;
                 let mut to_set = vec![];
                 let mut to_delete = vec![];
 
@@ -279,6 +284,7 @@ impl UserData for KvNamespace {
             "delete",
             |lua, mut this, keys: mlua::MultiValue| async move {
                 crate::platform::workflow::assert_effects_allowed(&lua)?;
+                crate::runtime::ActiasRuntime::assert_writes_allowed(&lua, "kv delete")?;
                 let keys: Vec<PairRequest> = keys
                     .into_vec()
                     .into_iter()

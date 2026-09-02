@@ -13,27 +13,33 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const LEVELS: [&str; 4] = ["debug", "info", "warn", "error"];
 
 /// Publishes log lines to one channel, without waiting on delivery.
+/// Where a script's log lines go: a redis channel a live session or a
+/// tail subscribes to, or a buffer a caller reads back, which is how a
+/// shell statement's prints come back with its result.
 #[derive(Clone)]
-pub struct LogPublisher {
-    connection: redis::aio::ConnectionManager,
-    channel: String,
+pub enum LogPublisher {
+    Redis {
+        connection: redis::aio::ConnectionManager,
+        channel: String,
+    },
+    Capture(std::sync::Arc<std::sync::Mutex<Vec<LogLine>>>),
 }
 
 impl LogPublisher {
     pub fn new(connection: redis::aio::ConnectionManager, channel: String) -> Self {
-        Self {
+        Self::Redis {
             connection,
             channel,
         }
     }
 
-    /// Publishes one line and returns immediately.
-    ///
-    /// Logging must never slow a script down or fail a request, so delivery
-    /// is a detached task and a failed publish is only traced. Public so
-    /// the platform can put its own lines on a stream (a live session's
-    /// failure belongs in front of its developer), not only script `log.*`
-    /// calls.
+    /// A publisher that keeps every line, and the buffer to read them
+    /// from once the run is over.
+    pub fn capturing() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<LogLine>>>) {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (Self::Capture(lines.clone()), lines)
+    }
+
     pub fn publish(&self, level: &str, message: String) {
         let line = LogLine {
             level: level.to_owned(),
@@ -44,12 +50,22 @@ impl LogPublisher {
                 .unwrap_or(0),
         };
 
+        let (connection, channel) = match self {
+            Self::Capture(lines) => {
+                lines.lock().unwrap_or_else(|p| p.into_inner()).push(line);
+                return;
+            }
+            Self::Redis {
+                connection,
+                channel,
+            } => (connection, channel),
+        };
         let Ok(payload) = serde_json::to_string(&line) else {
             return;
         };
 
-        let mut connection = self.connection.clone();
-        let channel = self.channel.clone();
+        let mut connection = connection.clone();
+        let channel = channel.clone();
         tokio::spawn(async move {
             if let Err(error) = connection.publish::<_, _, ()>(&channel, payload).await {
                 trace!(%error, "log line dropped");

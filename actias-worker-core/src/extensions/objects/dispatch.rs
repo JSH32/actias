@@ -95,10 +95,70 @@ fn resolve_hook(class: &Table, name: &str) -> Option<mlua::Function> {
     None
 }
 
+/// The migrations directory `class` declares, if any.
+///
+/// The registry is private to this module, so scratch evaluation asks
+/// here rather than reaching for it: a row derived from a pre-migration
+/// copy would be a row the live object never produces.
+pub(crate) fn class_migrations(lua: &Lua, class: &str) -> Option<String> {
+    ClassRegistry::of(lua)
+        .spec(class)
+        .and_then(|spec| spec.migrations.clone())
+}
+
+/// Derives one object's directory row, or [`None`] when its class
+/// declares no `directory`.
+///
+/// Runs the class's plan against a restricted state table with storage
+/// refusing writes, so the derivation cannot change what it describes
+/// and can therefore be re-run against any restored copy later. Every
+/// failure comes back as a message for the caller to mark: this must
+/// never turn into an error the object's caller sees.
+pub(crate) fn derive_directory(
+    lua: &Lua,
+    class: &str,
+    name: &str,
+) -> Option<Result<crate::directory::evaluate::Row, String>> {
+    // The same reader publish ran over this table, so a class that
+    // published clean is a class this can fill.
+    let directory = ClassRegistry::of(lua)
+        .class_table(class)?
+        .get::<Table>("directory")
+        .ok()?;
+    let plan = match actias_declarations::field_kit::plan(class, &directory) {
+        Ok(plan) => plan,
+        Err(error) => return Some(Err(error.to_string())),
+    };
+
+    let state = match super::state::directory_state(lua, name) {
+        Ok(state) => state,
+        Err(error) => return Some(Err(error.to_string())),
+    };
+
+    let home = lua
+        .app_data_ref::<Arc<crate::objects::ObjectHome>>()?
+        .clone();
+    // Set, call, clear: never a scoped closure over the call, because
+    // the hook reaches storage through the same lock (see
+    // SqliteStorage::set_read_only). The clear is unconditional, so a
+    // throwing hook cannot leave the object unable to write.
+    let _ = home.with_storage(|storage| {
+        storage.set_read_only(true);
+        Ok(())
+    });
+    let derived = crate::directory::evaluate::evaluate(&plan, &state);
+    let _ = home.with_storage(|storage| {
+        storage.set_read_only(false);
+        Ok(())
+    });
+
+    Some(derived)
+}
+
 /// Which class and instance the pinned vm is currently dispatching for.
-pub(super) struct CurrentDispatch {
-    pub(super) class: String,
-    pub(super) name: String,
+pub(crate) struct CurrentDispatch {
+    pub(crate) class: String,
+    pub(crate) name: String,
 }
 
 /// Runs `init` exactly once per object before any other work touches
@@ -119,7 +179,7 @@ async fn run_init_if_fresh(
         .map(|home| home.clone())
         .filter(|home| home.has_storage());
     // Stored objects consult the file every call: a failed first call
-    // rolls init back WITH the mark (user_version is transactional), so
+    // rolls init back with the mark (user_version is transactional), so
     // the next call retries it; vm memory must not veto that. Without
     // storage, once per vm life is the record.
     // Schema from files runs before init, so init only ever seeds.
@@ -287,7 +347,7 @@ async fn dispatch_internal(
                 .unwrap_or(serde_json::Value::Null);
             let from_class = event_json["from"]["class"].as_str().unwrap_or_default();
             let topic = event_json["topic"].as_str().unwrap_or_default();
-            // The FOLLOWER owns its high-water mark: a redelivered seq
+            // The follower owns its high-water mark: a redelivered seq
             // skips instead of re-running, and the cursor bump commits
             // with the handler's own writes, so at-least-once delivery
             // becomes exactly-once effect here.
@@ -434,7 +494,7 @@ pub(super) fn install_dispatch(lua: &Lua) -> mlua::Result<()> {
             let mut multi = mlua::MultiValue::new();
             multi.push_back(mlua::Value::Table(state));
             for argument in call.args {
-                // A json null in an argument is Lua NIL, never mlua's
+                // A json null in an argument is Lua `nil`, never mlua's
                 // null sentinel: the sentinel is truthy, so `limit or
                 // 50` style defaulting would silently keep a userdata
                 // (found live: math.min exploding on a nil parameter).

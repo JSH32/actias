@@ -1,3 +1,6 @@
+//! The `jwt` surface: signing and verifying tokens with the algorithm
+//! the caller names.
+
 use std::str::FromStr;
 
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
@@ -5,7 +8,6 @@ use mlua::{ExternalResult, LuaSerdeExt, UserData};
 
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
 
-/// JWT extension.
 pub struct JwtExtension;
 
 impl LuaExtension for JwtExtension {
@@ -41,6 +43,16 @@ impl UserData for JwtClass {
             let algorithm: Algorithm = Algorithm::from_str(&algorithm).map_err(|e| {
                 mlua::Error::runtime(format!("Invalid JWT Algorithm provided: {}", e))
             })?;
+            // The key is a shared secret, so only the HMAC family can
+            // sign or verify with it.
+            if !matches!(
+                algorithm,
+                Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512
+            ) {
+                return Err(mlua::Error::runtime(
+                    "Only HS256, HS384 and HS512 are offered; the key is a shared secret.",
+                ));
+            }
 
             lua.create_userdata(JwtClass {
                 encoding_key: EncodingKey::from_secret(secret.as_ref()),

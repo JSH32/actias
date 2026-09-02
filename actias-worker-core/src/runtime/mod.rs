@@ -1,3 +1,12 @@
+//! The Luau vm and everything installed into it: the module loader over
+//! a bundle, the extension surface a profile admits, the declaration
+//! phase that runs the entry point, and the contract checks every
+//! capability passes through.
+//!
+//! One runtime owns one vm. What runs in it (a request, an object call,
+//! a connection frame) is decided by the caller; this module only
+//! decides what such code may reach.
+
 pub mod extension;
 
 use crate::{
@@ -89,6 +98,10 @@ fn no_revision() -> mlua::Error {
 /// as a manifest: a capability that could be minted per request could not be
 /// recorded at publish.
 struct DeclarationPhase(bool);
+
+/// Marker: this vm is a read-only shell session (see
+/// [`ActiasRuntime::set_read_only_session`]).
+pub struct ReadOnlySession;
 
 /// Everything the entry point declared, recorded as the declarations run.
 ///
@@ -258,6 +271,23 @@ impl PreparedRevision {
         u64::try_from(ms / 1000).ok().filter(|secs| *secs > 0)
     }
 
+    /// The directory field set the contract declares for `class`, with
+    /// the version publish minted for it. [`None`] for a class with no
+    /// directory, and for a contract from before fields were declared
+    /// (the bare `Class:directory` marker), which derives at version
+    /// zero and unvalidated, exactly as it always did.
+    pub fn directory_spec(
+        &self,
+        class: &str,
+    ) -> Option<actias_common::directory_spec::DirectorySpec> {
+        let contract = self.contract.as_ref()?;
+        contract.lifecycle.iter().find_map(|entry| {
+            actias_common::directory_spec::DirectorySpec::parse(entry)
+                .filter(|(owner, _)| owner == class)
+                .map(|(_, spec)| spec)
+        })
+    }
+
     /// Whether the contract declares a creation gate for `class`.
     pub fn gates_admission(&self, class: &str) -> bool {
         self.contract.as_ref().is_some_and(|contract| {
@@ -395,9 +425,8 @@ impl PreparedRevision {
 }
 
 /// Which extension surface a vm gets. Standard is every script vm;
-/// Workflow is the enforced-determinism profile from
-/// docs/WORKFLOWS.md, where effects are refused outside steps and
-/// ambient nondeterminism journals.
+/// Workflow is the enforced-determinism profile, where effects are
+/// refused outside steps and ambient nondeterminism journals.
 #[derive(Clone)]
 pub enum VmProfile {
     Standard,
@@ -420,7 +449,10 @@ impl ActiasRuntime {
     pub const FETCH_EVENT: &'static str = "fetch";
 
     /// Events a script may register a listener for.
-    const EVENTS: [&'static str; 1] = [Self::FETCH_EVENT];
+    /// The shell's one handler: a chunk registers itself under this so
+    /// it runs under a call budget rather than the entry's.
+    pub const SHELL_EVENT: &'static str = "shell";
+    const EVENTS: [&'static str; 2] = [Self::FETCH_EVENT, Self::SHELL_EVENT];
 
     /// Registry key holding the listener registered for `event`.
     ///
@@ -449,6 +481,10 @@ impl ActiasRuntime {
     ///
     /// Every declaration form calls this first, so `kv "x"` inside a handler
     /// fails with the same message everywhere.
+    ///
+    /// # Errors
+    /// Returns [`mlua::Error::RuntimeError`] naming `form` once the entry
+    /// point has run.
     pub fn assert_declaration_phase(lua: &Lua, form: &str) -> mlua::Result<()> {
         let declaring = lua
             .app_data_ref::<DeclarationPhase>()
@@ -466,6 +502,10 @@ impl ActiasRuntime {
 
     /// Errors when the revision's published [`Contract`] does not record
     /// `name` for `kind`; contract-less revisions pass.
+    ///
+    /// # Errors
+    /// Returns [`mlua::Error::RuntimeError`] naming the resource when the
+    /// revision's contract does not carry it.
     pub fn assert_contract_allows(lua: &Lua, kind: ContractKind, name: &str) -> mlua::Result<()> {
         let Some(prepared) = lua.app_data_ref::<Arc<PreparedRevision>>() else {
             return Ok(());
@@ -737,7 +777,8 @@ impl ActiasRuntime {
         Ok(())
     }
 
-    /// Create a new [`ActiasRuntime`], this will run the main script from the entrypoint defined in the [`Bundle`].
+    /// Creates a runtime and runs the bundle's entry point, so every
+    /// top-level declaration is registered before the first call.
     ///
     /// # Arguments
     /// - `prepared` - Compiled revision, shared with the cache; the vm loads its bytecode without recompiling.
@@ -784,7 +825,7 @@ impl ActiasRuntime {
         trace!("Initializing lua runtime");
 
         let lua = Self {
-            // catch_rust_panics stays at its DEFAULT (true), which keeps
+            // catch_rust_panics stays at its default (true), which keeps
             // Luau's native pcall/xpcall: the false setting swaps in
             // mlua's plain-C wrappers, and a plain C frame cannot host a
             // yield, so every user pcall around a cross-object or
@@ -860,7 +901,7 @@ impl ActiasRuntime {
                 // Declaration surfaces (kv, queue, database, object)
                 // stay: they run at script top level during replay and
                 // only return handles. Guarding the handles' effectful
-                // METHODS is the step verb's dispatch-level business.
+                // methods is the step verb's dispatch-level business.
                 lua.register_extensions(&[
                     &JsonExtension,
                     &JournaledUuidExtension,
@@ -929,10 +970,58 @@ impl ActiasRuntime {
     /// `seconds` is the wall backstop for this scope; the work ceiling
     /// comes from [`Self::set_work_limit`] and is what actually stops a
     /// runaway.
+    /// Lets declaration forms (`kv "x"`, `database "x"`, `objects "X"`)
+    /// run outside the entry point's top level. For a shell session,
+    /// whose principal is the operator rather than a published script:
+    /// its statements bind resources as they go, and the contract they
+    /// are checked against is the one the session was granted.
+    pub fn allow_declarations(&self, allowed: bool) {
+        self.lua.set_app_data(DeclarationPhase(allowed));
+    }
+
+    /// Marks this vm as a read-only shell session, or clears the mark.
+    /// The writing verbs (kv set and delete, a database's exec, any
+    /// user object's method) refuse while it is set; the reads keep
+    /// working, which is what lets an ad hoc join run without write
+    /// mode.
+    pub fn set_read_only_session(&self, read_only: bool) {
+        if read_only {
+            self.lua.set_app_data(ReadOnlySession);
+        } else {
+            self.lua.remove_app_data::<ReadOnlySession>();
+        }
+    }
+
+    /// Errors when the vm is a read-only shell session; the writing
+    /// verbs call this first.
+    ///
+    /// # Errors
+    /// Returns [`mlua::Error::RuntimeError`] naming `what` while the vm is
+    /// inside a read-only window.
+    pub fn assert_writes_allowed(lua: &Lua, what: &str) -> mlua::Result<()> {
+        if lua.app_data_ref::<ReadOnlySession>().is_some() {
+            return Err(mlua::Error::RuntimeError(format!(
+                "{what} is a write, and this shell session is read-only; \\write allows it"
+            )));
+        }
+        Ok(())
+    }
+
     pub fn begin_call_budget(&self, seconds: u64) {
         self.meter.arm(crate::budget::Budget::new(
             self.work_limit.load(std::sync::atomic::Ordering::Relaxed),
             std::time::Duration::from_secs(seconds),
+        ));
+    }
+
+    /// Arms a budget in milliseconds, for guest code the platform runs
+    /// on its own behalf and needs to stay short: the directory row's
+    /// derivation runs on the object's pinned task, so its budget is
+    /// also the bound on how long it may stall the mailbox.
+    pub fn begin_short_budget(&self, millis: u64) {
+        self.meter.arm(crate::budget::Budget::new(
+            self.work_limit.load(std::sync::atomic::Ordering::Relaxed),
+            std::time::Duration::from_millis(millis),
         ));
     }
 
@@ -962,7 +1051,11 @@ impl ActiasRuntime {
         self.meter.consumed()
     }
 
-    /// Register an extension into the runtime.
+    /// Registers extensions into the runtime, each under its own name.
+    ///
+    /// # Errors
+    /// Returns [`mlua::Error`] when an extension's value cannot be built or
+    /// installed.
     pub fn register_extensions(&self, extensions: &[&dyn LuaExtension]) -> mlua::Result<()> {
         for extension in extensions {
             let info = extension.extension_info();
@@ -985,7 +1078,7 @@ impl ActiasRuntime {
         Ok(())
     }
 
-    /// Set a module from an object, making it visible to `require`.
+    /// Sets one module's value, making it visible to `require`.
     ///
     /// # Errors
     /// Returns [`mlua::Error`] if the module registry cannot be reached.
@@ -1494,6 +1587,50 @@ mod tests {
             None,
         )
         .await
+    }
+
+    /// The knob a host turns: the same loop must survive the default
+    /// ceiling and be cut off by a low one, and the refusal must quote
+    /// the configured number rather than the constant.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_work_ceiling_is_whatever_the_host_set() {
+        let loop_of = |turns: u32| {
+            format!(
+                r#"
+                on "fetch" (function()
+                    local n = 0
+                    for i = 1, {turns} do n = n + i end
+                    return {{ body = tostring(n) }}
+                end)
+                "#
+            )
+        };
+
+        let generous = runtime_running(&loop_of(20_000)).await.expect("runs");
+        generous.start_timer();
+        generous
+            .listener(ActiasRuntime::FETCH_EVENT)
+            .expect("registered")
+            .call_async::<mlua::Value>(())
+            .await
+            .expect("the default ceiling is not reached by 20k turns");
+
+        let stingy = runtime_running(&loop_of(20_000)).await.expect("runs");
+        stingy.set_work_limit(500);
+        stingy.start_timer();
+        let refused = stingy
+            .listener(ActiasRuntime::FETCH_EVENT)
+            .expect("registered")
+            .call_async::<mlua::Value>(())
+            .await;
+        let text = format!(
+            "{:#}",
+            refused.expect_err("500 units cannot cover 20k turns")
+        );
+        assert!(
+            text.contains("too much work") && text.contains("500"),
+            "the refusal should name the configured limit: {text}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

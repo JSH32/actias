@@ -7,6 +7,7 @@
 
 pub mod budget;
 pub mod connections;
+pub mod directory;
 pub mod egress;
 pub mod extensions;
 pub mod identity;

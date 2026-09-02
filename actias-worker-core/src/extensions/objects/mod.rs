@@ -12,6 +12,7 @@
 //! table first. A request vm never dispatches; the pinned vm the router
 //! spawned does.
 
+mod directory;
 mod dispatch;
 mod handles;
 mod products;
@@ -35,10 +36,15 @@ pub use actias_common::classes::{CRON_CLASS, DATABASE_CLASS, QUEUE_CLASS, WORKFL
 pub use crate::platform::time::{
     advance_clock_for_tests, cron_delay_ms, parse_duration_ms, unix_now_ms,
 };
+pub use directory::{DirectoryAnswer, DirectoryListFuture, DirectoryLister, DirectoryRequest};
+/// Crate-internal: scratch evaluation needs the class's ladder, and the
+/// registry that knows it is private to this module.
+pub(crate) use dispatch::class_migrations;
 pub use dispatch::{
     CallChain, CallerIdentity, ObjectRouter, ObjectTarget, PendingAlarm, RESERVED_METHODS,
     RouterFuture,
 };
+pub(crate) use dispatch::{CurrentDispatch, derive_directory};
 pub(crate) use products::workflow_definition_handle;
 
 /// Runs the class's admission gate for a fresh identity: [`Some`] with
@@ -80,6 +86,10 @@ impl LuaExtension for ObjectExtension {
         // appear here.
         registry::ClassRegistry::of(lua).install()?;
         products::install_products(lua)?;
+        // The field kit a class writes its directory fields with. Data,
+        // not a verb: the markers ARE the declaration, and the same
+        // reader walks them at publish and at derivation.
+        actias_declarations::field_kit::install(lua)?;
 
         dispatch::install_dispatch(lua)?;
 

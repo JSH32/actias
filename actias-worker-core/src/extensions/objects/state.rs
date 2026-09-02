@@ -16,7 +16,7 @@ use crate::platform::time::{parse_duration_ms, unix_now_ms};
 const STATE_KEY: &str = "object_state";
 
 /// The identity value gates and `receives` handlers see: name, transport, a
-/// canonical id, and `:is(Class)` against a class VALUE, never a string.
+/// canonical id, and `:is(Class)` against a class value, never a string.
 pub(super) fn make_identity(
     lua: &Lua,
     class: &str,
@@ -133,7 +133,7 @@ fn sql_surface(lua: &Lua) -> mlua::Result<Table> {
             |lua, (_this, text, params): (Table, String, Option<Table>)| {
                 let params = sql_params(lua, params)?;
                 let rows = with_storage(lua, |storage| storage.query(&text, &params))?;
-                // Null columns become Lua NIL, never mlua's truthy
+                // Null columns become Lua `nil`, never mlua's truthy
                 // null sentinel; same rule as every call boundary.
                 lua.to_value_with(
                     &rows,
@@ -217,8 +217,7 @@ fn store_home(lua: &Lua) -> mlua::Result<Arc<crate::objects::ObjectHome>> {
 }
 
 /// The key-value face over the object's own file: kv's verbs, the
-/// call's own transaction, the reserved table as the representation
-/// (docs/OBJECT-STATE.md).
+/// call's own transaction, the reserved table as the representation.
 fn store_surface(lua: &Lua) -> mlua::Result<Table> {
     use crate::platform::state_store;
 
@@ -484,7 +483,7 @@ pub(super) fn object_state(lua: &Lua) -> mlua::Result<(Table, bool)> {
     )?;
 
     // `state:method(...)` reaches the class's own routable methods as a
-    // DIRECT call: inside a dispatch this vm already is the single
+    // A direct call: inside a dispatch this vm already is the single
     // writer, so sibling behavior needs no mailbox ride (a handle
     // self-call is a refused cycle) and no hoisted-helper idiom.
     // Resolved per call through the dispatch, because one state table
@@ -523,6 +522,28 @@ pub(super) fn object_state(lua: &Lua) -> mlua::Result<(Table, bool)> {
 
     lua.set_named_registry_value(STATE_KEY, state.clone())?;
     Ok((state, true))
+}
+
+/// The state a `directory` function sees: an allowlist, not the call
+/// state with pieces removed. The mutating verbs (`set_alarm`,
+/// `destroy`, `publish`) are simply absent, and there is no method
+/// fallthrough, because a row derives from state and must not act on
+/// it. The storage read-only window is the second layer, catching
+/// what these verbs would have reached; either alone would be enough,
+/// and both together mean a new mutating verb on the call state is
+/// not silently inherited here.
+pub(super) fn directory_state(lua: &Lua, name: &str) -> mlua::Result<Table> {
+    let state = lua.create_table()?;
+    let stored = lua
+        .app_data_ref::<Arc<crate::objects::ObjectHome>>()
+        .is_some_and(|home| home.has_storage());
+    if stored {
+        state.set("sql", sql_surface(lua)?)?;
+        state.set("store", store_surface(lua)?)?;
+    }
+    state.set("name", name)?;
+    state.set("now", lua.create_function(|_, ()| Ok(unix_now_ms()))?)?;
+    Ok(state)
 }
 
 /// Routes a follow or unfollow to the target object as an internal

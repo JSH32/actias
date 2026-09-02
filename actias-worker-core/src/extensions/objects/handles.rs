@@ -6,6 +6,26 @@ use mlua::{Lua, LuaSerdeExt, Table};
 
 use super::dispatch::{CallChain, ObjectRouter, ObjectTarget, callable_method};
 
+/// Answers one directory request through the runtime's lister seam.
+///
+/// # Errors
+/// A runtime with no route to the directory (a vm the worker never
+/// installed one in), or the read's own refusal: an unknown field, a
+/// field still building, the store's message.
+async fn answer(lua: &Lua, request: super::directory::DirectoryRequest) -> mlua::Result<Table> {
+    let lister = lua
+        .app_data_ref::<super::directory::DirectoryLister>()
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError(
+                "Reading a class's directory needs a route to it, which this runtime has none."
+                    .to_owned(),
+            )
+        })?
+        .clone();
+    let answered = lister(request).await.map_err(mlua::Error::RuntimeError)?;
+    super::directory::answer_to_lua(lua, answered)
+}
+
 /// The class handle: `Class(name)` (or the long `Class:get(name)`) mints
 /// an instance handle.
 pub(super) fn class_handle(lua: &Lua, class: String) -> mlua::Result<Table> {
@@ -17,6 +37,46 @@ pub(super) fn class_handle(lua: &Lua, class: String) -> mlua::Result<Table> {
         lua.create_function(|lua, (this, name): (Table, String)| {
             let class: String = this.get("__class")?;
             instance_handle(lua, class, name)
+        })?,
+    )?;
+
+    // `Class:list { ... }`, `Class:find { ... }` and `Class:visit
+    // { ... }`: the directory, not an instance. Async because the
+    // answer may need files this node has not cached; no object is
+    // woken and no lease is taken by any of them.
+    handle.set(
+        "list",
+        lua.create_async_function(|lua, (this, options): (Table, Option<Table>)| async move {
+            let class: String = this.get("__class")?;
+            answer(
+                &lua,
+                super::directory::parse_request(class, options, false)?,
+            )
+            .await
+        })?,
+    )?;
+
+    // The shorthand: the argument IS the predicate, and order and limit
+    // take their defaults.
+    handle.set(
+        "find",
+        lua.create_async_function(
+            |lua, (this, predicate): (Table, Option<Table>)| async move {
+                let class: String = this.get("__class")?;
+                answer(&lua, super::directory::parse_find(class, predicate)?).await
+            },
+        )?,
+    )?;
+
+    // The verified read: every candidate is checked against its own
+    // object's shipping manifest, so a row that stopped matching is
+    // dropped and a fresher one is served fresh. A row that cannot be
+    // checked is served carrying `unverified`, never dropped.
+    handle.set(
+        "visit",
+        lua.create_async_function(|lua, (this, options): (Table, Option<Table>)| async move {
+            let class: String = this.get("__class")?;
+            answer(&lua, super::directory::parse_request(class, options, true)?).await
         })?,
     )?;
 
@@ -61,6 +121,17 @@ pub(super) fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::R
                     // In workflow vms, effects live inside steps alone;
                     // everywhere else this is a no-op.
                     crate::platform::workflow::assert_effects_allowed(&lua)?;
+                    // A read-only shell session refuses every method call
+                    // except a database's reading verbs: a method on a
+                    // user object runs code with effects, and exec writes.
+                    let database_read = class == actias_common::classes::DATABASE_CLASS
+                        && matches!(method.as_str(), "query" | "query_one" | "read" | "read_one");
+                    if !database_read {
+                        crate::runtime::ActiasRuntime::assert_writes_allowed(
+                            &lua,
+                            &format!("{class}:{method}"),
+                        )?;
+                    }
                     // The colon-call receiver is the handle itself; what
                     // travels is everything after it, as plain values.
                     let mut values = args.into_iter();
@@ -95,7 +166,7 @@ pub(super) fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::R
                     .await
                     .map_err(mlua::Error::RuntimeError)?;
 
-                    // A json null in a result is Lua NIL, never mlua's
+                    // A json null in a result is Lua `nil`, never mlua's
                     // null sentinel, for the same reason dispatch treats
                     // arguments this way: the sentinel is truthy, so a
                     // missing `query_one` row would arrive as userdata

@@ -133,8 +133,8 @@ pub(crate) fn dispatch(
     match call.method.as_str() {
         "exec" => {
             let (sql, params) = statement(&call.args)?;
-            database.exec(&sql, &params)?;
-            Ok(serde_json::Value::Bool(true))
+            let changed = database.exec(&sql, &params)?;
+            Ok(serde_json::Value::from(changed))
         }
         "query" | "read" => {
             let (sql, params) = statement(&call.args)?;
@@ -216,6 +216,9 @@ pub struct Overview {
 /// endpoint) without dispatching at all. Reserved and internal tables
 /// stay hidden. Column metadata comes from the platform connection, which
 /// the script authorizer never restricts.
+///
+/// # Errors
+/// Returns SQLite's message.
 pub fn read_overview(storage: &mut crate::storage::SqliteStorage) -> Result<Overview, String> {
     let connection = storage.platform();
 

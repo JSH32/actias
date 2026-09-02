@@ -3,7 +3,7 @@
 //! deliberately a concrete type, not a trait: the surface is SQL, so only
 //! a SQL engine could ever implement it, and the plausible futures (a
 //! restored snapshot, the `actias test` fake, WAL shipping) are all still
-//! this type - opened on a different file, in memory, or with a shipper
+//! this type: opened on a different file, in memory, or with a shipper
 //! watching the WAL beside it.
 
 use std::path::Path;
@@ -13,6 +13,10 @@ use std::path::Path;
 /// flush step. Checkpoint trims the WAL so files stay small.
 pub struct SqliteStorage {
     connection: rusqlite::Connection,
+    /// Whether script-issued statements and the platform's own
+    /// key-value verbs currently refuse to write. Set only for the
+    /// window [`SqliteStorage::read_only`] scopes.
+    read_only: bool,
 }
 
 /// How long a connection waits for a lock another one holds. Contention
@@ -42,18 +46,24 @@ impl SqliteStorage {
             .map_err(|e| e.to_string())?;
         // The WAL folds when the shipper decides, never behind our back:
         // an implicit checkpoint mid-flight would move bytes the frame
-        // reader is about to ship (docs/WAL-SHIPPING.md).
+        // reader is about to ship.
         connection
             .pragma_update(None, "wal_autocheckpoint", 0)
             .map_err(|e| e.to_string())?;
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            read_only: false,
+        })
     }
 
     /// A consistent snapshot of the database into `dest`, taken through
     /// sqlite itself, so it is safe beside a live writer; copying the
     /// file's bytes is not. The copy is compacted and carries every
     /// committed write, checkpointed or not.
+    ///
+    /// # Errors
+    /// Returns SQLite's message.
     pub fn snapshot_to(&mut self, dest: &Path) -> Result<(), String> {
         let _ = std::fs::remove_file(dest);
         let quoted = dest.to_string_lossy().replace('\'', "''");
@@ -65,6 +75,9 @@ impl SqliteStorage {
     /// Folds what it can of the WAL into the main file without waiting
     /// on anyone; the shipper calls it to bound log growth, and a busy
     /// answer is fine because the next flight retries.
+    ///
+    /// # Errors
+    /// Returns SQLite's message. A busy database is one of them.
     pub fn checkpoint_passive(&mut self) -> Result<(), String> {
         self.connection
             .pragma_update(None, "wal_checkpoint", "PASSIVE")
@@ -85,7 +98,10 @@ impl SqliteStorage {
             .busy_timeout(BUSY_TIMEOUT)
             .map_err(|e| e.to_string())?;
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            read_only: false,
+        })
     }
 
     /// An in-memory database, for tests and local fakes.
@@ -95,7 +111,47 @@ impl SqliteStorage {
     pub fn in_memory() -> Result<Self, String> {
         Ok(Self {
             connection: rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?,
+            read_only: false,
         })
+    }
+
+    /// Refuses writes until cleared: script sql is authorized
+    /// read-only and the platform's key-value verbs refuse too, so a
+    /// directory evaluation cannot change the state it describes.
+    ///
+    /// A setter rather than a scoped closure on purpose. The guest
+    /// code this scopes reaches storage through the same lock the
+    /// scope would hold, so a closure spanning the call would
+    /// deadlock on the first `state.sql` read. The caller sets, calls,
+    /// and clears unconditionally.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    /// Refuses a platform write while the storage is read-only,
+    /// naming what was attempted. The authorizer covers script sql;
+    /// this covers the verbs that drive the connection directly.
+    ///
+    /// # Errors
+    /// Returns the refusal when [`SqliteStorage::read_only`] scopes
+    /// the caller.
+    pub(crate) fn refuse_if_read_only(&self, what: &str) -> Result<(), String> {
+        if self.read_only {
+            return Err(format!(
+                "{what} is not allowed here: this code runs read-only."
+            ));
+        }
+        Ok(())
+    }
+
+    /// The guard script-issued sql runs under, which the read-only
+    /// window swaps.
+    fn guard(&self) -> fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
+        if self.read_only {
+            read_only_authorizer
+        } else {
+            script_authorizer
+        }
     }
 }
 
@@ -149,7 +205,7 @@ impl SqliteStorage {
     /// # Errors
     /// Returns SQLite's message.
     pub fn exec_script(&mut self, sql: &str) -> Result<(), String> {
-        self.connection.authorizer(Some(script_authorizer));
+        self.connection.authorizer(Some(self.guard()));
         let result = self
             .connection
             .execute_batch(sql)
@@ -380,6 +436,31 @@ impl SqliteStorage {
 /// [`SqliteStorage::ensure_meta`].
 const ALARM_TABLE: &str = "__actias_alarm";
 
+/// What script-issued SQL may do while the storage is read-only: the
+/// script guard, plus a refusal of everything that writes. Directory
+/// evaluation runs under this, which is what lets the same function be
+/// re-derived from a restored copy on any node, with no lease and no
+/// mailbox: a function that cannot write cannot need one.
+fn read_only_authorizer(
+    context: rusqlite::hooks::AuthContext<'_>,
+) -> rusqlite::hooks::Authorization {
+    use rusqlite::hooks::{AuthAction, Authorization};
+
+    match &context.action {
+        AuthAction::Insert { .. }
+        | AuthAction::Update { .. }
+        | AuthAction::Delete { .. }
+        | AuthAction::CreateTable { .. }
+        | AuthAction::CreateIndex { .. }
+        | AuthAction::CreateTrigger { .. }
+        | AuthAction::DropTable { .. }
+        | AuthAction::DropIndex { .. }
+        | AuthAction::DropTrigger { .. }
+        | AuthAction::AlterTable { .. } => Authorization::Deny,
+        _ => script_authorizer(context),
+    }
+}
+
 /// What script-issued SQL may do. Platform paths (the dispatch
 /// transaction, meta tables, pragmas at open) run without this guard;
 /// everything a script writes runs under it.
@@ -468,7 +549,7 @@ impl SqliteStorage {
         let bound: Vec<rusqlite::types::Value> =
             params.iter().map(bind).collect::<Result<_, _>>()?;
 
-        self.connection.authorizer(Some(script_authorizer));
+        self.connection.authorizer(Some(self.guard()));
         let result = self
             .connection
             .execute(sql, rusqlite::params_from_iter(bound))
@@ -493,7 +574,7 @@ impl SqliteStorage {
         let bound: Vec<rusqlite::types::Value> =
             params.iter().map(bind).collect::<Result<_, _>>()?;
 
-        self.connection.authorizer(Some(script_authorizer));
+        self.connection.authorizer(Some(self.guard()));
         let prepared = self.connection.prepare(sql);
         self.connection.authorizer(
             None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
@@ -528,8 +609,6 @@ impl SqliteStorage {
     /// # Errors
     /// Returns SQLite's own message.
     pub fn checkpoint(&mut self) -> Result<(), String> {
-        // Writes are already durable (synchronous=FULL); this only keeps
-        // the WAL from growing between calls.
         self.connection
             .pragma_update(None, "wal_checkpoint", "TRUNCATE")
             .map_err(|e| e.to_string())
