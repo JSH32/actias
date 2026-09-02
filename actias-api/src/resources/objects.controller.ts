@@ -7,12 +7,16 @@ import {
   Param,
   Post,
   Query,
+  Logger,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
-import { AclByProject } from 'src/project/acl/acl.guard';
+import { AuthGuard } from 'src/auth/auth.guard';
+import { AclByProject, AclGuard } from 'src/project/acl/acl.guard';
 import { AccessFields } from 'src/project/acl/accessFields';
 import { EntityParam } from 'src/util/entitydecorator';
+import { Principal } from 'src/auth/user.decorator';
 import { Projects } from 'src/entities/Projects';
 import { toHttpException } from 'src/exceptions/grpc.exception';
 import { ResourcesService, clampPageSize } from './resources.service';
@@ -20,6 +24,12 @@ import {
   ClassCountDto,
   DatabaseOverviewDto,
   DeleteOutcomeDto,
+  DirectoryPageDto,
+  DirectoryQueryDto,
+  DirectoryRebuiltDto,
+  ObjectCallDto,
+  ObjectCallResultDto,
+  VisitPageDto,
   FollowerEdgeDto,
   FollowersDto,
   ObjectPageDto,
@@ -33,9 +43,12 @@ import {
  * directory that outlives the contracts that declared it. One family of
  * the backplane surface (`/project/:id/objects`).
  */
+@UseGuards(AuthGuard, AclGuard)
 @ApiTags('objects')
 @Controller('project/:project/objects')
 export class ObjectsController {
+  private readonly logger = new Logger(ObjectsController.name);
+
   constructor(private readonly resources: ResourcesService) {}
 
   /** Instances the directory knows, filterable by class and name
@@ -195,9 +208,63 @@ export class ObjectsController {
     );
     // Platform classes have their own sections; the object family is
     // user classes alone.
+    const declared = await this.resources.classDeclarations(project);
     return (counted.counts || [])
       .filter((row) => !row.class.startsWith('__'))
-      .map((row) => ({ class: row.class, count: Number(row.count ?? 0) }));
+      .map((row) => ({
+        class: row.class,
+        count: Number(row.count ?? 0),
+        hasDirectory: declared.get(row.class)?.directory ?? false,
+        directoryFields: declared.get(row.class)?.fields ?? [],
+        methods: declared.get(row.class)?.methods ?? [],
+      }));
+  }
+
+  /**
+   * One method call on one instance, as a script would make it: through
+   * the object's own lane, serialized with every other call, directory
+   * derivation and alarms running as they always do. Never a side
+   * channel into the file.
+   *
+   * This is the shell's write mode, and a person touching live data,
+   * so every call is logged against the account that made it. Naming
+   * an instance that does not exist creates it, admission permitting,
+   * exactly as in a script.
+   */
+  @Post(':class/:name/call')
+  @AclByProject(AccessFields.DATABASE_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async objectCall(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+    @Param('name') name: string,
+    @Body() body: ObjectCallDto,
+    @Principal()
+    principal: {
+      user?: { id: string; username?: string };
+      serviceToken?: { id: string; name?: string };
+    },
+  ): Promise<ObjectCallResultDto> {
+    this.refusePlatformClass(className);
+    // Whoever authenticated: a person's session or a project's service
+    // token. Logged either way; a shell session is live data touched
+    // by hand.
+    const who = principal.user
+      ? principal.user.username ?? principal.user.id
+      : `service token ${
+          principal.serviceToken?.name ?? principal.serviceToken?.id ?? ''
+        }`;
+    this.logger.log(
+      `shell call by ${who} on ${project.id}: ${className}("${name}"):${body.method}`,
+    );
+    const value = await this.resources.dispatchObject(
+      project,
+      className,
+      name,
+      body.method,
+      body.args ?? [],
+    );
+    return { valueJson: JSON.stringify(value ?? null) };
   }
 
   /** Overview of one durable object's private storage; a user class's
@@ -295,6 +362,93 @@ export class ObjectsController {
       sql: body.sql,
     });
     return { rows: Array.isArray(rows) ? rows : [] };
+  }
+
+  /** One page of the class's directory: the row every object in it
+   * contributes, answered without waking any of them.
+   *
+   * A POST because the predicate is a tree, not a query string. The
+   * rows are each object's last saved write, so a listing decides
+   * which objects to call and never substitutes for calling one.
+   */
+  @Post(':class/directory')
+  @AclByProject(AccessFields.DATABASE_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async objectDirectory(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+    @Body() body: DirectoryQueryDto,
+  ): Promise<DirectoryPageDto> {
+    this.refusePlatformClass(className);
+    const page = await this.resources.listDirectory(project, className, body);
+    return {
+      entries: (page.entries ?? []).map((entry) => ({
+        name: entry.name,
+        objectId: entry.objectId,
+        fields: entry.fields ?? {},
+      })),
+      cursor: page.cursor,
+      building: page.building ?? [],
+    };
+  }
+
+  /**
+   * Rebuilds the class's index from what still exists: the placement
+   * store's live identities, and each object's shipping manifest.
+   *
+   * The operator's path for damage the background pass cannot reach.
+   * That pass finds classes by listing the blob store, so a class
+   * whose prefix is gone entirely is invisible to it; a name can always
+   * be asked for. Nothing is woken and no object file is opened, so
+   * the cost is one small read per live object.
+   */
+  @Post(':class/directory/rebuild')
+  @AclByProject(AccessFields.DATABASE_WRITE)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async objectDirectoryRebuild(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+  ): Promise<DirectoryRebuiltDto> {
+    this.refusePlatformClass(className);
+    const rebuilt = await this.resources.rebuildDirectory(project, className);
+    return {
+      live: Number(rebuilt.live ?? 0),
+      rows: Number(rebuilt.rows ?? 0),
+      withoutRow: Number(rebuilt.withoutRow ?? 0),
+      tombstones: Number(rebuilt.tombstones ?? 0),
+      held: rebuilt.held ?? false,
+    };
+  }
+
+  /**
+   * The verified read over a class's directory. Same query as the
+   * listing; every candidate is checked against its object's settled
+   * state before it is served, so stale rows drop, fresher rows arrive
+   * fresh, and the uncheckable come back flagged rather than missing.
+   */
+  @Post(':class/directory/visit')
+  @AclByProject(AccessFields.DATABASE_READ)
+  @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
+  async objectDirectoryVisit(
+    @EntityParam('project', Projects) project: Projects,
+    @Param('class') className: string,
+    @Body() body: DirectoryQueryDto,
+  ): Promise<VisitPageDto> {
+    this.refusePlatformClass(className);
+    const page = await this.resources.visitDirectory(project, className, body);
+    return {
+      entries: (page.entries ?? []).map((served) => ({
+        entry: {
+          name: served.entry?.name ?? '',
+          objectId: served.entry?.objectId ?? '',
+          fields: served.entry?.fields ?? {},
+        },
+        unverified: served.unverified ?? false,
+        reason: served.reason || undefined,
+      })),
+      cursor: page.cursor,
+      building: page.building ?? [],
+    };
   }
 
   /** Platform classes have their own typed endpoints; the generic object

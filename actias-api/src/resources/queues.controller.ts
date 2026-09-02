@@ -1,6 +1,7 @@
-import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { AclByProject } from 'src/project/acl/acl.guard';
+import { AuthGuard } from 'src/auth/auth.guard';
+import { AclByProject, AclGuard } from 'src/project/acl/acl.guard';
 import { AccessFields } from 'src/project/acl/accessFields';
 import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
@@ -18,6 +19,7 @@ import {
  * directory, inspected and controlled through the worker data plane.
  * One family of the backplane surface (`/project/:id/queues`).
  */
+@UseGuards(AuthGuard, AclGuard)
 @ApiTags('queues')
 @Controller('project/:project/queues')
 export class QueuesController {

@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiParam, ApiTags } from '@nestjs/swagger';
-import { AclByProject } from 'src/project/acl/acl.guard';
+import { AuthGuard } from 'src/auth/auth.guard';
+import { AclByProject, AclGuard } from 'src/project/acl/acl.guard';
 import { AccessFields } from 'src/project/acl/accessFields';
 import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
@@ -17,6 +18,7 @@ import {
  * any node can read. One family of the backplane surface
  * (`/project/:id/databases`).
  */
+@UseGuards(AuthGuard, AclGuard)
 @ApiTags('databases')
 @Controller('project/:project/databases')
 export class DatabasesController {

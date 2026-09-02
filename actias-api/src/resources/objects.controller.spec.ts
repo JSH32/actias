@@ -78,6 +78,16 @@ describe('the class counts', () => {
 
     const counts = await instance.countObjects(PROJECT);
 
-    expect(counts).toEqual([{ class: 'UserCart', count: 10000 }]);
+    // No contract declares a directory or a method in this fixture, so
+    // the class carries the empty shape a console types against.
+    expect(counts).toEqual([
+      {
+        class: 'UserCart',
+        count: 10000,
+        hasDirectory: false,
+        directoryFields: [],
+        methods: [],
+      },
+    ]);
   });
 });

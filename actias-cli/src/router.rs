@@ -1,3 +1,6 @@
+//! One parsed command to its handler, holding the client and settings
+//! every handler needs.
+
 use crate::{
     client::Client,
     commands::{Commands, ProjectOperations, ScriptOperations},
@@ -6,19 +9,23 @@ use crate::{
     settings::Settings,
 };
 
-/// Router for dispatching commands to their handlers
+/// Dispatches one parsed command to its handler, holding the client
+/// and settings every handler needs.
 pub struct Router {
     client: Client,
     settings: Settings,
 }
 
 impl Router {
-    /// Create a new router with the given client
+    /// Creates a router over one client and its settings.
     pub fn new(client: Client, settings: Settings) -> Self {
         Self { client, settings }
     }
 
-    /// Route command to appropriate handler
+    /// Routes one command to its handler.
+    ///
+    /// # Errors
+    /// Returns whatever the handler the command names returns.
     pub async fn route(&self, command: Commands) -> Result<()> {
         match command {
             Commands::Login => Ok(()), // Login is handled before this function is called
@@ -48,11 +55,15 @@ impl Router {
             Commands::Object { project, sub } => {
                 handlers::objects::handle(&self.client, &project, sub).await
             }
+            Commands::Shell { project } => handlers::shell::handle(&self.client, &project).await,
             Commands::Projects { page } => self.handle_list_projects(page).await,
             Commands::Project { sub } => self.handle_project(sub).await,
             Commands::Script { id, sub } => self.handle_script(id, sub).await,
             // Handled before authentication in main; unreachable here.
-            Commands::Check { .. } | Commands::Test { .. } | Commands::Sql { .. } => Ok(()),
+            Commands::Check { .. }
+            | Commands::Test { .. }
+            | Commands::Sql { .. }
+            | Commands::Lsp => Ok(()),
         }
     }
 

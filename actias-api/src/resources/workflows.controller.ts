@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiParam, ApiTags } from '@nestjs/swagger';
 import { lastValueFrom } from 'rxjs';
-import { AclByProject } from 'src/project/acl/acl.guard';
+import { AuthGuard } from 'src/auth/auth.guard';
+import { AclByProject, AclGuard } from 'src/project/acl/acl.guard';
 import { AccessFields } from 'src/project/acl/accessFields';
 import { EntityParam } from 'src/util/entitydecorator';
 import { Projects } from 'src/entities/Projects';
@@ -26,6 +27,7 @@ const WORKFLOW_CLASS = '__workflow';
  * fold over its replay journal, read from the freshest copy without
  * waking the vm. One family of the backplane (`/project/:id/workflows`).
  */
+@UseGuards(AuthGuard, AclGuard)
 @ApiTags('workflows')
 @Controller('project/:project/workflows')
 export class WorkflowsController {

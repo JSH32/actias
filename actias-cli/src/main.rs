@@ -1,3 +1,6 @@
+//! The `actias` cli: publishing a project, following its logs, running
+//! a live session, and querying a project's resources from a terminal.
+
 mod analyze;
 mod capabilities;
 mod client;
@@ -5,8 +8,10 @@ mod commands;
 mod errors;
 mod gateway;
 mod handlers;
+mod lsp;
 mod router;
 mod script;
+mod service;
 mod settings;
 mod testing;
 mod ui;
@@ -40,6 +45,11 @@ async fn run() -> errors::Result<()> {
         }
         Commands::Check { ref directory } => {
             return handlers::check::handle(directory);
+        }
+        // An editor starting its language server must never be asked to
+        // log in, so this belongs with the other local commands.
+        Commands::Lsp => {
+            return lsp::serve().map_err(Error::Script);
         }
         Commands::Sql {
             ref database,

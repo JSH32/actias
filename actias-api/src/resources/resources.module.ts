@@ -5,11 +5,13 @@ import { AclModule } from 'src/project/acl/acl.module';
 import { AuthModule } from 'src/auth/auth.module';
 import { ProjectModule } from 'src/project/project.module';
 import { ScriptModule } from 'src/scripts/scripts.module';
+import { KvModule } from 'src/kv/kv.module';
 import { ResourcesService } from './resources.service';
 import { QueuesController } from './queues.controller';
 import { DatabasesController } from './databases.controller';
 import { ObjectsController } from './objects.controller';
 import { WorkflowsController } from './workflows.controller';
+import { ShellController } from './shell.controller';
 
 @Module({
   imports: [
@@ -17,6 +19,8 @@ import { WorkflowsController } from './workflows.controller';
     AclModule,
     forwardRef(() => ProjectModule),
     ScriptModule,
+    // The shell derives its kv grants from the project's namespaces.
+    KvModule,
     ClientsModule.registerAsync(
       grpcClient(
         'NODE_REGISTRY',
@@ -41,6 +45,7 @@ import { WorkflowsController } from './workflows.controller';
     DatabasesController,
     ObjectsController,
     WorkflowsController,
+    ShellController,
   ],
   providers: [ResourcesService],
 })

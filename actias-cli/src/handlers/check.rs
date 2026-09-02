@@ -1,3 +1,6 @@
+//! `actias check`: the declaration pass and the type check, the same two
+//! refusals a publish would make, without publishing anything.
+
 use std::path::Path;
 
 use crate::{
@@ -7,7 +10,12 @@ use crate::{
     ui,
 };
 
-/// Handle the Check command
+/// Runs `actias check`: the declaration pass and the type check over
+/// one project.
+///
+/// # Errors
+/// Returns the declaration pass's or the type check's refusal, naming
+/// what it refused.
 pub fn handle(directory: &str) -> Result<()> {
     let config = ScriptConfig::from_path(Path::new(directory)).map_err(Error::Script)?;
 
@@ -196,7 +204,16 @@ pub fn handle(directory: &str) -> Result<()> {
     // Strict types over the whole bundle, with the platform surface shadowed
     // in; diagnostics point at the user's own lines.
     analyze::analyze(&config).map_err(Error::Script)?;
-    ui::done("Checked", "types (luau-analyze)");
+    ui::done(
+        "Checked",
+        // Which checker ran is worth saying: they do not see the same
+        // things, and the linked one is the editor's.
+        if crate::service::locate().is_some() {
+            "types (language service)"
+        } else {
+            "types (luau-analyze, cross-module types are any)"
+        },
+    );
 
     Ok(())
 }

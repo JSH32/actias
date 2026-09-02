@@ -155,12 +155,117 @@ export class ObjectPageDto {
 }
 
 /** How many instances one class holds; the rail shows classes, not names. */
+/** One field a class's directory declares, as its publish recorded it. */
+export class DirectoryFieldDto {
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty({
+    description:
+      'string, integer, number, boolean or array. The store binds each value as the kind declared, and a filter is checked against it.',
+  })
+  kind: string;
+}
+
 export class ClassCountDto {
   @ApiProperty()
   class: string;
 
   @ApiProperty()
   count: number;
+
+  @ApiProperty({
+    description:
+      "Whether the class's current revision declares a directory, so the console offers a search only where one exists.",
+  })
+  hasDirectory: boolean;
+
+  @ApiProperty({
+    type: [DirectoryFieldDto],
+    description:
+      'The fields that directory declares, so a filter can be typed against the same set the worker enforces. Empty for a class with no directory, and for one published before fields were declared.',
+  })
+  directoryFields: DirectoryFieldDto[];
+
+  @ApiProperty({
+    type: [String],
+    description:
+      "The methods the class's current revision declares, by name, so a shell can offer what an instance answers to. Which of them write is not declarable; a read-only session refuses at the call.",
+  })
+  methods: string[];
+}
+
+export class ObjectCallDto {
+  @ApiProperty({ description: 'The method to call on the instance.' })
+  @IsString()
+  method: string;
+
+  @ApiProperty({
+    required: false,
+    type: 'array',
+    items: {},
+    description: 'Positional arguments, as json values.',
+  })
+  @IsOptional()
+  @IsArray()
+  args?: unknown[];
+}
+
+export class ObjectCallResultDto {
+  @ApiProperty({
+    description:
+      'What the method returned, as json text; "null" for nothing. Text rather than a typed value because a method returns whatever it returns, and every generated client reads json text the same way (the same convention as condition values and entry fields).',
+  })
+  valueJson: string;
+}
+
+export class ShellRunDto {
+  @ApiProperty({
+    description:
+      'The chunk to run: any Luau, as typed or pasted. Its return value is the result.',
+  })
+  @IsString()
+  source: string;
+
+  @ApiProperty({
+    required: false,
+    description: 'Wall budget in seconds; the node caps it.',
+  })
+  @IsOptional()
+  wallSecs?: number;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Whether the session is in write mode. Off, the chunk still runs, and the vm refuses kv set/delete, database exec and method calls inside it.',
+  })
+  @IsOptional()
+  write?: boolean;
+}
+
+export class ShellOutcomeDto {
+  @ApiProperty({
+    description: 'The chunk\'s return value as json text; "null" for nothing.',
+  })
+  valueJson: string;
+
+  @ApiProperty({
+    type: [String],
+    description: 'Every print and log line, in order.',
+  })
+  output: string[];
+
+  @ApiProperty({
+    required: false,
+    description: "The chunk's own error, when it failed.",
+  })
+  error?: string;
+
+  @ApiProperty({ description: 'Work units the run consumed.' })
+  work: number;
+
+  @ApiProperty({ description: 'Milliseconds the run took on the node.' })
+  wallMs: number;
 }
 
 export class RetriedDto {
@@ -275,4 +380,194 @@ export class QueueEventDto {
     additionalProperties: true,
   })
   detail: Record<string, unknown>;
+}
+
+/** One filter on one directory field. A bare value is equality; the
+ * operator names match the Lua surface exactly, so what an author
+ * types and what the console sends are one vocabulary. */
+export class DirectoryConditionDto {
+  @ApiProperty({
+    description:
+      'Field name as the class\'s directory function returned it; nested tables arrive flattened, so "location.region" is one field.',
+  })
+  field: string;
+
+  @ApiProperty({
+    description:
+      'eq, ne, lt, lte, gt, gte, one_of, starts_with, contains or exists. one_of rather than in, because in is a Lua keyword.',
+  })
+  op: string;
+
+  @ApiProperty({
+    description:
+      'The operand, json-encoded: a scalar, an array for one_of, or a boolean for exists.',
+  })
+  valueJson: string;
+}
+
+/** A conjunction of conditions, with nested combinators. Sent as a
+ * tree rather than a query string: the worker turns it into
+ * parameterized sql, so nothing a caller sends can shape an
+ * identifier. */
+export class DirectoryWhereDto {
+  @ApiProperty({ type: [DirectoryConditionDto], required: false })
+  conditions?: DirectoryConditionDto[];
+
+  @ApiProperty({
+    type: [DirectoryWhereDto],
+    required: false,
+    description: 'OR over sub-wheres.',
+  })
+  any?: DirectoryWhereDto[];
+
+  @ApiProperty({
+    type: [DirectoryWhereDto],
+    required: false,
+    description: 'Explicit AND, for grouping inside an any.',
+  })
+  all?: DirectoryWhereDto[];
+
+  @ApiProperty({
+    type: [DirectoryWhereDto],
+    required: false,
+    description: 'NOT over sub-wheres.',
+  })
+  none?: DirectoryWhereDto[];
+}
+
+export class DirectoryOrderDto {
+  @ApiProperty()
+  field: string;
+
+  @ApiProperty({ required: false })
+  descending?: boolean;
+}
+
+/** What a directory listing asks for. */
+export class DirectoryQueryDto {
+  @ApiProperty({ type: DirectoryWhereDto, required: false })
+  where?: DirectoryWhereDto;
+
+  @ApiProperty({ type: [DirectoryOrderDto], required: false })
+  order?: DirectoryOrderDto[];
+
+  @ApiProperty({
+    required: false,
+    description: 'Rows this page may carry; the worker caps it.',
+  })
+  limit?: number;
+
+  @ApiProperty({ required: false, description: 'From a previous page.' })
+  cursor?: string;
+}
+
+/** One object's row. */
+export class DirectoryEntryDto {
+  @ApiProperty({
+    description: 'The instance name; what you call to reach the object.',
+  })
+  name: string;
+
+  @ApiProperty()
+  objectId: string;
+
+  @ApiProperty({
+    type: 'object',
+    additionalProperties: { type: 'string' },
+    description:
+      'Field name to json-encoded value, for the fields this object has. A field the object lacks is simply absent.',
+  })
+  fields: Record<string, string>;
+}
+
+/** One row of a verified listing. */
+export class VisitEntryDto {
+  @ApiProperty({ type: DirectoryEntryDto })
+  entry: DirectoryEntryDto;
+
+  @ApiProperty({
+    description:
+      'The row could not be checked against its object and is served anyway, saying so: dropping it would invent the false negative the directory refuses.',
+  })
+  unverified: boolean;
+
+  @ApiProperty({ required: false, description: 'Why, when unverified.' })
+  reason?: string;
+}
+
+/** One page of a verified listing.
+ *
+ * Every candidate was checked against its object\'s own settled state:
+ * rows that stopped matching are gone, fresher rows are served fresh,
+ * and the unverifiable are flagged. The limit bounds candidates
+ * examined, so a short page with a cursor is normal, not the end. */
+export class VisitPageDto {
+  @ApiProperty({ type: [VisitEntryDto] })
+  entries: VisitEntryDto[];
+
+  @ApiProperty({
+    required: false,
+    description: 'Feeds the next page; absent on the last.',
+  })
+  cursor?: string;
+
+  @ApiProperty({
+    type: [String],
+    description: 'Fields still building; a query naming one is refused.',
+  })
+  building: string[];
+}
+
+/** One page of a directory listing.
+ *
+ * The rows are a snapshot as of each object\'s last saved write, so a
+ * listing chooses which objects to call; the object itself is the
+ * truth. */
+export class DirectoryPageDto {
+  @ApiProperty({ type: [DirectoryEntryDto] })
+  entries: DirectoryEntryDto[];
+
+  @ApiProperty({
+    required: false,
+    description: 'Feeds the next page; absent on the last.',
+  })
+  cursor?: string;
+
+  @ApiProperty({
+    type: [String],
+    description:
+      'Fields the class has seen but not finished backfilling. A query naming one is refused; this reports the rest so progress is visible rather than a column mysteriously missing.',
+  })
+  building: string[];
+}
+
+/** What an operator's rebuild of one class recovered.
+ *
+ * Every row comes from an object's shipping manifest, so a rebuild is
+ * a metadata copy: nothing is woken, and no object's file is opened. */
+export class DirectoryRebuiltDto {
+  @ApiProperty({
+    description: 'Identities the placement store still lists as live.',
+  })
+  live: number;
+
+  @ApiProperty({ description: 'Rows recovered from manifests.' })
+  rows: number;
+
+  @ApiProperty({
+    description:
+      'Live objects whose manifest carries no row yet. Not an error: nothing has settled to copy, and a backfill is what covers them.',
+  })
+  withoutRow: number;
+
+  @ApiProperty({
+    description: 'Rows retired because the object no longer exists.',
+  })
+  tombstones: number;
+
+  @ApiProperty({
+    description:
+      'Whether a node did the work. False means another node holds the class and is rebuilding it already.',
+  })
+  held: boolean;
 }

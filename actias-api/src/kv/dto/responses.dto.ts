@@ -47,19 +47,21 @@ export function pairTypeOf(value: unknown): PairType {
 }
 
 export class PairDto {
-  // Project that this key belongs to.
   projectId: string;
-  // Grouped namespace that this belongs to.
   namespace: string;
-  // The value is always stored as a string, this metadata helps for parsing.
+  /** The stored value is always text; this names how to read it back. */
   @ApiProperty({
     enum: PairType,
     enumName: 'PairType',
   })
   type: PairType;
-  // TTL (time to live)
-  ttl: number;
-  // Unique key.
+  /**
+   * Seconds until the pair expires; absent for one that never does.
+   * Declared optional so a generated client does not demand a field
+   * the service omits.
+   */
+  @ApiProperty({ required: false })
+  ttl?: number;
   key: string;
   value: string;
 

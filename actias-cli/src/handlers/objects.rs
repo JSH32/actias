@@ -1,3 +1,6 @@
+//! `actias objects`: a project's durable object instances, with their
+//! residency and lifetime as the placement store reports them.
+
 use colored::*;
 use prettytable::{Table, row};
 
@@ -87,6 +90,35 @@ pub async fn handle(client: &Client, project: &str, operation: ObjectOperations)
                 );
             } else {
                 println!("Nothing to delete: no live {class} \"{name}\".");
+            }
+        }
+        ObjectOperations::Rebuild { class } => {
+            let rebuilt = client
+                .object_directory_rebuild()
+                .project(project)
+                .class(&class)
+                .send()
+                .await
+                .map_err(progenitor_error)?
+                .into_inner();
+            if !rebuilt.held {
+                println!("Another node is rebuilding {class} right now; its work is this work.");
+                return Ok(());
+            }
+            println!(
+                "Rebuilt {class}: {} row(s) from {} live instance(s), {} retired.",
+                (rebuilt.rows as u64).to_string().yellow(),
+                (rebuilt.live as u64).to_string().yellow(),
+                (rebuilt.tombstones as u64).to_string().yellow()
+            );
+            if rebuilt.without_row > 0.0 {
+                // Not a failure: nothing has settled for those objects
+                // yet, so there is no row to copy. A large count here
+                // means a backfill is the thing actually needed.
+                println!(
+                    "{} live instance(s) had no row to recover yet.",
+                    (rebuilt.without_row as u64).to_string().yellow()
+                );
             }
         }
         ObjectOperations::DeleteClass { class } => {

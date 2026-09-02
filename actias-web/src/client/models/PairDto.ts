@@ -6,9 +6,9 @@ import type { PairType } from './PairType';
 
 export type PairDto = {
     type: PairType;
+    ttl?: number;
     projectId: string;
     namespace: string;
-    ttl: number;
     key: string;
     value: string;
 };

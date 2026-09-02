@@ -83,6 +83,216 @@ export class ResourcesService {
    * freshest copy the worker can reach (its file, the holder's, the
    * replica). With `sql`, one read-only statement instead of the class
    * overview; with `messages`, the queue's message rows. */
+  /** Classes in this project whose current revision declares a
+   * directory, each with the fields it declared.
+   *
+   * Read from the stored contract (`Class:directory` in lifecycle),
+   * which is the same record publish derived from the code, so the
+   * console offers a directory exactly where one exists, and can type
+   * a filter against the same field set the worker enforces. A class
+   * from before fields were declared carries the bare marker and an
+   * empty list.
+   */
+  async directoryClasses(
+    project: Projects,
+  ): Promise<Map<string, { name: string; kind: string }[]>> {
+    const declared = await this.classDeclarations(project);
+    const directories = new Map<string, { name: string; kind: string }[]>();
+    for (const [klass, entry] of declared) {
+      if (entry.directory) directories.set(klass, entry.fields);
+    }
+    return directories;
+  }
+
+  /** Every user class the project's live contracts declare, with the
+   * directory field set (when one is declared) and the method names.
+   * Both come from the stored contract, the same record publish
+   * derived from the code, so a shell completes exactly what the
+   * worker will route. */
+  async classDeclarations(project: Projects): Promise<
+    Map<
+      string,
+      {
+        directory: boolean;
+        fields: { name: string; kind: string }[];
+        methods: string[];
+      }
+    >
+  > {
+    const page = await lastValueFrom(
+      this.scripts
+        .listScripts({ projectId: project.id, pageSize: 500, page: 1 })
+        .pipe(toHttpException()),
+    );
+    const scripts = page.scripts || [];
+    const declared = new Map<
+      string,
+      {
+        directory: boolean;
+        fields: { name: string; kind: string }[];
+        methods: string[];
+      }
+    >();
+    const of = (klass: string) => {
+      let entry = declared.get(klass);
+      if (!entry) {
+        entry = { directory: false, fields: [], methods: [] };
+        declared.set(klass, entry);
+      }
+      return entry;
+    };
+    await Promise.all(
+      scripts
+        .filter((script) => script.currentRevisionId)
+        .map(async (script) => {
+          const revision = await lastValueFrom(
+            this.scripts
+              .getRevision({
+                id: script.currentRevisionId,
+                withBundle: false,
+                manifestOnly: false,
+              })
+              .pipe(toHttpException()),
+          );
+          for (const entry of revision.scriptConfig?.capabilities?.lifecycle ??
+            []) {
+            // `Class:directory@2=high_bid:integer,state:string`. The
+            // payload carries colons of its own, so the class is what
+            // precedes the first one and the marker stops at the
+            // version: splitting the whole entry on ':' would read
+            // 'directory@2=high_bid' as the marker and find nothing.
+            const at = entry.indexOf(':');
+            if (at <= 0) continue;
+            const klass = entry.slice(0, at);
+            const marker = entry.slice(at + 1);
+            // `Class:methods=a,b,c`: the names an instance answers to.
+            if (marker.startsWith('methods=')) {
+              of(klass).methods = marker
+                .slice('methods='.length)
+                .split(',')
+                .filter((name) => name !== '');
+              continue;
+            }
+            if (marker !== 'directory' && !marker.startsWith('directory@')) {
+              continue;
+            }
+            // `directory@2=high_bid:integer,state:string`: everything
+            // after the first '=' is the field set, and a field is
+            // `name:kind`. The bare marker has no '=' and declares
+            // nothing, which is what a pre-fields contract looks like.
+            const equals = marker.indexOf('=');
+            const fields =
+              equals < 0
+                ? []
+                : marker
+                    .slice(equals + 1)
+                    .split(',')
+                    .filter((part) => part !== '')
+                    .map((part) => {
+                      const colon = part.indexOf(':');
+                      return colon < 0
+                        ? { name: part, kind: 'string' }
+                        : {
+                            name: part.slice(0, colon),
+                            kind: part.slice(colon + 1),
+                          };
+                    });
+            const known = of(klass);
+            known.directory = true;
+            known.fields = fields;
+          }
+        }),
+    );
+    return declared;
+  }
+
+  /** One directory listing for a class, from whichever worker answers.
+   *
+   * The predicate travels as a tree, never as text the worker parses
+   * into sql: the worker translates it against the class's own field
+   * set, so a caller cannot name a column, only a field.
+   */
+  async listDirectory(
+    project: Projects,
+    className: string,
+    query: {
+      where?: unknown;
+      order?: { field: string; descending?: boolean }[];
+      limit?: number;
+      cursor?: string;
+    },
+  ) {
+    return lastValueFrom(
+      this.workers
+        .listDirectory(
+          {
+            scopeId: project.id,
+            class: className,
+            where: query.where as never,
+            order: (query.order ?? []).map((entry) => ({
+              field: entry.field,
+              descending: entry.descending ?? false,
+            })),
+            limit: query.limit ?? 100,
+            cursor: query.cursor,
+          },
+          this.internalMetadata(),
+        )
+        .pipe(toHttpException()),
+    );
+  }
+
+  /** Rebuilds one class's index from live identities and each object's
+   * shipping manifest.
+   *
+   * The operator's path for damage the background pass cannot reach:
+   * that pass discovers classes by listing the blob store, so a class
+   * whose prefix is gone entirely is invisible to it, while a name can
+   * always be asked for. */
+  async rebuildDirectory(project: Projects, className: string) {
+    return lastValueFrom(
+      this.workers
+        .rebuildDirectory(
+          { scopeId: project.id, class: className },
+          this.internalMetadata(),
+        )
+        .pipe(toHttpException()),
+    );
+  }
+
+  /** The verified read: the same query, each candidate checked against
+   * its object's settled state on the worker. Same shape in, flagged
+   * entries out. */
+  async visitDirectory(
+    project: Projects,
+    className: string,
+    query: {
+      where?: unknown;
+      order?: { field: string; descending?: boolean }[];
+      limit?: number;
+      cursor?: string;
+    },
+  ) {
+    return lastValueFrom(
+      this.workers
+        .visitDirectory(
+          {
+            scopeId: project.id,
+            class: className,
+            where: query.where as never,
+            order: (query.order ?? []).map((entry) => ({
+              field: entry.field,
+              descending: entry.descending ?? false,
+            })),
+            limit: query.limit ?? 100,
+            cursor: query.cursor,
+          },
+          this.internalMetadata(),
+        )
+        .pipe(toHttpException()),
+    );
+  }
+
   async workerRead(
     project: Projects,
     className: string,
@@ -172,6 +382,47 @@ export class ResourcesService {
       throw new BadRequestException(result.error);
     }
     return this.parseValue(result.resultJson);
+  }
+
+  /** One shell chunk on a worker, under the grants the caller derived:
+   * the operator's principal binds what the operator may open, and the
+   * worker checks the chunk against exactly that as a contract. */
+  async runShell(
+    project: Projects,
+    source: string,
+    grants: { kv: string[]; databases: string[]; objects: string[] },
+    wallSecs: number,
+    write: boolean,
+  ): Promise<{
+    valueJson: string;
+    output: string[];
+    error: string;
+    work: number;
+    wallMs: number;
+  }> {
+    const outcome = await lastValueFrom(
+      this.workers
+        .runShell(
+          {
+            scopeId: project.id,
+            source,
+            kv: grants.kv,
+            databases: grants.databases,
+            objects: grants.objects,
+            wallSecs,
+            write,
+          },
+          this.internalMetadata(),
+        )
+        .pipe(toHttpException()),
+    );
+    return {
+      valueJson: outcome.valueJson || 'null',
+      output: outcome.output ?? [],
+      error: outcome.error ?? '',
+      work: Number(outcome.work ?? 0),
+      wallMs: Number(outcome.wallMs ?? 0),
+    };
   }
 
   /** One overview read mapped onto the DTO, whatever class owns the file. */

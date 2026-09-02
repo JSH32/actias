@@ -1,3 +1,6 @@
+//! The command tree, as clap derives it. The doc comment on each
+//! variant is the help text a user reads, so it is written for them.
+
 use clap::{Parser, Subcommand};
 
 /// Actias CLI for interacting with the actias API.
@@ -85,6 +88,18 @@ pub enum Commands {
         #[clap(default_value = ".")]
         directory: String,
     },
+    /// Serve the language service to an editor over stdio (lsp).
+    ///
+    /// Point any lsp-speaking editor at `actias lsp`; it answers from
+    /// the same checker `actias check` and the web workbench use.
+    Lsp,
+    /// The query shell: list, find and visit a project's classes, and
+    /// in write mode call one instance's methods, with completions from
+    /// the same analyser `actias check` runs.
+    Shell {
+        /// Project whose classes the shell speaks to.
+        project: String,
+    },
     /// Manage a project's durable object instances
     Object {
         /// Project the instances belong to.
@@ -119,6 +134,14 @@ pub enum ObjectOperations {
     Delete { class: String, name: String },
     /// Forget every instance of a class (dev cleanup).
     DeleteClass { class: String },
+    /// Rebuild a class's directory index from what still exists.
+    ///
+    /// Reads the live identities and each object's shipping manifest,
+    /// waking nothing. The background pass repairs routine damage on
+    /// its own; this is for damage it cannot see, above all a class
+    /// whose index is gone entirely, because that pass finds classes
+    /// by listing what is there.
+    Rebuild { class: String },
 }
 
 #[derive(Parser, Debug)]

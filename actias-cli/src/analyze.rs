@@ -1,9 +1,13 @@
-//! Typed checking via luau-analyze: every bundle source is copied to a
-//! shadow file that opens with typed locals shadowing the platform globals,
-//! and the analyzer runs over those. Shadowing beats definition files
-//! because the stock luau-analyze binary silently ignores its definitions
-//! flags; reported line numbers are shifted back so they point at the
-//! user's own code.
+//! Typed checking. Every bundle source gets a shadow copy opening with
+//! typed locals that stand in for the platform globals, because both
+//! checkers ignore definition-file flags; reported line numbers are
+//! shifted back so they point at the user's own code.
+//!
+//! Two checkers, one preferred. The language service linked from
+//! `luau-web/` is the same code the workbench runs, and it resolves
+//! requires against the bundle, so cross-module types survive. Without
+//! it the cli falls back to `luau-analyze` on PATH, which resolves
+//! against the filesystem and therefore types imports as `any`.
 //!
 //! Checking is gradual, luau's own model: nonstrict by default, which
 //! catches unknown globals (typos against the platform surface) while
@@ -33,7 +37,13 @@ pub const DEFINITION_FILES: [(&str, &str); 4] = [
 /// other lines pass through, and a keep-alive expression suppresses
 /// unused warnings. Shadows instead of `--defs` because luau-analyze
 /// ignores definition-file flags.
-fn prologue() -> String {
+///
+/// `resolve_requires` says whether the checker resolves project modules
+/// itself. The linked service does, so shadowing `require` there would
+/// type every cross-module import as `any` and switch off exactly the
+/// checking it was linked in to provide; stock luau-analyze does not,
+/// and needs the shadow or it reports an unknown global instead.
+pub fn prologue(resolve_requires: bool) -> String {
     let mut out = String::from("-- actias: typed shadows derived from the definitions files\n");
     let mut names: Vec<&str> = Vec::new();
     for line in DEFINITION_FILES
@@ -41,6 +51,10 @@ fn prologue() -> String {
         .flat_map(|(_, content)| content.lines())
     {
         if let Some(rest) = line.strip_prefix("declare ") {
+            if resolve_requires && rest.starts_with("require:") {
+                out.push_str("-- require: the analyser resolves project modules\n");
+                continue;
+            }
             let name = rest.split(':').next().unwrap_or("").trim();
             names.push(name);
             out.push_str("local ");
@@ -67,32 +81,96 @@ fn prologue() -> String {
 pub fn analyze(config: &ScriptConfig) -> Result<(), String> {
     let bundle = config.to_bundle()?;
 
-    let root = std::env::temp_dir().join(format!("actias-check-{}", uuid::Uuid::new_v4()));
-
-    let mut targets: Vec<String> = Vec::new();
+    let mut sources: Vec<(String, String)> = Vec::new();
     for file in &bundle.files {
         if !file.file_path.ends_with(".lua") {
             continue;
         }
-
         let content = base64::engine::general_purpose::STANDARD_NO_PAD
             .decode(&file.content)
             .map_err(|e| format!("{}: {e}", file.file_path))?;
         let Ok(source) = String::from_utf8(content) else {
             continue;
         };
+        sources.push((file.file_path.clone(), source));
+    }
 
-        let shadow = root.join(&file.file_path);
+    if sources.is_empty() {
+        return Ok(());
+    }
+
+    match crate::service::locate() {
+        Some(command) => analyze_with_service(&command, &sources),
+        None => analyze_external(&sources),
+    }
+}
+
+/// The language service: modules load as one project, so a `require`
+/// resolves and the required module's types cross with it. This is the
+/// same implementation the workbench runs, which is the point.
+///
+/// # Errors
+/// Returns text when the service reports errors or cannot run.
+fn analyze_with_service(
+    command: &std::path::Path,
+    sources: &[(String, String)],
+) -> Result<(), String> {
+    let prologue = prologue(true);
+    let mut service = crate::service::Service::start(command)?;
+
+    // Everything loads before anything is checked: a require reaching a
+    // module the frontend has not seen resolves to nothing, so checking
+    // as we went would make the answer depend on file order.
+    let mut shadows = Vec::with_capacity(sources.len());
+    for (path, source) in sources {
+        service.set_file(path, &shadow_source(source, &prologue))?;
+        shadows.push(crate::service::Shadow::new(source, &prologue));
+    }
+
+    let mut failed = false;
+    for ((path, _), shadow) in sources.iter().zip(&shadows) {
+        for diagnostic in service.check(path)? {
+            // A line inside the prologue belongs to the shadows, not to
+            // anything the user wrote.
+            let Some(line) = shadow.to_user(diagnostic.line) else {
+                continue;
+            };
+            failed |= diagnostic.severity == "error";
+            println!(
+                "{path}({},{}): {}",
+                line + 1,
+                diagnostic.column,
+                diagnostic.message
+            );
+        }
+    }
+
+    if failed {
+        Err("the type check found errors".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+/// The fallback: stock `luau-analyze` over shadow files on disk. It
+/// resolves requires against the filesystem rather than the bundle, so
+/// cross-module types stay `any` here.
+///
+/// # Errors
+/// Returns text when the analyzer reports type errors or cannot run.
+fn analyze_external(sources: &[(String, String)]) -> Result<(), String> {
+    let prologue = prologue(false);
+    let root = std::env::temp_dir().join(format!("actias-check-{}", uuid::Uuid::new_v4()));
+
+    let mut targets: Vec<String> = Vec::new();
+    for (path, source) in sources {
+        let shadow = root.join(path);
         if let Some(parent) = shadow.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&shadow, shadow_source(&source)).map_err(|e| e.to_string())?;
+        std::fs::write(&shadow, shadow_source(source, &prologue)).map_err(|e| e.to_string())?;
 
-        targets.push(file.file_path.clone());
-    }
-
-    if targets.is_empty() {
-        return Ok(());
+        targets.push(path.clone());
     }
 
     let output = Command::new("luau-analyze")
@@ -117,7 +195,7 @@ pub fn analyze(config: &ScriptConfig) -> Result<(), String> {
     };
     cleanup();
 
-    let offset = prologue().lines().count();
+    let offset = prologue.lines().count();
     for line in String::from_utf8_lossy(&output.stdout)
         .lines()
         .chain(String::from_utf8_lossy(&output.stderr).lines())
@@ -135,7 +213,7 @@ pub fn analyze(config: &ScriptConfig) -> Result<(), String> {
 /// One shadow file: the user's leading `--!` directives (luau only honors
 /// them at the very top, so they hoist above the prologue), the prologue,
 /// then the rest of the source.
-fn shadow_source(source: &str) -> String {
+pub fn shadow_source(source: &str, prologue: &str) -> String {
     let directives: Vec<&str> = source
         .lines()
         .take_while(|line| line.trim_start().starts_with("--!"))
@@ -152,7 +230,7 @@ fn shadow_source(source: &str) -> String {
         shadow.push_str(directive);
         shadow.push('\n');
     }
-    shadow.push_str(&prologue());
+    shadow.push_str(prologue);
     shadow.push_str(&rest);
     shadow
 }
@@ -205,7 +283,7 @@ mod tests {
 
     #[test]
     fn diagnostics_point_at_the_users_lines() {
-        let offset = prologue().lines().count();
+        let offset = prologue(false).lines().count();
         let raw = format!("./main.lua({},7): TypeError: nope", offset + 2);
         assert_eq!(shift_line(&raw, offset), "./main.lua(2,7): TypeError: nope");
 
@@ -243,6 +321,60 @@ mod tests {
             ],
         );
         analyze(&config).expect("the router template checks");
+    }
+
+    #[test]
+    fn a_directory_class_type_checks_under_strict() {
+        // The definitions carry the field kit and DirectoryState; a
+        // class that annotates its directory with them must check,
+        // since a broken definitions file would fail every user's
+        // `check`. The annotation is what makes the markers checked:
+        // an object body is deliberately unconstrained.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = project(
+            dir.path(),
+            &[(
+                "main.lua",
+                r#"--!strict
+local Auction = object "Auction" {
+    migrations = "migrations/Auction",
+    directory = {
+        from = function(state: DirectoryState)
+            return { status = state.store:get("status") or "open" }
+        end,
+        fields = {
+            status = f.string,
+            high_bid = f.integer(function(lot) return lot.high_bid end),
+            tags = f.array(function(lot) return { "vintage", "rare" } end),
+        },
+    } :: DirectoryDeclaration,
+    bid = function(state: ObjectState, amount: number)
+        state.store:set("high_bid", amount)
+    end,
+}
+on "fetch" (function(request)
+    Auction("lot-42"):bid(25)
+    -- The directory, typed from the same definitions the workbench
+    -- loads: a misspelled operator or a bad sort direction is a check
+    -- error rather than an empty result at runtime.
+    local page = Auction:list {
+        where = {
+            status = "open",
+            high_bid = { gte = 100 },
+            closes_at = { exists = false },
+        },
+        order = { high_bid = "desc" },
+        limit = 25,
+    }
+    for _, entry in page.entries do
+        print(entry.name)
+    end
+    return { body = "ok" }
+end)
+"#,
+            )],
+        );
+        analyze(&config).expect("a directory class checks");
     }
 
     #[test]
@@ -285,7 +417,7 @@ end)
 
     #[test]
     fn directives_hoist_above_the_prologue() {
-        let shadow = shadow_source("--!strict\nlocal x = 1\nprint(x)\n");
+        let shadow = shadow_source("--!strict\nlocal x = 1\nprint(x)\n", &prologue(false));
         let first = shadow.lines().next().expect("has lines");
         assert_eq!(first, "--!strict");
         assert!(shadow.contains("local x = 1"));
