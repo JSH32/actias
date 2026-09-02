@@ -42,6 +42,10 @@ impl ConnectionSpec {
     /// and runtime refuse identically: unknown keys, non-function
     /// handlers and malformed timers die at declaration, which is what
     /// makes `check` a handler-shape verifier.
+    ///
+    /// # Errors
+    /// Returns [`mlua::Error::RuntimeError`] naming the malformed entry: a
+    /// handler that is not a function, or a timer without a parseable period.
     pub fn parse(name: &str, body: &Table) -> mlua::Result<Self> {
         let mut timer_every_ms = None;
         let mut forwards = false;
