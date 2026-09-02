@@ -1,3 +1,6 @@
+//! Live development sessions in Redis: the working tree a `_live`
+//! request serves, and the log channel `actias dev` tails.
+
 use actias_common::logging::LogLine;
 use actias_common::thiserror;
 use deadpool_redis::redis::AsyncCommands;
@@ -9,7 +12,8 @@ use uuid::Uuid;
 use crate::proto_script_service::{LogMessage, ScriptConfig};
 use crate::{bundle::Bundle, proto_script_service::LiveScript};
 
-/// Used to manage live script sessions.
+/// Manages live script sessions in Redis: the working tree a `_live`
+/// request serves and the log channel `actias dev` tails.
 pub struct LiveScriptManager {
     pool: deadpool_redis::Pool,
     /// Dedicated client for pub/sub subscriptions, which take over a whole
@@ -171,7 +175,7 @@ impl LiveScriptManager {
         Ok(session_id)
     }
 
-    /// Delete a live script session.
+    /// Deletes one live script session.
     pub async fn delete_session(
         &self,
         script_id: &str,
@@ -185,7 +189,10 @@ impl LiveScriptManager {
         Ok(())
     }
 
-    /// Delete all sessions for a script.
+    /// Deletes every session belonging to one script.
+    ///
+    /// # Errors
+    /// Returns [`LiveScriptError`] with Redis's message.
     pub async fn delete_script(&self, script_id: &str) -> Result<(), LiveScriptError> {
         let mut con = self.pool.get().await?;
 
@@ -203,7 +210,7 @@ impl LiveScriptManager {
         Ok(())
     }
 
-    /// Get a live script session.
+    /// Gets one live script session.
     ///
     /// # Errors
     /// Returns [`LiveScriptError::Corrupt`] if the stored session cannot be

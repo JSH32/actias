@@ -1,3 +1,5 @@
+//! The service's row types and their mapping onto the wire messages.
+
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};

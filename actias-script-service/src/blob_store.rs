@@ -95,6 +95,9 @@ impl BlobStore {
 
     /// Stores one blob under its hash. Rewriting an existing key writes the
     /// same bytes, so the operation is idempotent by construction.
+    ///
+    /// # Errors
+    /// Returns [`BlobStoreError::Storage`] with the store's message.
     pub async fn put(&self, hash: &str, bytes: Vec<u8>) -> Result<(), BlobStoreError> {
         self.client
             .put_object()
@@ -139,6 +142,10 @@ impl BlobStore {
 
     /// Size in bytes of the blob with this hash, or [`None`] when it is not
     /// stored.
+    ///
+    /// # Errors
+    /// Returns [`BlobStoreError::Storage`] with the store's message; a blob
+    /// that is simply absent answers [`None`].
     pub async fn head(&self, hash: &str) -> Result<Option<u64>, BlobStoreError> {
         match self
             .client
@@ -161,6 +168,10 @@ impl BlobStore {
     }
 
     /// The subset of `hashes` not stored yet, preserving request order.
+    ///
+    /// # Errors
+    /// Returns whatever [`BlobStore::head`] returns for the first hash it
+    /// cannot ask about.
     pub async fn missing(&self, hashes: &[String]) -> Result<Vec<String>, BlobStoreError> {
         let mut missing = Vec::new();
         for hash in hashes {

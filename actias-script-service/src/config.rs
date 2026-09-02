@@ -1,3 +1,6 @@
+//! The script service's operator interface: every knob it reads from
+//! the environment.
+
 use actias_common::config::{dotenv, get_env, get_env_or};
 
 pub struct Config {

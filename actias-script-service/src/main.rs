@@ -1,3 +1,7 @@
+//! The script service binary: the control plane's record of projects,
+//! scripts, revisions and bundles, plus the node registry workers
+//! heartbeat into. Also its own migrator, under `--migrate`.
+
 use crate::live_script::LiveScriptManager;
 use crate::proto_node_registry::node_registry_service_server::NodeRegistryServiceServer;
 use crate::proto_script_service::script_service_server::ScriptServiceServer;
@@ -34,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The same image is both the service and its migrator, so a
     // deployment never carries a second artifact that can drift from
     // the schema it applies: these are the migrations compiled into
-    // THIS binary. It reads DATABASE_URL and nothing else, ahead of
+    // this binary. It reads DATABASE_URL and nothing else, ahead of
     // the service's own config, so applying a schema never requires
     // the credentials serving traffic does.
     if std::env::args().any(|arg| arg == "--migrate") {
