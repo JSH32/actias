@@ -1,3 +1,6 @@
+//! The KvService grpc surface. Handlers stay thin and delegate to the
+//! store; the error mapping here decides what a caller may see.
+
 use actias_common::tracing::error;
 use tonic::{Response, Status};
 

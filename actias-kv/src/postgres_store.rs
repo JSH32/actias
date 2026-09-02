@@ -93,6 +93,9 @@ impl PostgresStore {
 
     /// Deletes a batch of expired rows; returns how many went. The
     /// sweeper loops this until a sweep comes back empty.
+    ///
+    /// # Errors
+    /// Returns [`DatabaseError`] with postgres's message.
     pub async fn sweep(&self, batch: i64) -> Result<u64, DatabaseError> {
         let result = sqlx::query(
             "DELETE FROM pairs WHERE ctid IN (\

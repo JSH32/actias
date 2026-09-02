@@ -1,3 +1,6 @@
+//! The kv service binary: namespaced key-value pairs with typed values
+//! and optional expiry, over postgres or scylla.
+
 use std::sync::Arc;
 
 use crate::config::{Backend, Config};

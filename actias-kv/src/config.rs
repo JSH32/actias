@@ -1,3 +1,5 @@
+//! The kv service's operator interface, including which store backs it.
+
 use actias_common::config::{dotenv, get_env_or};
 
 /// Which store backs this service, from the environment: postgres when
