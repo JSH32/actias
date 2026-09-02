@@ -1,3 +1,7 @@
+//! The secret service binary: envelope-encrypted project secrets, with
+//! the active master key wrapping every new write. Also its own
+//! migrator, under `--migrate`.
+
 use actias_common::setup_tracing;
 use actias_common::tracing::info;
 use sea_orm::Database;
@@ -24,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The same image is both the service and its migrator, so a
     // deployment never carries a second artifact that can drift from
     // the schema it applies: these are the migrations compiled into
-    // THIS binary. It reads DATABASE_URL and nothing else, ahead of
+    // this binary. It reads DATABASE_URL and nothing else, ahead of
     // the service's own config, so applying a schema never requires
     // the master key serving traffic does.
     if std::env::args().any(|arg| arg == "--migrate") {

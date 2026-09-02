@@ -1,3 +1,6 @@
+//! The secret service's operator interface, including the master key
+//! it wraps under and the previous one it still reads.
+
 use actias_common::config::{dotenv, get_env, get_env_or};
 use base64::Engine;
 use zeroize::Zeroizing;

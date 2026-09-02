@@ -82,6 +82,9 @@ impl Envelope {
 
     /// Encrypts one value under a fresh data key wrapped by the active
     /// master.
+    ///
+    /// # Errors
+    /// Returns [`CryptoError::Corrupt`] when the aead refuses to seal.
     pub fn seal(&self, plaintext: &[u8]) -> Result<Sealed, CryptoError> {
         let mut dek = Zeroizing::new([0u8; KEY_LEN]);
         random(dek.as_mut())?;
