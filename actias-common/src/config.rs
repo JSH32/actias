@@ -1,8 +1,12 @@
+//! Reading a service's configuration from the environment. Every
+//! service's `config.rs` builds on these two functions, so a missing
+//! variable fails at startup rather than on a request.
+
 pub use dotenv::dotenv;
 
 use std::{env, fmt::Debug, str::FromStr};
 
-/// Get env as [`T`] or `default`.
+/// Reads `var` from the environment as `T`, or `default` when unset.
 pub fn get_env_or<T>(var: &str, default: T) -> T
 where
     T: FromStr,
@@ -16,7 +20,8 @@ where
     }
 }
 
-/// Get env as [`T`].
+/// Reads `var` from the environment as `T`, panicking at startup
+/// when it is unset or unparseable.
 pub fn get_env<T>(var: &str) -> T
 where
     T: FromStr,

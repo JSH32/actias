@@ -2,10 +2,9 @@
 //!
 //! A migrator's first act is to reach a database that may not have been
 //! created yet: compose seeds them from `docker/init.sql`, but that
-//! script only runs on a cluster's FIRST init, so a volume that
-//! predates a service leaves it with nowhere to migrate (found
-//! 2026-08-26 against a pre-existing volume). Every managed postgres
-//! has the same gap in its own way.
+//! script only runs on a cluster's first init, so a volume that
+//! predates a service leaves it with nowhere to migrate. Every
+//! managed postgres has the same gap in its own way.
 //!
 //! So the migrator creates what it needs: on 3D000 (the server is
 //! there, the database is not) it connects to the maintenance database
