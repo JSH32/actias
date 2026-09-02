@@ -31,6 +31,11 @@ pub struct GatewayReply {
 ///
 /// The gateway confirms authentication with `ready`; sending earlier races
 /// its connection handling and the message would be dropped.
+///
+/// # Errors
+/// Returns [`Error::Config`] for a url the socket layer refuses, and
+/// [`Error::Api`] when the gateway cannot be reached or refuses the
+/// handshake.
 pub async fn connect(ws_url: &str, token: &str) -> Result<WsStream> {
     let request = ClientRequestBuilder::new(
         ws_url
@@ -55,6 +60,10 @@ pub async fn connect(ws_url: &str, token: &str) -> Result<WsStream> {
 }
 
 /// Waits for the gateway's next json reply, ignoring other frames.
+///
+/// # Errors
+/// Returns [`Error::Api`] when the socket fails, the gateway closes, or
+/// a frame does not parse as a reply.
 pub async fn read_reply(socket: &mut WsStream) -> Result<GatewayReply> {
     while let Some(message) = socket.next().await {
         match message {
@@ -95,6 +104,10 @@ pub fn print_log_line(reply: &GatewayReply) {
 }
 
 /// Derives the live gateway socket url from the configured api url.
+///
+/// # Errors
+/// Returns [`Error::Config`] when the api url carries no scheme this can
+/// map onto a websocket url.
 pub fn live_socket_url(api_url: &str) -> Result<String> {
     let base = api_url.trim_end_matches('/');
 

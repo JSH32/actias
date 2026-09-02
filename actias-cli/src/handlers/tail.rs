@@ -22,7 +22,11 @@ enum TailEnd {
     Disconnected,
 }
 
-/// Handle tail command
+/// Runs `actias tail`: follows one script's published log channel.
+///
+/// # Errors
+/// Returns the api's message, or the gateway's when the log socket
+/// cannot be opened.
 pub async fn handle(client: &Client, settings: &Settings, target: &str) -> Result<()> {
     let script_id = resolve_script_id(target)?;
 

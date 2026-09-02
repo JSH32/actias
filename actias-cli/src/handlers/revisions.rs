@@ -1,3 +1,6 @@
+//! `actias script revision`: listing revisions, pointing a script at
+//! one, cloning one back to disk, and deleting one.
+
 use colored::*;
 use include_dir::{Dir, include_dir};
 use inquire::{Confirm, Select};
@@ -16,7 +19,10 @@ use crate::{
 // Reference to template directory
 static PROJ_TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template/templates");
 
-/// Handle revision deletion
+/// Deletes one revision, moving the script's pointer when it was current.
+///
+/// # Errors
+/// Returns the api's message, or the prompt's when the operator cancels.
 pub async fn handle_delete(client: &Client, script: &ScriptDto, revision_id: &str) -> Result<()> {
     let result = client
         .delete_revision()
@@ -42,7 +48,10 @@ pub async fn handle_delete(client: &Client, script: &ScriptDto, revision_id: &st
     Ok(())
 }
 
-/// Handle listing revisions
+/// Prints one page of a script's revisions.
+///
+/// # Errors
+/// Returns the api's message.
 pub async fn handle_list(client: &Client, script_id: &str, page: &Option<i64>) -> Result<()> {
     let script = client
         .get_script()
@@ -84,7 +93,10 @@ pub async fn handle_list(client: &Client, script_id: &str, page: &Option<i64>) -
     Ok(())
 }
 
-/// Handle setting active revision
+/// Points the script at one revision.
+///
+/// # Errors
+/// Returns the api's message.
 pub async fn handle_set(client: &Client, script_id: &str, revision_id: &str) -> Result<()> {
     let script = client
         .get_script()
@@ -114,7 +126,7 @@ pub async fn handle_set(client: &Client, script_id: &str, revision_id: &str) -> 
     Ok(())
 }
 
-/// Handle cloning a revision
+/// Writes one revision's files into a local directory.
 pub async fn handle_clone(
     client: &Client,
     script: &ScriptDto,
@@ -148,7 +160,11 @@ pub async fn handle_clone(
     Ok(())
 }
 
-/// Handle creating a sample revision
+/// Publishes the built-in sample as a script's first revision.
+///
+/// # Errors
+/// Returns the api's message, or the filesystem's when the sample cannot
+/// be written out.
 pub async fn handle_create_sample(client: &Client, script: &ScriptDto) -> Result<()> {
     println!("Script does not have a current revision");
     if !Confirm::new("Do you want to create one?")

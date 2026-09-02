@@ -1,3 +1,6 @@
+//! `actias init`: a project scaffolded from a template and registered
+//! against the api.
+
 use colored::*;
 use include_dir::{Dir, include_dir};
 use inquire::Select;
@@ -14,7 +17,8 @@ use crate::{
 // Reference to template directory
 static PROJ_TEMPLATE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template/templates");
 
-/// Handle the Init command
+/// Runs `actias init`: scaffolds a project from a template and
+/// registers it.
 pub async fn handle(
     client: &Client,
     script_name: &str,
@@ -51,7 +55,7 @@ pub async fn handle(
     Ok(())
 }
 
-/// Check if the user has script write permission for the project
+/// Whether the logged-in user may write scripts in this project.
 async fn check_script_permission(client: &Client, project_id: &str) -> Result<()> {
     let acl = client
         .get_acl_me()
@@ -124,7 +128,7 @@ fn extract_template(script_path: &Path, template_name: &str, template: &Dir<'_>)
     Ok(())
 }
 
-/// Create and publish new script to the API
+/// Creates the script and publishes its first revision.
 async fn publish_new_script(
     client: &Client,
     script_path: &Path,

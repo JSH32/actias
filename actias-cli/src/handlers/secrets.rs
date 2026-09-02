@@ -12,7 +12,10 @@ use crate::{
     ui,
 };
 
-/// Handle secret command
+/// Runs one `actias secret` subcommand.
+///
+/// # Errors
+/// Returns the api's message, or the prompt's when the operator cancels.
 pub async fn handle(client: &Client, project: &str, operation: &SecretOperations) -> Result<()> {
     match operation {
         SecretOperations::Put { name, value } => {

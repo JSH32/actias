@@ -1,3 +1,6 @@
+//! `actias publish`: check the project, upload the blobs the store is
+//! missing, and mint a revision from the bundle.
+
 use colored::*;
 use inquire::{Confirm, Text};
 use std::path::Path;
@@ -16,7 +19,12 @@ use crate::{
     util::get_dir,
 };
 
-/// Handle publish command
+/// Runs `actias publish`: checks the project, uploads missing blobs,
+/// and mints a revision.
+///
+/// # Errors
+/// Returns the project's own refusal from the check that runs first, or
+/// the api's message.
 pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
     let script_path = get_dir(script_dir, false, false).map_err(Error::Io)?;
 
@@ -161,7 +169,7 @@ pub async fn handle(client: &Client, script_dir: &str) -> Result<()> {
     Ok(())
 }
 
-/// Create a new script when ID is not present
+/// Creates the script when the project config names no id yet.
 async fn create_new_script(
     client: &Client,
     script_config: &mut ScriptConfig,

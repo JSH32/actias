@@ -10,7 +10,11 @@ use crate::{
     ui,
 };
 
-/// Handle tokens command
+/// Runs one `actias token` subcommand.
+///
+/// # Errors
+/// Returns the api's message, or [`Error::Command`] naming an access
+/// field the command does not know.
 pub async fn handle(client: &Client, project: &str, operation: &TokenOperations) -> Result<()> {
     match operation {
         TokenOperations::Create { name, access } => {

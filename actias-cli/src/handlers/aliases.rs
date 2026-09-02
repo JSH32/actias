@@ -15,6 +15,9 @@ use crate::{
 
 /// Handles `actias alias <script> <op>`; `script` may be a script id or a
 /// project directory whose config carries one.
+///
+/// # Errors
+/// Returns the api's message.
 pub async fn handle(client: &Client, script: &str, operation: &AliasOperations) -> Result<()> {
     let id = match ScriptConfig::from_path(Path::new(script)) {
         Ok(config) => config.id.unwrap_or_else(|| script.to_owned()),

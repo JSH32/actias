@@ -1,3 +1,6 @@
+//! `actias script`: listing a project's scripts, cloning one, and
+//! deleting one with everything it owns.
+
 use colored::*;
 use prettytable::{Table, row};
 use std::path::Path;
@@ -10,7 +13,10 @@ use crate::{
     script::ScriptConfig,
 };
 
-/// Handle listing scripts
+/// Prints one page of a project's scripts.
+///
+/// # Errors
+/// Returns the api's message.
 pub async fn handle_list(client: &Client, project: &str, page: f64) -> Result<()> {
     let response = client
         .list_scripts()
@@ -51,7 +57,7 @@ pub async fn handle_list(client: &Client, project: &str, page: f64) -> Result<()
     Ok(())
 }
 
-/// Handle script operations
+/// Runs one `actias script` subcommand.
 pub async fn handle_operation(
     client: &Client,
     script_id: &str,
@@ -72,7 +78,7 @@ pub async fn handle_operation(
     }
 }
 
-/// Handle script deletion
+/// Deletes one script and everything it owns, after confirmation.
 async fn handle_delete(client: &Client, id: &str) -> Result<()> {
     let script = client
         .get_script()
@@ -98,7 +104,7 @@ async fn handle_delete(client: &Client, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Handle script cloning
+/// Writes a script's current revision into a local directory.
 async fn handle_clone(client: &Client, id: &str, path: Option<String>) -> Result<()> {
     let script = client
         .get_script()
@@ -114,7 +120,7 @@ async fn handle_clone(client: &Client, id: &str, path: Option<String>) -> Result
     }
 }
 
-/// Handle revision operations
+/// Runs one `actias script revision` subcommand.
 async fn handle_revisions(
     client: &Client,
     script_id: &str,

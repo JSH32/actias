@@ -34,7 +34,7 @@ enum SessionEnd {
     Disconnected,
 }
 
-/// Handle dev command
+/// Runs `actias dev`: a live session that republishes on every save.
 pub async fn handle(
     client: &Client,
     settings: &Settings,

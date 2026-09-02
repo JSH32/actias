@@ -1,3 +1,6 @@
+//! A project on disk: its `script.json`, the build command it may run,
+//! and the bundle its file globs select.
+
 use std::{
     fs::{self, File},
     io::{BufReader, Write},
@@ -25,7 +28,7 @@ pub struct ScriptConfig {
     pub id: Option<String>,
     /// First file which will be executed in the bundle.
     pub entry_point: String,
-    /// List of all files which will be included in their bundle.
+    /// Glob patterns selecting the files the bundle carries.
     /// All paths are relative to the project file.
     pub includes: Vec<String>,
     /// Patterns to ignore. This will be cross referenced with `includes`.
@@ -42,6 +45,10 @@ impl ScriptConfig {
     /// Runs the declared build command, if any, inheriting stdio so
     /// its output lands in the publisher's terminal; the bundle is
     /// cut only from what it leaves behind.
+    ///
+    /// # Errors
+    /// Returns text when the project path is unset, when the build command
+    /// cannot start, or when it exits nonzero.
     pub fn run_build(&self) -> Result<(), String> {
         let Some(command) = &self.build else {
             return Ok(());
@@ -90,7 +97,11 @@ impl From<ScriptConfig> for ScriptConfigDto {
 }
 
 impl ScriptConfig {
-    /// Parse project directory to a proper [`ScriptConfig`].
+    /// Reads a project directory's `script.json` into a [`ScriptConfig`].
+    ///
+    /// # Errors
+    /// Returns text when the directory holds no `script.json`, or when it
+    /// does not parse.
     pub fn from_path(project_path: &Path) -> Result<Self, String> {
         let mut config_path = project_path.to_path_buf();
         config_path.push("script.json");
@@ -112,7 +123,10 @@ impl ScriptConfig {
         Ok(config)
     }
 
-    /// Get a bundle object from the project configuration.
+    /// Builds the bundle this project's configuration describes.
+    ///
+    /// # Errors
+    /// Returns text naming the file that could not be read.
     pub fn to_bundle(&self) -> Result<BundleDto, String> {
         let file_paths = self.glob_includes()?;
 

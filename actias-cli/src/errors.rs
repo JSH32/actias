@@ -1,6 +1,9 @@
+//! What a command can fail with, and the one shape every failure prints
+//! in. Raw `Debug` never reaches the terminal.
+
 use std::fmt;
 
-/// Custom error type for the application
+/// Every way a cli command can fail, by the audience the message is for.
 #[derive(Debug)]
 pub enum Error {
     Authentication(String),
@@ -61,7 +64,7 @@ pub fn progenitor_error<E: std::error::Error>(err: E) -> Error {
     Error::Api(err.to_string())
 }
 
-/// Handle and print errors in a consistent way
+/// Prints one error to the terminal, in the one shape every command uses.
 pub fn print_error(err: &Error) {
     match err {
         Error::Authentication(msg) => crate::ui::error("authentication error", msg),

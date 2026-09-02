@@ -1,3 +1,6 @@
+//! Shared helpers: rendering an api failure, resolving a directory, and
+//! writing a revision's files back out.
+
 use std::{
     fs,
     io::Write,
@@ -10,7 +13,7 @@ use serde::Deserialize;
 
 use crate::{client::types::RevisionFullDto, script::ScriptConfig};
 
-/// Convert an API error to a string which can be used to log.
+/// Converts an api error into the message a command prints.
 pub fn progenitor_error(error: progenitor::progenitor_client::Error) -> String {
     #[derive(Deserialize)]
     struct ErrorResponse {
@@ -40,7 +43,7 @@ pub fn progenitor_error(error: progenitor::progenitor_client::Error) -> String {
     }
 }
 
-/// Get a directory and validate it. This will create a directory of it doesn't exist.
+/// Resolves a directory path, creating it when it does not exist.
 ///
 /// # Arguments
 /// * `relative_path` - Relative path to the current terminal.
@@ -85,6 +88,9 @@ pub fn get_dir(
 /// Writes the project's editor tooling: the Luau declarations, a
 /// luau-lsp settings file (only when none exists, so user settings
 /// survive), and a .luaurc.
+///
+/// # Errors
+/// Returns the filesystem's message, naming what could not be written.
 pub fn copy_definitions(proj_path: &Path) -> Result<(), String> {
     let def_path = proj_path.join("definitions");
     let _ = std::fs::remove_dir_all(&def_path);
@@ -113,7 +119,10 @@ pub fn copy_definitions(proj_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Write a revision to a provided path.
+/// Writes a revision's files out to `path`.
+///
+/// # Errors
+/// Returns the filesystem's message, naming what could not be written.
 pub fn write_revision(path: PathBuf, revision: RevisionFullDto) -> Result<(), String> {
     check_clone_dir(&revision.script_id, &path)?;
 
@@ -146,7 +155,7 @@ pub fn write_revision(path: PathBuf, revision: RevisionFullDto) -> Result<(), St
     Ok(())
 }
 
-/// Check if revision can be cloned to this directory.
+/// Whether a revision may be cloned into this directory.
 fn check_clone_dir(script_id: &str, path: &Path) -> Result<(), String> {
     // Things exist here
     if path.exists() && path.read_dir().unwrap().next().is_some() {

@@ -1,3 +1,6 @@
+//! The saved login: where it lives on disk, and the prompts that fill
+//! it in.
+
 use std::{
     fs::File,
     io::{BufReader, BufWriter, Write},
@@ -22,8 +25,12 @@ pub struct Settings {
     pub token: String,
 }
 
-/// Where the login lives. One place, because the path used to be spelled
-/// out at both call sites and they could drift.
+/// Where the login lives. One place, so the reader and the writer
+/// cannot drift apart on it.
+///
+/// # Errors
+/// Returns text when this user has no config directory, or when it
+/// cannot be created.
 pub fn settings_path() -> Result<std::path::PathBuf, String> {
     let auth_dir = config_dir()
         .ok_or("no config directory for this user")?

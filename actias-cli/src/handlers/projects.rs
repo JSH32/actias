@@ -1,3 +1,6 @@
+//! `actias project`: listing the projects this account can see, and
+//! creating or deleting one.
+
 use colored::*;
 use prettytable::{Table, row};
 
@@ -8,7 +11,10 @@ use crate::{
     ui,
 };
 
-/// Handle listing projects
+/// Prints one page of the projects this account can see.
+///
+/// # Errors
+/// Returns the api's message.
 pub async fn handle_list(client: &Client, page: f64) -> Result<()> {
     let response = client
         .list_projects()
@@ -36,7 +42,10 @@ pub async fn handle_list(client: &Client, page: f64) -> Result<()> {
     Ok(())
 }
 
-/// Handle project operations
+/// Runs one `actias project` subcommand.
+///
+/// # Errors
+/// Returns the api's message, or the prompt's when the operator cancels.
 pub async fn handle_operation(client: &Client, operation: &ProjectOperations) -> Result<()> {
     match operation {
         ProjectOperations::Create { name } => {
