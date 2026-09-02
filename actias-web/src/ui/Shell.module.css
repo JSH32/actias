@@ -78,6 +78,44 @@
   letter-spacing: 0.06em;
 }
 
+.railHeadName {
+  flex: 1;
+}
+
+/* A control that belongs to a band rather than sitting on it: full
+ * band height, one square, no box of its own. Every such control in
+ * the chrome is this rule, so their boxes cannot drift apart in size
+ * the way two hand-matched declarations did.
+ *
+ * The band's own side padding is cancelled by whoever uses it, so the
+ * square reaches the frame edge and its divider lands flush against
+ * the box on both sides. */
+.bandButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: 34px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.bandButton:hover {
+  color: var(--ink-1);
+  background: var(--night-1);
+}
+
+/* Closes the rail: last in its head, so it takes the head's right
+ * padding back and wears the divider on its left. */
+.railFold {
+  composes: bandButton;
+  margin-right: -14px;
+  border-left: 1px solid var(--line);
+}
+
 .railSection {
   padding: 6px 0;
 }
@@ -175,6 +213,63 @@
 .railTwirl:hover {
   color: var(--ink-1);
 }
+
+/* A class row: the twirl as it always was, plus a search button for
+ * classes that derive directory rows. The button sits beside the
+ * twirl rather than replacing part of it, so a class without a
+ * directory looks exactly as it did before. */
+.railClassRow {
+  display: flex;
+  align-items: center;
+}
+
+.railClassRow .railTwirl {
+  flex: 1;
+  min-width: 0;
+}
+
+.railClassRowOn {
+  composes: railClassRow;
+  background: var(--luna-tint);
+}
+.railClassRowOn .railTwirl {
+  color: var(--ink-1);
+}
+
+/* The directory button's slot, present on every class whether or not
+ * it has one. Without it the counts shifted right on classes with no
+ * directory, which read as the rail moving under the pointer. */
+.railSlot {
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.railFindClass {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  /* --ink-4 does not exist in the sheet, and an undefined variable
+   * renders as nothing: the button had no colour at all. */
+  color: var(--ink-3);
+}
+
+.railFindClass:hover {
+  color: var(--kind-event);
+  background: var(--night-2);
+}
+
+.railFindActive {
+  composes: railFindClass;
+  color: var(--kind-event);
+}
+
 
 /* An instance under its class twirl: indented, chevron-free; the only
  * chevrons in the tree belong to the collapsible class heads. */
@@ -396,12 +491,43 @@
   border-bottom: 1px solid var(--line);
 }
 
+/* Stepping back and forth through the trail, and the way back to a
+ * hidden rail. Sits at the head of the breadcrumb because that is
+ * where the rail was, so nothing has to be hunted for. */
+/* The trail belongs to the topbar the way the fold belongs to the rail
+ * head. The topbar's left padding is cancelled so the cluster starts
+ * flush at the frame edge, where the rail sits, and its divider is
+ * flush against the last square with no pad between: the topbar's own
+ * 16px gap is what separates the rule from the breadcrumb. A pad here
+ * was what made these boxes look unlike the fold. */
+.trail {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  flex: none;
+  margin-left: -20px;
+  border-right: 1px solid var(--line);
+}
+
+.trailStep {
+  composes: bandButton;
+}
+
+/* The way back to the rail stands where the rail did, so it reads as
+ * the frame's own edge rather than a chip parked in the breadcrumb. */
+.trailPanel {
+  composes: bandButton;
+  border-right: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
 /* The breadcrumb is the path: identifiers verbatim, the leaf in full
  * ink because it names the thing on screen. */
 .crumbs {
   display: flex;
   align-items: center;
   gap: 7px;
+  flex: 1;
   min-width: 0;
   font: 400 12px var(--mono);
 }

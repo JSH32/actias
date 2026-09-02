@@ -92,6 +92,9 @@ const paths: Record<string, string[]> = {
   arrowLeft: ['M19 12h-13l4 -4', 'M10 16l-4 -4'],
   chevronDown: ['M6 9l6 6l6 -6'],
   check: ['M5 12l5 5l9 -9'],
+  // A magnifier: the directory is a search over a class, and the rail
+  // needs one control that says so at 12px.
+  search: ['M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0', 'M21 21l-6 -6'],
   copy: [
     'M8 8m0 2a2 2 0 0 1 2 -2h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2z',
     'M16 8v-2a2 2 0 0 0 -2 -2h-8a2 2 0 0 0 -2 2v8a2 2 0 0 0 2 2h2',

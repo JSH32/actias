@@ -437,9 +437,9 @@ export default function KvPanel({
                       </span>
                       <span
                         className={classes.cellRight}
-                        style={{ color: ttlColor(pair.ttl) }}
+                        style={{ color: ttlColor(pair.ttl ?? 0) }}
                       >
-                        {ttlLabel(pair.ttl)}
+                        {ttlLabel(pair.ttl ?? 0)}
                       </span>
                       <span className={classes.cellDim}>
                         {looksLikeJson(pair.value) ? (
@@ -510,7 +510,7 @@ export default function KvPanel({
                     <span className={classes.sectionLabel}>TTL</span>
                     <span
                       className={classes.factColValue}
-                      style={{ color: ttlColor(current.ttl) }}
+                      style={{ color: ttlColor(current.ttl ?? 0) }}
                     >
                       {current.ttl ? `${current.ttl}s left` : 'no expiry'}
                     </span>

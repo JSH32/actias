@@ -21,6 +21,7 @@ import {
   TableInfoDto,
 } from '@/client';
 import { useLogout, useUser } from '@/helpers/auth';
+import { ArrowLeft, ArrowRight, PanelLeft, PanelLeftClose } from 'lucide-react';
 import { Icon, IconName } from './icons';
 import { Mark } from './Mark';
 import classes from './Shell.module.css';
@@ -50,6 +51,7 @@ const projectNav: { label: string; slug: string; icon: IconName }[] = [
   { label: 'Databases', slug: 'databases', icon: 'databases' },
   { label: 'Queues', slug: 'queues', icon: 'queues' },
   { label: 'Workflows', slug: 'workflows', icon: 'workflows' },
+  { label: 'Shell', slug: 'shell', icon: 'play' },
   { label: 'Secrets', slug: 'secrets', icon: 'secrets' },
   { label: 'Members', slug: 'members', icon: 'members' },
   { label: 'Tokens', slug: 'tokens', icon: 'tokens' },
@@ -186,6 +188,8 @@ function RailObjectClass({
   klass,
   count,
   railObj,
+  railClass,
+  hasDirectory,
   tables,
   tableHrefFor,
   activeTable,
@@ -194,11 +198,16 @@ function RailObjectClass({
   klass: string;
   count: number;
   railObj: string | null;
+  /** The class whose directory is open, when one is. */
+  railClass: string | null;
+  /** Whether this class derives directory rows; no button if not. */
+  hasDirectory: boolean;
   tables: TableInfoDto[];
   tableHrefFor: (table: string) => string;
   activeTable: string | null;
 }) {
   const holdsSelection = railObj?.startsWith(`${klass}/`) ?? false;
+  const classSelected = railClass === klass;
   const [open, setOpen] = React.useState(holdsSelection);
   React.useEffect(() => {
     if (holdsSelection) setOpen(true);
@@ -216,15 +225,42 @@ function RailObjectClass({
 
   return (
     <div>
-      <button
-        className={classes.railTwirl}
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
+      {/* The class row is the original twirl again: one control, one
+          job. The directory is a separate small button beside it.
+          Its slot is reserved whether or not the class has one, so
+          the counts line up down the rail instead of jumping left on
+          every class that happens to lack a directory. */}
+      <div
+        className={
+          classSelected ? classes.railClassRowOn : classes.railClassRow
+        }
       >
-        <RailChevron open={open} />
-        <span className={classes.railName}>{klass}</span>
-        <span className={classes.railMeta}>{count}</span>
-      </button>
+        <button
+          className={classes.railTwirl}
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+        >
+          <RailChevron open={open} />
+          <span className={classes.railName}>{klass}</span>
+          <span className={classes.railMeta}>{count}</span>
+        </button>
+        <span className={classes.railSlot}>
+          {hasDirectory && (
+            <Link
+              href={`/project/${projectId}/databases?class=${encodeURIComponent(
+                klass,
+              )}`}
+              className={
+                classSelected ? classes.railFindActive : classes.railFindClass
+              }
+              title={`Open the ${klass} directory: one row per instance`}
+              aria-label={`${klass} directory`}
+            >
+              <Icon name="folder" size={12} />
+            </Link>
+          )}
+        </span>
+      </div>
       {open && (
         <>
           {!small && (
@@ -377,8 +413,15 @@ export function Shell({ children }: React.PropsWithChildren) {
     typeof router.query.obj === 'string' && router.query.obj.includes('/')
       ? router.query.obj
       : null;
+  const railClass =
+    typeof router.query.class === 'string' ? router.query.class : null;
+  // A database is only the rail's selection when nothing else is. The
+  // first database stands in when the page opened without a source,
+  // but a directory IS a source: falling back while `?class=` is open
+  // made the rail claim you were reading `catalog` when you were
+  // querying Auction.
   const railDb =
-    railObj == null
+    railObj == null && railClass == null
       ? typeof router.query.db === 'string'
         ? router.query.db
         : navDatabases?.[0]?.name ?? null
@@ -428,6 +471,19 @@ export function Shell({ children }: React.PropsWithChildren) {
       return !was;
     });
 
+  // The sources rail, pushed aside when the table wants the width. It
+  // leaves a chip in the topbar rather than vanishing, so the way back
+  // sits exactly where the rail used to be.
+  const [railHidden, setRailHidden] = React.useState(false);
+  React.useEffect(() => {
+    setRailHidden(localStorage.getItem('rail-hidden') === '1');
+  }, []);
+  const toggleRail = () =>
+    setRailHidden((was) => {
+      localStorage.setItem('rail-hidden', was ? '0' : '1');
+      return !was;
+    });
+
   if (router.pathname === '/script/[id]/workbench') {
     return <>{children}</>;
   }
@@ -440,11 +496,15 @@ export function Shell({ children }: React.PropsWithChildren) {
   // into the cli, so showing them verbatim beats prettifying.
   const crumbs = router.asPath.split('?')[0].split('/').filter(Boolean);
 
+  // A hidden rail gives its column back to the page rather than
+  // shrinking to a stub: the point of pushing it aside is the width.
+  const railShown = railed && !railHidden;
+
   const shellClass = collapsed
-    ? railed
+    ? railShown
       ? classes.shellRailedNarrow
       : classes.shellNarrow
-    : railed
+    : railShown
     ? classes.shellRailed
     : classes.shell;
 
@@ -739,9 +799,19 @@ export function Shell({ children }: React.PropsWithChildren) {
           )}
         </div>
       </aside>
-      {railed && (
+      {railShown && (
         <div className={classes.rail}>
-          <div className={classes.railHead}>SOURCES</div>
+          <div className={classes.railHead}>
+            <span className={classes.railHeadName}>SOURCES</span>
+            <button
+              className={classes.railFold}
+              onClick={toggleRail}
+              title="Hide sources, give the width to the table"
+              aria-label="Hide sources"
+            >
+              <PanelLeftClose size={15} strokeWidth={1.7} />
+            </button>
+          </div>
           <div className={classes.railSection}>
             <div className={`${classes.railSectionHead} ${classes.railKindDb}`}>
               <Icon name="databases" size={13} />
@@ -796,6 +866,8 @@ export function Shell({ children }: React.PropsWithChildren) {
                   klass={row.class}
                   count={row.count}
                   railObj={railObj}
+                  railClass={railClass}
+                  hasDirectory={row.hasDirectory ?? false}
                   tables={railOverview?.tables ?? []}
                   tableHrefFor={railTableHref}
                   activeTable={railActiveTable}
@@ -807,6 +879,48 @@ export function Shell({ children }: React.PropsWithChildren) {
       )}
       <div className={classes.main}>
         <div className={classes.topbar}>
+          {/* Where the rail was: the way back to it, and the way back
+              through the trail that leads here. A query is part of the
+              url, so stepping back lands in the listing you came from
+              rather than an empty one. */}
+          {railed && (
+            <div className={classes.trail}>
+              {railHidden && (
+                <button
+                  className={classes.trailPanel}
+                  onClick={toggleRail}
+                  title="Show sources"
+                  aria-label="Show sources"
+                >
+                  <PanelLeft size={15} strokeWidth={1.7} />
+                </button>
+              )}
+              {/* History directly, not the router. `useRouter` returns a
+                  proxy carrying a fixed list of methods, and in the
+                  pages router that list has `back` but no `forward`,
+                  so `router.forward()` is undefined at runtime. Its
+                  type declares it regardless, which is why this
+                  typechecked and still threw. `router.back()` is
+                  itself only a call to `window.history.back()`, so
+                  taking both from history keeps the pair honest. */}
+              <button
+                className={classes.trailStep}
+                onClick={() => window.history.back()}
+                title="Back"
+                aria-label="Back"
+              >
+                <ArrowLeft size={15} strokeWidth={1.7} />
+              </button>
+              <button
+                className={classes.trailStep}
+                onClick={() => window.history.forward()}
+                title="Forward"
+                aria-label="Forward"
+              >
+                <ArrowRight size={15} strokeWidth={1.7} />
+              </button>
+            </div>
+          )}
           <div className={classes.crumbs}>
             {crumbs.length === 0 ? (
               <span className={classes.crumbCurrent}>actias</span>

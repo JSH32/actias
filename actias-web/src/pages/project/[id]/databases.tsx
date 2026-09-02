@@ -13,7 +13,9 @@ import {
 } from '@/client';
 import ProjectSection from '@/components/ProjectSection';
 import { JsonInline, JsonValue, looksLikeJson } from '@/components/JsonValue';
+import DirectoryGrid from '@/components/DirectoryGrid';
 import { EmptyState } from '@/ui';
+import { Icon } from '@/ui/icons';
 import {
   DocsHint,
   Drawer,
@@ -111,6 +113,10 @@ function Databases({
     name: string;
   } | null>(null);
   const [selectedTable, setSelectedTable] = React.useState<string | null>(null);
+  // A whole class as the source: its directory, one row per object.
+  // Exclusive with a database and with a single instance, because all
+  // three answer "what am I looking at" differently.
+  const [selectedClass, setSelectedClass] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState<Tab>('browse');
   const [page, setPage] = React.useState(0);
   const [inspected, setInspected] = React.useState<number | null>(null);
@@ -123,15 +129,25 @@ function Databases({
     if (typeof router.query.db === 'string') {
       setSelectedDb(router.query.db);
       setSelectedObj(null);
+      setSelectedClass(null);
       setPage(0);
       setInspected(null);
     }
   }, [router.query.db]);
   React.useEffect(() => {
+    if (typeof router.query.class === 'string') {
+      setSelectedClass(router.query.class);
+      setSelectedDb(null);
+      setSelectedObj(null);
+      setInspected(null);
+    }
+  }, [router.query.class]);
+  React.useEffect(() => {
     if (
       typeof router.query.obj === 'string' &&
       router.query.obj.includes('/')
     ) {
+      setSelectedClass(null);
       const [className, ...rest] = router.query.obj.split('/');
       setSelectedObj({ class: className, name: rest.join('/') });
       setPage(0);
@@ -332,6 +348,63 @@ function Databases({
       .finally(() => setRunning(false));
   };
 
+  // A class source shows its directory: the rows every object in it
+  // contributes. Ahead of the empty-databases branch, because a
+  // project can have no database and still have classes worth
+  // listing.
+  if (selectedClass) {
+    return (
+      <div className={classes.frame}>
+        <div className={classes.frameHead}>
+          <div className={classes.headTop}>
+            <div className={classes.headMain}>
+              <div className={classes.pageHead}>
+                <span
+                  className={classes.pageIcon}
+                  style={{ color: 'var(--kind-event)' }}
+                >
+                  <Icon name="folder" size={19} />
+                </span>
+                <h1 className={classes.pageTitle}>{selectedClass}</h1>
+                <DocsHint slug="runtime/directory" label="Directory" />
+                <StatePill state="directory" />
+              </div>
+            </div>
+          </div>
+          <p className={classes.ledeAboveBand}>
+            One row per <code>{selectedClass}</code>, as of each object&apos;s
+            last saved write. A listing chooses which objects to open; the
+            object itself is the truth.{' '}
+            <button
+              type="button"
+              className={classes.linkButton}
+              onClick={() =>
+                router.push(
+                  `/project/${project.id}/shell?class=${encodeURIComponent(
+                    selectedClass,
+                  )}`,
+                )
+              }
+            >
+              open the shell
+            </button>
+          </p>
+        </div>
+        <DirectoryGrid
+          projectId={project.id}
+          klass={selectedClass}
+          onOpenInstance={(name) =>
+            router.push(
+              `/project/${project.id}/databases?obj=${encodeURIComponent(
+                `${selectedClass}/${name}`,
+              )}`,
+            )
+          }
+        />
+      </div>
+    );
+  }
+
   if (databases && databases.length === 0 && !objectSource) {
     return (
       <div className={classes.frameEmpty}>
@@ -368,6 +441,14 @@ function Databases({
         <div className={classes.headTop}>
           <div className={classes.headMain}>
             <div className={classes.pageHead}>
+              <span
+                className={classes.pageIcon}
+                style={{
+                  color: objectSource ? 'var(--kind-obj)' : 'var(--kind-db)',
+                }}
+              >
+                <Icon name={objectSource ? 'kv' : 'databases'} size={19} />
+              </span>
               <h1 className={classes.pageTitle}>
                 {table?.name ?? sourceLabel}
               </h1>
@@ -425,10 +506,19 @@ function Databases({
               {objectSource && instanceRow && instanceRow.alarmDueMs > 0 && (
                 <span
                   className={classes.metaChip}
-                  title="A pending alarm blocks expiry."
-                  style={{ color: 'var(--warn)' }}
+                  title="The object's own timer. A pending alarm blocks expiry; an overdue one fires on the next sweep, wherever the object is homed."
+                  style={{
+                    color:
+                      instanceRow.alarmDueMs <= Date.now()
+                        ? 'var(--warn)'
+                        : undefined,
+                  }}
                 >
-                  alarm due
+                  {/* An ARMED alarm is not a stuck one: saying "due"
+                      for a timer set an hour out reads as a fault. */}
+                  {instanceRow.alarmDueMs <= Date.now()
+                    ? 'alarm overdue'
+                    : `alarm ${dueIn(instanceRow.alarmDueMs)}`}
                 </span>
               )}
               <span className={classes.metaChip}>

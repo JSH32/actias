@@ -1,0 +1,461 @@
+/* The directory grid. Square, like everything else: the design
+ * separates by line, so a corner is where two rules meet and a radius
+ * has nothing to do. Tokens are the sheet's own (night/ink/luna); an
+ * invented name renders as nothing, which is how the first pass ended
+ * up with see-through panels. */
+
+/* The region runs edge to edge like every other data view: the rows
+ * are the content, so nothing insets them from the frame. Padding
+ * belongs to the bands (query, notice, pager), never to the table. */
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The query band, not a box parked in one: it spans the frame and is
+ * divided from the rows by the same rule everything else uses. The
+ * leading glyph and the placeholder say it takes typing, so the field
+ * needs no outline of its own. */
+.queryRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.queryRow:focus-within {
+  background: var(--night-1);
+}
+
+.queryIcon {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-3);
+}
+
+.queryRow:focus-within .queryIcon {
+  color: var(--luna);
+}
+
+/* The editor: a coloured layer with a transparent input exactly on
+ * top, so the caret, selection and native editing all stay real while
+ * the text underneath is syntax coloured. Both layers must share font
+ * and line height to the pixel, or the two drift apart as you type. */
+.editor {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  font: 400 12px/40px var(--mono);
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--ink-2);
+}
+
+.input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: 400 12px/40px var(--mono);
+  /* The colour lives in the layer below; only the caret shows here. */
+  color: transparent;
+  caret-color: var(--ink-1);
+}
+
+.input::placeholder {
+  color: var(--ink-mark);
+}
+
+.input:focus {
+  outline: none;
+}
+
+/* Token colours, borrowed from the capability palette so the console
+ * reads as one thing rather than a second theme. */
+.tField {
+  color: var(--ink-1);
+}
+
+.tOp {
+  color: var(--luna);
+}
+
+.tString {
+  color: var(--kind-kv);
+}
+
+.tNumber {
+  color: var(--viola);
+}
+
+.tJoiner {
+  color: var(--warn);
+}
+
+.tPlain {
+  color: var(--ink-2);
+}
+
+/* The unreadable part, marked where it sits rather than in a banner
+ * below: an editor underlines the offending span and explains on
+ * hover, and a banner that pushes the results down reads as a failure
+ * of the whole view. */
+.tBad {
+  color: var(--err);
+  text-decoration: underline wavy var(--err);
+  text-underline-offset: 3px;
+}
+
+/* The analyser's message, on its own line under the query band. It
+ * wraps rather than truncating: the whole point of the sentence is the
+ * list of fields that do exist, which is the part a truncation would
+ * cut. */
+.queryProblem {
+  flex: none;
+  margin: 0;
+  padding: 7px 16px;
+  color: var(--err);
+  font: 400 11px/1.5 var(--mono);
+  border-bottom: 1px solid var(--line);
+  background: var(--night-1);
+}
+
+.rows {
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+  flex: none;
+}
+
+/* The verified read, asked for rather than assumed.
+ *
+ * It sits between two things that wear no box (the query line, the row
+ * count), so a bordered chip parked among them read as pasted on. Off,
+ * it is a word on the line like its neighbours and earns an outline
+ * only under the pointer; on, it is filled in the colour of the reading
+ * it performed. The weight tracks the state instead of being spent up
+ * front, which is also the honest emphasis: the plain listing is the
+ * normal way to read this page. */
+.verify {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  background: none;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+  flex: none;
+  cursor: pointer;
+}
+
+.verify:hover {
+  color: var(--ink-1);
+  border-color: var(--line);
+}
+
+.verify:focus-visible {
+  outline: none;
+  color: var(--ink-1);
+  border-color: var(--luna-dim);
+}
+
+/* On and everything proved. Filled rather than outlined: the state is
+ * worth seeing from across the page, and a tint says "this is a mode"
+ * where a border would only say "this is a button". */
+.verifyOn {
+  composes: verify;
+  color: var(--luna);
+  border-color: var(--luna-dim);
+  background: var(--luna-tint);
+}
+
+.verifyOn:hover,
+.verifyOn:focus-visible {
+  color: var(--luna);
+  border-color: var(--luna);
+}
+
+/* On, and some row could not be proved. It wears the flagged rows' own
+ * colour so the count and the badges below it are visibly the same
+ * fact, told once at the top and once per row. */
+.verifyFlagged {
+  composes: verify;
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--night-1);
+}
+
+.verifyFlagged:hover,
+.verifyFlagged:focus-visible {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+/* A row served without proof. Named rather than coloured alone: the
+ * word is the whole point, since the row is here precisely because
+ * dropping it would have been a silent miss. */
+.unverified {
+  font: 400 10px var(--mono);
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  padding: 0 4px;
+  flex: none;
+  cursor: help;
+}
+
+.pending {
+  color: var(--luna-dim);
+}
+
+/* Completions, at the caret. An editor's shape, because that is what
+ * this is: you are writing an expression, and what may come next
+ * depends on where you are in it. */
+/* Hangs off the band's own rule, so the list reads as attached to the
+ * line rather than floating near it. */
+.completions {
+  position: absolute;
+  top: 100%;
+  z-index: 40;
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+  min-width: 190px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  background: var(--night-1);
+  box-shadow: var(--shadow-overlay);
+}
+
+.completion {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: 400 12px var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.completion:hover:not(:disabled) {
+  color: var(--ink-1);
+}
+
+.completion:disabled {
+  color: var(--ink-mark);
+  cursor: default;
+}
+
+/* What Enter or Tab takes. Marked rather than merely hovered, because
+ * the keyboard is the fast path through a query. */
+.completionPicked {
+  composes: completion;
+  background: var(--luna-tint);
+  color: var(--ink-1);
+}
+
+.completionToken {
+  flex: none;
+}
+
+.completionMeans {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The console's one table shape: a grid whose template the head and
+ * every row share, 30px head and 36px rows, sixteen of padding. The
+ * first pass here was an html table with its own fonts and spacing,
+ * which is why this view did not look like the rest of the console. */
+.grid {
+  display: block;
+}
+
+.head {
+  display: grid;
+  gap: 12px;
+  height: 30px;
+  align-items: center;
+  padding: 0 16px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--night-0);
+  border-bottom: 1px solid var(--line);
+}
+
+.headButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--ink-2);
+  font: 500 11px var(--ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.headButton:hover {
+  color: var(--ink-1);
+}
+
+.sortMark {
+  display: inline-flex;
+  align-items: center;
+  color: var(--luna);
+}
+
+.row {
+  display: grid;
+  gap: 12px;
+  height: 36px;
+  align-items: center;
+  padding: 0 16px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: inset 2px 0 0 transparent;
+}
+
+.row:last-child {
+  border-bottom: 0;
+}
+
+.row:hover {
+  background: var(--night-1);
+}
+
+.rowIcon {
+  display: inline-flex;
+  flex: none;
+  color: var(--kind-obj);
+}
+
+.cellName {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font: 400 12px var(--mono);
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Long values truncate rather than widening the table: the row is a
+ * way into the object, and the object is where the whole value is. */
+.cell {
+  min-width: 0;
+  font: 400 12px var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cellAbsent {
+  composes: cell;
+  color: var(--ink-mark);
+}
+
+/* Values wear the json inspector's colours, so a number reads as a
+ * number wherever you meet it in the console. */
+.vString {
+  color: var(--syn-string);
+}
+.vNumber {
+  color: var(--syn-number);
+  font-variant-numeric: tabular-nums;
+}
+.vBool {
+  color: var(--syn-keyword);
+}
+.vNull {
+  color: var(--ink-mark);
+}
+.vArray {
+  color: var(--syn-default);
+}
+
+/* A band like the query line above it, not a card floating in the
+ * region: the table stays flush, so anything stacked over it spans the
+ * frame too. */
+.notice {
+  flex: none;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid var(--luna);
+  background: var(--night-1);
+  color: var(--ink-2);
+  font: 400 11px/1.55 var(--doc);
+  margin: 0;
+}
+
+/* Paging is the console's, not this view's: the bar, the buttons and
+ * the ghost styling all come from the inspector sheet, so a directory
+ * pages exactly the way a table does. */
+.pager {
+  composes: pager from './inspector.module.css';
+}
+
+.pagerButtons {
+  composes: pagerButtons from './inspector.module.css';
+}
+
+.ghostButton {
+  composes: ghostButton from './inspector.module.css';
+  height: 24px;
+  font: 400 11px var(--mono);
+}
+
+.ghostButton:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.pagerHint {
+  margin-left: 10px;
+}

@@ -10,7 +10,7 @@ import * as React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import api, { showError } from '@/helpers/api';
-import { AclListDto, ProjectDto, UserDto } from '@/client';
+import { AclListDto, ProjectDto, PublicUserDto, UserDto } from '@/client';
 import { EmptyState } from '@/ui';
 import dialogClasses from '../pages/projects.module.css';
 import classes from './inspector.module.css';
@@ -189,25 +189,16 @@ export default function AccessPanel({
     roster[0];
 
   /**
-   * Turns what was typed into exactly one account, or nothing.
-   *
-   * The search endpoint matches substrings, so it can answer with people
-   * who merely resemble what was typed. An invite has to be the person
-   * meant, so only an exact username or address counts.
+   * Turns what was typed into exactly one account, or nothing. The
+   * endpoint resolves it and 404s on a miss; nothing is listed either
+   * way, so a typo cannot answer with somebody who merely resembles it.
    */
-  const resolveAccount = async (typed: string): Promise<UserDto | null> => {
-    const wanted = typed.trim().toLowerCase();
+  const resolveAccount = async (
+    typed: string,
+  ): Promise<PublicUserDto | null> => {
+    const wanted = typed.trim();
     if (!wanted) return null;
-    const page = (await api.users.searchUsers(wanted, 1)) as unknown as {
-      items: UserDto[];
-    };
-    return (
-      page.items.find(
-        (user) =>
-          user.username.toLowerCase() === wanted ||
-          user.email.toLowerCase() === wanted,
-      ) ?? null
-    );
+    return await api.users.lookupUser(wanted).catch(() => null);
   };
 
   const invite = useMutation({

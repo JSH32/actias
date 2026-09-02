@@ -1,0 +1,286 @@
+/* The query shell: a transcript above one line. Square, ruled, the
+ * console's own tokens, like the grid it renders pages with. */
+.shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0;
+}
+
+.intro {
+  padding: 8px 16px 12px;
+  color: var(--ink-3);
+  font: 400 12px/1.55 var(--doc);
+}
+
+.intro pre {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--night-1);
+  color: var(--ink-2);
+  font: 400 12px/1.6 var(--mono);
+  overflow-x: auto;
+}
+
+.intro code {
+  font: 400 12px var(--mono);
+  color: var(--ink-2);
+}
+
+.turn {
+  padding: 6px 0 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.prompt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 16px;
+  font: 400 12px var(--mono);
+  color: var(--ink-1);
+}
+
+.prompt code {
+  font: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chevron {
+  color: var(--luna);
+  flex: none;
+}
+
+.meta {
+  margin: 4px 0 6px;
+  padding: 0 16px 0 32px;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+}
+
+.error {
+  margin: 4px 0 0;
+  padding: 0 16px 0 32px;
+  font: 400 11px/1.5 var(--mono);
+  color: var(--err);
+  white-space: pre-wrap;
+}
+
+.text {
+  margin: 4px 0 0;
+  padding: 0 16px 0 32px;
+  font: 400 11px/1.6 var(--mono);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+
+.none {
+  margin: 4px 0 0;
+  padding: 0 16px 0 32px;
+  font: 400 11px var(--mono);
+  color: var(--ink-mark);
+}
+
+/* A page's rows, the grid's own head and row rules, inset under the
+ * statement that produced them and scrolling sideways on their own. */
+.table {
+  margin: 0 16px 0 32px;
+  border: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+/* The input line: the query band's shape, pinned under the transcript. */
+.line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  height: 40px;
+  padding: 0 16px;
+  border-top: 1px solid var(--line);
+}
+
+.line:focus-within {
+  background: var(--night-1);
+}
+
+.editor {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+}
+
+.input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: 400 12px/40px var(--mono);
+  color: var(--ink-1);
+  caret-color: var(--ink-1);
+}
+
+.input::placeholder {
+  color: var(--ink-mark);
+}
+
+.input:focus {
+  outline: none;
+}
+
+.hint {
+  flex: none;
+  font: 400 11px var(--mono);
+  color: var(--ink-mark);
+  white-space: nowrap;
+}
+
+.problem {
+  flex: none;
+  margin: 0;
+  padding: 7px 16px;
+  color: var(--err);
+  font: 400 11px/1.5 var(--mono);
+  border-top: 1px solid var(--line);
+  background: var(--night-1);
+}
+
+/* Completions hang off the line, upward, since the line is at the
+ * bottom of the frame. */
+.completions {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  z-index: 40;
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+  min-width: 190px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  background: var(--night-1);
+  box-shadow: var(--shadow-overlay);
+}
+
+.completion {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: 400 12px var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.completion:hover {
+  color: var(--ink-1);
+}
+
+.completionPicked {
+  composes: completion;
+  background: var(--luna-tint);
+  color: var(--ink-1);
+}
+
+/* A returned value, the json inspector's own rendering, inset like a
+ * page's rows. */
+.value {
+  margin: 0 16px 0 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  background: var(--night-1);
+  font: 400 12px/1.5 var(--mono);
+  overflow-x: auto;
+}
+
+/* Write mode wears the warning colour in the line's hint: the one
+ * state worth noticing from across the page. */
+.hintWrite {
+  composes: hint;
+  color: var(--warn);
+}
+
+/* The mode switch: a word on the line like its neighbours until it is
+ * on, when it wears the warning colour, the one state worth noticing
+ * from across the page. */
+.mode {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  background: none;
+  font: 400 11px var(--mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mode:hover {
+  color: var(--ink-1);
+  border-color: var(--line);
+}
+
+.modeWrite {
+  composes: mode;
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--night-1);
+}
+
+.modeWrite:hover {
+  color: var(--warn);
+}
+
+/* The buffer: the escalation from a line to a chunk, above the line
+ * and under the transcript, sized for a pasted script. */
+.buffer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: var(--night-1);
+}
+
+.bufferText {
+  width: 100%;
+  min-height: 160px;
+  max-height: 40vh;
+  padding: 8px 16px;
+  border: 0;
+  background: none;
+  resize: vertical;
+  font: 400 12px/1.6 var(--mono);
+  color: var(--ink-1);
+}
+
+.bufferText:focus {
+  outline: none;
+}
+
+.bufferBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px 6px;
+}
+
+.bufferBar .hint {
+  flex: 1;
+  white-space: normal;
+}

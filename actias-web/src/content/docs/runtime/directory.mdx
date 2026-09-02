@@ -1,0 +1,356 @@
+---
+title: Directory
+lead: Query a class of objects by declared fields, without waking any of them.
+order: 11
+---
+
+## One row per object
+
+A class declares a `directory`: one read that runs per derivation, and
+the fields it feeds. Each field names its own kind.
+
+```lua
+local Auction = object "Auction" {
+    migrations = "migrations/Auction",
+
+    directory = {
+        -- Runs once per derivation; every field reads what it returns.
+        from = function(state)
+            return state.store:get("lot")
+        end,
+
+        fields = {
+            -- Bare: read the field's own name off the lot.
+            status    = f.string,
+            closes_at = f.integer,
+            -- Called: run this extractor against the same lot.
+            high_bid  = f.integer(function(lot) return tonumber(lot.bid) end),
+        },
+    },
+
+    bid = function(state, user, amount)
+        -- methods never mention the directory; they maintain the
+        -- state it reads
+        state.sql:exec("INSERT INTO bids (at, user, amount) VALUES (?, ?, ?)",
+            { state.now(), user, amount })
+        state.store:set("lot", { status = "open", bid = amount })
+    end,
+}
+```
+
+The platform recomputes the row after any call that wrote. Methods are
+never edited for indexing, and the row cannot drift from the state it
+is computed from.
+
+<table>
+  <thead>
+    <tr><th>Kind</th><th>Accepts</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>f.string</code></td><td>a string</td></tr>
+    <tr><td><code>f.integer</code></td><td>a whole number; a fraction fails the derivation</td></tr>
+    <tr><td><code>f.number</code></td><td>any number, whole numbers included</td></tr>
+    <tr><td><code>f.boolean</code></td><td>true or false</td></tr>
+    <tr><td><code>f.array</code></td><td>an array of scalars, up to 256 members</td></tr>
+  </tbody>
+</table>
+
+An extractor receives the value `from` returned and the same restricted
+`state`. The fields are a table, not something a function returns: the
+publish reads the field set without running anything, so a field cannot
+hide inside a branch that only some objects take.
+
+**Gotchas**
+
+- A derivation sees `state.name`, `state.sql`, `state.store` and
+  `state.now()` only. It is read-only; a write inside it is an error.
+- It runs on every write under a 5 ms budget, so it reads state the
+  methods keep current. An aggregate per write (a `MAX` over a table)
+  is the shape the budget exists to refuse.
+- A value of the wrong kind, or a field the declaration does not name,
+  fails the derivation the way a thrown error does.
+- If `from` returns nothing, every field is absent for that object,
+  which is what a brand new instance looks like.
+- A class with a `directory` needs storage to derive from: `migrations`
+  or an `init` that creates its schema. A `directory` with no fields
+  is refused at publish.
+
+## Query the class
+
+```lua
+local page = Auction:list {
+    where  = { status = "open", closes_at = { lt = now + 3600 } },
+    order  = { closes_at = "asc" },
+    limit  = 50,
+}
+
+for _, entry in page.entries do
+    print(entry.name, entry.high_bid)
+end
+```
+
+Entries carry `name` plus the declared fields; an array field comes
+back as a table. Pass `cursor = page.cursor` to continue a page. With
+no `limit` a page holds 100 entries; the console and the api cap a page
+at 500.
+
+`order` takes one field. A Lua table has no order between its keys, so
+a second sort key's precedence could not be read from it; sort by the
+one that matters and page by the cursor. Absent values sort last in
+both directions, and `name` is the final tie-break, so the order is
+total.
+
+`actias check` types the query and the declaration alike: a kind that
+is not a kind (`f.txt`) and a misspelled operator are type errors
+before anything is published.
+
+## Predicates
+
+Top-level fields are ANDed. Values match exactly, or take an operator
+table:
+
+<table>
+  <thead>
+    <tr><th>Operator</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>eq</code></td><td>equal; the same as a bare value</td></tr>
+    <tr><td><code>lt</code>, <code>lte</code>, <code>gt</code>, <code>gte</code></td><td>comparison</td></tr>
+    <tr><td><code>ne</code></td><td>not equal</td></tr>
+    <tr><td><code>one_of</code></td><td>any of a list, at most 1024 values; an empty list matches nothing</td></tr>
+    <tr><td><code>starts_with</code></td><td>text prefix</td></tr>
+    <tr><td><code>contains</code></td><td>membership, for array fields</td></tr>
+    <tr><td><code>exists</code></td><td>presence; <code>exists = false</code> matches absence</td></tr>
+  </tbody>
+</table>
+
+`any`, `all` and `none` combine full `where` tables, and nest:
+
+```lua
+local page = Auction:list {
+    where = {
+        status   = "open",
+        high_bid = { gte = 100, lt = 5000 },
+        name     = { starts_with = "lot:" },
+        any = {
+            { closes_at = { lt = soon } },
+            { high_bid = { gt = 10000 } },
+        },
+    },
+    order = { closes_at = "asc" },
+}
+```
+
+`name` is always queryable. Every query runs against an indexed local
+copy; equality, ranges and `starts_with` walk an index, while
+`contains`, `ne` and `exists` scan the candidate rows.
+
+**Gotchas**
+
+- An unknown operator is refused, never ignored: a filter that widens
+  silently would be worse than an error.
+- A `nil` operand is refused with a hint: a table cannot hold one, and
+  absence is spelled `exists = false`.
+- An empty `any`, `all` or `none` is refused.
+- `Auction:list {}` and `Auction:find()` list everything, 100 at a time.
+
+## Arrays, dotted names, and absence
+
+A field can hold an array of scalars, and a name may carry dots, which
+is how a nested shape is exposed one leaf at a time:
+
+```lua
+directory = {
+    from = function(state) return state.store:get("lot") end,
+    fields = {
+        tags = f.array,                      -- e.g. {"vintage", "rare"}
+        ["location.region"] = f.string(function(lot) return lot.region end),
+        closes_at = f.integer,
+    },
+}
+
+local page = Auction:list {
+    where = {
+        tags = { contains = "vintage" },
+        ["location.region"] = "eu",
+        closes_at = { exists = false },   -- auctions with no close time
+    },
+}
+```
+
+- Arrays take `contains` and `exists` only. They have no order, so
+  comparing or sorting by one is refused.
+- A dotted name is one field with a dot in it, not a path the platform
+  walks; the extractor is what reaches into the shape.
+- `exists = false` is the one way to match an absent field.
+  Comparisons, `ne` included, never match absence.
+- Members and leaves are scalars. An array inside an array is
+  refused.
+
+## Three ways to read
+
+<table>
+  <thead>
+    <tr><th>Call</th><th>Cost</th><th>Freshness</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>Auction:list</code>, <code>Auction:find</code></td><td>cheapest; nothing woken</td><td>rows trail writes by seconds</td></tr>
+    <tr><td><code>Auction:visit</code></td><td>rechecks each candidate against its object's saved state; nothing woken</td><td>stale rows are dropped or refreshed</td></tr>
+    <tr><td><code>Auction(name):method()</code></td><td>a real call, serialized</td><td>the truth</td></tr>
+  </tbody>
+</table>
+
+`find` is `list` with the predicate as the whole argument, for the
+common read that wants default order and limit:
+
+```lua
+local open = Auction:find { status = "open" }
+```
+
+The directory's guarantee is one-sided. An object that matched is
+always present; a row may briefly still match after the object
+changed. Plan for over-inclusion, never for omission.
+
+```lua
+local page = Auction:visit { where = { status = "open" }, limit = 50 }
+
+for _, entry in page.entries do
+    Auction(entry.name):close()
+end
+```
+
+`visit` decides per candidate from the object's saved state, without
+waking it:
+
+<table>
+  <thead>
+    <tr><th>Saved state is</th><th>The entry</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>what the row describes</td><td>returned as is</td></tr>
+    <tr><td>newer, and still matching</td><td>returned with the newer field values</td></tr>
+    <tr><td>newer, and no longer matching</td><td>dropped</td></tr>
+    <tr><td>deleted</td><td>dropped</td></tr>
+    <tr><td>a state whose derivation failed</td><td>re-derived on a scratch copy and judged from that, 16 per page; past that, returned with <code>entry.unverified = true</code></td></tr>
+  </tbody>
+</table>
+
+**Gotchas**
+
+- `limit` bounds candidates examined, not entries returned. A `visit`
+  page can hold fewer entries than the limit, plus a cursor.
+- `list` fields are a snapshot as of the object's last saved write.
+  The directory chooses who to call; the object is the truth. Acting
+  on `entry.high_bid` without calling the object acts on stale data.
+- An object that exists but has never written has an entry with no
+  fields: the index records that it exists, nothing more. Comparisons
+  never match it; `exists = false` does. Its first write replaces the
+  empty entry with a real one.
+- A field you just published is queryable from the moment the publish
+  lands, as a building field: a query naming it is refused with
+  "still building" until every row has been re-derived under the new
+  declaration, never with "not a directory field".
+- A page boundary can repeat or skip a row whose sort value moved
+  between pages. The cursor is keyed on the name, which cannot move.
+
+## The shell
+
+The project's [shell](/docs/runtime/shell) runs these reads as typed,
+against the live project, from the console or `actias shell`:
+
+```lua
+Auction:find { status = "open", high_bid = { gt = 100 } }
+Auction:visit { where = { status = "open" } }
+```
+
+## Across classes
+
+There are no joins. Query one class, feed the names to the other:
+
+```lua
+local flagged = Account:list { where = { flagged = true }, limit = 500 }
+local names = {}
+for i, e in flagged.entries do names[i] = e.name end
+
+local risky = Auction:list {
+    where = { seller = { one_of = names }, status = "open" },
+}
+```
+
+The design that avoids the second query: `directory` computes from the
+object's own state, so an Auction that learns seller standing through
+its own calls or followed streams exposes `seller_flagged` itself.
+
+There are no counts and no group-by. Over rows that can briefly
+over-include, a count is wrong; keep a counter object, or use
+analytics.
+
+## Adding a field later
+
+Add it to `fields`, publish. The publish records the new field set, so
+the platform knows the field exists before any object has derived one,
+and a background pass fills it from each object's saved state: nothing
+is woken, and objects behind on migrations are handled.
+
+A deploy that changes no field renumbers nothing and rebuilds nothing,
+so ordinary releases cost the index nothing at all.
+
+Until the pass finishes, the field is **building**. A query filtering
+or ordering on it is refused, never served incomplete; the class page
+and the shell name the fields still building.
+
+The pass rebuilds up to 256 objects per class each time it runs, on
+the reconciliation schedule, every fifteen minutes by default. A class
+of a few hundred objects is built within a pass or two; a class of ten
+thousand takes about forty passes, ten hours at the default. Publish
+the field before the query that needs it, not with it.
+
+## When a derivation fails
+
+A thrown error, a blown budget, a wrong kind or an oversized row inside
+`from` or a field's extractor never fails the write that triggered it.
+The method's changes commit; the row keeps its last good value and is
+marked failed.
+
+- The failure is logged by the worker, naming the object.
+- `visit` re-derives such candidates on a scratch copy and judges them
+  from that, so a broken class is still visited correctly.
+- Publishing a fix refills the failed rows in the background: the same
+  pass that fills an added field.
+
+Until the fix ships, `list` and `find` see the object by its last good
+row only. Changed fields are stale, visibly, never silently.
+
+## Limits
+
+<table>
+  <thead>
+    <tr><th>Limit</th><th>Value</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>fields per class</td><td>no fixed count; the encoded row caps at 4 KB, and a larger row fails the derivation</td></tr>
+    <tr><td>field values</td><td>string, number, boolean, nil, or an array of those; integral numbers store exactly</td></tr>
+    <tr><td>numeric precision</td><td>53 bits (Luau numbers); larger ids belong in text fields</td></tr>
+    <tr><td>field names</td><td>128 bytes, never empty, without <code>,</code> <code>:</code> or <code>=</code></td></tr>
+    <tr><td>nesting</td><td>none; a field is one declared name, and arrays hold scalars only</td></tr>
+    <tr><td>array members</td><td>256 per field</td></tr>
+    <tr><td>rows per page</td><td>100 by default; the console and the api cap at 500; a script's <code>limit</code> is honoured as asked</td></tr>
+    <tr><td><code>one_of</code> list</td><td>1024 values</td></tr>
+    <tr><td><code>order</code></td><td>one field</td></tr>
+    <tr><td>reserved names</td><td><code>any</code>, <code>all</code>, <code>none</code>, <code>name</code></td></tr>
+    <tr><td>writes inside a derivation</td><td>refused</td></tr>
+    <tr><td>compute per evaluation</td><td>5 ms; past it the evaluation counts as failed</td></tr>
+    <tr><td>joins, counts, group-by</td><td>not offered</td></tr>
+  </tbody>
+</table>
+
+`nil` means the field is absent. Absent never matches any predicate.
+
+## Related
+
+- [Objects](/docs/runtime/objects): the class surface the directory
+  hangs off.
+- [Guarantees and limits](/docs/runtime/guarantees): the freshness
+  promise in the same terms as every other guarantee.
+- [The directory's internals](/docs/internals/directory): where rows
+  live, how they merge, what a crash costs.

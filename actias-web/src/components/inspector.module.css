@@ -64,6 +64,15 @@
   color: var(--ink-2);
   text-wrap: pretty;
 }
+/* A lede sitting directly above a data band. The band's own top edge
+ * is a rule, so without this the sentence reads as underlined by the
+ * table rather than as its own line. Spacing belongs here, on the
+ * text, and not on the band, where it would only make the band taller. */
+.ledeAboveBand {
+  composes: lede;
+  margin-bottom: 14px;
+}
+
 .lede code {
   font-family: var(--mono);
   color: var(--ink-1);
@@ -872,6 +881,18 @@
   letter-spacing: -0.01em;
   color: var(--ink-1);
 }
+
+/* What kind of thing the page is about, beside its name: the same
+ * colour coding the rest of the console uses for databases, objects
+ * and directories. The page sets the colour; the shape says the rest. */
+.pageIcon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  /* Pulled against the title so the two read as one label rather than
+   * an icon parked next to a word. */
+  margin-right: -4px;
+}
 .pageActions {
   display: flex;
   align-items: center;
@@ -1602,4 +1623,20 @@
   gap: 4px;
   padding: 6px 0;
   border-bottom: 1px solid var(--line-soft);
+}
+
+/* A verb inside a sentence: the lede's own text with the accent, no
+ * box, so the choice reads as part of the description rather than as a
+ * control parked beside it. */
+.linkButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--luna);
+  font: inherit;
+  cursor: pointer;
+}
+
+.linkButton:hover {
+  text-decoration: underline;
 }

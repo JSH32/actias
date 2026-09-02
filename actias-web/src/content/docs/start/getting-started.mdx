@@ -1,42 +1,73 @@
 ---
 title: Your first script
-lead: Install the CLI, create a project, publish it, and watch it answer a request.
+lead: Install the CLI, create a project, publish a script, and watch it answer a request.
 order: 2
 ---
 
-## Get the tools
-
-The CLI is one binary, `actias`. Take it from the download page or
-build it from the repository:
+## The tools
 
 ```sh
-cargo build -p actias-cli
+cargo build --release -p actias-cli      # needs protoc on your PATH
+export PATH="$PWD/target/release:$PATH"  # the binary is target/release/actias
 ```
 
-You also need somewhere to publish to. Locally that is
-`docker-compose up -d` in the repository root, which boots the api, the
-console, workers and storage.
-
-## Log in and make a project
+The [download page](/download) has the same instructions. A local
+platform to publish to is one command in the repository root:
 
 ```sh
-actias login          # asks for the api url and your credentials
-actias project create my-project
+docker compose up -d --build
 ```
 
-`actias projects` lists the ones you can reach, and the console shows the
-same set at `/projects`.
+<table>
+  <thead>
+    <tr><th>Service</th><th>Where</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>api</td><td><code>http://localhost:3001</code></td></tr>
+    <tr><td>console</td><td><code>http://localhost:3000</code></td></tr>
+    <tr><td>worker</td><td><code>http://localhost:3002</code></td></tr>
+  </tbody>
+</table>
 
-A **project** owns your scripts and everything they declare. The kv
-namespaces, databases, objects and secrets a script uses are scoped to
-it.
+## An account and a project
 
-## Create a script
+Register at the console, `http://localhost:3000/register`. A local
+compose accepts registrations; a deployment with `INVITE_ONLY=true`
+needs an invite from an admin.
 
 ```sh
-actias init hello
-cd hello
+actias login
+actias project create auction-house
 ```
+
+`login` asks for the server URL, which is the api origin
+(`http://localhost:3001`, no `/api`), then your username or email and
+password. The login lives in your user config directory under
+`actias/settings.json`; running `login` again replaces it.
+
+`project create` prints the project's id and the `init` line that uses
+it. A **project** owns scripts and everything they declare; kv
+namespaces, databases, objects and secrets are scoped to it. Project
+names are 6 to 36 characters. `actias projects` lists the ones you can
+reach; the console shows the same set.
+
+## A script
+
+```sh
+actias init auctions basic <project-id>
+cd auctions
+```
+
+<table>
+  <thead>
+    <tr><th>Argument</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>auctions</code></td><td>the folder to create</td></tr>
+    <tr><td><code>basic</code></td><td>the template: <code>basic</code>, <code>router</code> or <code>todo</code>; omitted, the cli asks</td></tr>
+    <tr><td><code>&lt;project-id&gt;</code></td><td>registers the script under the project, so <code>script.json</code> carries its id; omitted, the first <code>publish</code> asks</td></tr>
+  </tbody>
+</table>
 
 <table>
   <thead>
@@ -44,12 +75,14 @@ cd hello
   </thead>
   <tbody>
     <tr><td><code>main.lua</code></td><td>the entry point</td></tr>
-    <tr><td><code>script.json</code></td><td>the script's id and which files belong to the bundle</td></tr>
-    <tr><td><code>definitions/</code></td><td>editor autocomplete for the platform surface</td></tr>
+    <tr><td><code>script.json</code></td><td>the script's id, its entry point, which files belong to the bundle, and an optional <code>build</code> command run before each publish</td></tr>
+    <tr><td><code>tests/</code></td><td>tests <code>actias test</code> runs</td></tr>
+    <tr><td><code>definitions/</code></td><td>the platform's types for your editor; rewritten by every <code>check</code>, <code>publish</code> and <code>dev</code>, so never edited</td></tr>
+    <tr><td><code>.luaurc</code>, <code>.vscode/</code></td><td>point the editor at those definitions</td></tr>
   </tbody>
 </table>
 
-Open `main.lua`:
+`main.lua` from the `basic` template:
 
 ```lua
 -- `on` declares an event handler; declarations live at the top level.
@@ -61,44 +94,110 @@ on "fetch" (function(request)
 end)
 ```
 
-## Check it
+## Check
 
 ```sh
 actias check
 ```
 
 ```
-📜 Project validated!
-⚡ Handles events: fetch
-🔎 Types check out (luau-analyze).
+   Validated main.lua
+     Handles fetch
+     Checked types (language service)
 ```
 
-`check` runs the same declaration pass the server runs at publish, then
-type-checks every file. Anything the platform would reject fails here
-first.
+`check` runs the declaration pass the server runs at publish, then
+type-checks every `.lua` file in the bundle. The printed list is the
+script's contract: kv namespaces, handled events, secrets, object
+classes, databases, queues, connections, workflows, lifecycle hooks,
+streams published and received, and migrations.
 
-As your script grows the printed list grows with it: the kv namespaces,
-databases, queues, workflows, object classes and streams it declares.
-The console shows the same list, and the server enforces it.
+The last line names the type checker that ran.
 
-## Publish it
+<table>
+  <thead>
+    <tr><th>Checker</th><th>When</th><th>What it sees</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>language service</code></td><td><code>actias-luau</code> is beside the binary, on your PATH, or named by <code>ACTIAS_LUAU</code></td><td>resolves <code>require</code> against your bundle; a type crossing a module boundary is checked</td></tr>
+    <tr><td><code>luau-analyze</code></td><td>a stock <code>luau-analyze</code> is on your PATH</td><td>resolves against the filesystem; every import is <code>any</code></td></tr>
+    <tr><td>none</td><td>neither is installed</td><td>the type check is skipped, with a warning</td></tr>
+  </tbody>
+</table>
+
+`actias-luau` is built from the repository's `luau-web/` directory;
+there is no packaged release of it yet.
+
+**Gotchas**
+
+- A publish can still be refused for something `check` cannot see:
+  another script in the project already declaring the same class,
+  queue or workflow.
+
+## Check in an editor
+
+`actias lsp` speaks the language server protocol over stdio and
+answers with the same checker as `check`. Diagnostics, hover,
+completion and go-to-definition resolve through your bundle, so a
+method call lands on the file that defines it.
+
+Attach it to `.lua` files in a directory holding a `script.json`. In
+Neovim:
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+    pattern = "lua",
+    callback = function()
+        vim.lsp.start({
+            name = "actias",
+            cmd = { "actias", "lsp" },
+            root_dir = vim.fs.root(0, { "script.json" }),
+        })
+    end,
+})
+```
+
+The server needs `actias-luau`, found the same three ways `check`
+finds it; without it the server refuses to start and says so.
+
+## Publish
 
 ```sh
 actias publish
 ```
 
-Only changed files upload. The server derives the contract from your
-code again, the revision goes live, and the CLI prints the public
-identifier and the revision id.
+```
+   Uploading 1 of 1 files
+   Published auctions (a68e112a-…)
+             revision 2f0c…
+             preview  /_rev/auctions/2f0c…
+```
 
-Your script answers at `<worker-url>/<identifier>/`:
+Only changed files upload. The server derives the contract from your
+code again and the revision goes live at `<worker-url>/<identifier>/`:
 
 ```sh
-curl http://localhost:3002/hello/
+curl http://localhost:3002/auctions/
+```
+
+```json
 {"hello":"world"}
 ```
 
-## Add something that remembers
+## Run it live while editing
+
+```sh
+actias dev
+```
+
+`dev` opens a live session on the worker (`--worker-url`, default
+`http://127.0.0.1:3002`) and prints its URL,
+`<worker-url>/_live/<identifier>/<session>/`. Every save in the project
+directory uploads the bundle again, so the URL always serves the file
+on disk. The script needs an id first, so `init` with a project id, or
+publish once.
+
+## Something that remembers
 
 Declare a key-value namespace at the top level and use it inside the
 handler:
@@ -117,11 +216,11 @@ end)
 ```
 
 Publish again and refresh a few times. The counter survives requests,
-restarts and deploys, and the console's KV section shows it changing.
+restarts and deploys, and the console's KV page shows it changing.
 
-## Where to go next
+## Related
 
-- [How a request runs](/docs/runtime/requests) explains the execution
-  model, one concept per chapter.
-- [The Lua reference](/docs/reference/kv) documents every namespace
-  with signatures and examples.
+- [How a request runs](/docs/runtime/requests): the execution model,
+  one concept per chapter.
+- [The Lua reference](/docs/reference/kv): every namespace with
+  signatures and examples.
