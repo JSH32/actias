@@ -1,3 +1,6 @@
+//! The worker's operator interface: every knob it reads from the
+//! environment, with the default each one falls back to.
+
 use actias_common::config::{dotenv, get_env, get_env_or};
 
 pub struct Config {
@@ -16,6 +19,14 @@ pub struct Config {
     pub max_body_bytes: usize,
     /// Whole-request deadline, covering script lookup and execution.
     pub request_timeout_secs: u64,
+    /// Work units one guest scope may spend: a request, an object call,
+    /// a connection frame. What actually stops a runaway, since it
+    /// counts work rather than time and so cannot be outrun by a busy
+    /// host.
+    pub guest_work_limit: u64,
+    /// Wall backstop for the same scope, seconds. Only catches what the
+    /// meter cannot see, code stuck outside the vm.
+    pub guest_wall_secs: u64,
     /// How long a cached identifier-to-script pointer may be served before
     /// re-resolving; the upper bound on publish propagation delay.
     pub pointer_ttl_secs: u64,
@@ -62,6 +73,39 @@ pub struct Config {
     pub queue_backoff_base_ms: i64,
     /// Seconds between cold-alarm sweeps of the object data dir.
     pub object_sweep_secs: u64,
+    /// Milliseconds between directory delta flushes. The interval is
+    /// the coalescing window: every settled row a node collects inside
+    /// one becomes a single upload per class, so raising it trades
+    /// index freshness for fewer, larger deltas.
+    pub directory_flush_ms: u64,
+    /// Milliseconds a `directory` function may run before its budget
+    /// is spent. Contained like any other failure: the write commits,
+    /// the last good row stays, the failure is marked.
+    pub directory_eval_budget_ms: u64,
+    /// Seconds between directory compaction passes. Folding is the only
+    /// serialized step in the directory and it is off the write path,
+    /// so this trades query freshness against store traffic.
+    pub directory_compact_secs: u64,
+    /// Seconds between directory reconciliation passes: rows recovered
+    /// from object manifests, and rows retired for objects that no
+    /// longer exist. One GET per object, so this is rare on purpose.
+    /// It bounds how long a missing or ghost row can persist; it is not
+    /// what keeps the index fresh.
+    pub directory_rebuild_secs: u64,
+    /// Seconds between crash-sweep polls. Frequent and cheap: the poll
+    /// is one indexed query that answers nothing on a healthy cluster,
+    /// and a dead node's rows should not wait a reconciliation interval.
+    pub directory_sweep_secs: u64,
+    /// Seconds an unused directory overlay stays on disk. Pure cache
+    /// rebuilt from immutable files, so evicting costs a rebuild and
+    /// never correctness; holding every class a node was ever asked
+    /// about is what costs disk forever.
+    pub directory_overlay_ttl_secs: u64,
+    /// Byte budget for cached directory bases and deltas. They are
+    /// content-addressed, so an entry can never be stale and the cache
+    /// is what keeps a hot class from re-downloading its whole base on
+    /// every compaction and every overlay rebuild.
+    pub directory_cache_bytes: u64,
     /// Shared secret authenticating node-to-node object forwards.
     pub internal_token: String,
     /// Seconds a snapshot replica serves reads before refreshing.
@@ -93,6 +137,11 @@ impl Config {
             secret_service_uri: std::env::var("SECRET_SERVICE_URI").ok(),
             max_body_bytes: get_env_or("MAX_BODY_BYTES", 10 * 1024 * 1024),
             request_timeout_secs: get_env_or("REQUEST_TIMEOUT_SECS", 30),
+            guest_work_limit: get_env_or(
+                "GUEST_WORK_LIMIT",
+                actias_worker_core::budget::DEFAULT_WORK_LIMIT,
+            ),
+            guest_wall_secs: get_env_or("GUEST_WALL_SECS", 10),
             pointer_ttl_secs: get_env_or("POINTER_TTL_SECS", 5),
             revision_cache_bytes: get_env_or::<u64>("REVISION_CACHE_MB", 128) * 1024 * 1024,
             s3_endpoint: get_env("S3_ENDPOINT"),
@@ -122,6 +171,16 @@ impl Config {
             queue_max_attempts: get_env_or("QUEUE_MAX_ATTEMPTS", 5),
             queue_backoff_base_ms: get_env_or("QUEUE_BACKOFF_BASE_MS", 2000),
             object_sweep_secs: get_env_or("OBJECT_SWEEP_SECS", 30),
+            directory_flush_ms: get_env_or("DIRECTORY_FLUSH_MS", 200),
+            directory_compact_secs: get_env_or("DIRECTORY_COMPACT_SECS", 10),
+            directory_rebuild_secs: get_env_or("DIRECTORY_REBUILD_SECS", 900),
+            directory_sweep_secs: get_env_or("DIRECTORY_SWEEP_SECS", 15),
+            directory_overlay_ttl_secs: get_env_or("DIRECTORY_OVERLAY_TTL_SECS", 1800),
+            directory_cache_bytes: get_env_or::<u64>("DIRECTORY_CACHE_MB", 256) * 1024 * 1024,
+            directory_eval_budget_ms: get_env_or(
+                "DIRECTORY_EVAL_BUDGET_MS",
+                actias_worker_core::directory::DEFAULT_EVAL_BUDGET_MS,
+            ),
             // Development default; a deployment must set its own.
             internal_token: get_env_or("INTERNAL_TOKEN", "dev-internal-token".to_owned()),
             replica_ttl_secs: get_env_or("OBJECT_REPLICA_TTL_SECS", 30),

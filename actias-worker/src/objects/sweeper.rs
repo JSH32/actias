@@ -367,7 +367,7 @@ mod tests {
     fn the_scan_finds_every_alarm_with_its_due_time() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        // The boot mirror wants them ALL, due and future alike: the
+        // The boot mirror wants them all, due and future alike: the
         // registry decides dueness, the file only remembers.
         file_with_alarm(dir.path(), "due.db", "script-1/Keeper/due", -5_000);
         file_with_alarm(dir.path(), "future.db", "script-1/Keeper/future", 60_000);

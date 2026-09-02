@@ -6,23 +6,39 @@
 //! once its ticket resolves, so "the caller heard success" and "this
 //! commit survives the machine" are the same event.
 //!
-//! Coverage is decided by flight ordering rather than frame offsets. A
-//! flight takes a number when it begins, and a mark taken while
-//! [`Shipper::begun`] reads N is covered by flight N+1: that flight had
-//! not started reading the file when the mark was taken, so it sees the
-//! committed frames. This can wait one flight longer than strictly
-//! necessary and never one fewer.
+//! Coverage is decided by flight ordering, never by frame offsets:
 //!
-//! What a completed flight promises is that everything committed when
-//! it read the file is durable: it either shipped those frames and
-//! wrote the manifest naming them, or found them already covered by an
-//! earlier manifest and did nothing. The manifest is the release point
-//! either way, because restore reads only the segments a manifest
-//! names, so an uploaded segment whose manifest never landed
-//! reconstructs nothing (object_store.rs). A graceful
-//! drain flushes every dirty object before the process leaves, and what
-//! a hard crash takes back is work nobody was promised: calls still
-//! waiting on their ticket, whose callers see a transport failure.
+//! ```text
+//!   flight N     |- reads file ------------|  manifest
+//!   write W                * commit
+//!   ticket                 `- target = N+1     (begun read as N)
+//!   flight N+1                       |- reads file --|  manifest
+//!                                    ^
+//!                     begins after W committed, so it sees W's frames
+//! ```
+//!
+//! A flight takes its number before it reads the file, so a mark taken
+//! while [`Shipper::begun`] reads N is covered by flight N+1. The cost
+//! is waiting at most one flight longer than strictly necessary, and
+//! never one fewer.
+//!
+//! A completed flight promises that everything committed when it read
+//! the file is durable: it either shipped those frames and wrote the
+//! manifest naming them, or found them already covered by an earlier
+//! manifest and did nothing. The manifest is the release point either
+//! way, because restore reads only the segments a manifest names, so an
+//! uploaded segment whose manifest never landed reconstructs nothing
+//! ([`crate::objects::store`]). A graceful drain flushes every dirty
+//! object before the process leaves, and what a hard crash takes back is
+//! work nobody was promised: calls still waiting on their ticket, whose
+//! callers see a transport failure.
+//!
+//! The release point is not the end state. Answering on a manifest write
+//! is what makes a gated write cost a round trip to the object store;
+//! replicating the WAL tail to peers under the same lease and answering
+//! on their acks replaces it, and takes the flight-ordering argument
+//! above with it. Keep changes here small, and do not build anything new
+//! on `begun`/`landed`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -392,7 +408,7 @@ mod tests {
     }
 
     /// A ticket taken while a flight is already in the air waits for the
-    /// NEXT one: the flight that was already reading the file cannot be
+    /// next one: the flight that was already reading the file cannot be
     /// proven to carry the write that had not yet happened when it began.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_ticket_waits_for_the_flight_that_began_after_it() {

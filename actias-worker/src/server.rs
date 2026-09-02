@@ -1,3 +1,11 @@
+//! The http surface: address a script by path or subdomain, resolve it
+//! through the pointer and revision caches, run it, and shape what it
+//! returns. Everything about placement and object routing lives in
+//! [`crate::routing`]; this module only turns transports into calls.
+//!
+//! [`AppState`] is the one handle every handler reaches through, so a
+//! new capability is a field here rather than a second global.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -17,7 +25,7 @@ use actias_worker_core::egress::EgressClient;
 use actias_worker_core::extensions;
 use actias_worker_core::extensions::http::Request as LuaRequest;
 use actias_worker_core::extensions::log::LogPublisher;
-use actias_worker_core::extensions::objects::ObjectRouter;
+use actias_worker_core::extensions::objects::{DirectoryLister, ObjectRouter};
 use actias_worker_core::identity::ObjectKey;
 use actias_worker_core::objects::ObjectHost;
 use actias_worker_core::proto::bundle::File;
@@ -34,7 +42,7 @@ use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
 
 use crate::blob_cache::BlobCache;
 use crate::metrics::Metrics;
-use crate::object_store::ObjectStore;
+use crate::objects::store::ObjectStore;
 use crate::routing::{ObjectRouting, ResolveError, cached_revision};
 
 /// The service clients every request handler needs.
@@ -116,6 +124,10 @@ pub struct AppState {
         >,
     >,
     pub request_timeout: Duration,
+    /// Work and wall ceilings every guest scope on this node is armed
+    /// with: requests, object calls, connection frames alike. One pair,
+    /// because a caller cannot tell which kind of scope it reached.
+    pub guest_limits: GuestLimits,
     /// Requests currently executing; the heartbeat reports it as load.
     pub in_flight: Arc<AtomicU32>,
     /// Live durable objects on this node, one pinned vm each.
@@ -125,15 +137,37 @@ pub struct AppState {
     /// Size cap per object database, bytes.
     pub object_db_max_bytes: u64,
     /// When objects ship WAL segments and when generations rotate.
-    pub ship_thresholds: crate::object_store::ShipThresholds,
+    pub ship_thresholds: crate::objects::store::ShipThresholds,
     /// How long a written call's answer waits on the output gate before
     /// its outcome is reported unknown.
     pub ack_gate: std::time::Duration,
     /// Shipping and output-gate counters, shared by every object's
     /// shipper on this node.
-    pub ship_gauges: Arc<crate::shipper::ShipGauges>,
+    pub ship_gauges: Arc<crate::objects::shipper::ShipGauges>,
     /// How much of the store this node may occupy at once.
-    pub ship_limits: Arc<crate::shipper::ShipLimits>,
+    pub ship_limits: Arc<crate::objects::shipper::ShipLimits>,
+    /// Settled directory rows waiting to leave this node. Node-wide,
+    /// because a delta is a bag of rows: one upload per class per
+    /// interval rather than one per object.
+    pub directory_sync: Arc<crate::directory::sync::DirectorySyncer>,
+    /// The directory's loop counters, served at /_metrics.
+    pub directory_gauges: Arc<crate::directory::gauges::DirectoryGauges>,
+    /// Live membership as the reader placement last read it, keyed by
+    /// one constant; a short ttl bounds how long a query can hop to a
+    /// node that left.
+    pub reader_membership: moka::future::Cache<String, Arc<Vec<String>>>,
+    /// Milliseconds a `directory` function may run before its budget is
+    /// spent; contained like any other failure.
+    pub directory_eval_budget_ms: u64,
+    /// Class overlays this node has materialized for querying. Keyed by
+    /// generation, and bases are immutable, so rebuilding is the only
+    /// invalidation.
+    pub directory_overlays: Arc<crate::directory::read::Overlays>,
+    /// Rows recomputed by a verified read's scratch tail, keyed by the
+    /// version they were derived at. A failed derivation is a class-wide
+    /// condition, not a scattered one, so without this every visit over
+    /// a broken class re-restores every object it names.
+    pub directory_recomputed: Arc<crate::directory::visit::Recomputed>,
     /// Names an admission gate refused, with the refusal; junk
     /// identities answer from here for a pointer ttl.
     pub admit_refusals: moka::future::Cache<String, String>,
@@ -166,13 +200,13 @@ pub struct AppState {
     /// object claims speak as it.
     pub node_identity: Arc<std::sync::RwLock<Option<String>>>,
     /// Every live snapshot shipper, for the drain flush.
-    pub shippers: crate::shipper::Shippers,
+    pub shippers: crate::objects::shipper::Shippers,
     /// The placement store, for object lease claims.
     pub registry: NodeRegistryServiceClient<actias_worker_core::Grpc>,
     /// Domain subdomain routing hangs off; [`None`] leaves only the path
     /// forms.
     pub base_domain: Option<String>,
-    /// Live websocket connections on THIS node, by connection id; the
+    /// Live websocket connections on this node, by connection id; the
     /// stream pump delivers connection edges through it, and a missing
     /// id is the prune signal.
     pub connections: Arc<actias_worker_core::connections::ConnectionRegistry>,
@@ -181,6 +215,26 @@ pub struct AppState {
     pub connection_gauges: Arc<actias_worker_core::connections::actor::ConnectionGauges>,
     /// Silence before a connection's vm drops; [`None`] never drops.
     pub connection_hibernate_after: Option<std::time::Duration>,
+}
+
+/// What a guest scope may spend before the platform cuts it off.
+/// Operator config, defaulted from
+/// [`actias_worker_core::budget::DEFAULT_WORK_LIMIT`].
+#[derive(Clone, Copy)]
+pub struct GuestLimits {
+    /// Work units; the ceiling that actually stops a runaway.
+    pub work: u64,
+    /// Wall seconds, the backstop for code stuck outside the vm.
+    pub wall_secs: u64,
+}
+
+impl GuestLimits {
+    /// Arms a freshly built vm. Every runtime this node constructs goes
+    /// through here, so the wall limit a constructor took and the work
+    /// limit a setter carries cannot drift apart.
+    pub fn apply(&self, runtime: &ActiasRuntime) {
+        runtime.set_work_limit(self.work);
+    }
 }
 
 /// Holds the in-flight gauge up for exactly one request's lifetime;
@@ -475,11 +529,24 @@ fn lua_response_into_response(res: extensions::http::Response) -> anyhow::Result
 /// The prometheus exposition; gauges are measured at scrape time.
 async fn metrics_handler(State(state): State<AppState>) -> Response {
     let resident = state.objects.resident_count().await;
-    let mut response = Response::new(Body::from(state.metrics.render(
-        resident,
-        &state.connection_gauges,
-        &state.ship_gauges,
-    )));
+    let mut response = Response::new(Body::from(
+        state.metrics.render(
+            resident,
+            &state.connection_gauges,
+            &state.ship_gauges,
+            &state.directory_gauges,
+            (
+                state
+                    .object_store
+                    .file_reads
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                state
+                    .object_store
+                    .file_fetches
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        ),
+    ));
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/plain; version=0.0.4"),
@@ -863,11 +930,15 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     );
 
     // Lua futures are Send under mlua's send feature, so the runtime runs
-    // directly on the async executor; the old block_in_place/LocalSet dance
-    // died with mlua 0.9.
+    // directly on the async executor. Never wrap it in block_in_place or
+    // a LocalSet: that blocks a worker thread for the whole script.
     let kv_client = state.clients.kv.clone();
 
-    let router = ObjectRouting::new(&state, prepared.clone()).as_router();
+    // Kept rather than discarded: the call seam and the listing seam
+    // are both cut from one routing, so they cannot disagree about
+    // whose project a vm is running in.
+    let request_routing = ObjectRouting::new(&state, prepared.clone());
+    let router = request_routing.as_router();
 
     // First touch of a revision on this worker arms its cron events: each
     // becomes a __cron object whose alarm re-arms itself forever after,
@@ -939,11 +1010,16 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         state.egress.clone(),
         logs.clone(),
         state.secret_client.clone(),
-        Some(10),
+        Some(state.guest_limits.wall_secs),
     )
     .await?;
+    state.guest_limits.apply(&lua);
     let connection_router = router.clone();
     lua.set_app_data::<ObjectRouter>(router);
+    // The listing seam. Without it every `Class:list` in a request
+    // handler refuses, because the verb resolves against app data that
+    // only this call installs.
+    lua.set_app_data::<DirectoryLister>(request_routing.as_lister());
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
@@ -959,7 +1035,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     let value: mlua::Value = listener.call_async(request_value).await?;
 
     // The handler upgraded: the response is the handshake and the
-    // request vm is RELEASED like any other response. The pending
+    // request vm is released like any other response. The pending
     // carries a class name and a json seed, and the actor rebuilds a
     // vm of this same revision from the factory when a handler needs
     // one.
@@ -1018,11 +1094,14 @@ fn vm_factory(
                 state.egress.clone(),
                 logs,
                 state.secret_client.clone(),
-                Some(10),
+                Some(state.guest_limits.wall_secs),
             )
             .await
             .map_err(|error| error.to_string())?;
-            lua.set_app_data::<ObjectRouter>(ObjectRouting::new(&state, prepared).as_router());
+            state.guest_limits.apply(&lua);
+            let routing = ObjectRouting::new(&state, prepared);
+            lua.set_app_data::<ObjectRouter>(routing.as_router());
+            lua.set_app_data::<DirectoryLister>(routing.as_lister());
             Ok(lua)
         })
     })
@@ -1172,6 +1251,10 @@ pub(crate) mod test_state {
             redis: None,
             secret_client: None,
             request_timeout: Duration::from_secs(5),
+            guest_limits: GuestLimits {
+                work: actias_worker_core::budget::DEFAULT_WORK_LIMIT,
+                wall_secs: 10,
+            },
             in_flight: Arc::default(),
             objects: Arc::default(),
             metrics: Arc::default(),
@@ -1191,17 +1274,30 @@ pub(crate) mod test_state {
             object_store: Arc::new(ObjectStore::new(
                 crate::blob_cache::s3_client("http://127.0.0.1:1", "unused", "unused"),
                 "unused".to_owned(),
+                1024 * 1024,
             )),
             object_data_dir: std::env::temp_dir(),
             object_db_max_bytes: 64 * 1024 * 1024,
-            ship_thresholds: crate::object_store::ShipThresholds {
+            ship_thresholds: crate::objects::store::ShipThresholds {
                 whole_max: 256 * 1024,
                 rotate_bytes: 4096 * 1024,
                 max_segments: 64,
             },
             ack_gate: Duration::from_millis(10_000),
             ship_gauges: Arc::default(),
-            ship_limits: crate::shipper::ShipLimits::new(32, 8),
+            ship_limits: crate::objects::shipper::ShipLimits::new(32, 8),
+            directory_sync: crate::directory::sync::DirectorySyncer::new(
+                Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
+                std::env::temp_dir(),
+                Arc::default(),
+            ),
+            directory_eval_budget_ms: 5,
+            directory_gauges: Arc::default(),
+            reader_membership: moka::future::Cache::builder()
+                .time_to_live(Duration::from_secs(10))
+                .build(),
+            directory_overlays: Arc::default(),
+            directory_recomputed: Arc::default(),
             admit_refusals: moka::future::Cache::builder()
                 .max_capacity(100_000)
                 .time_to_live(std::time::Duration::from_secs(5))
@@ -1459,7 +1555,7 @@ mod tests {
     async fn a_websocket_handshake_reaches_101_through_the_fetch_handler() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        // A REAL connection on purpose: the upgrade needs hyper's
+        // A real connection on purpose: the upgrade needs hyper's
         // OnUpgrade extension, which tower::oneshot never carries.
         let app = router(
             state_with(caches_with_upgrading_script().await),

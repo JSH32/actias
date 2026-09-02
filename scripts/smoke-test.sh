@@ -123,9 +123,32 @@ local db = database "main" { migrations = "migrations/main" }
 local Hits = object "Hits" {
     publishes = { poked = "public" },
 
+    -- The table exists from the object's first breath, so the row can
+    -- be derived on any write, not only after a bump.
+    hooks = {
+        init = function(state)
+            state.sql:exec("CREATE TABLE IF NOT EXISTS hits (at INTEGER)")
+        end,
+    },
+
+    -- One queryable row per Hits object, derived from its own state.
+    -- `from` runs once; a bare marker reads the field's own name off
+    -- what it returned, a called one projects.
+    directory = {
+        from = function(state)
+            return state.sql:query_one(
+                "SELECT COUNT(*) AS hits, MAX(at) AS last FROM hits")
+        end,
+        fields = {
+            hits = f.integer,
+            last = f.integer(function(row) return tonumber(row.last) end),
+            busy = f.boolean(function(row) return (row.hits or 0) > 1 end),
+        },
+    },
+
     bump = function(state)
         state.sql:exec("CREATE TABLE IF NOT EXISTS hits (at INTEGER)")
-        state.sql:exec("INSERT INTO hits VALUES (?)", { 1 })
+        state.sql:exec("INSERT INTO hits VALUES (?)", { state.now() })
         return state.sql:query_one("SELECT COUNT(*) AS n FROM hits").n
     end,
 
@@ -223,6 +246,25 @@ on "fetch" (function(request)
     end
     if string.find(request.context_uri or "", "/enqueue") then
         jobs:send({ n = 1 })
+    end
+    if string.find(request.context_uri or "", "/dir-seed") then
+        local q = request.query or {}
+        return { body = json.stringify({ hits = Hits(q.who or "one"):bump() }) }
+    end
+    if string.find(request.context_uri or "", "/directory") then
+        local q = request.query or {}
+        if q.read == "find" then
+            return { body = json.stringify(Hits:find { busy = true }) }
+        end
+        if q.read == "visit" then
+            return { body = json.stringify(Hits:visit { limit = 20 }) }
+        end
+        -- Names no field, so it answers even for a class whose
+        -- manifest (and with it the field set) is gone.
+        if q.read == "all" then
+            return { body = json.stringify(Hits:list { limit = 20 }) }
+        end
+        return { body = json.stringify(Hits:list { order = { hits = "desc" }, limit = 20 }) }
     end
     if string.find(request.context_uri or "", "/visit") then
         local q = request.query or {}
@@ -334,8 +376,21 @@ DB_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfi
 [ "$DB_DECLARED" = "main=migrations/main" ] \
     || { echo "the database was not in the stored contract (got '$DB_DECLARED')"; exit 1; }
 LIFE_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.lifecycle | join(",")')
-[ "$LIFE_DECLARED" = "Visit:expire=10s,Visit:admit" ] \
-    || { echo "the lifecycle was not in the stored contract (got '$LIFE_DECLARED')"; exit 1; }
+# The directory's entry carries its declared FIELD SET and a version
+# publish minted, so the lifecycle is matched by parts rather than as
+# one string: the version moves whenever the set does.
+case "$LIFE_DECLARED" in
+    *"Visit:expire=10s"*) ;;
+    *) echo "the lifespan was not in the stored contract (got '$LIFE_DECLARED')"; exit 1 ;;
+esac
+case "$LIFE_DECLARED" in
+    *"Visit:admit"*) ;;
+    *) echo "the admission gate was not in the stored contract (got '$LIFE_DECLARED')"; exit 1 ;;
+esac
+case "$LIFE_DECLARED" in
+    *"Hits:directory@"*"busy:boolean,hits:integer,last:integer"*) ;;
+    *) echo "the directory field set was not in the stored contract (got '$LIFE_DECLARED')"; exit 1 ;;
+esac
 CONN_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.connections | join(",")')
 [ "$CONN_DECLARED" = "Live,Pulse" ] \
     || { echo "the connection classes were not in the stored contract (got '$CONN_DECLARED')"; exit 1; }
@@ -381,7 +436,9 @@ echo "cold alarm fired via the sweep; $MARKS mark(s) written"
 
 echo "== lifecycle: destroy from inside, recreate fresh, expire, refuse"
 # The directory speaks for every residue location the platform keeps in
-# sql; the epoch fence is the ONE row deletion leaves on purpose.
+# sql. Deletion leaves NOTHING behind: epochs come from a sequence, so
+# the fence a recreated name has to clear is the sequence's own forward
+# march rather than a row anybody has to keep.
 pg() { compose exec -T postgres psql -U actias -d actias_script_service -tA -c "$1"; }
 
 T1=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
@@ -390,7 +447,7 @@ T2=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
     || { echo "the store-face counter did not accumulate ($T1 -> '$T2')"; exit 1; }
 VISIT_HASH=$(pg "SELECT object_id FROM object_instances WHERE class='Visit' AND name='roomy'")
 [ -n "$VISIT_HASH" ] || { echo "the directory never learned the identity hash"; exit 1; }
-EPOCH_BEFORE=$(pg "SELECT COALESCE(MAX(epoch),0) FROM object_epochs WHERE object_id='$VISIT_HASH'")
+EPOCH_BEFORE=$(pg "SELECT COALESCE(MAX(epoch),0) FROM leases WHERE object_id='$VISIT_HASH'")
 
 # Destroy answers first: the reply carries the state the object died with.
 FIN=$(curl -sf "$WORKER/$IDENT/visit?name=roomy&act=finish" | jq .finished)
@@ -398,7 +455,7 @@ FIN=$(curl -sf "$WORKER/$IDENT/visit?name=roomy&act=finish" | jq .finished)
     || { echo "destroy did not answer with the final state (got '$FIN')"; exit 1; }
 
 # The janitor finishes within a sweep: directory, lease and alarm rows
-# empty, and only the epoch fence outlives the object, bumped.
+# all empty, with nothing at all left behind for the identity.
 LEFT=1
 for _ in $(seq 1 20); do
     LEFT=$(pg "SELECT count(*) FROM object_instances WHERE class='Visit' AND name='roomy'")
@@ -410,14 +467,15 @@ done
     || { echo "a lease outlived the object"; exit 1; }
 [ "$(pg "SELECT count(*) FROM object_alarms WHERE object_id='$VISIT_HASH'")" = 0 ] \
     || { echo "an alarm outlived the object"; exit 1; }
-EPOCH_AFTER=$(pg "SELECT COALESCE(MAX(epoch),0) FROM object_epochs WHERE object_id='$VISIT_HASH'")
-[ "$EPOCH_AFTER" -gt "$EPOCH_BEFORE" ] 2>/dev/null \
-    || { echo "deletion did not bump the epoch fence ($EPOCH_BEFORE -> '$EPOCH_AFTER')"; exit 1; }
-
-# The name is legal again and starts fresh: forget, never a ban.
+# The name is legal again and starts fresh: forget, never a ban. Its
+# new residency must also claim ABOVE the epoch the old one held, or
+# the reborn object's rows lose to its own gravestone forever.
 T3=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
 [ "$T3" = 1 ] 2>/dev/null \
     || { echo "recreation did not start fresh (touched '$T3')"; exit 1; }
+EPOCH_AFTER=$(pg "SELECT COALESCE(MAX(epoch),0) FROM leases WHERE object_id='$VISIT_HASH'")
+[ "$EPOCH_AFTER" -gt "$EPOCH_BEFORE" ] 2>/dev/null \
+    || { echo "the reborn name did not claim above its tombstone ($EPOCH_BEFORE -> '$EPOCH_AFTER')"; exit 1; }
 
 # An untouched instance ages out through the sweep (expire=10s, sweep=3s).
 curl -sf "$WORKER/$IDENT/visit?name=brief" -o /dev/null
@@ -429,16 +487,15 @@ for _ in $(seq 1 20); do
 done
 [ "$SWEPT" = 0 ] || { echo "the untouched instance never expired"; exit 1; }
 
-# A refused name leaves nothing at all: no row, no epoch fence.
-EPOCHS_TOTAL=$(pg "SELECT count(*) FROM object_epochs")
+# A refused name leaves nothing at all: no instance row, no lease.
 REFUSED_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$WORKER/$IDENT/visit?name=zz")
 [ "$REFUSED_CODE" != 200 ] \
     || { echo "the admission gate admitted a two-letter name"; exit 1; }
 [ "$(pg "SELECT count(*) FROM object_instances WHERE class='Visit' AND name='zz'")" = 0 ] \
     || { echo "a refused name reached the directory"; exit 1; }
-[ "$(pg "SELECT count(*) FROM object_epochs")" = "$EPOCHS_TOTAL" ] \
-    || { echo "a refused name left an epoch fence"; exit 1; }
-echo "lifecycle round-tripped: destroy answered $FIN, epoch $EPOCH_BEFORE -> $EPOCH_AFTER, recreation fresh, expiry swept, refusal residue-free"
+[ "$(pg "SELECT count(*) FROM leases l JOIN object_instances i ON i.object_id = l.object_id WHERE i.class='Visit' AND i.name='zz'")" = 0 ] \
+    || { echo "a refused name left a lease"; exit 1; }
+echo "lifecycle round-tripped: destroy answered $FIN, rebirth claimed $EPOCH_BEFORE -> $EPOCH_AFTER, recreation fresh, expiry swept, refusal residue-free"
 
 echo "== a connection hibernates with the socket open and revives on delivery"
 # The whole arc's claim in one sequence: declared handlers run, the vm
@@ -598,6 +655,70 @@ CONSOLE=$(curl -sf -X POST "$API/project/$PROJECT_ID/databases/main/query" \
 echo "$CONSOLE" | jq -e '(.rows[0].n? // .rows[0][0].n? // 0) >= 1' >/dev/null \
     || { echo "the query console did not read visits: $CONSOLE"; exit 1; }
 echo "resources listing, stats, tables and console all answered"
+
+echo "== the directory answers a class without waking anything"
+# Three objects, each with its own row derived from its own state. The
+# reads are the script's own: list is the plain page, find is the
+# predicate shorthand, and visit checks every candidate against its
+# object's shipping manifest before serving it.
+for who in alpha beta beta gamma gamma gamma; do
+    curl -sf "$WORKER/$IDENT/dir-seed?who=$who" >/dev/null \
+        || { echo "seeding the directory class failed"; exit 1; }
+done
+DIR_LIST=""
+for _ in $(seq 1 30); do
+    DIR_LIST=$(curl -sf "$WORKER/$IDENT/directory" || true)
+    echo "$DIR_LIST" | jq -e '.entries | length >= 1' >/dev/null 2>&1 && break
+    sleep 2
+done
+echo "$DIR_LIST" | jq -e '.entries | length >= 1' >/dev/null 2>&1 \
+    || { echo "the directory never served a row (got '$DIR_LIST')"; exit 1; }
+echo "$DIR_LIST" | jq -e '.entries[0].hits > 0' >/dev/null \
+    || { echo "a directory row carried no derived field: $DIR_LIST"; exit 1; }
+echo "listing served $(echo "$DIR_LIST" | jq '.entries | length') row(s)"
+
+# `find` is the predicate alone: only the objects bumped more than once.
+DIR_FIND=$(curl -sf "$WORKER/$IDENT/directory?read=find")
+echo "$DIR_FIND" | jq -e '[.entries[] | select(.busy != true)] | length == 0' >/dev/null \
+    || { echo "find returned a row the predicate excludes: $DIR_FIND"; exit 1; }
+echo "$DIR_FIND" | jq -e '.entries | length >= 1' >/dev/null \
+    || { echo "find narrowed to nothing: $DIR_FIND"; exit 1; }
+echo "find narrowed to $(echo "$DIR_FIND" | jq '.entries | length') busy object(s)"
+
+# The verified read: every entry says whether it was checked, and an
+# entry that cannot be is served FLAGGED, never dropped.
+DIR_VISIT=$(curl -sf "$WORKER/$IDENT/directory?read=visit")
+echo "$DIR_VISIT" | jq -e '[.entries[] | select(.unverified == false)] | length >= 1' >/dev/null \
+    || { echo "no candidate verified against its manifest: $DIR_VISIT"; exit 1; }
+echo "visit verified $(echo "$DIR_VISIT" | jq '[.entries[] | select(.unverified == false)] | length') candidate(s) with no restores"
+
+# The operator's answer to total loss: wipe the class's whole prefix,
+# which background discovery provably cannot find again, then ask for it
+# by name.
+docker exec "$(compose ps -q minio)" sh -c \
+    'rm -rf /data/actias-blobs/directory/*/Hits' >/dev/null 2>&1
+# A read that names no field, because the wipe took the FIELD SET with
+# the manifest: ordering by one is refused outright until a rebuild
+# puts the declaration back.
+WIPED=$(curl -sf "$WORKER/$IDENT/directory?read=all" || true)
+echo "$WIPED" | jq -e '.entries | length == 0' >/dev/null 2>&1 \
+    || { echo "the class answered after its prefix was wiped: $WIPED"; exit 1; }
+"$REPO/target/debug/actias" object "$PROJECT_ID" rebuild Hits | grep -q "Rebuilt Hits" \
+    || { echo "the operator rebuild did not run"; exit 1; }
+# The ordered listing is the stronger assertion: rows AND the field set
+# came back, because a rebuild that recovered names alone could not
+# sort by one.
+REBUILT=""
+for _ in $(seq 1 20); do
+    REBUILT=$(curl -sf "$WORKER/$IDENT/directory" || true)
+    echo "$REBUILT" | jq -e '.entries | length >= 1' >/dev/null 2>&1 && break
+    sleep 2
+done
+echo "$REBUILT" | jq -e '.entries | length >= 1' >/dev/null 2>&1 \
+    || { echo "the rebuild did not restore the class (got '$REBUILT')"; exit 1; }
+echo "$REBUILT" | jq -e '.entries[0].hits != null' >/dev/null 2>&1 \
+    || { echo "the rebuild restored names but not fields: $REBUILT"; exit 1; }
+echo "wiped the class prefix and rebuilt it by name: $(echo "$REBUILT" | jq '.entries | length') row(s) and their fields back"
 
 echo "== object state survives losing the data volume"
 # The disk is a leased cache; the blob store is the truth. Wipe every

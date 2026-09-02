@@ -44,7 +44,9 @@ impl Metrics {
         &self,
         objects_resident: usize,
         connections: &actias_worker_core::connections::actor::ConnectionGauges,
-        ships: &crate::shipper::ShipGauges,
+        ships: &crate::objects::shipper::ShipGauges,
+        directory: &crate::directory::gauges::DirectoryGauges,
+        directory_files: (u64, u64),
     ) -> String {
         let scripts = self.scripts.lock().expect("no poisoned lock").clone();
 
@@ -143,7 +145,111 @@ impl Metrics {
             "actias_ack_gate_expired_total {}\n",
             count(&ships.gates_expired)
         ));
-
+        // The directory's loops. Each pair reads as work done against
+        // work failed, so a dashboard sees the flush keeping up, the
+        // compactor folding, the invariant gate staying shut on a
+        // healthy cluster, and the backfill draining.
+        let counters: [(&str, &std::sync::atomic::AtomicU64); 25] = [
+            ("actias_directory_flushes_total", &directory.flushes),
+            (
+                "actias_directory_flushed_rows_total",
+                &directory.flushed_rows,
+            ),
+            (
+                "actias_directory_flush_failures_total",
+                &directory.flush_failures,
+            ),
+            ("actias_directory_folds_total", &directory.folds),
+            (
+                "actias_directory_fold_failures_total",
+                &directory.fold_failures,
+            ),
+            ("actias_directory_passes_total", &directory.passes),
+            ("actias_directory_gate_checks_total", &directory.gate_checks),
+            ("actias_directory_gate_opened_total", &directory.gate_opened),
+            ("actias_directory_rebuilds_total", &directory.rebuilds),
+            (
+                "actias_directory_rebuilt_rows_total",
+                &directory.rebuilt_rows,
+            ),
+            (
+                "actias_directory_placeholder_rows_total",
+                &directory.placeholder_rows,
+            ),
+            (
+                "actias_directory_rebuild_failures_total",
+                &directory.rebuild_failures,
+            ),
+            ("actias_directory_sweeps_total", &directory.sweeps),
+            ("actias_directory_swept_rows_total", &directory.swept_rows),
+            (
+                "actias_directory_backfilled_rows_total",
+                &directory.backfilled_rows,
+            ),
+            (
+                "actias_directory_backfill_skipped_total",
+                &directory.backfill_skipped,
+            ),
+            (
+                "actias_directory_visit_verified_total",
+                &directory.visit_verified,
+            ),
+            (
+                "actias_directory_visit_flagged_total",
+                &directory.visit_flagged,
+            ),
+            (
+                "actias_directory_visit_recomputed_total",
+                &directory.visit_recomputed,
+            ),
+            (
+                "actias_directory_visit_dropped_total",
+                &directory.visit_dropped,
+            ),
+            (
+                "actias_directory_overlay_builds_total",
+                &directory.overlay_builds,
+            ),
+            (
+                "actias_directory_overlay_build_ms_total",
+                &directory.overlay_build_ms_total,
+            ),
+            (
+                "actias_directory_overlay_applies_total",
+                &directory.overlay_applies,
+            ),
+            ("actias_directory_forwarded_total", &directory.forwarded),
+            (
+                "actias_directory_served_for_peer_total",
+                &directory.served_for_peer,
+            ),
+        ];
+        for (name, value) in counters {
+            out.push_str(&format!("# TYPE {name} counter\n{name} {}\n", count(value)));
+        }
+        out.push_str("# TYPE actias_directory_backfill_remaining gauge\n");
+        out.push_str(&format!(
+            "actias_directory_backfill_remaining {}\n",
+            load(&directory.backfill_remaining)
+        ));
+        out.push_str("# TYPE actias_directory_refusals_total counter\n");
+        for (class, refused) in directory.refusals() {
+            out.push_str(&format!(
+                "actias_directory_refusals_total{{class=\"{class}\"}} {refused}\n"
+            ));
+        }
+        // The content-addressed file cache: reads against the fetches
+        // that reached the store.
+        out.push_str("# TYPE actias_directory_file_reads_total counter\n");
+        out.push_str(&format!(
+            "actias_directory_file_reads_total {}\n",
+            directory_files.0
+        ));
+        out.push_str("# TYPE actias_directory_file_fetches_total counter\n");
+        out.push_str(&format!(
+            "actias_directory_file_fetches_total {}\n",
+            directory_files.1
+        ));
         out
     }
 }
@@ -158,7 +264,16 @@ mod tests {
         metrics.record("proj-1", "my-script", Duration::from_millis(12), true);
         metrics.record("proj-1", "my-script", Duration::from_millis(8), false);
 
-        let text = metrics.render(3, &Default::default(), &Default::default());
+        let directory = crate::directory::gauges::DirectoryGauges::default();
+        directory.count(&directory.folds);
+        directory.refused("Lot");
+        let text = metrics.render(
+            3,
+            &Default::default(),
+            &Default::default(),
+            &directory,
+            (7, 2),
+        );
 
         assert!(text.contains("actias_requests_total{project=\"proj-1\",script=\"my-script\"} 2"));
         assert!(
@@ -168,5 +283,9 @@ mod tests {
             "actias_request_duration_ms_total{project=\"proj-1\",script=\"my-script\"} 20"
         ));
         assert!(text.contains("actias_objects_resident 3"));
+        assert!(text.contains("actias_directory_folds_total 1\n"));
+        assert!(text.contains("actias_directory_refusals_total{class=\"Lot\"} 1\n"));
+        assert!(text.contains("actias_directory_file_reads_total 7\n"));
+        assert!(text.contains("actias_directory_file_fetches_total 2\n"));
     }
 }

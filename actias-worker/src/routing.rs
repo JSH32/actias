@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use actias_common::logging::script_log_channel;
 use actias_worker_core::extensions::log::LogPublisher;
-use actias_worker_core::extensions::objects::{ObjectRouter, ObjectTarget};
+use actias_worker_core::extensions::objects::{
+    DirectoryAnswer, DirectoryLister, DirectoryRequest, ObjectRouter, ObjectTarget,
+};
 use actias_worker_core::identity::ObjectKey;
 use actias_worker_core::proto::node_registry::AcquireLeaseRequest;
 use actias_worker_core::proto::script_service::FindScriptRequest;
@@ -131,17 +133,14 @@ pub async fn owner_prepared(
 /// Everything routing an object method call needs; one per node, shared
 /// by request vms and pinned vms alike, so objects call objects through
 /// exactly the machinery requests use. The prepared revision is the
-/// CALLER's context (whose project and script derive identities); the
+/// caller's context (whose project and script derive identities); the
 /// code an object runs is always the owner's current revision, resolved
 /// per identity through [`owner_prepared`].
 pub struct ObjectRouting {
     state: AppState,
-    /// The CALLER context: whose project and script derive identities.
+    /// The caller context: whose project and script derive identities.
     pub(crate) prepared: Arc<PreparedRevision>,
 }
-
-/// Per-call budget for one object method, mirroring the request deadline.
-const OBJECT_CALL_BUDGET_SECS: u64 = 10;
 
 /// Why an object could not be made resident here.
 pub enum ResolveError {
@@ -216,6 +215,49 @@ impl ObjectRouting {
         })
     }
 
+    /// Wraps this routing as the reading closure, the read-path sibling
+    /// of [`Self::as_router`].
+    ///
+    /// The vm names a class and a predicate; the scope is never its to
+    /// choose, so it comes from the revision the vm is running. That is
+    /// also the fence: a script can only ever read classes in its own
+    /// project, because it cannot spell a scope at all.
+    ///
+    /// Answered from this node with no lease and nothing woken. A
+    /// listing costs one local overlay read wherever the request
+    /// landed; a verified read adds one small manifest fetch per
+    /// candidate, and still restores nothing on the common path.
+    pub(crate) fn as_lister(self: &Arc<Self>) -> DirectoryLister {
+        let this = self.clone();
+        Arc::new(move |request: DirectoryRequest| {
+            let this = this.clone();
+            Box::pin(async move {
+                let class = crate::directory::sync::ClassKey {
+                    scope_id: this.prepared.script.project_id.clone(),
+                    class: request.class,
+                };
+                let query = actias_worker_core::directory::overlay::Query {
+                    where_: request.where_,
+                    order: request.order,
+                    limit: request.limit,
+                    cursor: request.cursor,
+                };
+                // Routed to the class's reader like a console query, so
+                // a script's listing does not materialize the class on
+                // whichever node happened to run it.
+                if request.verified {
+                    crate::directory::route::visit(&this.state, &class, query)
+                        .await
+                        .map(|(page, _)| DirectoryAnswer::Visited(page))
+                } else {
+                    crate::directory::route::list(&this.state, &class, query)
+                        .await
+                        .map(|(page, _)| DirectoryAnswer::Listed(page))
+                }
+            })
+        })
+    }
+
     /// The lease claim for one identity, spoken as this node. The claim
     /// carries the key's preimage plus the owner script as directory
     /// metadata.
@@ -245,8 +287,7 @@ impl ObjectRouting {
                 script_id: owner.script.id.clone(),
                 // The contract's declared lifespan; every claim restates
                 // it, so touch refreshes and policy changes apply on the
-                // next touch. The creator stamp arrives with the cascade
-                // work (Arc 11).
+                // next touch. The creator stamp is not filled in here.
                 expire_secs: owner.expire_secs_for(key.class()).unwrap_or(0),
                 created_by: String::new(),
             })
@@ -369,7 +410,7 @@ impl ObjectRouting {
 
                 // The store is the truth whenever anyone else held the
                 // object since this node last did. A missing file means
-                // never hosted (or a lost volume); an EXISTING file can
+                // never hosted (or a lost volume); an existing file can
                 // still be stale: this node hosted the object once, it
                 // rehomed elsewhere and wrote, and now the lease is back.
                 // The sidecar records the epoch of this node's last
@@ -410,7 +451,7 @@ impl ObjectRouting {
                 }
                 write_resident_epoch(&file, lease.epoch);
 
-                // A workflow instance replays the revision it STARTED
+                // A workflow instance replays the revision it started
                 // with, the one deliberate exception to always-current;
                 // every other class runs the owner's current revision.
                 let workflow = identity.class() == actias_common::classes::WORKFLOW_CLASS;
@@ -437,7 +478,7 @@ impl ObjectRouting {
                 let runtime = if workflow {
                     // The enforced-determinism profile: the shared cell is
                     // both the replay cursor and the shim source. The
-                    // instance file opens BEFORE the vm builds, because
+                    // instance file opens before the vm builds, because
                     // `secret` declarations run during construction and
                     // must see the run's pins; the task reopens the same
                     // file afterwards.
@@ -471,6 +512,7 @@ impl ObjectRouting {
                     )
                     .await?
                 };
+                routing.state.guest_limits.apply(&runtime);
                 // The admission gate, fresh identities only: existing
                 // instances never re-run it, so it gates creation, not
                 // access. A refusal rolls the claim back through the
@@ -529,12 +571,16 @@ impl ObjectRouting {
                 // routing context matches the code it runs.
                 let vm_routing = ObjectRouting::new(&routing.state, prepared);
                 runtime.set_app_data::<ObjectRouter>(vm_routing.as_router());
+                // The read-path sibling: without it `Class:list`
+                // refuses inside an object exactly as it did in a
+                // request handler.
+                runtime.set_app_data::<DirectoryLister>(vm_routing.as_lister());
                 // The pump reads this to deliver connection edges; a
                 // node without the socket serving the id prunes them.
                 runtime.set_app_data::<Arc<actias_worker_core::connections::ConnectionRegistry>>(
                     routing.state.connections.clone(),
                 );
-                // And these to deliver the edges that live ELSEWHERE:
+                // And these to deliver the edges that live elsewhere:
                 // its own name to tell local from remote, and the
                 // forwarder that sends each remote node one batched
                 // call for everything due there.
@@ -572,29 +618,60 @@ impl ObjectRouting {
                 // ticket, and is answered only once a flight carrying its
                 // frames has written its manifest. Bursts coalesce, so
                 // one flight acknowledges many writes and the gate costs
-                // latency rather than throughput. The epoch fence is
-                // unchanged, and the drain still flushes every dirty
+                // latency rather than throughput. The epoch fence and the
+                // drain are unaffected: the drain flushes every dirty
                 // object before the process leaves.
                 let ship_store = routing.state.object_store.clone();
                 let ship_id = object_id.clone();
                 let ship_file = file.clone();
                 let epoch = lease.epoch;
                 let ship_state = Arc::new(tokio::sync::Mutex::new(
-                    crate::object_store::ShipState::default(),
+                    crate::objects::store::ShipState::default(),
                 ));
                 let thresholds = routing.state.ship_thresholds;
-                let ship_fn: crate::shipper::ShipFn = Arc::new(move || {
+                // Settle-fed, not commit-fed: the row is offered to the
+                // syncer only after the flight carrying it wrote the
+                // object's manifest, so the index describes the durable
+                // universe and can never name a state a crash took back.
+                // The epoch comes from the lease here, because the
+                // object's own file does not know it.
+                let ship_sync = routing.state.directory_sync.clone();
+                let ship_class = crate::directory::sync::ClassKey {
+                    scope_id: identity.scope().to_owned(),
+                    class: identity.class().to_owned(),
+                };
+                let ship_name = identity.name().to_owned();
+                // The publish these rows were derived under, read from
+                // the owner's contract (the code the object actually
+                // runs), so the version stamped on the row and the one
+                // riding the delta always name the same declaration.
+                let ship_declaration = owner.directory_spec(identity.class());
+                let ship_fn: crate::objects::shipper::ShipFn = Arc::new(move || {
                     let store = ship_store.clone();
                     let object_id = ship_id.clone();
                     let file = ship_file.clone();
                     let state = ship_state.clone();
+                    let syncer = ship_sync.clone();
+                    let class = ship_class.clone();
+                    let name = ship_name.clone();
+                    let declaration = ship_declaration.clone();
                     Box::pin(async move {
                         store
                             .ship(&object_id, epoch, &file, &state, thresholds)
-                            .await
+                            .await?;
+                        // The manifest landed, so whatever row it
+                        // carries is durable and may be indexed. A
+                        // class with no directory carries none, and
+                        // offering nothing is the whole cost.
+                        if let Ok(Some(manifest)) = store.manifest(&object_id).await
+                            && let Some(snapshot) = manifest.directory
+                        {
+                            syncer.record(class, object_id, name, epoch, snapshot, declaration);
+                        }
+                        Ok(())
                     })
                 });
-                let ship = crate::shipper::Shipper::new(
+                let ship = crate::objects::shipper::Shipper::new(
                     object_id.clone(),
                     ship_fn,
                     routing.state.ship_gauges.clone(),
@@ -617,20 +694,29 @@ impl ObjectRouting {
 
                 let alarm_sync = alarm_mirror(&routing.state, &object_id, &identity.to_string());
 
-                // The deletion sequence (docs/OBJECT-LIFECYCLE.md): the
-                // tombstone is the commit point, the store marker fences
-                // any zombie ship, the local files go (unlinking beside
-                // the task's open connection is safe; space frees on
-                // close), and the purge frees the name for a fresh life.
+                // The deletion sequence, in order: the tombstone is the
+                // commit point, the store marker fences any zombie ship,
+                // the local files go (unlinking beside the task's open
+                // connection is safe; space frees on close), and the
+                // purge frees the name for a fresh life.
                 let destroy_state = routing.state.clone();
                 let destroy_id = object_id.clone();
                 let destroy_key = identity.clone();
                 let destroy_file = file.clone();
+                // Cloned up front: the closure is Fn and may run more
+                // than once, so it cannot move the identity it names.
+                let destroy_class = crate::directory::sync::ClassKey {
+                    scope_id: identity.scope().to_owned(),
+                    class: identity.class().to_owned(),
+                };
+                let destroy_name = identity.name().to_owned();
                 let destroy: actias_worker_core::objects::DestroyFn = Arc::new(move || {
                     let state = destroy_state.clone();
                     let object_id = destroy_id.clone();
                     let key = destroy_key.clone();
                     let file = destroy_file.clone();
+                    let class = destroy_class.clone();
+                    let name = destroy_name.clone();
                     Box::pin(async move {
                         let deleted = state
                             .registry
@@ -655,6 +741,15 @@ impl ObjectRouting {
                                 .object_store
                                 .mark_deleted(&object_id, deleted.epoch)
                                 .await?;
+                            // The directory learns of the death at the
+                            // bumped epoch, so the tombstone outranks
+                            // every row of the life before it.
+                            state.directory_sync.record_destroyed(
+                                class.clone(),
+                                object_id.clone(),
+                                name.clone(),
+                                deleted.epoch,
+                            );
                         }
 
                         let _ = tokio::fs::remove_file(&file).await;
@@ -715,7 +810,8 @@ impl ObjectRouting {
                 Ok((
                     runtime,
                     actias_worker_core::objects::TaskOptions {
-                        call_budget: Some(OBJECT_CALL_BUDGET_SECS),
+                        call_budget: Some(routing.state.guest_limits.wall_secs),
+                        directory_budget_ms: Some(routing.state.directory_eval_budget_ms),
                         storage: Some(storage),
                         hibernate_after: Some(routing.state.object_idle_after),
                         after_write: Some(after_write),
@@ -756,6 +852,10 @@ impl ObjectRouting {
     /// claim path would refuse instead of forwarding. Cold (unheld)
     /// needs nothing. Best effort; the marker heals whatever this
     /// misses.
+    ///
+    /// # Errors
+    /// Returns the holder's status message. A home that is already gone is
+    /// not an error.
     pub async fn end_residency(&self, key: &ObjectKey) -> Result<(), String> {
         let lease = match self
             .state
@@ -1022,7 +1122,7 @@ impl ObjectRouting {
 
 /// The registry mirror for one object's alarm: `Some(due_ms)` upserts the
 /// row, [`None`] deletes it, each write in its own task with a short
-/// retry, OFF every call's transaction, so arming an alarm never pays a
+/// retry, off every call's transaction, so arming an alarm never pays a
 /// postgres round trip. Exhausted retries are logged and tolerated: the
 /// local file still holds the alarm, and the spawn-time sync re-mirrors
 /// on the next residency. Two rapid writes may land out of order; the

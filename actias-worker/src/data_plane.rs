@@ -16,8 +16,9 @@ use actias_worker_core::proto::node_registry::{GetLeaseRequest, GetNodeRequest};
 use actias_worker_core::proto::worker_data::worker_data_client::WorkerDataClient;
 use actias_worker_core::proto::worker_data::worker_data_server::WorkerData;
 use actias_worker_core::proto::worker_data::{
-    CallResult, InboxBatch, InboxEdge, InboxReceipts, ObjectCall, ReadRequest, ReadValue,
-    ReceiveBatch, ReceiveEntry, ReceiveOutcome, ReceiveReceipts,
+    CallResult, DirectoryEntry, DirectoryPage, DirectoryQuery, DirectoryRebuild, DirectoryRebuilt,
+    InboxBatch, InboxEdge, InboxReceipts, ObjectCall, ReadRequest, ReadValue, ReceiveBatch,
+    ReceiveEntry, ReceiveOutcome, ReceiveReceipts, ShellOutcome, ShellRun, VisitEntry, VisitPage,
 };
 
 use crate::routing::{ObjectRouting, fresh_replica_file, owner_prepared};
@@ -252,7 +253,7 @@ impl WorkerData for WorkerDataService {
                         // through the target; dispatch reads it as-is.
                         chain: call.chain,
                         // The wire's caller is the truth; the owner
-                        // resolved here is who RUNS the code, not who
+                        // resolved here is who runs the code, not who
                         // called.
                         caller: call.caller.map(|caller| CallerIdentity {
                             script: caller.script,
@@ -286,6 +287,42 @@ impl WorkerData for WorkerDataService {
         }))
     }
 
+    /// One shell chunk, run in a fresh vm under the session's grants.
+    ///
+    /// The chunk becomes a revision of its own: an entry that registers
+    /// it as a handler, a synthetic script scoped to the project, and a
+    /// contract holding exactly the grants the api derived from what the
+    /// operator may open. Declarations are allowed inside the handler,
+    /// because a shell binds resources as it goes; everything else is the
+    /// ordinary runtime, budgeted like a request, with the object router
+    /// and the directory lister a script would have. Prints are captured
+    /// and returned with the value rather than published to a channel
+    /// nobody is tailing.
+    async fn run_shell(
+        &self,
+        request: Request<ShellRun>,
+    ) -> Result<Response<ShellOutcome>, Status> {
+        let run = request.into_inner();
+        if run.scope_id.is_empty() {
+            return Err(Status::invalid_argument("The shell run names no project."));
+        }
+        let started = std::time::Instant::now();
+        let outcome = crate::shell_run::run(&self.state, run).await;
+        Ok(Response::new(match outcome {
+            Ok(mut done) => {
+                done.wall_ms = started.elapsed().as_millis() as u64;
+                done
+            }
+            Err(error) => ShellOutcome {
+                value_json: String::new(),
+                output: Vec::new(),
+                error,
+                work: 0,
+                wall_ms: started.elapsed().as_millis() as u64,
+            },
+        }))
+    }
+
     async fn read_stats(
         &self,
         request: Request<ReadRequest>,
@@ -314,7 +351,7 @@ impl WorkerData for WorkerDataService {
         self.read_routed(request, read).await
     }
 
-    /// One publisher's due events for the connections THIS node hosts:
+    /// One publisher's due events for the connections this node hosts:
     /// the events arrive once, each edge names its slice (topic, seq
     /// watermark, filter), and this walks the local registry to fan
     /// out, reporting back whoever is gone. The publisher sent one
@@ -363,7 +400,7 @@ impl WorkerData for WorkerDataService {
         Ok(Response::new(InboxReceipts { gone }))
     }
 
-    /// One publisher's due events for the durable followers THIS node
+    /// One publisher's due events for the durable followers this node
     /// hosts: materialize each entry's events (inline, or a range read
     /// from the nearest copy of the publisher's log), dispatch
     /// __receive in order, report how far each follower got. The
@@ -388,6 +425,167 @@ impl WorkerData for WorkerDataService {
         }
         Ok(Response::new(ReceiveReceipts { outcomes }))
     }
+
+    async fn list_directory(
+        &self,
+        request: Request<DirectoryQuery>,
+    ) -> Result<Response<DirectoryPage>, Status> {
+        // A hop is served here, whoever this node is: the reader is a
+        // preference the first node applied, and two hops never happen.
+        let hop = crate::directory::route::is_hop(&request);
+        let request = request.into_inner();
+        let (class, query) = directory_request(&request).map_err(Status::invalid_argument)?;
+        // A refused field (unknown, or still building) is the caller's
+        // mistake or their answer to wait, never an internal failure.
+        let (page, building) = if hop {
+            self.state
+                .directory_gauges
+                .count(&self.state.directory_gauges.served_for_peer);
+            let page = crate::directory::read::list(&self.state, &class, query)
+                .await
+                .map_err(Status::invalid_argument)?;
+            let building = crate::directory::read::building(&self.state, &class).await;
+            (page, building)
+        } else {
+            crate::directory::route::list(&self.state, &class, query)
+                .await
+                .map_err(Status::invalid_argument)?
+        };
+        Ok(Response::new(DirectoryPage {
+            entries: page
+                .entries
+                .into_iter()
+                .map(|entry| DirectoryEntry {
+                    name: entry.name,
+                    object_id: entry.object_id,
+                    fields: entry
+                        .fields
+                        .into_iter()
+                        .map(|(name, value)| (name, crate::directory::query::value_to_json(&value)))
+                        .collect(),
+                })
+                .collect(),
+            cursor: page.cursor,
+            building,
+        }))
+    }
+
+    async fn visit_directory(
+        &self,
+        request: Request<DirectoryQuery>,
+    ) -> Result<Response<VisitPage>, Status> {
+        let hop = crate::directory::route::is_hop(&request);
+        let request = request.into_inner();
+        let (class, query) = directory_request(&request).map_err(Status::invalid_argument)?;
+        let (page, building) = if hop {
+            self.state
+                .directory_gauges
+                .count(&self.state.directory_gauges.served_for_peer);
+            let page = crate::directory::visit::visit(&self.state, &class, query)
+                .await
+                .map_err(Status::invalid_argument)?;
+            let building = crate::directory::read::building(&self.state, &class).await;
+            (page, building)
+        } else {
+            crate::directory::route::visit(&self.state, &class, query)
+                .await
+                .map_err(Status::invalid_argument)?
+        };
+        Ok(Response::new(VisitPage {
+            entries: page
+                .entries
+                .into_iter()
+                .map(|served| VisitEntry {
+                    entry: Some(DirectoryEntry {
+                        name: served.entry.name,
+                        object_id: served.entry.object_id,
+                        fields: served
+                            .entry
+                            .fields
+                            .into_iter()
+                            .map(|(name, value)| {
+                                (name, crate::directory::query::value_to_json(&value))
+                            })
+                            .collect(),
+                    }),
+                    unverified: served.unverified,
+                    reason: served.reason.unwrap_or_default(),
+                })
+                .collect(),
+            cursor: page.cursor,
+            building,
+        }))
+    }
+
+    async fn rebuild_directory(
+        &self,
+        request: Request<DirectoryRebuild>,
+    ) -> Result<Response<DirectoryRebuilt>, Status> {
+        let request = request.into_inner();
+        if request.scope_id.is_empty() || request.class.is_empty() {
+            return Err(Status::invalid_argument(
+                "a rebuild names a project and a class.",
+            ));
+        }
+        let class = crate::directory::sync::ClassKey {
+            scope_id: request.scope_id,
+            class: request.class,
+        };
+
+        let rebuilt = crate::directory::rebuild::rebuild_on_demand(&self.state, &class)
+            .await
+            .map_err(Status::unavailable)?;
+
+        // Another node holding the class is not a failure: it is
+        // already doing exactly this work, and the answer says so
+        // rather than pretending the counts are zero.
+        let Some(rebuilt) = rebuilt else {
+            return Ok(Response::new(DirectoryRebuilt {
+                held: false,
+                ..Default::default()
+            }));
+        };
+        Ok(Response::new(DirectoryRebuilt {
+            live: rebuilt.live as u64,
+            rows: rebuilt.rows as u64,
+            without_row: rebuilt.without_row as u64,
+            tombstones: rebuilt.tombstones as u64,
+            held: true,
+        }))
+    }
+}
+
+/// The wire query as the kernel takes it: one translation shared by the
+/// listing and the verified read, so the two cannot drift on what a
+/// query means.
+#[allow(clippy::type_complexity)]
+fn directory_request(
+    request: &DirectoryQuery,
+) -> Result<
+    (
+        crate::directory::sync::ClassKey,
+        actias_worker_core::directory::overlay::Query,
+    ),
+    String,
+> {
+    let class = crate::directory::sync::ClassKey {
+        scope_id: request.scope_id.clone(),
+        class: request.class.clone(),
+    };
+    let query = actias_worker_core::directory::overlay::Query {
+        where_: crate::directory::query::where_from_proto(request.r#where.as_ref())?,
+        order: request
+            .order
+            .iter()
+            .map(|entry| actias_worker_core::directory::predicate::Order {
+                field: entry.field.clone(),
+                descending: entry.descending,
+            })
+            .collect(),
+        limit: request.limit.clamp(1, crate::directory::read::MAX_LIMIT),
+        cursor: request.cursor.clone(),
+    };
+    Ok((class, query))
 }
 
 impl WorkerDataService {

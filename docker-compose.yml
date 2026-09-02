@@ -171,6 +171,17 @@ services:
       - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
       # One SQLite file per durable object; the volume IS their persistence.
       - OBJECT_DATA_DIR=/data/objects
+      # Directory reconciliation: recovers rows for objects that
+      # stopped writing and retires rows for objects that stopped
+      # existing. Rare in production, low here so it is testable.
+      - DIRECTORY_REBUILD_SECS=${ACTIAS_DIRECTORY_REBUILD_SECS:-900}
+      # The coalescing window for directory rows. Raised only to
+      # drill the crash sweep, where rows must provably still be
+      # in the syncer when a node dies.
+      - DIRECTORY_FLUSH_MS=${ACTIAS_DIRECTORY_FLUSH_MS:-200}
+      # How long an unused overlay stays on disk. Pure cache, so
+      # evicting costs a rebuild and never correctness.
+      - DIRECTORY_OVERLAY_TTL_SECS=${ACTIAS_DIRECTORY_OVERLAY_TTL_SECS:-1800}
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
       - CONNECTION_HIBERNATE_SECS=${CONNECTION_HIBERNATE_SECS:-300}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
@@ -228,6 +239,17 @@ services:
       - SECRET_SERVICE_URI=http://secret_service:3000
       - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
       - OBJECT_DATA_DIR=/data/objects
+      # Directory reconciliation: recovers rows for objects that
+      # stopped writing and retires rows for objects that stopped
+      # existing. Rare in production, low here so it is testable.
+      - DIRECTORY_REBUILD_SECS=${ACTIAS_DIRECTORY_REBUILD_SECS:-900}
+      # The coalescing window for directory rows. Raised only to
+      # drill the crash sweep, where rows must provably still be
+      # in the syncer when a node dies.
+      - DIRECTORY_FLUSH_MS=${ACTIAS_DIRECTORY_FLUSH_MS:-200}
+      # How long an unused overlay stays on disk. Pure cache, so
+      # evicting costs a rebuild and never correctness.
+      - DIRECTORY_OVERLAY_TTL_SECS=${ACTIAS_DIRECTORY_OVERLAY_TTL_SECS:-1800}
       - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
       - CONNECTION_HIBERNATE_SECS=${CONNECTION_HIBERNATE_SECS:-300}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}

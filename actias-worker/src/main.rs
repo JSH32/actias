@@ -1,13 +1,17 @@
+//! The worker binary: the http surface scripts are served from, the
+//! grpc data plane peers and the api call, and the loops that keep an
+//! object's durable state, its index and its placement current.
+
 mod blob_cache;
 mod config;
 mod data_plane;
+mod directory;
 mod heartbeat;
 mod metrics;
-mod object_store;
+mod objects;
 mod routing;
 mod server;
-mod shipper;
-mod sweeper;
+mod shell_run;
 
 use std::net::SocketAddr;
 
@@ -117,6 +121,36 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Object storage must exist before the first object call needs it.
     std::fs::create_dir_all(&config.object_data_dir)?;
 
+    // The directory syncer needs the store before the state that holds
+    // both, so it is built here and shared into the state and the flush
+    // loop below.
+    let directory_store = std::sync::Arc::new(objects::store::ObjectStore::new(
+        blob_cache::s3_client(
+            &config.s3_endpoint,
+            &config.s3_access_key,
+            &config.s3_secret_key,
+        ),
+        config.s3_bucket.clone(),
+        config.directory_cache_bytes,
+    ));
+    let directory_gauges: std::sync::Arc<directory::gauges::DirectoryGauges> =
+        std::sync::Arc::default();
+    let directory_sync = {
+        let store = directory_store.clone();
+        directory::sync::DirectorySyncer::new(
+            std::sync::Arc::new(move |class: directory::sync::ClassKey, name, bytes| {
+                let store = store.clone();
+                Box::pin(async move {
+                    store
+                        .put_directory_delta(&class.scope_id, &class.class, &name, bytes)
+                        .await
+                })
+            }),
+            std::path::PathBuf::from(&config.object_data_dir),
+            directory_gauges.clone(),
+        )
+    };
+
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let state = server::AppState {
         clients: server::Clients {
@@ -145,35 +179,48 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .time_to_live(std::time::Duration::from_secs(120))
             .build(),
         internal_token: config.internal_token,
-        object_store: std::sync::Arc::new(object_store::ObjectStore::new(
+        object_store: std::sync::Arc::new(objects::store::ObjectStore::new(
             blob_cache::s3_client(
                 &config.s3_endpoint,
                 &config.s3_access_key,
                 &config.s3_secret_key,
             ),
             config.s3_bucket,
+            config.directory_cache_bytes,
         )),
         egress,
         redis: Some(redis),
         secret_client,
         request_timeout: std::time::Duration::from_secs(config.request_timeout_secs),
+        guest_limits: server::GuestLimits {
+            work: config.guest_work_limit,
+            wall_secs: config.guest_wall_secs,
+        },
         in_flight,
         objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),
         metrics: std::sync::Arc::default(),
         armed_crons: std::sync::Arc::default(),
         object_data_dir: std::path::PathBuf::from(config.object_data_dir),
         object_db_max_bytes: config.object_db_max_bytes,
-        ship_thresholds: object_store::ShipThresholds {
+        ship_thresholds: objects::store::ShipThresholds {
             whole_max: config.object_ship_whole_max_bytes,
             rotate_bytes: config.object_wal_rotate_bytes,
             max_segments: config.object_max_segments,
         },
         ack_gate: std::time::Duration::from_millis(config.object_ack_gate_ms),
         ship_gauges: std::sync::Arc::default(),
-        ship_limits: shipper::ShipLimits::new(
+        ship_limits: objects::shipper::ShipLimits::new(
             config.object_ship_concurrency,
             config.object_ship_reserved,
         ),
+        directory_sync: directory_sync.clone(),
+        directory_gauges,
+        reader_membership: moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(10))
+            .build(),
+        directory_overlays: std::sync::Arc::default(),
+        directory_recomputed: std::sync::Arc::default(),
+        directory_eval_budget_ms: config.directory_eval_budget_ms,
         admit_refusals: moka::future::Cache::builder()
             .max_capacity(100_000)
             .time_to_live(std::time::Duration::from_secs(config.pointer_ttl_secs))
@@ -195,13 +242,59 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Due alarms in cold files fire without anyone asking; the sweep is
     // what makes hibernation and crashes indistinguishable to an alarm.
-    tokio::spawn(sweeper::run(
+    tokio::spawn(objects::sweeper::run(
         state.clone(),
         std::time::Duration::from_secs(config.object_sweep_secs),
     ));
 
+    // Settled directory rows leave on their own cadence, never on a
+    // caller's. A flush that fails keeps its rows, so the next tick
+    // retries them.
+    tokio::spawn({
+        let syncer = directory_sync.clone();
+        let interval = std::time::Duration::from_millis(config.directory_flush_ms);
+        async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let _ = syncer.flush().await;
+            }
+        }
+    });
+
+    // Deltas become a base on their own cadence. Any node may compact
+    // any class it has written to; the lease decides which one does.
+    tokio::spawn(directory::compact::run(
+        state.clone(),
+        std::time::Duration::from_secs(config.directory_compact_secs),
+    ));
+
+    // Rows the write path cannot reach: an object that never writes
+    // again never offers one, and an object that expires never offers
+    // its tombstone. Both are recovered from metadata, so this reads
+    // manifests and never opens an object file.
+    tokio::spawn(directory::rebuild::run(
+        state.clone(),
+        std::time::Duration::from_secs(config.directory_rebuild_secs),
+    ));
+
+    // The event-driven half: a node that died may have settled a write
+    // whose row never reached a delta. Scoped to what that node held,
+    // so it costs the crash rather than the cluster.
+    tokio::spawn(directory::sweep::run(
+        state.clone(),
+        std::time::Duration::from_secs(config.directory_sweep_secs),
+    ));
+
+    // Overlays are pure cache; without this a node keeps one file per
+    // class it was ever asked about, forever.
+    tokio::spawn(directory::read::evict(
+        state.clone(),
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(config.directory_overlay_ttl_secs),
+    ));
+
     // The data plane: object dispatch and typed reads, cluster-internal.
-    // The registry address other nodes and the api dial is THIS listener.
+    // The registry address other nodes and the api dial is this listener.
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], config.grpc_port));
     // The standard grpc health service rides the data plane unguarded
     // (health is not a capability), the probe target for this node.
@@ -228,7 +321,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let http = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 
-    // The goodbye fires AT the shutdown signal, not after the drain:
+    // The goodbye fires at the shutdown signal, not after the drain:
     // graceful drain waits on peers' persistent h2 channels and can
     // outlive the sigkill window, and the node stops being routable the
     // moment it stops accepting anyway. Deregistering frees this node's
@@ -271,7 +364,15 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // a deploy never leaves state only this volume holds. The floor is
     // five seconds; a node holding a real backlog gets more, because
     // shipping is bounded and the backlog drains in waves.
-    shipper::flush_all(&state.shippers, std::time::Duration::from_secs(5)).await;
+    objects::shipper::flush_all(&state.shippers, std::time::Duration::from_secs(5)).await;
+
+    // The shippers settled, so every row they carried is durable and
+    // offered. Flushing the syncer now is what lets a graceful stop
+    // leave the index current instead of one interval behind, which is
+    // also what the crash sweep uses to tell a clean exit from a death.
+    if !state.directory_sync.settled() {
+        let _ = state.directory_sync.flush().await;
+    }
 
     // A fast drain must not outrun the goodbye: when nothing holds the
     // listeners open, main gets here in milliseconds and exiting now
