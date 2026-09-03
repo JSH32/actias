@@ -684,12 +684,23 @@ impl ObjectRouting {
                 // The pinned vm routes its own outbound calls too; the
                 // chain it hands them is what makes cycles refusable. Its
                 // routing context matches the code it runs.
-                let vm_routing = ObjectRouting::new(&routing.state, prepared);
+                let vm_routing = ObjectRouting::new(&routing.state, prepared.clone());
                 runtime.set_app_data::<ObjectRouter>(vm_routing.as_router());
                 // The read-path sibling: without it `Class:list`
                 // refuses inside an object exactly as it did in a
                 // request handler.
                 runtime.set_app_data::<DirectoryLister>(vm_routing.as_lister());
+                // An object may open a wire outward, the idiomatic owner
+                // of one: it decides exactly one exists and reopens it.
+                runtime.set_app_data::<actias_worker_core::extensions::sockets::Dialer>(
+                    crate::server::dialer_for(
+                        routing.state.clone(),
+                        prepared.clone(),
+                        routing.state.redis.clone().map(|connection| {
+                            LogPublisher::new(connection, script_log_channel(&owner.script.id))
+                        }),
+                    ),
+                );
                 // The pump reads this to deliver connection edges; a
                 // node without the socket serving the id prunes them.
                 runtime.set_app_data::<Arc<actias_worker_core::connections::ConnectionRegistry>>(

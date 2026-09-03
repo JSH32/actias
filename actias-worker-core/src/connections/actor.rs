@@ -26,7 +26,7 @@ use mlua::LuaSerdeExt;
 
 use actias_declarations::ConnectionSpec;
 
-use crate::connections::{InboxItem, InboxReceiver, OutboundFrame};
+use crate::connections::{InboxItem, InboxReceiver, OutboundFrame, Status};
 use crate::extensions::sockets::{ConnectionRegistry, SockShared, conn_surface, event_value};
 use crate::runtime::ActiasRuntime;
 
@@ -111,6 +111,13 @@ impl ConnectionTask {
         let outcome = self.serve().await;
         // The close handler still runs on an erroring connection: the
         // wire is ending either way, and cleanup is the hook's point.
+        // A handler's own failure is the reason when the wire gave none.
+        if let Err(error) = &outcome {
+            self.shared.record_closed(crate::connections::Closed {
+                by: crate::connections::ClosedBy::Error,
+                reason: Some(error.clone()),
+            });
+        }
         let closed = self.invoke("close", None).await;
         self.shared.sever_follows().await;
         let _ = self.shared.send_close().await;
@@ -176,6 +183,7 @@ impl ConnectionTask {
                 Err(_elapsed) => {
                     if self.vm.take().is_some() {
                         self.hibernated = true;
+                        self.shared.set_status(Status::Hibernated);
                         self.gauges.warm.fetch_sub(1, Ordering::Relaxed);
                         self.gauges.hibernated.fetch_add(1, Ordering::Relaxed);
                     }
@@ -265,6 +273,7 @@ impl ConnectionTask {
         if self.vm.is_none() {
             let started = std::time::Instant::now();
             self.vm = Some((self.factory)().await?);
+            self.shared.set_status(Status::Warm);
             self.gauges.warm.fetch_add(1, Ordering::Relaxed);
             if self.hibernated {
                 self.hibernated = false;
@@ -307,6 +316,20 @@ impl ConnectionTask {
             .map_err(|e| e.to_string())?;
         conn.set("class", self.shared.class.clone())
             .map_err(|e| e.to_string())?;
+        // Why the wire ended, for the close handler; absent on every
+        // other handler and on a node death, which runs none.
+        if handler == "close"
+            && let Some(closed) = self.shared.closed_snapshot()
+        {
+            let table = vm.create_table().map_err(|e| e.to_string())?;
+            table
+                .set("by", closed.by.as_str())
+                .map_err(|e| e.to_string())?;
+            if let Some(reason) = closed.reason {
+                table.set("reason", reason).map_err(|e| e.to_string())?;
+            }
+            conn.set("closed", table).map_err(|e| e.to_string())?;
+        }
 
         let argument = match argument {
             None => mlua::Value::Nil,

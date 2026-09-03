@@ -324,6 +324,22 @@ export class ResourcesService {
     return this.parseValue(value.valueJson);
   }
 
+  /** Every live connection the project holds, both directions, from
+   * every node: the worker asked fans the question out. */
+  async listConnections(
+    project: Projects,
+  ): Promise<worker_data.ConnectionRow[]> {
+    const value = await lastValueFrom(
+      this.workers
+        .listConnections(
+          { projectId: project.id, localOnly: false },
+          this.internalMetadata(),
+        )
+        .pipe(toHttpException()),
+    );
+    return value.connections ?? [];
+  }
+
   /** The queue's journal after a cursor, routed like any other read. */
   async readJournal(
     project: Projects,

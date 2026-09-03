@@ -12,6 +12,7 @@ import { DatabasesController } from './databases.controller';
 import { ObjectsController } from './objects.controller';
 import { WorkflowsController } from './workflows.controller';
 import { ShellController } from './shell.controller';
+import { ConnectionsController } from './connections.controller';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { ShellController } from './shell.controller';
     ObjectsController,
     WorkflowsController,
     ShellController,
+    ConnectionsController,
   ],
   providers: [ResourcesService],
 })

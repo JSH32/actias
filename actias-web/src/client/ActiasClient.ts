@@ -8,6 +8,7 @@ import { AxiosHttpRequest } from './core/AxiosHttpRequest';
 import { AclService } from './services/AclService';
 import { AdminService } from './services/AdminService';
 import { AuthService } from './services/AuthService';
+import { ConnectionsService } from './services/ConnectionsService';
 import { DatabasesService } from './services/DatabasesService';
 import { HealthService } from './services/HealthService';
 import { InterestService } from './services/InterestService';
@@ -30,6 +31,7 @@ export class ActiasClient {
     public readonly acl: AclService;
     public readonly admin: AdminService;
     public readonly auth: AuthService;
+    public readonly connections: ConnectionsService;
     public readonly databases: DatabasesService;
     public readonly health: HealthService;
     public readonly interest: InterestService;
@@ -63,6 +65,7 @@ export class ActiasClient {
         this.acl = new AclService(this.request);
         this.admin = new AdminService(this.request);
         this.auth = new AuthService(this.request);
+        this.connections = new ConnectionsService(this.request);
         this.databases = new DatabasesService(this.request);
         this.health = new HealthService(this.request);
         this.interest = new InterestService(this.request);

@@ -40,16 +40,23 @@
 //! across a metamethod boundary, so userdata async methods are
 //! structurally wrong here and a table of closures is the shape that
 //! works.
+//!
+//! The outbound half: `Class:open(url, seed?, options?)` on the class
+//! handle asks the worker's [`Dialer`] to dial the wire, mint the
+//! identity and spawn the same actor; it answers with the instance
+//! name once the handshake is up. Sending upstream is publishing on a
+//! topic the wire follows, so no socket handle exists in Lua.
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use mlua::{Lua, LuaSerdeExt, Table};
 
 use actias_declarations::ConnectionSpec;
 
-use crate::connections::OutboundFrame;
 use crate::connections::actor::STATE_CAP_BYTES;
+use crate::connections::{Closed, ConnectionSummary, Direction, OutboundFrame, Status};
 use crate::extensions::objects::{ObjectRouter, ObjectTarget};
 use crate::runtime::ActiasRuntime;
 use crate::runtime::extension::{ExtensionInfo, LuaExtension};
@@ -148,12 +155,97 @@ impl LuaExtension for ConnectionExtension {
                 ConnectionRegistry::of(lua).declare(spec, &body)?;
                 let handle = lua.create_table()?;
                 handle.set("__connection", class.clone())?;
+                handle.set("open", open_verb(lua)?)?;
                 Ok(handle)
             })
         })?;
 
         Ok(mlua::Value::Function(declaration))
     }
+}
+
+/// What `Class:open` asks the worker to dial.
+pub struct DialRequest {
+    pub spec: Arc<ConnectionSpec>,
+    pub url: String,
+    pub seed: serde_json::Value,
+    pub headers: Vec<(String, String)>,
+    pub protocols: Vec<String>,
+}
+
+/// Dials a wire, mints the identity, spawns the actor, and answers with
+/// the instance name once the handshake is up. The worker installs one
+/// as app data wherever a vm may open a connection; a vm without one
+/// refuses the verb.
+pub type Dialer = Arc<
+    dyn Fn(DialRequest) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// `Class:open(url, seed?, options?) -> name`. The seed becomes
+/// `conn.state`; `options.headers` and `options.protocols` go into the
+/// handshake.
+fn open_verb(lua: &Lua) -> mlua::Result<mlua::Function> {
+    lua.create_async_function(
+        |lua,
+         (handle, url, seed, options): (
+            Table,
+            String,
+            Option<mlua::Value>,
+            Option<Table>,
+        )| async move {
+            let class: String = handle.get("__connection")?;
+            let Some(spec) = ConnectionRegistry::of(&lua).spec(&class) else {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Connection '{class}' is not declared in this script."
+                )));
+            };
+            let seed = match seed {
+                None | Some(mlua::Value::Nil) => serde_json::json!({}),
+                Some(value) => lua.from_value::<serde_json::Value>(value)?,
+            };
+            let size = seed.to_string().len();
+            if size > STATE_CAP_BYTES {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "The state seed is {size} bytes; conn.state caps at \
+                     {STATE_CAP_BYTES}. A session worth more belongs in an object."
+                )));
+            }
+            let mut headers = Vec::new();
+            let mut protocols = Vec::new();
+            if let Some(options) = options {
+                if let Ok(table) = options.get::<Table>("headers") {
+                    for pair in table.pairs::<String, String>() {
+                        let (name, value) = pair?;
+                        headers.push((name, value));
+                    }
+                }
+                if let Ok(table) = options.get::<Table>("protocols") {
+                    for value in table.sequence_values::<String>() {
+                        protocols.push(value?);
+                    }
+                }
+            }
+            let dialer = lua
+                .app_data_ref::<Dialer>()
+                .map(|dialer| dialer.clone())
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError(
+                        "outbound connections cannot be opened from here.".to_owned(),
+                    )
+                })?;
+            dialer(DialRequest {
+                spec,
+                url,
+                seed,
+                headers,
+                protocols,
+            })
+            .await
+            .map_err(mlua::Error::RuntimeError)
+        },
+    )
 }
 
 /// A requested upgrade, parked in app data until the HTTP layer picks
@@ -291,6 +383,21 @@ pub struct SockShared {
     /// Edges this connection made, for polite cleanup on close; the
     /// pump's deliver-or-prune covers anything this list misses.
     follows: std::sync::Mutex<Vec<(String, String, String)>>,
+    /// What the listing shows, and what `conn.closed` reads.
+    about: About,
+    status: AtomicU8,
+    closed: std::sync::Mutex<Option<Closed>>,
+}
+
+/// The facts about a connection that never change after it opens.
+#[derive(Clone, Default)]
+pub struct About {
+    pub connection_class: String,
+    pub direction: Option<Direction>,
+    pub peer: Option<String>,
+    pub project_id: String,
+    pub script_id: String,
+    pub opened_at_ms: i64,
 }
 
 impl SockShared {
@@ -302,6 +409,27 @@ impl SockShared {
         outbound: tokio::sync::mpsc::Sender<OutboundFrame>,
         router: ObjectRouter,
     ) -> Arc<Self> {
+        Self::with_about(
+            connection_id,
+            node,
+            class,
+            name,
+            outbound,
+            router,
+            About::default(),
+        )
+    }
+
+    /// As [`Self::new`], with what the listing shows.
+    pub fn with_about(
+        connection_id: String,
+        node: String,
+        class: String,
+        name: String,
+        outbound: tokio::sync::mpsc::Sender<OutboundFrame>,
+        router: ObjectRouter,
+        about: About,
+    ) -> Arc<Self> {
         Arc::new(Self {
             connection_id,
             node,
@@ -310,7 +438,61 @@ impl SockShared {
             outbound,
             router,
             follows: std::sync::Mutex::new(Vec::new()),
+            about,
+            status: AtomicU8::new(0),
+            closed: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Records where the actor is in its life, for the listing.
+    pub fn set_status(&self, status: Status) {
+        let code = match status {
+            Status::New => 0,
+            Status::Warm => 1,
+            Status::Hibernated => 2,
+        };
+        self.status.store(code, Ordering::Relaxed);
+    }
+
+    fn status(&self) -> Status {
+        match self.status.load(Ordering::Relaxed) {
+            1 => Status::Warm,
+            2 => Status::Hibernated,
+            _ => Status::New,
+        }
+    }
+
+    /// Records why the wire ended, before the `close` handler runs;
+    /// the first record wins.
+    pub fn record_closed(&self, closed: Closed) {
+        if let Ok(mut slot) = self.closed.lock()
+            && slot.is_none()
+        {
+            *slot = Some(closed);
+        }
+    }
+
+    /// What `conn.closed` carries.
+    pub fn closed_snapshot(&self) -> Option<Closed> {
+        self.closed.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// The row the console lists for this connection.
+    pub fn summary(&self, id: &str) -> ConnectionSummary {
+        ConnectionSummary {
+            id: id.to_owned(),
+            connection_class: self.about.connection_class.clone(),
+            class: self.class.clone(),
+            name: self.name.clone(),
+            direction: self.about.direction.unwrap_or(Direction::Inbound),
+            peer: self.about.peer.clone(),
+            node: self.node.clone(),
+            project_id: self.about.project_id.clone(),
+            script_id: self.about.script_id.clone(),
+            opened_at_ms: self.about.opened_at_ms,
+            status: self.status(),
+            follows: self.follows_snapshot().len(),
+        }
     }
 
     /// The follower value every gate sees for this connection.
@@ -477,6 +659,10 @@ pub fn conn_surface(lua: &Lua, shared: Arc<SockShared>) -> mlua::Result<Table> {
     conn.set(
         "close",
         lua.create_function(move |_lua, _args: mlua::MultiValue| {
+            this.record_closed(Closed {
+                by: crate::connections::ClosedBy::Program,
+                reason: None,
+            });
             let _ = this.outbound.try_send(OutboundFrame::Close);
             Ok(true)
         })?,

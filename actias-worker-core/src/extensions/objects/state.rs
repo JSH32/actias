@@ -32,7 +32,18 @@ pub(super) fn make_identity(
         "is",
         lua.create_function(|_, (this, class_handle): (Table, Table)| {
             let mine: String = this.get("__of")?;
-            let theirs: String = class_handle.get("__class")?;
+            // An object class handle names its class under `__class`; a
+            // connection class handle under `__connection`. A follow gate
+            // asks about either, since a connection speaks as its own
+            // class when the platform dialled it.
+            let theirs: String = match class_handle.get::<String>("__class") {
+                Ok(class) => class,
+                Err(_) => class_handle.get("__connection").map_err(|_| {
+                    mlua::Error::RuntimeError(
+                        "is takes a class handle: follower:is(Account).".to_owned(),
+                    )
+                })?,
+            };
             Ok(mine == theirs)
         })?,
     )?;

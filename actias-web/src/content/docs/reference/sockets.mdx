@@ -106,11 +106,44 @@ as for the rest of its life. Two arguments means no seed.
     <tr><td><code>conn:follow(target, topic, filter?)</code></td><td>makes a connection edge; returns true</td></tr>
     <tr><td><code>conn:unfollow(target, topic)</code></td><td>removes it</td></tr>
     <tr><td><code>conn:close()</code></td><td>ends the connection</td></tr>
+    <tr><td><code>conn.closed</code></td><td>on the <code>close</code> handler only: <code>{'{ by, reason? }'}</code>, where <code>by</code> is <code>peer</code>, <code>program</code>, <code>error</code> or <code>overflow</code></td></tr>
   </tbody>
 </table>
 
 The event a handler receives is shaped
 `{ topic = "...", from = { id, class, name }, data = {...} }`.
+
+## Opening a wire outward
+
+The same class dials as well as accepts:
+
+```lua
+local name = Upstream:open("wss://api.example/realtime", { room = "lobby" }, {
+    headers = { Authorization = "Bearer " .. key },
+    protocols = { "json" },
+})
+```
+
+<table>
+  <thead>
+    <tr><th>Argument</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>url</code></td><td><code>ws://</code> or <code>wss://</code>; the egress policy applies, and every address the host resolves to is checked before any is dialled</td></tr>
+    <tr><td><code>seed</code></td><td>the initial <code>conn.state</code>, optional, 64 KB cap</td></tr>
+    <tr><td><code>options.headers</code></td><td>request headers for the handshake</td></tr>
+    <tr><td><code>options.protocols</code></td><td>the subprotocol list</td></tr>
+    <tr><td>returns</td><td>the instance name, once the handshake is up; the call raises with the reason otherwise, and gives up after 10 s</td></tr>
+  </tbody>
+</table>
+
+The connection speaks as its own class and the minted name, lives on
+the node that opened it, and is listed in the console's Connections
+page beside the inbound ones. There is no socket handle: to send up
+the wire, publish on a topic the connection follows, and send the
+payload from its `event` handler. See [wires this project
+opened](/docs/runtime/sockets#wires-this-project-opened) for the
+pattern and who should own the reopen.
 
 ## Example
 

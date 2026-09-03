@@ -155,6 +155,41 @@ export namespace worker_data {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<WalAppended>;
+        // The live connections a project holds, both directions. The node
+    // asked answers for itself and, unless &#x60;local_only&#x60;, asks every
+    // other live node the same question, so one call lists the cluster.
+        listConnections(
+            data: ConnectionQuery,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ConnectionList>;
+    }
+    export interface ConnectionQuery {
+        // Empty lists every project&#x27;s; the api always names one.
+        projectId?: string;
+        localOnly?: boolean;
+    }
+    export interface ConnectionRow {
+        id?: string;
+        // The declared connection class running the wire.
+        connectionClass?: string;
+        // The identity it speaks as.
+        class?: string;
+        name?: string;
+        // &quot;inbound&quot; (a client&#x27;s upgrade) or &quot;outbound&quot; (dialled by the project).
+        direction?: string;
+        // The far side&#x27;s host, outbound only.
+        peer?: string;
+        node?: string;
+        projectId?: string;
+        scriptId?: string;
+        openedAtMs?: number;
+        // &quot;new&quot;, &quot;warm&quot; or &quot;hibernated&quot;.
+        status?: string;
+        follows?: number;
+    }
+    export interface ConnectionList {
+        connections?: worker_data.ConnectionRow[];
     }
     export interface WatermarkQuery {
         objectId?: string;

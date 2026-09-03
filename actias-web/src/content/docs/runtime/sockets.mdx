@@ -199,6 +199,82 @@ inbox of 256 items.
 A handler throwing, `conn:close()`, or the peer disconnecting all end
 the connection and remove the edges it made.
 
+## Wires this project opened
+
+A connection is a wire with a program attached, and which side opened
+the wire does not change that. `Class:open(url, seed?, options?)`
+dials a `ws://` or `wss://` url through the egress policy and runs the
+same handlers over it: `open` once the handshake is up, `frame` per
+message from the far side, `event` for what it follows, `close` when
+it ends. It hibernates and holds `conn.state` like any other
+connection, lives on the node that opened it, and shows up in the
+console's Connections page marked outbound.
+
+```lua
+local Upstream = connection "Upstream" {
+    open = function(conn)
+        conn:follow(Chat(conn.state.room), "upstream")
+        Chat(conn.state.room):wire_up()
+    end,
+    event = function(conn, event) conn:send(event.data) end,
+    frame = function(conn, data) Chat(conn.state.room):token(data) end,
+    close = function(conn) Chat(conn.state.room):upstream_closed(conn.closed) end,
+}
+```
+
+Three rules make it easy to hold right.
+
+**The wire says when it is up.** `open` returns when the handshake is
+up, not when the wire's `open` handler has followed anything, and that
+handler's follow lands only after the call that opened the wire
+returns. So the handler follows and then posts into the object, and
+the object sends what was waiting from there; a publish in the same
+call that opened the wire reaches nobody.
+
+**Sending up the wire is publishing.** The connection has no socket
+handle in Lua. Whoever wants to send publishes on a topic the
+connection follows, and the `event` handler sends the payload raw.
+The publisher's code is the same whether the wire is up, reopening or
+gone, and a topic meant for the wire alone is guarded by the object's
+`follow` hook admitting only that class:
+
+```lua
+publishes = { tokens = "public", "upstream" },
+hooks = {
+    follow = function(state, topic, follower)
+        return topic == "tokens" or follower:is(Upstream)
+    end,
+},
+```
+
+**An object owns the intent.** An inbound connection is unique because
+the client's wire is; an outbound one has nobody to make it unique,
+so three requests calling `open` open three wires. The thing that
+decides exactly one should exist, and reopens it when it drops, is a
+leased single-home job: an object. It stores the name `open`
+returned, opens one only when nothing is stored, and cannot race
+itself because it takes one call at a time.
+
+Knowing a wire dropped, in order of trust:
+
+1. The `close` handler runs on every end except a node death, with
+   `conn.closed.by` saying who ended it: `peer`, `program`, `error`
+   or `overflow`, and `reason` when there is one. Post into the
+   owning object from it.
+2. The next send: a publish into a topic the gone wire followed
+   reaches nobody, and the object's next call finds no stored name
+   and opens again.
+3. A node death runs no handler at all. The object's stored "work
+   pending" fact, its `init` and an alarm reopen the wire wherever
+   the object wakes next, which is why the intent lives in the object
+   and not in the connection.
+
+A wire dropping mid-answer loses the rest of that answer. What the
+`frame` handler already posted into the object is durable, since each
+post is an ordinary write; the object discards its draft, tells its
+followers to expect a retry, and resends. Whether the far side can
+continue a partial answer is the far side's feature.
+
 ### Gotchas
 
 - Follow targets are handles named in your code, never strings taken
@@ -213,6 +289,9 @@ the connection and remove the edges it made.
   change what the connection speaks as.
 - Locals captured in the fetch handler do not reach the handlers;
   anything a session needs travels through the seed into `conn.state`.
+- An outbound wire is not replayed. The platform tells you it ended
+  and lets the retry be one method call; frames sent between the drop
+  and the reopen are gone, as for any client that disconnected.
 
 ## Related
 

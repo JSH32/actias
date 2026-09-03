@@ -26,6 +26,7 @@ use actias_worker_core::extensions;
 use actias_worker_core::extensions::http::Request as LuaRequest;
 use actias_worker_core::extensions::log::LogPublisher;
 use actias_worker_core::extensions::objects::{DirectoryLister, ObjectRouter};
+use actias_worker_core::extensions::sockets::Dialer;
 use actias_worker_core::identity::ObjectKey;
 use actias_worker_core::objects::ObjectHost;
 use actias_worker_core::proto::bundle::File;
@@ -1064,6 +1065,8 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // writes are held until durable like any object's.
     let connection_router = ObjectRouting::new(&state, prepared.clone()).as_router();
     lua.set_app_data::<ObjectRouter>(router);
+    // A request may open a wire outward; the connection outlives it.
+    lua.set_app_data::<Dialer>(dialer_for(state.clone(), prepared.clone(), logs.clone()));
     // The listing seam. Without it every `Class:list` in a request
     // handler refuses, because the verb resolves against app data that
     // only this call installs.
@@ -1111,6 +1114,14 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             .ok()
             .and_then(|guard| guard.clone())
             .unwrap_or_default();
+        let about = actias_worker_core::extensions::sockets::About {
+            connection_class: pending.spec.name.clone(),
+            direction: Some(actias_worker_core::connections::Direction::Inbound),
+            peer: None,
+            project_id: prepared.script.project_id.clone(),
+            script_id: prepared.script.id.clone(),
+            opened_at_ms: actias_worker_core::extensions::objects::unix_now_ms(),
+        };
         let factory = vm_factory(state.clone(), prepared, logs);
         let hibernate_after = state.connection_hibernate_after;
         let gauges = state.connection_gauges.clone();
@@ -1122,8 +1133,11 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             node,
             hibernate_after,
             gauges,
+            about,
         };
-        return Ok(websocket.on_upgrade(move |socket| drive_socket(socket, spawn)));
+        return Ok(
+            websocket.on_upgrade(move |socket| drive_wire(Wire::Inbound(Box::new(socket)), spawn))
+        );
     }
 
     let lua_response: extensions::http::Response = lua.from_value(value)?;
@@ -1177,16 +1191,147 @@ fn vm_factory(
                         revision_id: prepared.revision_id.clone(),
                         flavor: crate::vm_pool::Flavor::Request,
                     },
-                    request_vm_build(state.clone(), prepared.clone(), logs),
+                    request_vm_build(state.clone(), prepared.clone(), logs.clone()),
                 )
                 .await?;
             state.guest_limits.apply(&lua);
-            let routing = ObjectRouting::new(&state, prepared);
+            let routing = ObjectRouting::new(&state, prepared.clone());
             lua.set_app_data::<ObjectRouter>(routing.as_router());
             lua.set_app_data::<DirectoryLister>(routing.as_lister());
+            lua.set_app_data::<Dialer>(dialer_for(state.clone(), prepared, logs));
             Ok(lua)
         })
     })
+}
+
+/// The dialer a vm's `Class:open` calls: the egress check, the
+/// handshake, a minted identity, and the same actor an upgrade gets,
+/// spawned to outlive whatever opened it. Answers with the instance
+/// name once the wire is up.
+pub(crate) fn dialer_for(
+    state: AppState,
+    prepared: Arc<PreparedRevision>,
+    logs: Option<LogPublisher>,
+) -> Dialer {
+    Arc::new(move |request| {
+        let state = state.clone();
+        let prepared = prepared.clone();
+        let logs = logs.clone();
+        Box::pin(async move {
+            let (wire, host) = tokio::time::timeout(DIAL_BUDGET, dial(&state, &request))
+                .await
+                .map_err(|_| "the handshake took too long.".to_owned())??;
+            let name = uuid::Uuid::new_v4().simple().to_string()[..12].to_owned();
+            let node = state
+                .node_identity
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .unwrap_or_default();
+            let about = actias_worker_core::extensions::sockets::About {
+                connection_class: request.spec.name.clone(),
+                direction: Some(actias_worker_core::connections::Direction::Outbound),
+                peer: Some(host),
+                project_id: prepared.script.project_id.clone(),
+                script_id: prepared.script.id.clone(),
+                opened_at_ms: actias_worker_core::extensions::objects::unix_now_ms(),
+            };
+            let spawn = ConnectionSpawn {
+                factory: vm_factory(state.clone(), prepared.clone(), logs),
+                pending: actias_worker_core::extensions::sockets::PendingUpgrade {
+                    class: request.spec.name.clone(),
+                    name: name.clone(),
+                    spec: request.spec,
+                    seed: request.seed,
+                },
+                registry: state.connections.clone(),
+                router: ObjectRouting::new(&state, prepared).as_router(),
+                node,
+                hibernate_after: state.connection_hibernate_after,
+                gauges: state.connection_gauges.clone(),
+                about,
+            };
+            tokio::spawn(drive_wire(wire, spawn));
+            Ok(name)
+        })
+    })
+}
+
+/// Longest a `Class:open` waits for the far side to complete the
+/// handshake.
+const DIAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Opens the wire: the url through the egress policy, every address
+/// the host resolves to checked before any is connected, then the
+/// websocket handshake with the caller's headers and subprotocols.
+async fn dial(
+    state: &AppState,
+    request: &actias_worker_core::extensions::sockets::DialRequest,
+) -> Result<(Wire, String), String> {
+    let url = url::Url::parse(&request.url).map_err(|_| "the url does not parse.".to_owned())?;
+    let secure = match url.scheme() {
+        "wss" => true,
+        "ws" => false,
+        _ => return Err("the url must start with ws:// or wss://.".to_owned()),
+    };
+    state
+        .egress
+        .policy
+        .check_url(&url)
+        .map_err(|denied| denied.to_string())?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "the url has no host.".to_owned())?
+        .to_owned();
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(if secure { 443 } else { 80 });
+    // Resolved here rather than by the handshake, so a name pointing at
+    // a private address is refused the way an http request's is.
+    let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|_| format!("'{host}' does not resolve."))?
+        .collect();
+    if addresses.is_empty() {
+        return Err(format!("'{host}' does not resolve."));
+    }
+    for address in &addresses {
+        state
+            .egress
+            .policy
+            .check_ip(address.ip())
+            .map_err(|denied| denied.to_string())?;
+    }
+    let stream = tokio::net::TcpStream::connect(&addresses[..])
+        .await
+        .map_err(|error| format!("'{host}' refused the connection: {error}"))?;
+
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut handshake = request
+        .url
+        .as_str()
+        .into_client_request()
+        .map_err(|error| format!("the url cannot be dialled: {error}"))?;
+    for (name, value) in &request.headers {
+        let name = tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| format!("'{name}' is not a header name."))?;
+        let value = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(value)
+            .map_err(|_| format!("the value of '{name}' is not a header value."))?;
+        handshake.headers_mut().insert(name, value);
+    }
+    if !request.protocols.is_empty() {
+        let value = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(
+            &request.protocols.join(", "),
+        )
+        .map_err(|_| "the subprotocol list is not a header value.".to_owned())?;
+        handshake
+            .headers_mut()
+            .insert("Sec-WebSocket-Protocol", value);
+    }
+    let (socket, _response) = tokio_tungstenite::client_async_tls(handshake, stream)
+        .await
+        .map_err(|error| format!("the handshake with '{host}' failed: {error}"))?;
+    Ok((Wire::Outbound(Box::new(socket)), host))
 }
 
 /// The bridge between one live websocket and its connection actor:
@@ -1196,7 +1341,7 @@ fn vm_factory(
 /// (politely by the actor, or by the pump's deliver-or-prune for
 /// whatever that missed) and the registry forgets the id.
 /// Everything a connection needs besides its socket, gathered at the
-/// upgrade and handed to the task that outlives the request.
+/// upgrade or the dial and handed to the task that outlives it.
 struct ConnectionSpawn {
     factory: actias_worker_core::connections::actor::VmFactory,
     pending: actias_worker_core::extensions::sockets::PendingUpgrade,
@@ -1207,9 +1352,86 @@ struct ConnectionSpawn {
     node: String,
     hibernate_after: Option<std::time::Duration>,
     gauges: Arc<actias_worker_core::connections::actor::ConnectionGauges>,
+    about: actias_worker_core::extensions::sockets::About,
 }
 
-async fn drive_socket(mut socket: axum::extract::ws::WebSocket, spawn: ConnectionSpawn) {
+/// A live websocket, whichever side opened it. The bridge speaks in
+/// text frames and closes; the two libraries' message types stay here.
+enum Wire {
+    Inbound(Box<axum::extract::ws::WebSocket>),
+    Outbound(
+        Box<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
+    ),
+}
+
+/// What the bridge cares about in a received message.
+enum Received {
+    Text(String),
+    /// A close frame, the peer going away, or a read error.
+    Ended(Option<String>),
+    Other,
+}
+
+impl Wire {
+    async fn recv(&mut self) -> Received {
+        match self {
+            Self::Inbound(socket) => match socket.recv().await {
+                Some(Ok(axum::extract::ws::Message::Text(text))) => {
+                    Received::Text(text.to_string())
+                }
+                Some(Ok(axum::extract::ws::Message::Close(_))) | None => Received::Ended(None),
+                Some(Err(error)) => Received::Ended(Some(error.to_string())),
+                Some(Ok(_)) => Received::Other,
+            },
+            Self::Outbound(socket) => {
+                use futures::StreamExt;
+                use tokio_tungstenite::tungstenite::Message;
+                match socket.next().await {
+                    Some(Ok(Message::Text(text))) => Received::Text(text.to_string()),
+                    Some(Ok(Message::Close(_))) | None => Received::Ended(None),
+                    Some(Err(error)) => Received::Ended(Some(error.to_string())),
+                    Some(Ok(_)) => Received::Other,
+                }
+            }
+        }
+    }
+
+    async fn send_text(&mut self, text: String) -> Result<(), String> {
+        match self {
+            Self::Inbound(socket) => socket
+                .send(axum::extract::ws::Message::Text(text.into()))
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Outbound(socket) => {
+                use futures::SinkExt;
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    async fn close(&mut self) {
+        match self {
+            Self::Inbound(socket) => {
+                let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
+            }
+            Self::Outbound(socket) => {
+                use futures::SinkExt;
+                let _ = socket
+                    .send(tokio_tungstenite::tungstenite::Message::Close(None))
+                    .await;
+            }
+        }
+    }
+}
+
+async fn drive_wire(mut wire: Wire, spawn: ConnectionSpawn) {
     let ConnectionSpawn {
         factory,
         pending,
@@ -1218,60 +1440,63 @@ async fn drive_socket(mut socket: axum::extract::ws::WebSocket, spawn: Connectio
         node,
         hibernate_after,
         gauges,
+        about,
     } = spawn;
     use actias_worker_core::connections::actor::ConnectionTask;
-    use actias_worker_core::connections::{InboxItem, OutboundFrame, inbox};
+    use actias_worker_core::connections::{Closed, ClosedBy, InboxItem, OutboundFrame, inbox};
     use actias_worker_core::extensions::sockets::SockShared;
-    use axum::extract::ws::Message;
 
     let connection_id = format!("conn#{}", uuid::Uuid::new_v4().simple());
     let (inbox_tx, inbox_rx) = inbox();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<OutboundFrame>(64);
-    registry.register(&connection_id, inbox_tx.clone());
 
-    let shared = SockShared::new(
+    let shared = SockShared::with_about(
         connection_id.clone(),
         node,
         pending.class.clone(),
         pending.name.clone(),
         out_tx,
         router,
+        about,
     );
+    registry.register_with(&connection_id, inbox_tx.clone(), shared.clone());
 
     // One task owns the socket, both directions: uplink text frames
     // decode into the inbox (the wire speaks json; anything else is
     // dropped), downlink frames encode out, and Close from either side
-    // ends the wire.
-    let wire = async move {
+    // ends the wire. Why it ended is recorded for the close handler.
+    let wire_shared = shared.clone();
+    let wire_task = async move {
         loop {
             tokio::select! {
-                incoming = socket.recv() => match incoming {
-                    Some(Ok(Message::Text(text))) => {
+                incoming = wire.recv() => match incoming {
+                    Received::Text(text) => {
                         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text)
                             && inbox_tx.push(InboxItem::Frame(data)).is_err()
                         {
+                            wire_shared.record_closed(Closed { by: ClosedBy::Overflow, reason: None });
+                            wire.close().await;
                             break;
                         }
                     }
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                    Received::Ended(reason) => {
+                        wire_shared.record_closed(Closed { by: ClosedBy::Peer, reason });
                         let _ = inbox_tx.push(InboxItem::Closed);
                         break;
                     }
-                    Some(Ok(_)) => {}
+                    Received::Other => {}
                 },
                 outgoing = out_rx.recv() => match outgoing {
                     Some(OutboundFrame::Json(value)) => {
-                        if socket
-                            .send(Message::Text(value.to_string().into()))
-                            .await
-                            .is_err()
-                        {
+                        if let Err(error) = wire.send_text(value.to_string()).await {
+                            wire_shared.record_closed(Closed { by: ClosedBy::Peer, reason: Some(error) });
                             let _ = inbox_tx.push(InboxItem::Closed);
                             break;
                         }
                     }
                     Some(OutboundFrame::Close) | None => {
-                        let _ = socket.send(Message::Close(None)).await;
+                        wire_shared.record_closed(Closed { by: ClosedBy::Program, reason: None });
+                        wire.close().await;
                         let _ = inbox_tx.push(InboxItem::Closed);
                         break;
                     }
@@ -1289,7 +1514,7 @@ async fn drive_socket(mut socket: axum::extract::ws::WebSocket, spawn: Connectio
         hibernate_after,
         gauges,
     );
-    let (_, outcome) = tokio::join!(wire, task.run());
+    let (_, outcome) = tokio::join!(wire_task, task.run());
     if let Err(error) = outcome {
         actias_common::tracing::debug!(%error, connection_id, "connection ended with an error");
     }

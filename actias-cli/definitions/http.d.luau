@@ -11,6 +11,12 @@ type Uri = {
 -- The conn surface a declared connection's handlers receive: the wire
 -- verbs plus the identity it speaks as and its json-serializable
 -- session scratchpad.
+-- Why a wire ended, on the close handler only: `by` is "peer" (the far
+-- side closed or the wire dropped), "program" (conn:close()), "error"
+-- (a handler threw) or "overflow" (the inbox filled). A node death runs
+-- no handler, so it is never seen here.
+type ConnClosed = { by: string, reason: string? }
+
 type Conn = {
     send: (self: Conn, data: any) -> boolean,
     follow: (self: Conn, target: any, topic: string, filter: any?) -> boolean,
@@ -19,6 +25,13 @@ type Conn = {
     state: { [string]: any },
     name: string,
     class: string,
+    closed: ConnClosed?,
+}
+
+-- What a dial may carry into the handshake.
+type OpenOptions = {
+    headers: { [string]: string }?,
+    protocols: { string }?,
 }
 
 -- A declared connection program: handlers for the wire's stimuli.
@@ -35,7 +48,15 @@ type ConnectionBody = {
     -- counts ticks that fired while a previous run was still going.
     timer: { every: string, run: (conn: Conn, missed: number) -> () }?,
 }
-type ConnectionClass = { __connection: string }
+-- A declared class is also the door outward: `Class:open(url, seed?,
+-- options?)` dials a ws:// or wss:// url through the egress policy,
+-- runs the same handlers over the wire, and answers with the instance
+-- name once the handshake is up. Sending upstream is publishing on a
+-- topic the wire follows; there is no socket handle.
+type ConnectionClass = {
+    __connection: string,
+    open: (self: ConnectionClass, url: string, seed: any?, options: OpenOptions?) -> string,
+}
 
 declare connection: (class: string) -> (body: ConnectionBody) -> ConnectionClass
 

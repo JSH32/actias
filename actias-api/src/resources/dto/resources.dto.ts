@@ -328,6 +328,44 @@ export class FollowersDto {
   edges: FollowerEdgeDto[];
 }
 
+/** One live connection on the cluster, either direction: what the
+ * console lists. Runtime state, never contract. */
+export class ConnectionDto {
+  @ApiProperty({ description: 'Node-local connection id.' })
+  id: string;
+
+  @ApiProperty({ description: 'The declared connection class running the wire.' })
+  connectionClass: string;
+
+  @ApiProperty({ description: "The identity it speaks as, 'Class/name'." })
+  identity: string;
+
+  @ApiProperty({ description: "'inbound' (a client's upgrade) or 'outbound' (dialled by the project)." })
+  direction: string;
+
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: "The far side's host, outbound only.",
+  })
+  peer: string | null;
+
+  @ApiProperty({ description: 'The node holding the wire.' })
+  node: string;
+
+  @ApiProperty({ description: 'The script whose revision opened it.' })
+  scriptId: string;
+
+  @ApiProperty({ description: 'Unix milliseconds the wire opened.' })
+  openedAt: number;
+
+  @ApiProperty({ description: "'new', 'warm' (holding a vm) or 'hibernated' (wire kept, vm dropped)." })
+  status: string;
+
+  @ApiProperty({ description: 'Edges the connection holds right now.' })
+  follows: number;
+}
+
 /** One typed pair in an object's key-value state, the kv service's
  * encoding: `type` records how `value` parses. */
 export class StatePairDto {

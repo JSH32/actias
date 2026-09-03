@@ -16,11 +16,11 @@ use actias_worker_core::proto::node_registry::{GetLeaseRequest, GetNodeRequest};
 use actias_worker_core::proto::worker_data::worker_data_client::WorkerDataClient;
 use actias_worker_core::proto::worker_data::worker_data_server::WorkerData;
 use actias_worker_core::proto::worker_data::{
-    CallResult, DirectoryEntry, DirectoryPage, DirectoryQuery, DirectoryRebuild, DirectoryRebuilt,
-    GenerationPart, InboxBatch, InboxEdge, InboxReceipts, ObjectCall, ReadRequest, ReadValue,
-    ReceiveBatch, ReceiveEntry, ReceiveOutcome, ReceiveReceipts, ReplicaChunk, ReplicaInfo,
-    ReplicaQuery, ShellOutcome, ShellRun, VisitEntry, VisitPage, WalAppend, WalAppended,
-    WatermarkInfo, WatermarkQuery, generation_part,
+    CallResult, ConnectionList, ConnectionQuery, ConnectionRow, DirectoryEntry, DirectoryPage,
+    DirectoryQuery, DirectoryRebuild, DirectoryRebuilt, GenerationPart, InboxBatch, InboxEdge,
+    InboxReceipts, ObjectCall, ReadRequest, ReadValue, ReceiveBatch, ReceiveEntry, ReceiveOutcome,
+    ReceiveReceipts, ReplicaChunk, ReplicaInfo, ReplicaQuery, ShellOutcome, ShellRun, VisitEntry,
+    VisitPage, WalAppend, WalAppended, WatermarkInfo, WatermarkQuery, generation_part,
 };
 
 use crate::routing::{ObjectRouting, fresh_replica_file, owner_prepared};
@@ -274,6 +274,74 @@ impl WorkerData for WorkerDataService {
             applied: outcome.applied,
             refusal: outcome.refusal,
         }))
+    }
+
+    async fn list_connections(
+        &self,
+        request: Request<ConnectionQuery>,
+    ) -> Result<Response<ConnectionList>, Status> {
+        let query = request.into_inner();
+        let mut rows: Vec<ConnectionRow> = self
+            .state
+            .connections
+            .list()
+            .into_iter()
+            .filter(|row| query.project_id.is_empty() || row.project_id == query.project_id)
+            .map(|row| ConnectionRow {
+                id: row.id,
+                connection_class: row.connection_class,
+                class: row.class,
+                name: row.name,
+                direction: row.direction.as_str().to_owned(),
+                peer: row.peer.unwrap_or_default(),
+                node: row.node,
+                project_id: row.project_id,
+                script_id: row.script_id,
+                opened_at_ms: row.opened_at_ms,
+                status: row.status.as_str().to_owned(),
+                follows: row.follows as u32,
+            })
+            .collect();
+        if !query.local_only {
+            // Every other live node answers for itself; a node that does
+            // not answer in time lists nothing rather than failing the
+            // page.
+            let own = self
+                .state
+                .node_identity
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone());
+            for node in crate::directory::rebuild::live_nodes(&self.state).await {
+                if own.as_deref() == Some(node.as_str()) {
+                    continue;
+                }
+                let Ok(address) = crate::directory::route::address_of(&self.state, &node).await
+                else {
+                    continue;
+                };
+                if address == self.state.node_address {
+                    continue;
+                }
+                let Ok(mut client) = peer_client(&self.state, &address).await else {
+                    continue;
+                };
+                let ask = ConnectionQuery {
+                    project_id: query.project_id.clone(),
+                    local_only: true,
+                };
+                if let Ok(Ok(reply)) = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    client.list_connections(authed(&self.state.internal_token, ask)),
+                )
+                .await
+                {
+                    rows.extend(reply.into_inner().connections);
+                }
+            }
+        }
+        rows.sort_by_key(|row| std::cmp::Reverse(row.opened_at_ms));
+        Ok(Response::new(ConnectionList { connections: rows }))
     }
 
     async fn lay_generation(

@@ -107,6 +107,40 @@ service WorkerData {
     // is sent only the chunks a rotation dirtied and patches its base in
     // place; one that is not answers NO_BASE and is sent every chunk.
     rpc LayGeneration(stream GenerationPart) returns (WalAppended);
+    // The live connections a project holds, both directions. The node
+    // asked answers for itself and, unless `local_only`, asks every
+    // other live node the same question, so one call lists the cluster.
+    rpc ListConnections(ConnectionQuery) returns (ConnectionList);
+}
+
+message ConnectionQuery {
+    // Empty lists every project's; the api always names one.
+    string project_id = 1;
+    bool local_only = 2;
+}
+
+message ConnectionRow {
+    string id = 1;
+    // The declared connection class running the wire.
+    string connection_class = 2;
+    // The identity it speaks as.
+    string class = 3;
+    string name = 4;
+    // "inbound" (a client's upgrade) or "outbound" (dialled by the project).
+    string direction = 5;
+    // The far side's host, outbound only.
+    string peer = 6;
+    string node = 7;
+    string project_id = 8;
+    string script_id = 9;
+    int64 opened_at_ms = 10;
+    // "new", "warm" or "hibernated".
+    string status = 11;
+    uint32 follows = 12;
+}
+
+message ConnectionList {
+    repeated ConnectionRow connections = 1;
 }
 
 message WatermarkQuery {

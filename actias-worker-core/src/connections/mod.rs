@@ -28,11 +28,111 @@
 //! cross-node connection delivery (the edge would record its
 //! terminating node and ride the worker dispatch channel; an
 //! unroutable node is Gone).
+//!
+//! A wire the platform dialled rather than accepted is the same
+//! connection: the worker's dialer hands the actor an outbound socket
+//! and marks the direction, and everything above this line holds.
+//! The registry keeps enough about each connection, both directions,
+//! for the console to list them.
 
 pub mod actor;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use crate::extensions::sockets::SockShared;
+
+/// Which way the wire was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// A client's upgrade, accepted by the platform.
+    Inbound,
+    /// Dialled by the project through `Class:open`.
+    Outbound,
+}
+
+impl Direction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inbound => "inbound",
+            Self::Outbound => "outbound",
+        }
+    }
+}
+
+/// Who ended the wire, as `conn.closed.by` spells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosedBy {
+    /// The far side closed, or the wire dropped.
+    Peer,
+    /// The program called `conn:close()`.
+    Program,
+    /// A handler threw, or the wire failed with an error.
+    Error,
+    /// The inbox filled: the program stopped pulling.
+    Overflow,
+}
+
+impl ClosedBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Peer => "peer",
+            Self::Program => "program",
+            Self::Error => "error",
+            Self::Overflow => "overflow",
+        }
+    }
+}
+
+/// Why a connection ended; the `close` handler reads it as
+/// `conn.closed`. Absent for a node death, which runs no handler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Closed {
+    pub by: ClosedBy,
+    pub reason: Option<String>,
+}
+
+/// Where a connection's actor is in its life, for the listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    /// Registered, no handler has run yet.
+    New,
+    /// Holding a vm.
+    Warm,
+    /// The vm dropped after silence; the wire and the state stay.
+    Hibernated,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Warm => "warm",
+            Self::Hibernated => "hibernated",
+        }
+    }
+}
+
+/// One live connection as the console lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionSummary {
+    pub id: String,
+    /// The declared connection class running the wire.
+    pub connection_class: String,
+    /// The identity it speaks as.
+    pub class: String,
+    pub name: String,
+    pub direction: Direction,
+    /// The far side's host, for an outbound wire.
+    pub peer: Option<String>,
+    pub node: String,
+    pub project_id: String,
+    pub script_id: String,
+    pub opened_at_ms: i64,
+    pub status: Status,
+    /// Edges this connection holds right now.
+    pub follows: usize,
+}
 
 /// One connection's inbox capacity. Past this bound the connection is
 /// closed rather than buffered: a program that stops pulling has
@@ -116,13 +216,19 @@ impl InboxReceiver {
     }
 }
 
+/// One registered connection: its inbox, and what the listing shows.
+struct Entry {
+    sender: InboxSender,
+    shared: Option<Arc<SockShared>>,
+}
+
 /// Node-local connections by id: who can still be delivered to on this node.
 /// An id that is not present is Gone, and Gone prunes edges; after a
 /// failover every edge pointing at this node's old connections prunes
 /// on first delivery, which is the expected-stale story.
 #[derive(Default)]
 pub struct ConnectionRegistry {
-    inner: Mutex<HashMap<String, InboxSender>>,
+    inner: Mutex<HashMap<String, Entry>>,
 }
 
 impl ConnectionRegistry {
@@ -131,7 +237,40 @@ impl ConnectionRegistry {
         self.inner
             .lock()
             .expect("no panics hold the registry")
-            .insert(id.to_owned(), sender);
+            .insert(
+                id.to_owned(),
+                Entry {
+                    sender,
+                    shared: None,
+                },
+            );
+    }
+
+    /// Registers a connection with what the listing needs to say about
+    /// it; the worker's bridge uses this, tests the bare form.
+    pub fn register_with(&self, id: &str, sender: InboxSender, shared: Arc<SockShared>) {
+        self.inner
+            .lock()
+            .expect("no panics hold the registry")
+            .insert(
+                id.to_owned(),
+                Entry {
+                    sender,
+                    shared: Some(shared),
+                },
+            );
+    }
+
+    /// Every connection this node holds, both directions, as the
+    /// console lists them; the bare-registered ones are skipped.
+    pub fn list(&self) -> Vec<ConnectionSummary> {
+        let inner = self.inner.lock().expect("no panics hold the registry");
+        let mut rows: Vec<ConnectionSummary> = inner
+            .iter()
+            .filter_map(|(id, entry)| entry.shared.as_ref().map(|shared| shared.summary(id)))
+            .collect();
+        rows.sort_by_key(|row| std::cmp::Reverse(row.opened_at_ms));
+        rows
     }
 
     /// Removes a closed connection; later deliveries report Gone.
@@ -151,10 +290,10 @@ impl ConnectionRegistry {
     /// otherwise whatever [`InboxSender::push`] returns.
     pub fn deliver(&self, id: &str, item: InboxItem) -> Result<(), DeliveryRefused> {
         let mut inner = self.inner.lock().expect("no panics hold the registry");
-        let Some(sender) = inner.get(id) else {
+        let Some(entry) = inner.get(id) else {
             return Err(DeliveryRefused::Gone);
         };
-        match sender.push(item) {
+        match entry.sender.push(item) {
             Ok(()) => Ok(()),
             Err(refused) => {
                 inner.remove(id);

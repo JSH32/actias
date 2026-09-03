@@ -200,6 +200,9 @@ services:
       - OBJECT_REPLICA_IDLE_SECS=${OBJECT_REPLICA_IDLE_SECS:-1800}
       # A crash point for scripts/crash-drill.sh; empty everywhere else.
       - ACTIAS_DRILL_FAULT=${ACTIAS_DRILL_FAULT:-}
+      # Whether scripts may reach private addresses; the outbound drill
+      # dials a worker on the compose network and sets it for its run.
+      - EGRESS_ALLOW_PRIVATE=${EGRESS_ALLOW_PRIVATE:-false}
       # WAL shipping: generation rotation sizes. The floor, the fraction
       # of the base a large object rotates at, the segment count, and
       # how many chunk puts or gets a store operation keeps in flight.
@@ -285,6 +288,9 @@ services:
       - OBJECT_REPLICA_IDLE_SECS=${OBJECT_REPLICA_IDLE_SECS:-1800}
       # A crash point for scripts/crash-drill.sh; empty everywhere else.
       - ACTIAS_DRILL_FAULT=${ACTIAS_DRILL_FAULT:-}
+      # Whether scripts may reach private addresses; the outbound drill
+      # dials a worker on the compose network and sets it for its run.
+      - EGRESS_ALLOW_PRIVATE=${EGRESS_ALLOW_PRIVATE:-false}
       # WAL shipping: generation rotation sizes. The floor, the fraction
       # of the base a large object rotates at, the segment count, and
       # how many chunk puts or gets a store operation keeps in flight.

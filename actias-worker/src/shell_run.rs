@@ -122,9 +122,14 @@ pub async fn run(state: &AppState, run: ShellRun) -> Result<ShellOutcome, String
     .await
     .map_err(|error| shell_error(&error))?;
     state.guest_limits.apply(&runtime);
-    let routing = ObjectRouting::new(state, prepared);
+    let routing = ObjectRouting::new(state, prepared.clone());
     runtime.set_app_data::<ObjectRouter>(routing.as_router());
     runtime.set_app_data::<DirectoryLister>(routing.as_lister());
+    // A shell statement may open a wire too, for trying a provider by
+    // hand; the connection outlives the statement like any other.
+    runtime.set_app_data::<actias_worker_core::extensions::sockets::Dialer>(
+        crate::server::dialer_for(state.clone(), prepared.clone(), None),
+    );
     // `print` goes where the log lines go, in the same order, so a
     // chunk's output reads as one transcript.
     {
