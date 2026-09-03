@@ -24,9 +24,9 @@ promises in [guarantees](/docs/runtime/guarantees).
 </table>
 
 Services speak gRPC to each other. Workers also speak gRPC among
-themselves: forwarded object calls, delivery batches, directory hops
-and holder reads travel node to node without a coordinator. Replicas
-come from blob storage, not from a peer.
+themselves: forwarded object calls, delivery batches, directory hops,
+holder reads, and the write-ahead log an owner fans out to the nodes
+that replicate its objects, all node to node without a coordinator.
 
 ```mermaid
 flowchart LR

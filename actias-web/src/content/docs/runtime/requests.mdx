@@ -21,8 +21,11 @@ Each request gets its own copy of the script's state. Nothing is
 shared between requests, and nothing needs cleaning up after one
 finishes.
 
-Compiled code is shared; only the mutable environment is per-request,
-so building one is cheap.
+Compiled code is shared, and the environment is built ahead: the
+platform keeps a few fresh ones per revision, each having run the top
+level once and served nothing, so a request takes one rather than
+building it. A top-level value such as `os.time()` or a secret was
+read when the environment was built, at most 30 seconds earlier.
 
 Anything you need to keep goes in [kv](/docs/reference/kv), a
 [database](/docs/reference/database), or an

@@ -64,7 +64,7 @@ flowchart LR
   </thead>
   <tbody>
     <tr><td>object mailbox</td><td>128 calls</td><td>backpressure: the caller waits, nothing is dropped</td></tr>
-    <tr><td>ack gate</td><td>10 s (<code>OBJECT_ACK_GATE_MS</code>)</td><td>a written call answers "outcome unknown"; the write keeps trying to ship</td></tr>
+    <tr><td>ack gate</td><td>10 s (<code>OBJECT_ACK_GATE_MS</code>) for a replica quorum or the store</td><td>a written call answers "outcome unknown"; the write keeps trying to ship</td></tr>
     <tr><td>ship concurrency</td><td>32 flights, 8 reserved (<code>OBJECT_SHIP_CONCURRENCY</code>, <code>OBJECT_SHIP_RESERVED</code>)</td><td>flights a caller is waiting on always find a slot</td></tr>
     <tr><td>connection inbox</td><td>256 items</td><td>deliveries: refused and the edges severed; client frames: the wire closes</td></tr>
     <tr><td>object edge</td><td>8 attempts, 500 ms doubling</td><td>the edge is dropped</td></tr>

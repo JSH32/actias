@@ -53,9 +53,10 @@ flowchart LR
     txn -- threw --> rollback[roll back; answer the error now]
     txn -- wrote --> ticket[take a ticket;<br/>the next call already runs]
     txn -- read only --> answer
-    ticket --> flight[ship flight writes the manifest]
-    flight --> answer([answer released])
-    flight -. 10 s without a manifest .-> unknown([outcome unknown])
+    ticket --> flight[ship flight: frames to the replicas,<br/>then to the store]
+    flight -- Q replica acks --> answer([answer released])
+    flight -- no replicas: manifest written --> answer
+    flight -. 10 s without either .-> unknown([outcome unknown])
 ```
 
 A method's writes to `state.sql` commit together when the method
@@ -67,7 +68,9 @@ transaction.
 The answer waits for one thing more than the commit: the writes
 leaving the machine. Calls that arrive while an answer is waiting
 still run, so a busy object commits at its own speed and a burst of
-writes leaves together.
+writes leaves together. A request that makes several calls to objects
+on its own node gets each answer at commit and waits once, before its
+response and before any outbound request, for all of them.
 
 Migrations apply inside the transaction of the call that triggered
 them: a failing migration applies nothing and surfaces as that call's
@@ -92,11 +95,13 @@ Defaults, all operator-tunable on a self-hosted worker.
     <tr><td>Object database</td><td>64 MB per instance</td><td>writes fail, reads keep working</td></tr>
     <tr><td>Object mailbox</td><td>128 waiting calls</td><td>callers wait; nothing is dropped</td></tr>
     <tr><td>Object call chain</td><td>32 deep; an object calling itself, directly or through others, is a cycle</td><td>refused, naming the cycle or the depth</td></tr>
-    <tr><td>Durability gate</td><td>10 seconds for a write to reach storage</td><td>the call fails with an unknown outcome; the write keeps trying to ship</td></tr>
+    <tr><td>Writes from one request</td><td>answered at commit; the response waits once for all of them; a later <code>read</code> of the same object in that request sees them</td><td>a write that cannot be confirmed makes the whole response fail with an unknown outcome</td></tr>
+    <tr><td>Database <code>read</code> anywhere</td><td>sees every write answered before it began, whichever node serves it</td><td>nothing</td></tr>
+    <tr><td>Durability gate</td><td>10 seconds for a write to reach a quorum of its replicas, or the store</td><td>the call fails with an unknown outcome; the write keeps trying to ship</td></tr>
     <tr><td>Object idle</td><td>300 seconds without a call, delivery or alarm</td><td>the instance goes cold; the next call wakes it</td></tr>
     <tr><td><code>state.store</code> value</td><td>65,536 bytes as stored text</td><td>refused, naming the key</td></tr>
     <tr><td>kv value</td><td>no fixed limit</td><td></td></tr>
-    <tr><td>Database replica age</td><td>30 seconds for <code>read</code> and <code>read_one</code></td><td>the next read restores a fresher copy</td></tr>
+    <tr><td>Replica read wait</td><td>50 ms for a node's copy to reach what the owner answered</td><td>the read goes to the owner instead</td></tr>
     <tr><td>Queue attempts</td><td>5, first retry 2s, doubling to 1h</td><td>dead-lettered</td></tr>
     <tr><td>Queue file</td><td>64 MB</td><td><code>send</code> raises</td></tr>
     <tr><td>Stream edge attempts</td><td>8, first retry 500ms, doubling to 32s</td><td>the edge is dropped</td></tr>
@@ -126,8 +131,10 @@ warm.
 
 A hard crash cannot take back a call the platform answered. A method
 that wrote is not answered until its writes have reached durable
-storage off the machine, so anything you were told succeeded survives
-the loss of the node that ran it.
+storage off the machine: a quorum of the object's replica nodes, or
+the blob store when there are none. Anything you were told succeeded
+survives the loss of the node that ran it, and the next node to hold
+the object takes it over from a replica without touching the store.
 
 <table>
   <thead>

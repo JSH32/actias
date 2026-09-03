@@ -36,6 +36,8 @@ flowchart TD
     <tr><td>a graceful shutdown deregisters at the signal, freeing every lease at once; a crash waits for age-out, and calls forwarded to the dead node fail until then</td><td>45 s at most</td></tr>
     <tr><td>a resident object refreshes its claim on a call, throttled</td><td>once per 10 minutes</td></tr>
     <tr><td>every claim draws the object's <b>epoch</b> from one cluster-wide sequence; a delete takes the next value with its tombstone</td><td></td></tr>
+    <tr><td>a cold object's first call goes to a live node its manifest names as a replica, so it wakes on its own bytes; a node that is itself a replica claims at once</td><td>one hop at most</td></tr>
+    <tr><td>a replica copy the store covers entirely leaves the disk once idle (a deleted object's copy leaves with its fence)</td><td>1800 s (<code>OBJECT_REPLICA_IDLE_SECS</code>)</td></tr>
   </tbody>
 </table>
 
@@ -49,7 +51,7 @@ sequenceDiagram
     R->>R: departure record, leases freed
     B->>R: claim Auction/vase-7
     R-->>B: lease, epoch = next in sequence
-    B->>B: compare the manifest's epoch with its sidecar,<br/>restore base + segments or the snapshot
+    B->>B: ask the manifest's replicas, fencing them,<br/>then lay the longest copy, or restore from the store
     B->>B: spawn the task, serve
     A->>R: zombie ship at the old epoch
     R-->>A: fenced
@@ -58,29 +60,64 @@ sequenceDiagram
 ## Durability
 
 Writes mark the object dirty and one background flight per object
-ships to blob storage, coalescing bursts.
+carries the committed write-ahead log frames since the last flight,
+coalescing bursts, to two places: the object's **replicas** and the
+blob store.
+
+```mermaid
+sequenceDiagram
+    participant C as caller
+    participant O as owner
+    participant R as replicas (K)
+    participant S as blob store
+    C->>O: call that writes
+    O->>O: commit (synchronous=NORMAL)
+    O->>R: AppendWal, in parallel
+    R-->>O: acks, each after its own sync
+    Note over O: Q acks: the ticket resolves
+    O-->>C: answer
+    O->>S: segment put, manifest put
+```
 
 <table>
   <thead>
     <tr><th>What ships</th><th>When</th></tr>
   </thead>
   <tbody>
-    <tr><td>the whole file</td><td>the object is under 256 KB (<code>OBJECT_SHIP_WHOLE_MAX_KB</code>)</td></tr>
-    <tr><td>the write-ahead log frames since the last flight, against a base laid down at a checkpoint</td><td>larger objects; the cost follows the delta, not the database</td></tr>
+    <tr><td>the main file at a checkpoint, as the generation's base</td><td>the first flight of a residency, and each rotation; replicas receive it too</td></tr>
+    <tr><td>the write-ahead log frames since the last flight</td><td>every other flight; the cost follows the delta, not the database</td></tr>
     <tr><td>a fresh base</td><td>the log passes 4 MB or 64 segments (<code>OBJECT_WAL_ROTATE_KB</code>, <code>OBJECT_MAX_SEGMENTS</code>)</td></tr>
   </tbody>
 </table>
 
-The epoch fences every ship: a zombie ex-holder's upload loses to any
-newer epoch. A graceful stop flushes dirty objects before the process
-leaves, within a budget of 50 ms per dirty object; whatever the budget
-leaves behind is covered by the fence and the next holder's restore.
+<table>
+  <thead>
+    <tr><th>Knob</th><th>Default</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>OBJECT_REPLICAS</code></td><td>3</td><td>live nodes an owner fans out to, chosen by rendezvous over the object id; fewer when fewer exist, none on a single node</td></tr>
+    <tr><td><code>OBJECT_QUORUM</code></td><td>2</td><td>acks that answer the call; 0 keeps the store's manifest as the answer and runs the fan-out in shadow</td></tr>
+    <tr><td><code>OBJECT_REPLICA_SYNC</code></td><td><code>fsync</code></td><td>a replica syncs its WAL before acking, batched across every append that arrived together; <code>os</code> acks from the page cache</td></tr>
+    <tr><td><code>OBJECT_ACK_GATE_MS</code></td><td>10000</td><td>longest a written call waits for its quorum or, failing that, the store</td></tr>
+  </tbody>
+</table>
 
-A claim restores the last shipped state whenever the store's copy is
-newer than the node's own file: the base plus its shipped segments
-replayed by SQLite itself, or the snapshot directly. A sidecar records
-the epoch of the node's last residency, so a node returning to an
-object it hosted long ago cannot serve stale state.
+A flight that misses its quorum still lands on the store and answers
+at the manifest, as a single node always does. The replica fence and
+the manifest epoch both refuse a zombie ex-holder: a replica that has
+seen a newer epoch refuses its appends, and the store refuses its
+manifest. A graceful stop flushes dirty objects before the process
+leaves, within a budget of 50 ms per dirty object.
+
+A claim lays the object's file from the freshest copy it can prove.
+It asks the replicas the manifest names, raising their fences to the
+new epoch, and once a quorum has answered it takes the longest copy,
+provided it is at least as long as what the store holds; otherwise it
+restores from the store and logs a durability incident. With two of
+three replicas answering, any two quorums share a replica, so every
+acknowledged write is in the longest copy. A sidecar records the
+epoch of the node's last residency, so a node returning to an object
+it hosted long ago cannot serve stale state.
 
 ## Database reads from anywhere
 
@@ -92,16 +129,27 @@ the home. A read is answered from the nearest copy, in this order:
 flowchart LR
     read([db:read]) --> a{Resident here,<br/>file on disk?}
     a -- yes --> live[Live file]
-    a -- no --> c{Replica on disk<br/>under 30 s old?}
-    c -- yes --> rep[Replica file]
-    c -- no --> pull[Restore shipped state<br/>into a replica, then read it]
-    pull -. nothing shipped yet .-> home[Ask the home]
+    a -- no --> h{Another node<br/>holds the lease?}
+    h -- no --> wake[Wake the object here,<br/>read its live file]
+    h -- yes --> r{This node replicates<br/>the object?}
+    r -- no --> fwd[One hop: the owner reads<br/>its live file]
+    r -- yes --> wm[Ask the owner its watermark:<br/>the WAL length it answered callers with]
+    wm --> ok{Copy reached it<br/>within 50 ms?}
+    ok -- yes --> rep[The replica copy]
+    ok -- no --> fwd
 ```
 
-A **replica** is the last shipped state restored beside the node's
-own data, reused for 30 seconds (`OBJECT_REPLICA_TTL_SECS`). Reads
-scale with the number of nodes and trail writes by up to the ship
-interval plus the TTL; writes serialize at the one home.
+A read on any node sees every write a caller was told succeeded
+before the read began. A node that replicates the object asks the
+owner for its **watermark**, the WAL length its last released flight
+reached, and serves its own copy once the copy has reached it; the
+append carrying it is already on its way, so the wait is the tail of
+one round trip. A node holding no copy forwards the read to the owner.
+A request that has already called the object reads it at the owner
+without asking. Reads scale with the number of nodes; writes serialize
+at the one home. The store's copy, refreshed every 30 seconds
+(`OBJECT_REPLICA_TTL_SECS`), serves only the console's reads on a node
+holding nothing.
 
 ## Serialized calls
 

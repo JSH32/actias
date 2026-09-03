@@ -54,10 +54,13 @@ local rows = db:read("SELECT id, title FROM listings LIMIT 50")
 
 Parameters are bound, never interpolated.
 
-Use `read` and `read_one` for queries that can trail a write by up to
-30 seconds; they answer from a replica on the node that asked. Use
-`query` and `query_one` for the truth, which lives at the database's
-home.
+`read` and `read_one` see every write any caller was told succeeded
+before the read began, from any node. A node that replicates the
+database answers from its own copy once the owner has confirmed the
+copy is current, which costs one small round trip and no data; any
+other node asks the owner for the read itself; a request that already
+wrote to the database reads it at the owner. `query` and `query_one`
+always run at the owner and see writes not yet answered too.
 
 ## Migrations
 
