@@ -124,6 +124,7 @@
 
 .box,
 .holder,
+.successor,
 .store {
   fill: none;
   stroke: var(--line);
@@ -153,7 +154,66 @@
   transition: fill 500ms ease;
 }
 
-.lease {
+.successor {
+  transition: stroke 500ms ease;
+}
+
+.successorInk {
+  fill: var(--ink-2);
+  font-size: 11.5px;
+  transition: fill 500ms ease;
+}
+
+.goneInk {
+  fill: var(--ink-3);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+
+/* The replica chips: the same shape as the lease token, hollow, since a
+ * copy is not the object. */
+.copies {
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+
+.copyC {
+  transition: opacity 400ms ease;
+}
+
+.copyChip {
+  fill: none;
+  stroke: var(--kind-obj);
+  stroke-dasharray: 3 2;
+}
+
+.copyInk {
+  fill: var(--ink-2);
+  font-size: 9.5px;
+}
+
+.copyPip {
+  fill: var(--kind-obj);
+  opacity: 0.55;
+}
+
+.fanLine {
+  fill: none;
+  stroke: var(--kind-obj);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.fanInk {
+  fill: var(--kind-obj);
+  font-size: 9.5px;
+}
+
+.lease,
+.leaseC {
   fill: var(--kind-obj);
   font-size: 10px;
   letter-spacing: 0.6px;
@@ -204,6 +264,8 @@
 
 .onHot,
 .onLease,
+.onWrite,
+.onTakeover,
 .onIdle {
   opacity: 0;
   transition: opacity 400ms ease;
@@ -231,23 +293,66 @@
 }
 
 .drawing[data-stage='lease'] .token,
-.drawing[data-stage='hot'] .token {
+.drawing[data-stage='hot'] .token,
+.drawing[data-stage='write'] .token {
   transform: translate(0, -110px);
 }
 
+/* The token crosses to worker c: the same object, laid from the copy
+ * that was already there. */
+.drawing[data-stage='takeover'] .token {
+  transform: translate(110px, -110px);
+}
+
 .drawing[data-stage='lease'] .holder,
-.drawing[data-stage='hot'] .holder {
+.drawing[data-stage='hot'] .holder,
+.drawing[data-stage='write'] .holder {
   stroke: var(--kind-obj);
 }
 
 .drawing[data-stage='lease'] .holderInk,
-.drawing[data-stage='hot'] .holderInk {
+.drawing[data-stage='hot'] .holderInk,
+.drawing[data-stage='write'] .holderInk {
   fill: var(--ink-1);
 }
 
 .drawing[data-stage='lease'] .lease,
-.drawing[data-stage='hot'] .lease {
+.drawing[data-stage='hot'] .lease,
+.drawing[data-stage='write'] .lease {
   opacity: 1;
+}
+
+.drawing[data-stage='takeover'] .holder {
+  stroke-dasharray: 3 3;
+  stroke: var(--line-soft);
+}
+
+.drawing[data-stage='takeover'] .holderInk {
+  fill: var(--ink-3);
+}
+
+.drawing[data-stage='takeover'] .goneInk,
+.drawing[data-stage='takeover'] .leaseC,
+.drawing[data-stage='takeover'] .onTakeover {
+  opacity: 1;
+}
+
+.drawing[data-stage='takeover'] .successor {
+  stroke: var(--kind-obj);
+}
+
+.drawing[data-stage='takeover'] .successorInk {
+  fill: var(--ink-1);
+}
+
+.drawing[data-stage='hot'] .copies,
+.drawing[data-stage='write'] .copies,
+.drawing[data-stage='takeover'] .copies {
+  opacity: 1;
+}
+
+.drawing[data-stage='takeover'] .copyC {
+  opacity: 0;
 }
 
 .drawing[data-stage='lease'] .onLease {
@@ -258,8 +363,17 @@
   opacity: 1;
 }
 
-.drawing[data-stage='hot'] .pip {
+.drawing[data-stage='write'] .onWrite {
+  opacity: 1;
+}
+
+.drawing[data-stage='hot'] .pip,
+.drawing[data-stage='write'] .pip {
   animation: pulse 2.2s ease-in-out infinite;
+}
+
+.drawing[data-stage='write'] .copyPip {
+  animation: pulse 2.2s ease-in-out 0.5s infinite;
 }
 
 .drawing[data-stage='idle'] .onIdle {
@@ -291,7 +405,8 @@
   .stageTitle,
   .stageBody,
   .token,
-  .pip {
+  .pip,
+  .copyPip {
     animation: none;
     transition: none;
   }

@@ -49,7 +49,7 @@
   position: relative;
 }
 
-/* The drawing is laid out at 1000 x 520 and scales; below the width
+/* The drawing is laid out at 1000 x 580 and scales; below the width
  * where its text stops being legible it scrolls instead of shrinking. */
 .canvas {
   display: block;

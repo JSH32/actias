@@ -11,11 +11,10 @@ import {
   GraphPulse,
   MESSAGE_PULSES,
   NODE_HEIGHT,
+  STAGE_H,
+  STAGE_W,
 } from './graph-data';
 import classes from './ArchitectureGraph.module.css';
-
-const STAGE_W = 1000;
-const STAGE_H = 520;
 /** Roughly what the inspector occupies in stage units at full width. */
 const PANEL_W = 300;
 
@@ -166,7 +165,8 @@ function Pulse({ pulse }: { pulse: GraphPulse }) {
 
 /**
  * A whole chat platform as one project, drawn as the boxes it declares
- * and the calls between them. Three views read the same graph: what the
+ * and the calls between them, plus the one wire the project opens
+ * outward. Three views read the same graph: what the
  * pieces are, what one message touches, and what survives when nobody is
  * doing anything. Hovering a box or a line explains it; clicking locks
  * that explanation open.
@@ -331,13 +331,24 @@ export function ArchitectureGraph() {
 
             <rect
               x="140.5"
-              y="464.5"
+              y="524.5"
               width="680"
               height="30"
               className={classes.store}
             />
-            <text x="154" y="484" className={classes.storeInk}>
+            <text x="154" y="544" className={classes.storeInk}>
               object storage, one SQLite file per instance
+            </text>
+
+            <rect
+              x="870.5"
+              y="470.5"
+              width="110"
+              height="44"
+              className={classes.outside}
+            />
+            <text x="884" y="497" className={classes.sub}>
+              model API
             </text>
 
             <rect
@@ -367,9 +378,17 @@ export function ArchitectureGraph() {
 
             {GRAPH_NODES.map((entry) => {
               const on = nodeId === entry.id;
+              // The index keeps answering while every room sleeps.
               const sleeping =
-                idleView && entry.id !== 'gateway' && entry.id !== 'session';
-              const hibernating = idleView && entry.id === 'session';
+                idleView &&
+                entry.id !== 'gateway' &&
+                entry.id !== 'session' &&
+                entry.id !== 'model' &&
+                entry.id !== 'directory';
+              // Connections keep their wire and shed their vm, whichever
+              // way the wire was opened.
+              const hibernating =
+                idleView && (entry.id === 'session' || entry.id === 'model');
               const dimmed =
                 view.focus.length > 0 && !view.focus.includes(entry.id);
               const opacity = on

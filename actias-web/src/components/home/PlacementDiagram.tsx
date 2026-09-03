@@ -28,21 +28,34 @@ const STAGES: Stage[] = [
     key: 'hot',
     label: 'hot',
     title: 'Then every call lands in the same place',
-    body: 'The state is in memory on that worker with its SQLite file beside it, so a bid is a local write. No round trip to a shared database, and no coordination between two callers who arrived together.',
+    body: 'The state is in memory on that worker with its SQLite file beside it, so a write is a local write. No round trip to a shared database, and no coordination between two callers who arrived together.',
+  },
+  {
+    key: 'write',
+    label: 'a write',
+    title: 'Answered means on a quorum',
+    body: 'A write commits to the file on worker b. Its frames go to copies on the other workers, and the caller hears back once a quorum of them has written them down: one round trip inside the cluster, shared by every call that committed since the last one. The store gets its copy behind the answer, not in front of it.',
+  },
+  {
+    key: 'takeover',
+    label: 'worker b dies',
+    title: 'A dead worker is a takeover, not a restore',
+    body: 'Worker c claims the lease, asks the copies how far they got, and lays the longest one. Every answered write is on a quorum of copies, so it is on that one. If b comes back, the copies refuse its old epoch.',
   },
   {
     key: 'idle',
     label: 'idle or moved',
     title: 'Quiet objects let go',
-    body: 'With no traffic the state flushes back to storage and the lease lapses. If a worker gets crowded the lease moves instead, and the object wakes up elsewhere with the same file.',
+    body: 'With no traffic what changed flushes back to storage, the lease lapses, and the copies leave once the store covers them. If a worker gets crowded the lease moves instead, and the object wakes up elsewhere with the same file.',
   },
 ];
 
 const DWELL = 4000;
 
 /**
- * The lifecycle of one durable object instance, told as four states of
- * one drawing rather than four drawings.
+ * The lifecycle of one durable object instance, told as six states of
+ * one drawing rather than six drawings: where it lives, what a write
+ * touches before it is answered, and what a dead worker costs.
  *
  * It stops only when asked. A hover hold looked like "the animation
  * works half the time", because content scrolling under a stationary
@@ -185,11 +198,47 @@ export function PlacementDiagram() {
               y="18.5"
               width="100"
               height="84"
-              className={classes.box}
+              className={classes.successor}
             />
-            <text x="374" y="38" className={classes.sub}>
+            <text x="374" y="38" className={classes.successorInk}>
               worker c
             </text>
+            <text x="448" y="94" className={classes.leaseC} textAnchor="end">
+              LEASE HELD
+            </text>
+            <text x="338" y="58" className={classes.goneInk} textAnchor="end">
+              gone
+            </text>
+
+            {/* The copies the owner fans every write out to. */}
+            <g className={classes.copies}>
+              <g transform="translate(154 48)">
+                <rect
+                  x="0.5"
+                  y="0.5"
+                  width="72"
+                  height="20"
+                  className={classes.copyChip}
+                />
+                <text x="8" y="14" className={classes.copyInk}>
+                  replica
+                </text>
+                <circle cx="62" cy="10" r="2.4" className={classes.copyPip} />
+              </g>
+              <g transform="translate(374 48)" className={classes.copyC}>
+                <rect
+                  x="0.5"
+                  y="0.5"
+                  width="72"
+                  height="20"
+                  className={classes.copyChip}
+                />
+                <text x="8" y="14" className={classes.copyInk}>
+                  replica
+                </text>
+                <circle cx="62" cy="10" r="2.4" className={classes.copyPip} />
+              </g>
+            </g>
 
             {/* Calls arriving at the worker that already holds the lease. */}
             <g className={classes.onHot}>
@@ -206,6 +255,40 @@ export function PlacementDiagram() {
               <path d="M325 116 l5 -6 l5 6" className={classes.moveLine} />
               <text x="338" y="132" className={classes.moveInk}>
                 loads its file
+              </text>
+            </g>
+
+            {/* One write: committed on b, fanned out to the copies, and
+             * answered on their acks; the store follows. */}
+            <g className={classes.onWrite}>
+              <path d="M134 126 H270 V108" className={classes.callLine} />
+              <path d="M265 112 l5 -6 l5 6" className={classes.callLine} />
+              <text x="142" y="120" className={classes.callInk}>
+                one write
+              </text>
+              <path d="M256 58 H234" className={classes.fanLine} />
+              <path d="M239 53 l-5 5 l5 5" className={classes.fanLine} />
+              <path d="M344 58 H366" className={classes.fanLine} />
+              <path d="M361 53 l5 5 l-5 5" className={classes.fanLine} />
+              <text x="338" y="121" className={classes.fanInk}>
+                answered on a quorum
+              </text>
+              <path d="M330 106 V146" className={classes.flushLine} />
+              <path d="M325 140 l5 6 l5 -6" className={classes.flushLine} />
+              <text x="338" y="140" className={classes.flushInk}>
+                then the store
+              </text>
+            </g>
+
+            {/* Worker b is gone; c lays the object from its own copy. */}
+            <g className={classes.onTakeover}>
+              <path d="M134 126 H410 V108" className={classes.callLine} />
+              <path d="M405 112 l5 -6 l5 6" className={classes.callLine} />
+              <text x="142" y="120" className={classes.callInk}>
+                the next call lands on c
+              </text>
+              <text x="338" y="140" className={classes.moveInk}>
+                laid from its own copy
               </text>
             </g>
 

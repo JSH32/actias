@@ -178,6 +178,12 @@
 }
 
 /* A reference, not a call to action: the code face keeps it quiet. */
+.docLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+}
+
 .docLink {
   display: inline-flex;
   align-items: center;

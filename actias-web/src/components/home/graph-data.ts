@@ -4,13 +4,18 @@ import type { CapabilityKind } from '@/ui';
  * The chat platform the landing draws: what a real project declares, at
  * the granularity a reader can check against the reference docs. The
  * geometry is part of the data because the drawing is hand-laid: three
- * columns on a 1000 x 520 stage, edges routed around them by hand.
+ * columns on a 1000 x 580 stage, edges routed around them by hand.
  */
+
+/** The stage: three columns plus a row for the wire the project
+ * opens outward, over a 1000 x 580 canvas. */
+export const STAGE_W = 1000;
+export const STAGE_H = 580;
 
 /** A declaration in the project, drawn as a box. */
 export interface GraphNode {
   id: string;
-  /** Top-left corner and width on the 1000 x 520 stage. */
+  /** Top-left corner and width on the 1000 x 580 stage. */
   x: number;
   y: number;
   w: number;
@@ -90,6 +95,18 @@ export const GRAPH_NODES: GraphNode[] = [
     sub: 'nightly digest',
     decl: 'on "schedule" (handler)',
     body: 'A schedule declared in the file it runs. It walks the servers once a night and hands the mail off to the queue.',
+  },
+  {
+    id: 'directory',
+    x: 150,
+    y: 384,
+    w: 170,
+    kind: 'db',
+    kindLabel: 'DIRECTORY',
+    label: 'Channel:list { … }',
+    sub: 'every room, none woken',
+    decl: 'directory = { from, fields }',
+    body: 'The room list, as an index. Each Channel derives one row after any call that wrote, and list, find and visit read the rows without waking a single room. The class page in the console and the shell ask the same index.',
   },
   {
     id: 'server',
@@ -211,6 +228,18 @@ export const GRAPH_NODES: GraphNode[] = [
     decl: 'secret("APNS_KEY"):latest()',
     body: 'The push credential the consumer needs. Rotate it without a deploy, and it never ships inside the bundle.',
   },
+  {
+    id: 'model',
+    x: 620,
+    y: 470,
+    w: 200,
+    kind: 'kv',
+    kindLabel: 'CONNECTION',
+    label: 'connection "Model"',
+    sub: 'outbound, dialled by the room',
+    decl: 'Model:open("wss://…", { room = name })',
+    body: 'A wire this project opened, to a model provider, so a room can have an assistant in it. The room publishes the prompt on a topic only this wire may follow, the wire posts each token back into the room, and the room decides that exactly one such wire exists and reopens it when the wire or its node dies. Everything a connection is applies: handlers, state, follows, hibernation, and the console lists it beside the inbound ones.',
+  },
 ];
 
 /** Said the same way at five places, so it is written once. */
@@ -320,6 +349,34 @@ export const GRAPH_EDGES: GraphEdge[] = [
     body: 'Threads take posts directly, so a busy thread never queues behind its room.',
   },
   {
+    id: 'gw-directory',
+    d: 'M150 232 C 110 250 110 386 150 400',
+    kinds: ['idle'],
+    label: 'listing the rooms',
+    call: 'Channel:list { where = { … } }',
+    body: 'The handler lists rooms from the index. Nothing wakes; the rows are what each room last wrote about itself.',
+    idle: 'Listing rooms wakes none of them. The rows outlive every lease.',
+  },
+  {
+    id: 'general-directory',
+    d: 'M380 244 C 346 262 346 392 320 392',
+    dashed: true,
+    kinds: ['msg'],
+    label: 'a row per write',
+    call: 'directory = { from, fields }',
+    body: 'After any call that wrote, the room derives its row and the index takes it. Methods never mention the index, so the row cannot drift from the state it reads.',
+    msg: 'The room’s row updates after the message is durable. The index never touches the room.',
+  },
+  {
+    id: 'dev-directory',
+    d: 'M380 330 C 350 340 350 402 320 402',
+    dashed: true,
+    kinds: [],
+    label: 'a row per write',
+    call: 'directory = { from, fields }',
+    body: 'After any call that wrote, the room derives its row and the index takes it. Methods never mention the index, so the row cannot drift from the state it reads.',
+  },
+  {
     id: 'cron-server',
     d: 'M320 306 C 352 300 352 90 380 84',
     dashed: true,
@@ -403,6 +460,24 @@ export const GRAPH_EDGES: GraphEdge[] = [
     body: 'The credential is read at send time. It is versioned, rotatable, and never inside the bundle.',
   },
   {
+    id: 'general-model',
+    d: 'M560 254 C 600 300 600 486 620 486',
+    kinds: [],
+    label: 'the room asks the model',
+    call: 'state:publish("upstream", prompt)',
+    body: 'The room publishes the prompt on a topic its follow hook admits only the model wire to; the wire sends it raw. Tokens come back as calls into the room, one at a time, each durable before the next is handled.',
+    idle: 'The wire outlives the room’s vm. A token wakes the room like any other call.',
+  },
+  {
+    id: 'model-llm',
+    d: 'M820 492 H870',
+    dashed: true,
+    kinds: [],
+    label: 'leaving Actias, from inside',
+    call: 'wss to the provider',
+    body: 'The other hop that is not yours, this one dialled by the project. When the provider drops it, the close hook says why and the room reopens it; when the node holding it dies, the room’s alarm does.',
+  },
+  {
     id: 'push-apns',
     d: 'M820 320 H870',
     dashed: true,
@@ -414,7 +489,7 @@ export const GRAPH_EDGES: GraphEdge[] = [
   },
   {
     id: 'st-server',
-    d: 'M470 84 V96 H352 V458 H420 V464',
+    d: 'M470 84 V96 H352 V518 H420 V524',
     dashed: true,
     kinds: ['idle'],
     ...STORAGE_EDGE,
@@ -475,18 +550,18 @@ export const GRAPH_VIEWS: GraphView[] = [
     label: 'a message being sent',
     short: 'one message, socket to socket',
     hint: 'The lit path is one message going out.',
-    focus: ['session', 'general', 'search', 'pushq', 'secret'],
+    focus: ['session', 'general', 'search', 'pushq', 'secret', 'directory'],
     caption:
-      'A frame lands on the socket, the connection’s frame handler calls the room, and the room writes to its own file and publishes once. The same connection relays that event back down the wire. Indexing and the mention leave on their own paths.',
+      'A frame lands on the socket, the connection’s frame handler calls the room, and the room writes to its own file and publishes once. The same connection relays that event back down the wire. Indexing, the room’s directory row and the mention leave on their own paths.',
   },
   {
     key: 'idle',
     label: 'nothing is happening',
     short: 'no traffic, sockets still open',
     hint: 'The socket outlives the vm.',
-    focus: ['gateway'],
+    focus: ['gateway', 'directory'],
     caption:
-      'Quiet does not mean empty. Nobody is typing, but the tabs are still here and their sockets are still open. Rooms drop their leases and flush to storage; an idle connection sheds only its vm and keeps the wire, its inbox, conn.state and its follows for about the cost of a file descriptor. The next frame or event rebuilds it.',
+      'Quiet does not mean empty. Nobody is typing, but the tabs are still here and their sockets are still open. Rooms drop their leases and flush to storage; an idle connection sheds only its vm and keeps the wire, its inbox, conn.state and its follows for about the cost of a file descriptor. The next frame or event rebuilds it, and the room list answers from the index the whole time.',
   },
 ];
 
@@ -517,6 +592,12 @@ export const MESSAGE_PULSES: GraphPulse[] = [
     tone: 'event',
     seconds: 2.1,
     delay: 1,
+  },
+  {
+    path: 'M380 244 C 346 262 346 392 320 392',
+    tone: 'db',
+    seconds: 1.7,
+    delay: 1.2,
   },
   { path: 'M820 320 H870', tone: 'event', seconds: 1.2, delay: 1.8 },
   {

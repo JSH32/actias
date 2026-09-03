@@ -206,7 +206,21 @@ const primitives: {
     name: 'Objects',
     kind: 'var(--kind-obj)',
     code: 'object "Auction" { … }',
-    body: 'A named thing that exists once, takes one call at a time, keeps its own database file.',
+    body: 'A named thing that exists once, takes one call at a time, keeps its own database file that can grow to a gigabyte.',
+    href: '/docs/reference/objects',
+  },
+  {
+    name: 'Directory',
+    kind: 'var(--kind-db)',
+    code: 'Auction:find { status = "open" }',
+    body: 'One row per object, derived after every write. Query a class without waking anything in it.',
+    href: '/docs/runtime/directory',
+  },
+  {
+    name: 'Alarms',
+    kind: 'var(--kind-event)',
+    code: 'state:set_alarm("10m")',
+    body: 'An object wakes itself later. The alarm lives in its file, so it survives the worker.',
     href: '/docs/reference/objects',
   },
   {
@@ -229,6 +243,13 @@ const primitives: {
     code: 'publishes = { bids = "public" }',
     body: 'Publish once and everything following hears it, browser tabs included.',
     href: '/docs/runtime/streams',
+  },
+  {
+    name: 'Sockets',
+    kind: 'var(--kind-kv)',
+    code: 'connection "Session" { … }',
+    body: 'A socket with a program: what it follows, what a frame does. Its vm can go while the wire stays open.',
+    href: '/docs/reference/sockets',
   },
   {
     name: 'Secrets',
@@ -593,9 +614,13 @@ export default function Landing({ minimal }: { minimal: boolean }) {
             </div>
             <p className={classes.aside}>
               The console is reading that object&apos;s own SQLite file. Same
-              for queue journals and workflow runs.
+              for queue journals and workflow runs. The shell asks the same
+              things in a line of Lua, from the console or the cli.
             </p>
-            <DocLink href="/docs/runtime/objects">objects at runtime</DocLink>
+            <div className={classes.docLinks}>
+              <DocLink href="/docs/runtime/objects">objects at runtime</DocLink>
+              <DocLink href="/docs/runtime/shell">the shell</DocLink>
+            </div>
           </div>
         </div>
       </section>
