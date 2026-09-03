@@ -571,6 +571,20 @@ async fn metrics_handler(State(state): State<AppState>) -> Response {
                     .file_fetches
                     .load(std::sync::atomic::Ordering::Relaxed),
             ),
+            (
+                state
+                    .object_store
+                    .chunk_puts
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                state
+                    .object_store
+                    .chunk_bytes_put
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                state
+                    .object_store
+                    .chunk_gets
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
         ),
     ));
     response.headers_mut().insert(
@@ -1355,11 +1369,13 @@ pub(crate) mod test_state {
                 crate::blob_cache::s3_client("http://127.0.0.1:1", "unused", "unused"),
                 "unused".to_owned(),
                 1024 * 1024,
+                8,
             )),
             object_data_dir: std::env::temp_dir(),
             object_db_max_bytes: 64 * 1024 * 1024,
             ship_thresholds: crate::objects::store::ShipThresholds {
                 rotate_bytes: 4096 * 1024,
+                rotate_fraction: 0.125,
                 max_segments: 64,
             },
             ack_gate: Duration::from_millis(10_000),

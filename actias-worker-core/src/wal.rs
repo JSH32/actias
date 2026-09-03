@@ -49,6 +49,16 @@ pub enum WalError {
     BadHeader,
 }
 
+/// One frame of the committed prefix, as the rotation needs it: which
+/// page it carries, and for a commit frame the database size in pages
+/// after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub page: u32,
+    /// Non-zero on a commit frame: the database's size in pages.
+    pub commit_pages: u32,
+}
+
 /// The checksum-valid committed prefix of `wal`. Frames past the last
 /// commit, torn tails and checksum mismatches end the scan; they are
 /// the writer's business, not the shipper's.
@@ -58,6 +68,35 @@ pub enum WalError {
 /// carrying neither magic, and [`WalError::BadHeader`] when the header's
 /// own checksum fails.
 pub fn committed_prefix(wal: &[u8]) -> Result<CommittedPrefix, WalError> {
+    scan(wal, |_| {})
+}
+
+/// The frames of the committed prefix, in order. A rotation reads the
+/// page numbers off them to know which ranges of the file the
+/// checkpoint is about to change, so it hashes those and no others.
+///
+/// # Errors
+/// As [`committed_prefix`].
+pub fn frames(wal: &[u8]) -> Result<(CommittedPrefix, Vec<Frame>), WalError> {
+    let mut frames = Vec::new();
+    let prefix = scan(wal, |frame| frames.push(frame))?;
+    // Frames past the last commit are not part of the prefix, and the
+    // checkpoint never folds them.
+    let committed = prefix_frames(&prefix);
+    frames.truncate(committed);
+    Ok((prefix, frames))
+}
+
+/// How many frames the committed prefix holds.
+fn prefix_frames(prefix: &CommittedPrefix) -> usize {
+    prefix
+        .len
+        .saturating_sub(WAL_HEADER)
+        .checked_div(FRAME_HEADER + prefix.page_size as usize)
+        .unwrap_or(0)
+}
+
+fn scan(wal: &[u8], mut visit: impl FnMut(Frame)) -> Result<CommittedPrefix, WalError> {
     if wal.len() < WAL_HEADER {
         return Err(WalError::NotAWal);
     }
@@ -105,6 +144,10 @@ pub fn committed_prefix(wal: &[u8]) -> Result<CommittedPrefix, WalError> {
         }
         sum = next;
         offset += frame_size;
+        visit(Frame {
+            page: f(0),
+            commit_pages: f(4),
+        });
         if f(4) != 0 {
             // A commit frame: everything through here is shippable.
             committed = offset;
@@ -219,6 +262,31 @@ mod tests {
             prefix.len,
             wal.len(),
             "a quiet WAL is committed through its end"
+        );
+    }
+
+    #[test]
+    fn frames_name_their_pages_and_end_at_the_last_commit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("a.db");
+        let _keep = write_batches(&db, 5, 11);
+
+        let wal = std::fs::read(db.with_extension("db-wal")).expect("wal bytes");
+        let (prefix, frames) = frames(&wal).expect("parses");
+        assert_eq!(
+            frames.len(),
+            (prefix.len - WAL_HEADER) / (FRAME_HEADER + prefix.page_size as usize)
+        );
+        assert_eq!(
+            frames.iter().filter(|f| f.commit_pages != 0).count(),
+            prefix.commits
+        );
+        assert!(frames.iter().all(|f| f.page >= 1), "pages are 1-based");
+        let last = frames.last().expect("a frame");
+        assert!(last.commit_pages > 0, "the prefix ends at a commit");
+        assert!(
+            frames.iter().any(|f| f.page == 1),
+            "the schema commit touched page one"
         );
     }
 

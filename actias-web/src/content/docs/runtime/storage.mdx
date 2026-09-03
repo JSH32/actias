@@ -72,6 +72,12 @@ end)
 Use it when state belongs to one entity, and when concurrent changes
 to that entity must not interleave.
 
+An object's database lives in one SQLite file that can grow to a
+gigabyte (`OBJECT_DB_MAX_MB`; a write past the budget fails, reads
+keep working). Its durable copy is kept as content-addressed chunks,
+so a large object that changes a little costs a little to keep
+durable: what ships after a write is what the write touched.
+
 ## Choosing
 
 <table>

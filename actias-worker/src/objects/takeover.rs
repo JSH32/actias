@@ -127,12 +127,30 @@ pub async fn from_replicas(
         return Ok(false);
     }
 
-    let (base, wal) = if best.address.is_empty() {
-        state
+    // Sidecars first, so a stale local WAL is never recovered into the
+    // new base; then base and WAL as they arrive, then one checkpoint.
+    let wal_path = with_suffix(file, "-wal");
+    let _ = tokio::fs::remove_file(&wal_path).await;
+    let _ = tokio::fs::remove_file(with_suffix(file, "-shm")).await;
+    let laid = if best.address.is_empty() {
+        let copy = state
             .replica_store
             .fetch(object_id, manifest.epoch, manifest.base)
-            .await?
-            .ok_or_else(|| "this node's copy vanished under the takeover".to_owned())?
+            .await
+            .ok_or_else(|| "this node's copy vanished under the takeover".to_owned())?;
+        let target = file.to_path_buf();
+        let wal_target = wal_path.clone();
+        tokio::task::spawn_blocking(move || -> Result<(u64, u64), String> {
+            std::fs::copy(&copy.base, &target).map_err(|e| e.to_string())?;
+            let mut wal = std::fs::read(&copy.wal).map_err(|e| e.to_string())?;
+            wal.truncate(copy.wal_len as usize);
+            if !wal.is_empty() {
+                std::fs::write(&wal_target, &wal).map_err(|e| e.to_string())?;
+            }
+            Ok((copy.base_len, wal.len() as u64))
+        })
+        .await
+        .map_err(|e| e.to_string())??
     } else {
         let mut client = peer_client(state, &best.address).await?;
         let query = ReplicaQuery {
@@ -146,22 +164,55 @@ pub async fn from_replicas(
             .await
             .map_err(|status| status.message().to_owned())?
             .into_inner();
-        let mut base = Vec::new();
-        let mut wal = Vec::new();
+        use tokio::io::AsyncWriteExt;
+        let mut base = tokio::fs::File::create(file)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut wal: Option<tokio::fs::File> = None;
+        let (mut base_len, mut wal_len) = (0u64, 0u64);
         while let Some(chunk) = stream
             .message()
             .await
             .map_err(|status| status.message().to_owned())?
         {
-            base.extend_from_slice(&chunk.base);
-            wal.extend_from_slice(&chunk.wal);
+            if !chunk.base.is_empty() {
+                base.write_all(&chunk.base)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                base_len += chunk.base.len() as u64;
+            }
+            if !chunk.wal.is_empty() {
+                let wal = match wal.as_mut() {
+                    Some(wal) => wal,
+                    None => wal.insert(
+                        tokio::fs::File::create(&wal_path)
+                            .await
+                            .map_err(|e| e.to_string())?,
+                    ),
+                };
+                wal.write_all(&chunk.wal).await.map_err(|e| e.to_string())?;
+                wal_len += chunk.wal.len() as u64;
+            }
         }
-        (base, wal)
+        base.flush().await.map_err(|e| e.to_string())?;
+        if let Some(mut wal) = wal {
+            wal.flush().await.map_err(|e| e.to_string())?;
+        }
+        (base_len, wal_len)
     };
-    if base.is_empty() {
+    if laid.0 == 0 {
+        let _ = tokio::fs::remove_file(file).await;
         return Err("the replica handed over an empty base".to_owned());
     }
-    lay(file, base, wal).await?;
+    if laid.1 > 0 {
+        let target = file.to_path_buf();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let mut storage = actias_worker_core::storage::SqliteStorage::open(&target)?;
+            storage.checkpoint()
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
     state
         .replica_store
         .gauges
@@ -174,31 +225,6 @@ pub async fn from_replicas(
         "object taken over from a replica"
     );
     Ok(true)
-}
-
-/// Lays base and WAL the way restore does: sidecars first, so a stale
-/// local WAL is never recovered into the new base, then base and WAL,
-/// then one checkpoint to fold the WAL in.
-async fn lay(file: &Path, base: Vec<u8>, wal: Vec<u8>) -> Result<(), String> {
-    let wal_path = with_suffix(file, "-wal");
-    let _ = tokio::fs::remove_file(&wal_path).await;
-    let _ = tokio::fs::remove_file(with_suffix(file, "-shm")).await;
-    tokio::fs::write(file, base)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !wal.is_empty() {
-        tokio::fs::write(&wal_path, wal)
-            .await
-            .map_err(|e| e.to_string())?;
-        let target = file.to_path_buf();
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let mut storage = actias_worker_core::storage::SqliteStorage::open(&target)?;
-            storage.checkpoint()
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-    }
-    Ok(())
 }
 
 fn with_suffix(file: &Path, suffix: &str) -> std::path::PathBuf {

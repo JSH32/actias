@@ -92,7 +92,7 @@ Defaults, all operator-tunable on a self-hosted worker.
     <tr><td>Wall backstop</td><td>10 seconds (<code>GUEST_WALL_SECS</code>), for code stuck outside the vm</td><td>the run is cut off</td></tr>
     <tr><td>Request deadline</td><td>30 seconds, waiting included</td><td>the request fails</td></tr>
     <tr><td>Request body</td><td>10 MB</td><td>413</td></tr>
-    <tr><td>Object database</td><td>64 MB per instance</td><td>writes fail, reads keep working</td></tr>
+    <tr><td>Object database</td><td>1 GB per instance (<code>OBJECT_DB_MAX_MB</code>)</td><td>writes fail, reads keep working</td></tr>
     <tr><td>Object mailbox</td><td>128 waiting calls</td><td>callers wait; nothing is dropped</td></tr>
     <tr><td>Object call chain</td><td>32 deep; an object calling itself, directly or through others, is a cycle</td><td>refused, naming the cycle or the depth</td></tr>
     <tr><td>Writes from one request</td><td>answered at commit; the response waits once for all of them; a later <code>read</code> of the same object in that request sees them</td><td>a write that cannot be confirmed makes the whole response fail with an unknown outcome</td></tr>

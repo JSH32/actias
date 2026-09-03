@@ -1,9 +1,12 @@
 //! The replica side of tail replication: what this node holds for
 //! objects whose owners fan their WAL out to it. A replica never
-//! interprets bytes. It keeps, per object, one generation in the blob
-//! store's own layout (`base.db` beside a growing `wal`) and a fence,
-//! the highest epoch it has seen, and it does three things: append at
-//! an offset, answer what it holds, and hand the copy over.
+//! interprets bytes. It keeps, per object, one generation as an
+//! assembled `base.db` beside a growing `wal`, the chunk list the base
+//! was laid from (`gen.json`), and a fence, the highest epoch it has
+//! seen. It does four things: lay a generation from a stream of chunks
+//! (patching its base in place when the stream is a delta over the
+//! list it holds), append at an offset, answer what it holds, and hand
+//! the copy over.
 //!
 //! Every operation on one object runs under that object's own lock,
 //! from the first read of its state to the last write of it, so an
@@ -55,6 +58,11 @@ pub struct ReplicaGauges {
     pub objects_held: AtomicI64,
     /// Copies handed over to a takeover.
     pub fetches: AtomicU64,
+    /// Generations laid from an owner's stream, the chunks they carried
+    /// and their bytes; a delta lay carries only the dirty chunks.
+    pub lays: AtomicU64,
+    pub lay_chunks: AtomicU64,
+    pub lay_bytes: AtomicU64,
     /// Reads served from this node's copy after the owner's watermark
     /// confirmed it, reads that waited for an append to land first, and
     /// reads forwarded to the owner because the copy could not be
@@ -84,7 +92,8 @@ pub mod refusal {
     pub const FENCED: &str = "fenced";
     /// The offset is past what the replica holds; resend from `length`.
     pub const GAP: &str = "gap";
-    /// The replica lacks the generation; resend with the base.
+    /// The replica lacks the generation, or is not on the list a delta
+    /// applies to; lay it, every chunk.
     pub const NO_BASE: &str = "base";
 }
 
@@ -95,6 +104,8 @@ struct Held {
     base: u64,
     wal_len: u64,
     base_len: u64,
+    /// The chunk list the base was laid from; a delta must name it.
+    chunks: Vec<String>,
     /// How far the owner said the store's manifest covers this WAL; a
     /// copy the store covers entirely may leave once idle.
     covered: u64,
@@ -111,7 +122,28 @@ struct Meta {
     held: Option<Held>,
 }
 
-/// The outcome of one append.
+/// A generation lay's header, as the stream carries it.
+pub struct LayHeader {
+    pub epoch: u64,
+    pub base: u64,
+    /// The list hash the delta applies to; empty for a full lay.
+    pub from_list: String,
+    pub base_len: u64,
+    pub chunks: Vec<String>,
+}
+
+/// One chunk of a lay: its index and bytes.
+pub type LayPart = Result<(u32, actias_worker_core::proto::Bytes), String>;
+
+/// A held copy's files, for a takeover to stream.
+pub struct Copy {
+    pub base: PathBuf,
+    pub base_len: u64,
+    pub wal: PathBuf,
+    pub wal_len: u64,
+}
+
+/// The outcome of one append or lay.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Appended {
     pub length: u64,
@@ -240,16 +272,251 @@ impl ReplicaStore {
         Some(slot.lock_owned().await)
     }
 
-    /// Appends `bytes` at `offset` of the generation's WAL, laying the
-    /// base first when `base_bytes` comes with offset 0.
+    /// Lays a generation from an owner's stream: the header names the
+    /// new chunk list, `parts` carry chunks by index. A header whose
+    /// `from_list` names the held list is a delta: the parts are written
+    /// over the held base in place. An empty `from_list` is a full lay.
+    /// Anything else is refused `NO_BASE`, and the owner sends everything.
+    ///
+    /// Crash safety: a `rotating` marker stands in the object directory
+    /// while the base is being patched, and a copy found with the
+    /// marker at load is forgotten. Forgetting is always safe; the store
+    /// and the quorum's other members hold the bytes.
+    ///
+    /// # Errors
+    /// Returns the io failure or a stream that ended before `done`.
+    pub async fn lay<S>(
+        &self,
+        object_id: &str,
+        header: LayHeader,
+        mut parts: S,
+    ) -> Result<Appended, String>
+    where
+        S: futures::Stream<Item = LayPart> + Unpin,
+    {
+        use futures::StreamExt;
+        let started = std::time::Instant::now();
+        let mut meta = self
+            .lock(object_id, true)
+            .await
+            .ok_or_else(|| "the replica slot could not be made".to_owned())?;
+        let refused = |meta: &Meta, code: &str| {
+            self.gauges.append_refusals.fetch_add(1, Ordering::Relaxed);
+            Ok(Appended {
+                length: meta.held.as_ref().map_or(0, |h| h.wal_len),
+                applied: false,
+                refusal: code.to_owned(),
+            })
+        };
+        let LayHeader {
+            epoch,
+            base,
+            from_list,
+            base_len,
+            chunks,
+        } = header;
+        if epoch < meta.fence {
+            return refused(&meta, refusal::FENCED);
+        }
+        if let Some(held) = &meta.held
+            && (epoch, base) < (held.epoch, held.base)
+        {
+            return refused(&meta, refusal::FENCED);
+        }
+        if chunks.len() != crate::objects::store::chunk_count(base_len) {
+            return Err(format!(
+                "a lay of {} bytes lists {} chunks",
+                base_len,
+                chunks.len()
+            ));
+        }
+        let delta = !from_list.is_empty();
+        if delta
+            && !meta
+                .held
+                .as_ref()
+                .is_some_and(|held| crate::objects::store::list_hash(&held.chunks) == from_list)
+        {
+            return refused(&meta, refusal::NO_BASE);
+        }
+
+        // The directory: renamed from the held generation for a delta,
+        // fresh otherwise, under the marker either way.
+        let object_dir = self.object_dir(object_id);
+        let dir = self.generation_dir(object_id, epoch, base);
+        let previous = meta.held.clone();
+        let fence = meta.fence.max(epoch);
+        {
+            let object_dir = object_dir.clone();
+            let dir = dir.clone();
+            let previous_dir = previous
+                .as_ref()
+                .map(|prev| self.generation_dir(object_id, prev.epoch, prev.base));
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                std::fs::create_dir_all(&object_dir).map_err(|e| e.to_string())?;
+                std::fs::write(object_dir.join("rotating"), b"").map_err(|e| e.to_string())?;
+                match previous_dir {
+                    Some(prev) if delta && prev != dir => {
+                        std::fs::rename(&prev, &dir).map_err(|e| e.to_string())?;
+                    }
+                    Some(prev) if !delta => {
+                        if prev != dir {
+                            let _ = std::fs::remove_dir_all(&prev);
+                        }
+                        let _ = std::fs::remove_dir_all(&dir);
+                        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    }
+                    _ => {
+                        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    }
+                }
+                std::fs::write(object_dir.join("fence"), fence.to_string())
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+        }
+        // Bookkeeping follows the marker: from here the copy is either
+        // completed below or forgotten at the next load.
+        if let Some(prev) = &previous {
+            self.gauges
+                .bytes_held
+                .fetch_sub((prev.wal_len + prev.base_len) as i64, Ordering::Relaxed);
+        } else {
+            self.gauges.objects_held.fetch_add(1, Ordering::Relaxed);
+        }
+        meta.fence = fence;
+        meta.held = None;
+
+        let base_file = Arc::new(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(dir.join("base.db"))
+                .map_err(|e| e.to_string())?,
+        );
+        let read_copy = dir.join("read.db");
+        let read_file = if delta && read_copy.exists() {
+            Some(Arc::new(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&read_copy)
+                    .map_err(|e| e.to_string())?,
+            ))
+        } else {
+            let _ = std::fs::remove_file(&read_copy);
+            None
+        };
+        let mut laid = 0u64;
+        let mut laid_bytes = 0u64;
+        let outcome: Result<(), String> = async {
+            while let Some(part) = parts.next().await {
+                let (index, bytes) = part?;
+                if index as usize >= chunks.len() {
+                    return Err(format!("chunk {index} is past the list"));
+                }
+                let len = bytes.len() as u64;
+                let at = index as u64 * crate::objects::store::CHUNK_BYTES;
+                let base_file = base_file.clone();
+                let read_file = read_file.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    use std::os::unix::fs::FileExt;
+                    base_file
+                        .write_all_at(&bytes, at)
+                        .map_err(|e| e.to_string())?;
+                    if let Some(read_file) = read_file {
+                        read_file
+                            .write_all_at(&bytes, at)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                laid += 1;
+                laid_bytes += len;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = outcome {
+            // The marker stays: the copy is forgotten at the next load,
+            // and now, since the slot says nothing is held.
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return Err(error);
+        }
+
+        let wal_len_reset = {
+            let dir = dir.clone();
+            let object_dir = object_dir.clone();
+            let base_file = base_file.clone();
+            let read_file = read_file.clone();
+            let record = GenerationRecord {
+                base_len,
+                chunks: chunks.clone(),
+            };
+            let sync = self.mode == SyncMode::Fsync;
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                base_file.set_len(base_len).map_err(|e| e.to_string())?;
+                if let Some(read_file) = &read_file {
+                    read_file.set_len(base_len).map_err(|e| e.to_string())?;
+                    let _ = std::fs::remove_file(with_suffix(&dir.join("read.db"), "-wal"));
+                    let _ = std::fs::remove_file(with_suffix(&dir.join("read.db"), "-shm"));
+                }
+                std::fs::write(dir.join("wal"), []).map_err(|e| e.to_string())?;
+                std::fs::write(
+                    dir.join("gen.json"),
+                    serde_json::to_vec(&record).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+                if sync {
+                    base_file.sync_data().map_err(|e| e.to_string())?;
+                    std::fs::File::open(dir.join("gen.json"))
+                        .and_then(|f| f.sync_all())
+                        .map_err(|e| e.to_string())?;
+                }
+                std::fs::remove_file(object_dir.join("rotating")).map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| e.to_string())?
+        };
+        wal_len_reset?;
+
+        self.gauges
+            .bytes_held
+            .fetch_add(base_len as i64, Ordering::Relaxed);
+        meta.held = Some(Held {
+            epoch,
+            base,
+            wal_len: 0,
+            base_len,
+            chunks,
+            covered: 0,
+            read_len: read_file.is_some().then_some(0),
+            last_append: std::time::Instant::now(),
+        });
+        self.gauges.lays.fetch_add(1, Ordering::Relaxed);
+        self.gauges.lay_chunks.fetch_add(laid, Ordering::Relaxed);
+        self.gauges
+            .lay_bytes
+            .fetch_add(laid_bytes, Ordering::Relaxed);
+        self.gauges
+            .append_ms_total
+            .fetch_add(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+        Ok(Appended {
+            length: 0,
+            applied: true,
+            refusal: String::new(),
+        })
+    }
+
+    /// Appends `bytes` at `offset` of the generation's WAL.
     ///
     /// # Errors
     /// Returns the io failure; a refusal is not an error but an
     /// [`Appended`] with `applied` false and the reason.
-    // The append names the generation, the offset, the bytes, the base
-    // when one starts, and how far the store covers; a struct would only
-    // rename the wire message that already carries them.
-    #[allow(clippy::too_many_arguments)]
     pub async fn append(
         &self,
         object_id: &str,
@@ -257,7 +524,6 @@ impl ReplicaStore {
         base: u64,
         offset: u64,
         bytes: &[u8],
-        base_bytes: Option<&[u8]>,
         covered: u64,
     ) -> Result<Appended, String> {
         let started = std::time::Instant::now();
@@ -286,60 +552,6 @@ impl ReplicaStore {
         }
 
         let dir = self.generation_dir(object_id, epoch, base);
-        if let Some(base_bytes) = base_bytes
-            && offset == 0
-        {
-            // A generation starts: the base is laid, the WAL truncated,
-            // any older generation goes with it, and the fence is
-            // written with the bytes.
-            let object_dir = self.object_dir(object_id);
-            let previous = meta.held.clone();
-            let base_len = base_bytes.len() as u64;
-            let base_bytes = base_bytes.to_vec();
-            let dir_for_write = dir.clone();
-            let fence = meta.fence.max(epoch);
-            tokio::task::spawn_blocking(move || -> Result<(), String> {
-                if let Some(prev) = previous
-                    && (prev.epoch, prev.base) != (epoch, base)
-                {
-                    let _ = std::fs::remove_dir_all(
-                        object_dir.join(format!("e{}-b{}", prev.epoch, prev.base)),
-                    );
-                }
-                std::fs::create_dir_all(&dir_for_write).map_err(|e| e.to_string())?;
-                std::fs::write(dir_for_write.join("base.db"), base_bytes)
-                    .map_err(|e| e.to_string())?;
-                std::fs::write(dir_for_write.join("wal"), []).map_err(|e| e.to_string())?;
-                std::fs::write(object_dir.join("fence"), fence.to_string())
-                    .map_err(|e| e.to_string())
-            })
-            .await
-            .map_err(|e| e.to_string())??;
-            if let Some(prev) = &meta.held {
-                self.gauges
-                    .bytes_held
-                    .fetch_sub((prev.wal_len + prev.base_len) as i64, Ordering::Relaxed);
-            } else {
-                self.gauges.objects_held.fetch_add(1, Ordering::Relaxed);
-            }
-            self.gauges
-                .bytes_held
-                .fetch_add(base_len as i64, Ordering::Relaxed);
-            meta.fence = fence;
-            meta.held = Some(Held {
-                epoch,
-                base,
-                wal_len: 0,
-                base_len,
-                covered: 0,
-                read_len: None,
-                last_append: std::time::Instant::now(),
-            });
-            if let Some(path) = self.sync_target(&dir) {
-                self.request_sync(path).await?;
-            }
-        }
-
         let Some(held) = meta.held.as_mut() else {
             return refused(&Meta::default(), refusal::NO_BASE);
         };
@@ -501,45 +713,32 @@ impl ReplicaStore {
         }
     }
 
-    /// The copy, base then WAL; [`None`] when the generation is not
-    /// held.
-    ///
-    /// # Errors
-    /// Returns the io failure.
-    pub async fn fetch(
-        &self,
-        object_id: &str,
-        epoch: u64,
-        base: u64,
-    ) -> Result<Option<(Vec<u8>, Vec<u8>)>, String> {
-        let Some(meta) = self.lock(object_id, false).await else {
-            return Ok(None);
-        };
-        let Some(held) = meta.held.as_ref() else {
-            return Ok(None);
-        };
+    /// Where the copy is: the base file, the WAL file and how much of
+    /// the WAL was acked (a write in progress past that is not part of
+    /// the copy); [`None`] when the generation is not held. The caller
+    /// streams the files; nothing reads them whole.
+    pub async fn fetch(&self, object_id: &str, epoch: u64, base: u64) -> Option<Copy> {
+        let meta = self.lock(object_id, false).await?;
+        let held = meta.held.as_ref()?;
         if (held.epoch, held.base) != (epoch, base) {
-            return Ok(None);
+            return None;
         }
         let dir = self.generation_dir(object_id, epoch, base);
-        let base_bytes = tokio::fs::read(dir.join("base.db"))
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut wal = tokio::fs::read(dir.join("wal"))
-            .await
-            .map_err(|e| e.to_string())?;
-        // Never more than what was acked: a write in progress past the
-        // recorded length is not part of the copy.
-        wal.truncate(held.wal_len as usize);
         self.gauges.fetches.fetch_add(1, Ordering::Relaxed);
-        Ok(Some((base_bytes, wal)))
+        Some(Copy {
+            base: dir.join("base.db"),
+            base_len: held.base_len,
+            wal: dir.join("wal"),
+            wal_len: held.wal_len,
+        })
     }
 
     /// A readable copy of the held generation: the base beside the WAL
     /// under SQLite's own names, refreshed to the length held, so a
-    /// read-only open replays it. The base is copied once per
-    /// generation; a refresh rewrites only the WAL beside it, into a
-    /// staged name renamed into place. [`None`] when nothing is held.
+    /// read-only open replays it. The base is copied once and patched
+    /// in place by every delta lay after, so a refresh rewrites only
+    /// the WAL beside it, into a staged name renamed into place.
+    /// [`None`] when nothing is held.
     ///
     /// # Errors
     /// Returns the io failure.
@@ -648,15 +847,26 @@ impl ReplicaStore {
     }
 }
 
+/// What `gen.json` records beside a copy: the list its base was laid
+/// from, so a delta can be checked against it after a restart.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct GenerationRecord {
+    base_len: u64,
+    chunks: Vec<String>,
+}
+
 /// Rebuilds an object's state from its directory: the fence file and
 /// the one generation directory, with the WAL's length as found. The
 /// fence is never below the held generation's epoch, whatever the file
-/// says, so a lost or truncated fence cannot let an older owner in.
+/// says, so a lost or truncated fence cannot let an older owner in. A
+/// `rotating` marker means a lay was cut short: the copy is forgotten,
+/// the fence kept.
 fn load_meta(dir: &Path) -> Meta {
     let fence: u64 = std::fs::read_to_string(dir.join("fence"))
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
+    let interrupted = dir.join("rotating").exists();
     let mut held: Option<Held> = None;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -664,17 +874,32 @@ fn load_meta(dir: &Path) -> Meta {
             let Some(generation) = name.to_str().and_then(parse_generation) else {
                 continue;
             };
+            if interrupted {
+                let _ = std::fs::remove_dir_all(entry.path());
+                continue;
+            }
             let wal_len = std::fs::metadata(entry.path().join("wal"))
                 .map(|m| m.len())
                 .unwrap_or(0);
             let base_len = std::fs::metadata(entry.path().join("base.db"))
                 .map(|m| m.len())
                 .unwrap_or(0);
+            let Some(record) = std::fs::read(entry.path().join("gen.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<GenerationRecord>(&bytes).ok())
+                .filter(|record| record.base_len == base_len)
+            else {
+                // A copy whose list is missing or disagrees with its file
+                // cannot take a delta and cannot be vouched for; gone.
+                let _ = std::fs::remove_dir_all(entry.path());
+                continue;
+            };
             let candidate = Held {
                 epoch: generation.0,
                 base: generation.1,
                 wal_len,
                 base_len,
+                chunks: record.chunks,
                 covered: 0,
                 read_len: None,
                 last_append: std::time::Instant::now(),
@@ -687,6 +912,9 @@ fn load_meta(dir: &Path) -> Meta {
                 held = Some(candidate);
             }
         }
+    }
+    if interrupted {
+        let _ = std::fs::remove_file(dir.join("rotating"));
     }
     let fence = fence.max(held.as_ref().map_or(0, |h| h.epoch));
     Meta { fence, held }
@@ -751,6 +979,8 @@ async fn sync_loop(mut rx: mpsc::UnboundedReceiver<SyncRequest>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::objects::store::{CHUNK_BYTES, list_hash};
+    use actias_worker_core::proto::Bytes;
 
     fn store(idle: std::time::Duration) -> (Arc<ReplicaStore>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -764,43 +994,69 @@ mod tests {
         Arc::new(|_, _, _| Box::pin(async { Cover::Unknown }))
     }
 
+    /// The chunk list of `bytes`, as an owner would compute it.
+    fn chunks_of(bytes: &[u8]) -> Vec<String> {
+        bytes
+            .chunks(CHUNK_BYTES as usize)
+            .map(|chunk| blake3::hash(chunk).to_hex().to_string())
+            .collect()
+    }
+
+    /// Lays a whole base of `bytes` at the generation.
+    async fn lay_full(
+        store: &ReplicaStore,
+        id: &str,
+        epoch: u64,
+        base: u64,
+        bytes: &[u8],
+    ) -> Appended {
+        let chunks = chunks_of(bytes);
+        let parts: Vec<LayPart> = bytes
+            .chunks(CHUNK_BYTES as usize)
+            .enumerate()
+            .map(|(i, chunk)| Ok((i as u32, Bytes::copy_from_slice(chunk))))
+            .collect();
+        store
+            .lay(
+                id,
+                LayHeader {
+                    epoch,
+                    base,
+                    from_list: String::new(),
+                    base_len: bytes.len() as u64,
+                    chunks,
+                },
+                futures::stream::iter(parts),
+            )
+            .await
+            .expect("lays")
+    }
+
     #[tokio::test]
     async fn appends_are_idempotent_by_offset_and_gaps_are_refused() {
         let (store, _dir) = store(std::time::Duration::from_secs(1800));
-        let started = store
-            .append("o", 3, 0, 0, b"", Some(b"BASE"), 0)
-            .await
-            .expect("base laid");
+        let started = lay_full(&store, "o", 3, 0, b"BASE").await;
         assert!(started.applied);
 
-        let first = store
-            .append("o", 3, 0, 0, b"abcd", None, 0)
-            .await
-            .expect("ok");
+        let first = store.append("o", 3, 0, 0, b"abcd", 0).await.expect("ok");
         assert_eq!(first.length, 4);
         // The same bytes again: acked, nothing written twice.
-        let again = store
-            .append("o", 3, 0, 0, b"abcd", None, 0)
-            .await
-            .expect("ok");
+        let again = store.append("o", 3, 0, 0, b"abcd", 0).await.expect("ok");
         assert_eq!((again.applied, again.length), (true, 4));
         // Overlapping: only the new tail lands.
-        let overlap = store
-            .append("o", 3, 0, 2, b"cdef", None, 0)
-            .await
-            .expect("ok");
+        let overlap = store.append("o", 3, 0, 2, b"cdef", 0).await.expect("ok");
         assert_eq!((overlap.applied, overlap.length), (true, 6));
         // A gap says how much is held so the owner resends from there.
-        let gap = store
-            .append("o", 3, 0, 9, b"xyz", None, 0)
-            .await
-            .expect("ok");
+        let gap = store.append("o", 3, 0, 9, b"xyz", 0).await.expect("ok");
         assert!(!gap.applied);
         assert_eq!(gap.length, 6);
         assert_eq!(gap.refusal, refusal::GAP);
 
-        let (base, wal) = store.fetch("o", 3, 0).await.expect("ok").expect("held");
-        assert_eq!(base, b"BASE");
+        let copy = store.fetch("o", 3, 0).await.expect("held");
+        assert_eq!(std::fs::read(&copy.base).expect("base"), b"BASE");
+        assert_eq!(copy.base_len, 4);
+        let mut wal = std::fs::read(&copy.wal).expect("wal");
+        wal.truncate(copy.wal_len as usize);
         assert_eq!(wal, b"abcdef");
 
         // The read copy carries base and WAL under SQLite's names, at
@@ -816,14 +1072,8 @@ mod tests {
     #[tokio::test]
     async fn the_fence_refuses_an_older_epoch_after_a_takeover_asked() {
         let (store, _dir) = store(std::time::Duration::from_secs(1800));
-        store
-            .append("o", 3, 0, 0, b"", Some(b"BASE"), 0)
-            .await
-            .expect("base laid");
-        store
-            .append("o", 3, 0, 0, b"abcd", None, 0)
-            .await
-            .expect("ok");
+        lay_full(&store, "o", 3, 0, b"BASE").await;
+        store.append("o", 3, 0, 0, b"abcd", 0).await.expect("ok");
 
         // The new owner at epoch 4 asks, raising the fence.
         let info = store.state("o", 3, 0, 4).await.expect("fence written");
@@ -837,17 +1087,11 @@ mod tests {
         );
 
         // The zombie at epoch 3 can no longer append, nor lay a base.
-        let zombie = store
-            .append("o", 3, 0, 4, b"ef", None, 0)
-            .await
-            .expect("ok");
+        let zombie = store.append("o", 3, 0, 4, b"ef", 0).await.expect("ok");
         assert!(!zombie.applied);
         assert_eq!(zombie.refusal, refusal::FENCED);
         assert_eq!(zombie.length, 4);
-        let relay = store
-            .append("o", 3, 1, 0, b"", Some(b"STALE"), 0)
-            .await
-            .expect("ok");
+        let relay = lay_full(&store, "o", 3, 1, b"STALE").await;
         assert_eq!(relay.refusal, refusal::FENCED);
         assert!(
             store.state("o", 3, 0, 0).await.expect("ok").held,
@@ -855,12 +1099,101 @@ mod tests {
         );
 
         // A generation without its base is refused, asking for it.
-        let missing = store
-            .append("p", 1, 0, 0, b"ab", None, 0)
-            .await
-            .expect("ok");
+        let missing = store.append("p", 1, 0, 0, b"ab", 0).await.expect("ok");
         assert!(!missing.applied);
         assert_eq!(missing.refusal, refusal::NO_BASE);
+    }
+
+    #[tokio::test]
+    async fn a_delta_patches_the_base_and_the_read_copy_in_place() {
+        let (store, dir) = store(std::time::Duration::from_secs(1800));
+        let chunk = CHUNK_BYTES as usize;
+        let mut first = vec![b'a'; chunk];
+        first.extend(vec![b'b'; chunk]);
+        first.extend(vec![b'c'; 10]);
+        lay_full(&store, "o", 1, 0, &first).await;
+        store.append("o", 1, 0, 0, b"wal", 0).await.expect("ok");
+        // A read copy exists, so the delta must keep it current too.
+        let read = store.read_copy("o").await.expect("ok").expect("held");
+        assert_eq!(std::fs::read(&read).expect("read copy"), first);
+
+        // Rotation: the middle chunk changed and the file grew a byte.
+        let mut second = first.clone();
+        second[chunk..2 * chunk].fill(b'B');
+        second.push(b'd');
+        let chunks = chunks_of(&second);
+        let parts: Vec<LayPart> = vec![
+            Ok((1, Bytes::copy_from_slice(&second[chunk..2 * chunk]))),
+            Ok((2, Bytes::copy_from_slice(&second[2 * chunk..]))),
+        ];
+        let delta = store
+            .lay(
+                "o",
+                LayHeader {
+                    epoch: 1,
+                    base: 1,
+                    from_list: list_hash(&chunks_of(&first)),
+                    base_len: second.len() as u64,
+                    chunks: chunks.clone(),
+                },
+                futures::stream::iter(parts),
+            )
+            .await
+            .expect("lays");
+        assert!(delta.applied, "{}", delta.refusal);
+        let copy = store
+            .fetch("o", 1, 1)
+            .await
+            .expect("held at the new generation");
+        assert_eq!(std::fs::read(&copy.base).expect("base"), second);
+        assert_eq!(copy.wal_len, 0, "the WAL restarted");
+        assert!(
+            store.fetch("o", 1, 0).await.is_none(),
+            "the old generation is gone"
+        );
+        assert!(!dir.path().join("o").join("rotating").exists());
+        // The read copy was patched alongside, WAL dropped.
+        let read = store.read_copy("o").await.expect("ok").expect("held");
+        assert_eq!(std::fs::read(&read).expect("read copy"), second);
+        assert!(!with_suffix(&read, "-wal").exists());
+
+        // A delta over a list this copy is not on asks for everything.
+        let off = store
+            .lay(
+                "o",
+                LayHeader {
+                    epoch: 1,
+                    base: 2,
+                    from_list: "not-this-list".to_owned(),
+                    base_len: 1,
+                    chunks: chunks_of(b"z"),
+                },
+                futures::stream::iter(Vec::<LayPart>::new()),
+            )
+            .await
+            .expect("answers");
+        assert_eq!(off.refusal, refusal::NO_BASE);
+        assert!(store.fetch("o", 1, 1).await.is_some(), "the copy stands");
+
+        // A lay cut short forgets the copy rather than keeping half of it.
+        let cut = store
+            .lay(
+                "o",
+                LayHeader {
+                    epoch: 1,
+                    base: 2,
+                    from_list: list_hash(&chunks),
+                    base_len: second.len() as u64,
+                    chunks: chunks.clone(),
+                },
+                futures::stream::iter(vec![Err::<(u32, Bytes), String>("cut".to_owned())]),
+            )
+            .await;
+        assert!(cut.is_err());
+        assert!(store.fetch("o", 1, 2).await.is_none());
+        assert!(store.fetch("o", 1, 1).await.is_none());
+        let again = lay_full(&store, "o", 1, 3, b"fresh").await;
+        assert!(again.applied);
     }
 
     #[tokio::test]
@@ -872,14 +1205,8 @@ mod tests {
                 SyncMode::Fsync,
                 std::time::Duration::from_secs(1800),
             );
-            store
-                .append("o", 2, 1, 0, b"", Some(b"BASE"), 0)
-                .await
-                .expect("base laid");
-            store
-                .append("o", 2, 1, 0, b"abcd", None, 0)
-                .await
-                .expect("ok");
+            lay_full(&store, "o", 2, 1, b"BASE").await;
+            store.append("o", 2, 1, 0, b"abcd", 0).await.expect("ok");
             store.state("o", 2, 1, 5).await.expect("fence written");
         }
         // A lost fence file cannot let an owner older than the copy in.
@@ -898,43 +1225,56 @@ mod tests {
                 fence: 2
             }
         );
-        let (_, wal) = store.fetch("o", 2, 1).await.expect("ok").expect("held");
-        assert_eq!(wal, b"abcd");
-        let older = store
-            .append("o", 1, 0, 0, b"", Some(b"OLD"), 0)
-            .await
-            .expect("ok");
+        let copy = store.fetch("o", 2, 1).await.expect("held");
+        assert_eq!(std::fs::read(&copy.wal).expect("wal"), b"abcd");
+        let older = lay_full(&store, "o", 1, 0, b"OLD").await;
         assert_eq!(older.refusal, refusal::FENCED);
+        // The list survived the restart, so a delta still applies.
+        let delta = store
+            .lay(
+                "o",
+                LayHeader {
+                    epoch: 2,
+                    base: 2,
+                    from_list: list_hash(&chunks_of(b"BASE")),
+                    base_len: 4,
+                    chunks: chunks_of(b"BASF"),
+                },
+                futures::stream::iter(vec![Ok::<_, String>((0u32, Bytes::from_static(b"BASF")))]),
+            )
+            .await
+            .expect("lays");
+        assert!(delta.applied);
+
+        // A marker left by a lay that died mid-patch forgets the copy.
+        std::fs::write(dir.path().join("o").join("rotating"), b"").expect("marker");
+        let store = ReplicaStore::new(
+            dir.path().to_path_buf(),
+            SyncMode::Fsync,
+            std::time::Duration::from_secs(1800),
+        );
+        let info = store.state("o", 2, 2, 0).await.expect("ok");
+        assert_eq!(
+            info,
+            Info {
+                held: false,
+                length: 0,
+                fence: 2
+            },
+            "forgotten, fence kept"
+        );
     }
 
     #[tokio::test]
     async fn a_covered_idle_copy_leaves_and_an_uncovered_one_stays() {
         let (store, _dir) = store(std::time::Duration::from_millis(0));
-        store
-            .append("a", 1, 0, 0, b"", Some(b"B"), 0)
-            .await
-            .expect("ok");
-        store
-            .append("a", 1, 0, 0, b"abcd", None, 0)
-            .await
-            .expect("ok");
-        store
-            .append("b", 1, 0, 0, b"", Some(b"B"), 0)
-            .await
-            .expect("ok");
+        lay_full(&store, "a", 1, 0, b"B").await;
+        store.append("a", 1, 0, 0, b"abcd", 0).await.expect("ok");
+        lay_full(&store, "b", 1, 0, b"B").await;
         // The owner's next append says the store covers 4 bytes of "b".
-        store
-            .append("b", 1, 0, 0, b"abcd", None, 4)
-            .await
-            .expect("ok");
-        store
-            .append("c", 1, 0, 0, b"", Some(b"B"), 0)
-            .await
-            .expect("ok");
-        store
-            .append("c", 1, 0, 0, b"abcd", None, 0)
-            .await
-            .expect("ok");
+        store.append("b", 1, 0, 0, b"abcd", 4).await.expect("ok");
+        lay_full(&store, "c", 1, 0, b"B").await;
+        store.append("c", 1, 0, 0, b"abcd", 0).await.expect("ok");
 
         // "a": nobody said; the store, asked, holds nothing. "c": the
         // store, asked, covers it.
@@ -971,10 +1311,8 @@ mod tests {
             SyncMode::Os,
             std::time::Duration::ZERO,
         );
-        store
-            .append("gone", 3, 0, 0, b"ab", Some(b"B"), 0)
-            .await
-            .expect("ok");
+        lay_full(&store, "gone", 3, 0, b"B").await;
+        store.append("gone", 3, 0, 0, b"ab", 0).await.expect("ok");
         assert!(dir.path().join("gone").join("fence").exists());
 
         let forgotten: Coverage = Arc::new(|_, _, _| Box::pin(async { Cover::Forgotten }));
@@ -993,10 +1331,7 @@ mod tests {
             "nothing remembered"
         );
         // A recreation at any epoch lays a fresh base.
-        let again = store
-            .append("gone", 1, 0, 0, b"", Some(b"NEW"), 0)
-            .await
-            .expect("ok");
+        let again = lay_full(&store, "gone", 1, 0, b"NEW").await;
         assert!(again.applied);
     }
 }

@@ -200,9 +200,13 @@ services:
       - OBJECT_REPLICA_IDLE_SECS=${OBJECT_REPLICA_IDLE_SECS:-1800}
       # A crash point for scripts/crash-drill.sh; empty everywhere else.
       - ACTIAS_DRILL_FAULT=${ACTIAS_DRILL_FAULT:-}
-      # WAL shipping: generation rotation sizes.
+      # WAL shipping: generation rotation sizes. The floor, the fraction
+      # of the base a large object rotates at, the segment count, and
+      # how many chunk puts or gets a store operation keeps in flight.
       - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
+      - OBJECT_WAL_ROTATE_FRACTION=${OBJECT_WAL_ROTATE_FRACTION:-0.125}
       - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
+      - OBJECT_STORE_PARALLEL=${OBJECT_STORE_PARALLEL:-8}
       # Flights this node may have in the air at once (0 unbounded), and
       # how many of those are held for writes a caller waits on.
       - OBJECT_SHIP_CONCURRENCY=${OBJECT_SHIP_CONCURRENCY:-32}
@@ -281,9 +285,13 @@ services:
       - OBJECT_REPLICA_IDLE_SECS=${OBJECT_REPLICA_IDLE_SECS:-1800}
       # A crash point for scripts/crash-drill.sh; empty everywhere else.
       - ACTIAS_DRILL_FAULT=${ACTIAS_DRILL_FAULT:-}
-      # WAL shipping: generation rotation sizes.
+      # WAL shipping: generation rotation sizes. The floor, the fraction
+      # of the base a large object rotates at, the segment count, and
+      # how many chunk puts or gets a store operation keeps in flight.
       - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
+      - OBJECT_WAL_ROTATE_FRACTION=${OBJECT_WAL_ROTATE_FRACTION:-0.125}
       - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
+      - OBJECT_STORE_PARALLEL=${OBJECT_STORE_PARALLEL:-8}
       # Flights this node may have in the air at once (0 unbounded), and
       # how many of those are held for writes a caller waits on.
       - OBJECT_SHIP_CONCURRENCY=${OBJECT_SHIP_CONCURRENCY:-32}

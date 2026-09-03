@@ -54,6 +54,16 @@ impl SqliteStorage {
         connection
             .pragma_update(None, "wal_autocheckpoint", 0)
             .map_err(|e| e.to_string())?;
+        // Nor when the last connection closes: sqlite would otherwise
+        // fold the WAL into the file and delete it on its way out, and
+        // frames the shipper never walked would be in the file with no
+        // trace of which pages they touched.
+        connection
+            .set_db_config(
+                rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+                true,
+            )
+            .map_err(|e| e.to_string())?;
 
         Ok(Self {
             connection,

@@ -139,8 +139,12 @@ spec:
               value: {{ .Values.workers.tuning.objectReplicaIdleSecs | quote }}
             - name: OBJECT_WAL_ROTATE_KB
               value: {{ .Values.workers.tuning.objectWalRotateKb | quote }}
+            - name: OBJECT_WAL_ROTATE_FRACTION
+              value: {{ .Values.workers.tuning.objectWalRotateFraction | quote }}
             - name: OBJECT_MAX_SEGMENTS
               value: {{ .Values.workers.tuning.objectMaxSegments | quote }}
+            - name: OBJECT_STORE_PARALLEL
+              value: {{ .Values.workers.tuning.objectStoreParallel | quote }}
             - name: OBJECT_ACK_GATE_MS
               value: {{ .Values.workers.tuning.objectAckGateMs | quote }}
             {{- include "actias.otelEnv" (dict "root" . "service" "actias_worker") | nindent 12 }}

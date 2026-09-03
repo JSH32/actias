@@ -101,6 +101,12 @@ service WorkerData {
     // reached this, so a read on any node sees every write a caller was
     // told succeeded, without any token crossing requests.
     rpc Watermark(WatermarkQuery) returns (WatermarkInfo);
+    // A generation start: the owner lays a base on the replica as a
+    // stream of parts, a header naming the chunk list and then the
+    // chunks the replica lacks. A replica on the header's previous list
+    // is sent only the chunks a rotation dirtied and patches its base in
+    // place; one that is not answers NO_BASE and is sent every chunk.
+    rpc LayGeneration(stream GenerationPart) returns (WalAppended);
 }
 
 message WatermarkQuery {
@@ -129,13 +135,40 @@ message WalAppend {
     // Byte offset in the generation's WAL these bytes start at.
     uint64 offset = 4;
     bytes bytes = 5;
-    // The generation's base file, sent with offset 0 when a generation
-    // starts, and again when a replica answers that it lacks it.
-    optional bytes base_bytes = 6;
     // How far the store's manifest covers this WAL; informational, for
     // eviction.
     uint64 covered = 7;
 }
+
+message GenerationPart {
+    oneof part {
+        GenerationHeader header = 1;
+        GenerationChunk chunk = 2;
+        GenerationDone done = 3;
+    }
+}
+
+message GenerationHeader {
+    string object_id = 1;
+    uint64 epoch = 2;
+    uint64 base = 3;
+    // The hash of the chunk list this delta applies to, hex; empty when
+    // every chunk follows.
+    string from_list = 4;
+    // The base file's length after the lay.
+    uint64 base_len = 5;
+    // The new generation's chunk list: one blake3 hex per CHUNK_BYTES
+    // of the base, in order.
+    repeated string chunks = 6;
+}
+
+message GenerationChunk {
+    // Which range of the base these bytes are; the last chunk is short.
+    uint32 index = 1;
+    bytes bytes = 2;
+}
+
+message GenerationDone {}
 
 message WalAppended {
     // The WAL length the replica holds after the call.

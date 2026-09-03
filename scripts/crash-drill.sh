@@ -19,7 +19,7 @@ API="${API:-http://127.0.0.1:3001/api}"
 OWNER="${OWNER:-http://127.0.0.1:3002}"
 PEER="${PEER:-http://127.0.0.1:3003}"
 OWNER_SERVICE="${OWNER_SERVICE:-worker_service}"
-POINTS="${POINTS:-after-commit after-quorum after-segment after-manifest}"
+POINTS="${POINTS:-after-commit after-quorum after-segment after-manifest after-chunks after-lay}"
 TAKEOVER_WAIT="${TAKEOVER_WAIT:-90}"
 
 publish() {

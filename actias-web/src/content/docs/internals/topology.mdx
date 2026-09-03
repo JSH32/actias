@@ -26,7 +26,9 @@ promises in [guarantees](/docs/runtime/guarantees).
 Services speak gRPC to each other. Workers also speak gRPC among
 themselves: forwarded object calls, delivery batches, directory hops,
 holder reads, and the write-ahead log an owner fans out to the nodes
-that replicate its objects, all node to node without a coordinator.
+that replicate its objects, with the chunks of a base a rotation
+changed streamed to the same nodes, all node to node without a
+coordinator.
 
 ```mermaid
 flowchart LR
@@ -75,6 +77,7 @@ the interpreter; everything durable lives behind a platform surface
     <tr><td>pointers</td><td>public identifier to script row</td><td>5 s (<code>POINTER_TTL_SECS</code>)</td><td>a publish becomes visible within the TTL</td></tr>
     <tr><td>revisions</td><td>revision id to prepared program</td><td>128 MB (<code>REVISION_CACHE_MB</code>)</td><td>none, revisions are immutable</td></tr>
     <tr><td>blobs</td><td>blake3 hash to bytes</td><td>256 MB (<code>BLOB_CACHE_MB</code>)</td><td>none, content-addressed</td></tr>
+    <tr><td>store files</td><td>chunk or directory file hash to bytes</td><td>256 MB (<code>DIRECTORY_CACHE_MB</code>)</td><td>none, content-addressed; a restore fetches only the chunks it lacks</td></tr>
   </tbody>
 </table>
 

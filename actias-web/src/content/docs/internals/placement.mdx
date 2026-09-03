@@ -77,16 +77,27 @@ sequenceDiagram
     Note over O: Q acks: the ticket resolves
     O-->>C: answer
     O->>S: segment put, manifest put
+    Note over O,S: a rotation instead: dirty chunks to S,<br/>the same chunks streamed to R, then the manifest
 ```
+
+The base is the object's file at a checkpoint, kept as a list of 1 MiB
+chunks named by their content hash. Every frame in the write-ahead log
+names the page it carries, so when the log folds into the file the
+owner knows which chunks changed without reading the rest, and a
+rotation costs what was written, not what is stored. A replica holds
+the assembled file and patches it in place from the same chunks. A
+node laying the file from the store fetches the chunks it lacks in
+parallel, through a cache keyed by hash, so a copy it recently held is
+mostly already there.
 
 <table>
   <thead>
     <tr><th>What ships</th><th>When</th></tr>
   </thead>
   <tbody>
-    <tr><td>the main file at a checkpoint, as the generation's base</td><td>the first flight of a residency, and each rotation; replicas receive it too</td></tr>
+    <tr><td>the main file at a checkpoint, as the generation's base, in 1 MiB chunks named by their hash</td><td>the first flight of a residency ships every chunk; each rotation ships only the chunks the folded frames touched, and replicas receive the same delta and patch their copy in place</td></tr>
     <tr><td>the write-ahead log frames since the last flight</td><td>every other flight; the cost follows the delta, not the database</td></tr>
-    <tr><td>a fresh base</td><td>the log passes 4 MB or 64 segments (<code>OBJECT_WAL_ROTATE_KB</code>, <code>OBJECT_MAX_SEGMENTS</code>)</td></tr>
+    <tr><td>a fresh base</td><td>the log passes 4 MB, an eighth of the base, or 64 segments (<code>OBJECT_WAL_ROTATE_KB</code>, <code>OBJECT_WAL_ROTATE_FRACTION</code>, <code>OBJECT_MAX_SEGMENTS</code>)</td></tr>
   </tbody>
 </table>
 
@@ -113,7 +124,8 @@ A claim lays the object's file from the freshest copy it can prove.
 It asks the replicas the manifest names, raising their fences to the
 new epoch, and once a quorum has answered it takes the longest copy,
 provided it is at least as long as what the store holds; otherwise it
-restores from the store and logs a durability incident. With two of
+assembles the file from the store's chunks and logs a durability
+incident. With two of
 three replicas answering, any two quorums share a replica, so every
 acknowledged write is in the longest copy. A sidecar records the
 epoch of the node's last residency, so a node returning to an object

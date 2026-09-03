@@ -52,6 +52,7 @@ impl Metrics {
         vms: (&crate::vm_pool::VmPoolGauges, usize),
         directory: &crate::directory::gauges::DirectoryGauges,
         directory_files: (u64, u64),
+        chunks: (u64, u64, u64),
     ) -> String {
         let scripts = self.scripts.lock().expect("no poisoned lock").clone();
 
@@ -155,6 +156,21 @@ impl Metrics {
                 "actias_replica_fetches_total",
                 "counter",
                 count(&replicas.fetches),
+            ),
+            (
+                "actias_replica_lays_total",
+                "counter",
+                count(&replicas.lays),
+            ),
+            (
+                "actias_replica_lay_chunks_total",
+                "counter",
+                count(&replicas.lay_chunks),
+            ),
+            (
+                "actias_replica_lay_bytes_total",
+                "counter",
+                count(&replicas.lay_bytes),
             ),
             (
                 "actias_replica_reads_confirmed_total",
@@ -350,6 +366,15 @@ impl Metrics {
             "actias_directory_file_fetches_total {}\n",
             directory_files.1
         ));
+        // Chunked bases: what rotations put, and what restores fetched
+        // past the cache.
+        for (name, value) in [
+            ("actias_store_chunk_puts_total", chunks.0),
+            ("actias_store_chunk_bytes_put_total", chunks.1),
+            ("actias_store_chunk_gets_total", chunks.2),
+        ] {
+            out.push_str(&format!("# TYPE {name} counter\n{name} {value}\n"));
+        }
         out
     }
 }
@@ -375,6 +400,7 @@ mod tests {
             (&crate::vm_pool::VmPoolGauges::default(), 0),
             &directory,
             (7, 2),
+            (0, 0, 0),
         );
 
         assert!(text.contains("actias_requests_total{project=\"proj-1\",script=\"my-script\"} 2"));

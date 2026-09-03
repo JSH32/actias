@@ -17,10 +17,10 @@ use actias_worker_core::proto::worker_data::worker_data_client::WorkerDataClient
 use actias_worker_core::proto::worker_data::worker_data_server::WorkerData;
 use actias_worker_core::proto::worker_data::{
     CallResult, DirectoryEntry, DirectoryPage, DirectoryQuery, DirectoryRebuild, DirectoryRebuilt,
-    InboxBatch, InboxEdge, InboxReceipts, ObjectCall, ReadRequest, ReadValue, ReceiveBatch,
-    ReceiveEntry, ReceiveOutcome, ReceiveReceipts, ReplicaChunk, ReplicaInfo, ReplicaQuery,
-    ShellOutcome, ShellRun, VisitEntry, VisitPage, WalAppend, WalAppended, WatermarkInfo,
-    WatermarkQuery,
+    GenerationPart, InboxBatch, InboxEdge, InboxReceipts, ObjectCall, ReadRequest, ReadValue,
+    ReceiveBatch, ReceiveEntry, ReceiveOutcome, ReceiveReceipts, ReplicaChunk, ReplicaInfo,
+    ReplicaQuery, ShellOutcome, ShellRun, VisitEntry, VisitPage, WalAppend, WalAppended,
+    WatermarkInfo, WatermarkQuery, generation_part,
 };
 
 use crate::routing::{ObjectRouting, fresh_replica_file, owner_prepared};
@@ -84,9 +84,10 @@ pub(crate) async fn peer_client(
     )))
 }
 
-/// A replica fan-out carries a generation's base, up to an object's
-/// whole file; the default 4 MB message bound is too small for it.
-pub const PEER_MESSAGE_BYTES: usize = 256 << 20;
+/// Nothing larger than one chunk of a base, plus its framing, crosses
+/// the data plane in one message: a generation travels as a stream of
+/// parts, and a copy as a stream of chunks.
+pub const PEER_MESSAGE_BYTES: usize = 4 << 20;
 
 fn sized(
     client: WorkerDataClient<actias_worker_core::Grpc>,
@@ -261,13 +262,69 @@ impl WorkerData for WorkerDataService {
                 append.base,
                 append.offset,
                 &append.bytes,
-                append.base_bytes.as_deref(),
                 append.covered,
             )
             .await
             .map_err(|error| {
                 actias_common::tracing::warn!(%error, object_id = append.object_id, "replica append failed");
                 Status::internal("The replica could not append.")
+            })?;
+        Ok(Response::new(WalAppended {
+            length: outcome.length,
+            applied: outcome.applied,
+            refusal: outcome.refusal,
+        }))
+    }
+
+    async fn lay_generation(
+        &self,
+        request: Request<tonic::Streaming<GenerationPart>>,
+    ) -> Result<Response<WalAppended>, Status> {
+        use futures::StreamExt;
+        let mut parts = request.into_inner();
+        let header = match parts.message().await? {
+            Some(GenerationPart {
+                part: Some(generation_part::Part::Header(header)),
+            }) => header,
+            _ => return Err(Status::invalid_argument("A lay starts with its header.")),
+        };
+        let object_id = header.object_id.clone();
+        // Chunks until done; a stream that ends without it is an error
+        // the store turns into a forgotten copy.
+        let chunks = futures::stream::unfold((parts, false), |(mut parts, done)| async move {
+            if done {
+                return None;
+            }
+            match parts.message().await {
+                Ok(Some(GenerationPart {
+                    part: Some(generation_part::Part::Chunk(chunk)),
+                })) => Some((Ok((chunk.index, chunk.bytes)), (parts, false))),
+                Ok(Some(GenerationPart {
+                    part: Some(generation_part::Part::Done(_)),
+                })) => None,
+                Ok(Some(_)) => Some((Err("a lay carries a header once".to_owned()), (parts, true))),
+                Ok(None) => Some((Err("the lay ended before done".to_owned()), (parts, true))),
+                Err(status) => Some((Err(status.message().to_owned()), (parts, true))),
+            }
+        });
+        let outcome = self
+            .state
+            .replica_store
+            .lay(
+                &object_id,
+                crate::objects::replica::LayHeader {
+                    epoch: header.epoch,
+                    base: header.base,
+                    from_list: header.from_list,
+                    base_len: header.base_len,
+                    chunks: header.chunks,
+                },
+                chunks.boxed(),
+            )
+            .await
+            .map_err(|error| {
+                actias_common::tracing::warn!(%error, object_id, "replica lay failed");
+                Status::internal("The replica could not lay the generation.")
             })?;
         Ok(Response::new(WalAppended {
             length: outcome.length,
@@ -347,46 +404,70 @@ impl WorkerData for WorkerDataService {
                 actias_common::tracing::warn!(%error, object_id = query.object_id, "replica fence could not be written");
                 Status::internal("The replica could not record the fence.")
             })?;
-        let copy = self
+        let Some(copy) = self
             .state
             .replica_store
             .fetch(&query.object_id, query.epoch, query.base)
             .await
-            .map_err(|error| {
-                actias_common::tracing::warn!(%error, object_id = query.object_id, "replica fetch failed");
-                Status::internal("The replica could not be read.")
-            })?;
-        let Some((base, wal)) = copy else {
+        else {
             return Err(Status::not_found(
                 "This node does not hold that generation.",
             ));
         };
-        const CHUNK: usize = 1 << 20;
-        let base = actias_worker_core::proto::Bytes::from(base);
-        let wal = actias_worker_core::proto::Bytes::from(wal);
-        let base_chunks = base.len().div_ceil(CHUNK);
-        let wal_chunks = wal.len().div_ceil(CHUNK);
-        // Sliced as the stream is polled; the copy is held once and
-        // every chunk is a view of it.
-        let chunks = (0..base_chunks + wal_chunks).map(move |i| {
-            if i < base_chunks {
-                let at = i * CHUNK;
-                ReplicaChunk {
-                    base: base.slice(at..(at + CHUNK).min(base.len())),
-                    wal: actias_worker_core::proto::Bytes::new(),
+        const CHUNK: u64 = 1 << 20;
+        let base_chunks = copy.base_len.div_ceil(CHUNK);
+        let wal_chunks = copy.wal_len.div_ceil(CHUNK);
+        // Read from disk as the stream is polled; nothing holds the copy.
+        let object_id = query.object_id.clone();
+        let chunks = futures::stream::unfold(0u64, move |i| {
+            let copy = std::sync::Arc::new((
+                copy.base.clone(),
+                copy.base_len,
+                copy.wal.clone(),
+                copy.wal_len,
+            ));
+            let object_id = object_id.clone();
+            async move {
+                if i >= base_chunks + wal_chunks {
+                    return None;
                 }
-            } else {
-                let at = (i - base_chunks) * CHUNK;
-                ReplicaChunk {
-                    base: actias_worker_core::proto::Bytes::new(),
-                    wal: wal.slice(at..(at + CHUNK).min(wal.len())),
-                }
+                let (path, len, at, is_base) = if i < base_chunks {
+                    (copy.0.clone(), copy.1, i * CHUNK, true)
+                } else {
+                    (copy.2.clone(), copy.3, (i - base_chunks) * CHUNK, false)
+                };
+                let read = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+                    use std::os::unix::fs::FileExt;
+                    let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+                    let mut bytes = vec![0u8; (len - at).min(CHUNK) as usize];
+                    file.read_exact_at(&mut bytes, at)
+                        .map_err(|e| e.to_string())?;
+                    Ok(bytes)
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r);
+                let item = match read {
+                    Ok(bytes) => Ok(if is_base {
+                        ReplicaChunk {
+                            base: actias_worker_core::proto::Bytes::from(bytes),
+                            wal: actias_worker_core::proto::Bytes::new(),
+                        }
+                    } else {
+                        ReplicaChunk {
+                            base: actias_worker_core::proto::Bytes::new(),
+                            wal: actias_worker_core::proto::Bytes::from(bytes),
+                        }
+                    }),
+                    Err(error) => {
+                        actias_common::tracing::warn!(%error, object_id, "replica copy could not be read");
+                        Err(Status::internal("The replica copy could not be read."))
+                    }
+                };
+                Some((item, i + 1))
             }
         });
-        Ok(Response::new(Box::pin(futures::StreamExt::map(
-            futures::stream::iter(chunks),
-            Ok,
-        ))))
+        Ok(Response::new(Box::pin(chunks)))
     }
 
     /// One object method call: resolve the owner's current code, route to

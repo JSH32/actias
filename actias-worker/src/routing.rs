@@ -760,7 +760,6 @@ impl ObjectRouting {
                     crate::objects::fanout::fanout_for(
                         routing.state.clone(),
                         object_id.clone(),
-                        file.clone(),
                         replicas.clone(),
                     )
                 });

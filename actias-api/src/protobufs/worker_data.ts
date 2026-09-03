@@ -145,6 +145,16 @@ export namespace worker_data {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<WatermarkInfo>;
+        // A generation start: the owner lays a base on the replica as a
+    // stream of parts, a header naming the chunk list and then the
+    // chunks the replica lacks. A replica on the header&#x27;s previous list
+    // is sent only the chunks a rotation dirtied and patches its base in
+    // place; one that is not answers NO_BASE and is sent every chunk.
+        layGeneration(
+            data: Observable<GenerationPart>,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<WalAppended>;
     }
     export interface WatermarkQuery {
         objectId?: string;
@@ -170,12 +180,35 @@ export namespace worker_data {
         // Byte offset in the generation&#x27;s WAL these bytes start at.
         offset?: number;
         bytes?: Uint8Array;
-        // The generation&#x27;s base file, sent with offset 0 when a generation
-    // starts, and again when a replica answers that it lacks it.
-        baseBytes?: Uint8Array;
         // How far the store&#x27;s manifest covers this WAL; informational, for
     // eviction.
         covered?: number;
+    }
+    export interface GenerationPart {
+        header?: worker_data.GenerationHeader;
+        chunk?: worker_data.GenerationChunk;
+        done?: worker_data.GenerationDone;
+    }
+    export interface GenerationHeader {
+        objectId?: string;
+        epoch?: number;
+        base?: number;
+        // The hash of the chunk list this delta applies to, hex; empty when
+    // every chunk follows.
+        fromList?: string;
+        // The base file&#x27;s length after the lay.
+        baseLen?: number;
+        // The new generation&#x27;s chunk list: one blake3 hex per CHUNK_BYTES
+    // of the base, in order.
+        chunks?: string[];
+    }
+    export interface GenerationChunk {
+        // Which range of the base these bytes are; the last chunk is short.
+        index?: number;
+        bytes?: Uint8Array;
+    }
+    // tslint:disable-next-line:no-empty-interface
+    export interface GenerationDone {
     }
     export interface WalAppended {
         // The WAL length the replica holds after the call.

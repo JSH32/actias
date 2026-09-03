@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .bytes([
             "WalAppend.bytes",
-            "WalAppend.base_bytes",
+            "GenerationChunk.bytes",
             "ReplicaChunk.base",
             "ReplicaChunk.wal",
         ])

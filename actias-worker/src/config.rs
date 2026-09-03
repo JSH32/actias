@@ -49,8 +49,13 @@ pub struct Config {
     pub object_data_dir: String,
     /// Size cap per object database, bytes.
     pub object_db_max_bytes: u64,
-    /// A WAL this large rotates the shipping generation, bytes.
+    /// A WAL this large rotates the shipping generation, bytes; the
+    /// floor under the fraction.
     pub object_wal_rotate_bytes: u64,
+    /// A WAL this fraction of the base's length rotates it too.
+    pub object_wal_rotate_fraction: f64,
+    /// Chunk puts and gets in flight at once per store operation.
+    pub object_store_parallel: usize,
     /// So does this many shipped segments.
     pub object_max_segments: u32,
     /// Longest a written call's answer waits for its frames to reach the
@@ -172,8 +177,10 @@ impl Config {
                 ),
             ),
             object_data_dir: get_env_or("OBJECT_DATA_DIR", "./objects-data".to_owned()),
-            object_db_max_bytes: get_env_or::<u64>("OBJECT_DB_MAX_MB", 64) * 1024 * 1024,
+            object_db_max_bytes: get_env_or::<u64>("OBJECT_DB_MAX_MB", 1024) * 1024 * 1024,
             object_wal_rotate_bytes: get_env_or::<u64>("OBJECT_WAL_ROTATE_KB", 4096) * 1024,
+            object_wal_rotate_fraction: get_env_or("OBJECT_WAL_ROTATE_FRACTION", 0.125),
+            object_store_parallel: get_env_or("OBJECT_STORE_PARALLEL", 8),
             object_max_segments: get_env_or("OBJECT_MAX_SEGMENTS", 64),
             object_ack_gate_ms: get_env_or("OBJECT_ACK_GATE_MS", 10_000),
             object_ship_concurrency: get_env_or("OBJECT_SHIP_CONCURRENCY", 32),

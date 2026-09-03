@@ -19,7 +19,7 @@ use actias_worker_core::proto::Bytes;
 /// zero or more `wal-{n:05}.seg` slices of one live WAL.
 #[derive(Serialize, Deserialize)]
 pub struct Manifest {
-    #[serde(default = "two")]
+    #[serde(default = "three")]
     pub version: u32,
     /// The shipper's lease epoch; a zombie ex-owner's uploads lose to any
     /// newer epoch here.
@@ -60,10 +60,42 @@ pub struct Manifest {
     /// takeover can tell whether a replica's copy is at least as long.
     #[serde(default)]
     pub wal_len: u64,
+    /// The base file's length, and its content as an ordered list of
+    /// chunk hashes: one blake3 hex per [`CHUNK_BYTES`] of the file,
+    /// each stored under `objects/{id}/chunks/{hash}`. A rotation
+    /// rewrites only the entries the folded frames dirtied.
+    #[serde(default)]
+    pub base_len: u64,
+    #[serde(default)]
+    pub chunks: Vec<String>,
 }
 
-fn two() -> u32 {
-    2
+fn three() -> u32 {
+    3
+}
+
+/// The manifest layout this store reads and writes. Nothing older is
+/// read: a bucket written before chunked bases is wiped, not migrated.
+pub const MANIFEST_VERSION: u32 = 3;
+
+/// A base is stored and described in ranges this long. A constant, not
+/// a knob: changing it would change every hash ever written.
+pub const CHUNK_BYTES: u64 = 1 << 20;
+
+/// The name of a chunk list, for a replica to check a delta against:
+/// blake3 over the hashes joined by newlines.
+pub fn list_hash(chunks: &[String]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for hash in chunks {
+        hasher.update(hash.as_bytes());
+        hasher.update(b"\n");
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// How many chunks a base of `len` bytes has.
+pub fn chunk_count(len: u64) -> usize {
+    len.div_ceil(CHUNK_BYTES) as usize
 }
 
 /// The directory row a flight carries, if any.
@@ -162,26 +194,56 @@ impl ShipState {
 /// Operator-tunable shipping sizes, one copy per node.
 #[derive(Clone, Copy)]
 pub struct ShipThresholds {
-    /// A WAL this large rotates the generation at the next flight.
+    /// A WAL this large rotates the generation at the next flight; the
+    /// floor under the fraction.
     pub rotate_bytes: u64,
+    /// A WAL this fraction of the base's length rotates it too, so a
+    /// large object's checkpoint folds a bounded share of the file.
+    pub rotate_fraction: f64,
     /// So does this many segments, whatever their size.
     pub max_segments: u32,
 }
 
-/// One fan-out: the generation, the committed WAL prefix as a whole (so
-/// a replica behind can be resent from wherever it is), the offset the
-/// owner believes the replicas hold, and the base when a generation
-/// starts.
+impl ShipThresholds {
+    /// The WAL length that rotates a generation over a base of
+    /// `base_len` bytes.
+    pub fn rotate_at(&self, base_len: u64) -> u64 {
+        let by_fraction = (base_len as f64 * self.rotate_fraction) as u64;
+        self.rotate_bytes.max(by_fraction)
+    }
+}
+
+/// One fan-out: the generation it names, and either an append or a
+/// generation lay.
 pub struct FanoutRequest {
     pub epoch: u64,
     pub base: u64,
-    pub offset: u64,
-    pub wal: Bytes,
-    pub base_bytes: Option<Bytes>,
-    pub covered: u64,
     /// Acks that answer the flight; the fan-out stops waiting on the
     /// rest soon after it has them. 0 waits for everyone.
     pub quorum: usize,
+    pub payload: Payload,
+}
+
+pub enum Payload {
+    /// The committed WAL prefix as a whole (so a replica behind can be
+    /// resent from wherever it is), the offset the owner believes the
+    /// replicas hold, and how far the store covers.
+    Append {
+        offset: u64,
+        wal: Bytes,
+        covered: u64,
+    },
+    /// A generation start: the new chunk list, the list it is a delta
+    /// over (empty when every chunk goes), the base's length, and the
+    /// chunk indices to stream from `file`. A replica not on `from_list`
+    /// is sent every chunk instead.
+    Lay {
+        from_list: String,
+        base_len: u64,
+        chunks: Arc<Vec<String>>,
+        dirty: Arc<Vec<u32>>,
+        file: PathBuf,
+    },
 }
 
 /// What a fan-out came back with.
@@ -262,6 +324,7 @@ impl Replication {
 pub const FENCED_BY_REPLICAS: &str = "fenced by the replicas; another node owns the object";
 
 /// The generation a residency is shipping into.
+#[derive(Clone)]
 struct Generation {
     base: u64,
     segments: u32,
@@ -270,6 +333,10 @@ struct Generation {
     salts: Option<(u32, u32)>,
     /// Shipped through this byte of the WAL file.
     offset: usize,
+    /// The base as shipped: its length and chunk list, carried into
+    /// every manifest of the generation and diffed at the next rotation.
+    base_len: u64,
+    chunks: Arc<Vec<String>>,
 }
 
 pub struct ObjectStore {
@@ -291,10 +358,22 @@ pub struct ObjectStore {
     /// classes this node serves.
     pub file_reads: std::sync::atomic::AtomicU64,
     pub file_fetches: std::sync::atomic::AtomicU64,
+    /// Chunk puts and gets in flight at once per operation.
+    parallel: usize,
+    /// Chunks a rotation put, their bytes, and chunks a restore fetched
+    /// from the store rather than the cache.
+    pub chunk_puts: std::sync::atomic::AtomicU64,
+    pub chunk_bytes_put: std::sync::atomic::AtomicU64,
+    pub chunk_gets: std::sync::atomic::AtomicU64,
 }
 
 impl ObjectStore {
-    pub fn new(client: aws_sdk_s3::Client, bucket: String, cache_bytes: u64) -> Self {
+    pub fn new(
+        client: aws_sdk_s3::Client,
+        bucket: String,
+        cache_bytes: u64,
+        parallel: usize,
+    ) -> Self {
         Self {
             client,
             bucket,
@@ -304,6 +383,10 @@ impl ObjectStore {
                 .build(),
             file_reads: std::sync::atomic::AtomicU64::new(0),
             file_fetches: std::sync::atomic::AtomicU64::new(0),
+            parallel: parallel.max(1),
+            chunk_puts: std::sync::atomic::AtomicU64::new(0),
+            chunk_bytes_put: std::sync::atomic::AtomicU64::new(0),
+            chunk_gets: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -311,8 +394,12 @@ impl ObjectStore {
         format!("objects/{object_id}/manifest.json")
     }
 
-    fn base_key(object_id: &str, epoch: u64, base: u64) -> String {
-        format!("objects/{object_id}/e{epoch}-b{base}/base.db")
+    fn chunk_key(object_id: &str, hash: &str) -> String {
+        format!("objects/{object_id}/chunks/{hash}")
+    }
+
+    fn gen_key(object_id: &str, epoch: u64, base: u64) -> String {
+        format!("objects/{object_id}/e{epoch}-b{base}/gen.json")
     }
 
     fn segment_key(object_id: &str, epoch: u64, base: u64, n: u32) -> String {
@@ -326,13 +413,14 @@ impl ObjectStore {
     /// [`ShipState`].
     ///
     /// The first flight lays a generation: a checkpoint, the main file
-    /// as the base. Every flight after ships the committed WAL frames
-    /// since the last one as one segment, and the generation rotates
-    /// when the WAL or the segment count grows past the thresholds. A
-    /// segment that cannot be cut (the WAL restarted behind the shipper)
-    /// starts the next generation instead, which folds every frame in.
-    /// A flight that lays a new generation sweeps old ones, keeping the
-    /// newest previous as the rollback margin.
+    /// as the base, every chunk of it. Every flight after ships the
+    /// committed WAL frames since the last one as one segment, and the
+    /// generation rotates when the WAL or the segment count grows past
+    /// the thresholds; a rotation ships only the chunks the folded
+    /// frames dirtied. A segment that cannot be cut (the WAL restarted
+    /// behind the shipper) starts the next generation instead, which
+    /// folds every frame in. A flight that lays a new generation sweeps
+    /// old ones, keeping the newest previous as the rollback margin.
     // A flight names the residency (id, epoch, file), the node's sizes,
     // the membership its fence was checked under, and the replication
     // to fan out through; folding them into a struct would name nothing
@@ -371,38 +459,48 @@ impl ObjectStore {
         let wal_len = wal_path(file).metadata().map(|m| m.len()).unwrap_or(0);
         let base_before = state.generation.as_ref().map(|g| g.base);
         let may_release = state.replicas_named;
+        let chunks_before = state
+            .generation
+            .as_ref()
+            .map(|g| g.chunks.clone())
+            .unwrap_or_default();
 
         let next = match state.generation.as_ref() {
             None => {
                 let base = state.must_rotate.unwrap_or(0);
                 state.must_rotate = Some(base);
-                self.start_generation(object_id, epoch, file, base, replication, may_release)
+                self.start_generation(object_id, epoch, file, base, None, replication)
                     .await
             }
             Some(generation)
                 if state.must_rotate.is_some()
                     || generation.segments >= thresholds.max_segments
-                    || wal_len >= thresholds.rotate_bytes =>
+                    || wal_len >= thresholds.rotate_at(generation.base_len) =>
             {
                 // Rotation: the checkpoint folds every frame, shipped or
                 // not, into the next base; nothing can be lost to the
                 // boundary. A failed rotation keeps the generation as it
                 // was, and `must_rotate` remembers that the file was
                 // checkpointed, so the retry lays the generation rather
-                // than reading an empty WAL as "nothing to ship".
+                // than reading an empty WAL as "nothing to ship". The
+                // retry cannot know what the folded frames dirtied, so
+                // it hashes everything (a generation with no salts).
                 let base = state.must_rotate.unwrap_or(generation.base + 1);
+                let prev = if state.must_rotate.is_some() {
+                    Generation {
+                        salts: None,
+                        ..generation.clone()
+                    }
+                } else {
+                    generation.clone()
+                };
                 state.must_rotate = Some(base);
-                self.start_generation(object_id, epoch, file, base, replication, may_release)
+                self.start_generation(object_id, epoch, file, base, Some(&prev), replication)
                     .await
             }
             Some(generation) => {
                 let base = generation.base;
-                let resumed = Generation {
-                    base: generation.base,
-                    segments: generation.segments,
-                    salts: generation.salts,
-                    offset: generation.offset,
-                };
+                let resumed = generation.clone();
                 match self
                     .segment_flight(object_id, epoch, file, resumed, replication, may_release)
                     .await
@@ -419,14 +517,15 @@ impl ObjectStore {
                             %error,
                             "segment flight failed; starting a generation"
                         );
+                        let prev = generation.clone();
                         state.must_rotate = Some(base + 1);
                         self.start_generation(
                             object_id,
                             epoch,
                             file,
                             base + 1,
+                            Some(&prev),
                             replication,
-                            may_release,
                         )
                         .await
                     }
@@ -452,8 +551,15 @@ impl ObjectStore {
         // sweep to the next rotation.
         let base_after = state.generation.as_ref().map(|g| g.base);
         if base_after != base_before
-            && let Some(base) = base_after
-            && let Err(error) = self.collect_garbage(object_id, (epoch, base)).await
+            && let Some(current) = state.generation.as_ref()
+            && let Err(error) = self
+                .collect_garbage(
+                    object_id,
+                    (epoch, current.base),
+                    &current.chunks,
+                    &chunks_before,
+                )
+                .await
         {
             actias_common::tracing::warn!(object_id, %error, "generation sweep failed");
         }
@@ -462,11 +568,22 @@ impl ObjectStore {
 
     /// Deletes everything under the object except the current
     /// generation, the newest one before it (the rollback margin while
-    /// the current one is young), and the manifest.
-    async fn collect_garbage(&self, object_id: &str, current: (u64, u64)) -> Result<(), String> {
+    /// the current one is young), the chunks either of them lists, and
+    /// the manifest. `current_chunks` is the list just written and
+    /// `previous_chunks` the one it replaced, so the margin's chunks are
+    /// known without a read; any other kept generation's list is read
+    /// from its `gen.json`.
+    async fn collect_garbage(
+        &self,
+        object_id: &str,
+        current: (u64, u64),
+        current_chunks: &[String],
+        previous_chunks: &[String],
+    ) -> Result<(), String> {
         let prefix = format!("objects/{object_id}/");
         let mut generations: std::collections::BTreeMap<(u64, u64), Vec<String>> =
             std::collections::BTreeMap::new();
+        let mut chunks: Vec<(String, String)> = Vec::new();
         let mut token: Option<String> = None;
         loop {
             let page = self
@@ -482,7 +599,9 @@ impl ObjectStore {
                 let Some(rest) = key.strip_prefix(&prefix) else {
                     continue;
                 };
-                if let Some(generation) = rest
+                if let Some(hash) = rest.strip_prefix("chunks/") {
+                    chunks.push((hash.to_owned(), key.to_owned()));
+                } else if let Some(generation) = rest
                     .split_once('/')
                     .and_then(|(dir, _)| parse_generation(dir))
                 {
@@ -500,78 +619,154 @@ impl ObjectStore {
         }
 
         generations.remove(&current);
-        if let Some(newest) = generations.keys().next_back().copied() {
+        let margin = generations.keys().next_back().copied();
+        if let Some(newest) = margin {
             generations.remove(&newest);
         }
         for key in generations.into_values().flatten() {
-            self.client
-                .delete_object()
-                .bucket(&self.bucket)
-                .key(key)
-                .send()
-                .await
-                .map_err(|e| e.into_service_error().to_string())?;
+            self.delete(key).await?;
+        }
+
+        // Every chunk the two kept generations list stays; the margin's
+        // list is the previous one when it was this residency's, and is
+        // read from the store when it was not.
+        let mut referenced: std::collections::HashSet<String> =
+            current_chunks.iter().cloned().collect();
+        if let Some((epoch, base)) = margin {
+            if !previous_chunks.is_empty() {
+                referenced.extend(previous_chunks.iter().cloned());
+            } else if let Ok(bytes) = self.get(Self::gen_key(object_id, epoch, base)).await
+                && let Ok(listed) = serde_json::from_slice::<GenerationRecord>(&bytes)
+            {
+                referenced.extend(listed.chunks);
+            } else {
+                // A margin whose list cannot be read keeps every chunk
+                // for now; the next rotation retires it and sweeps.
+                return Ok(());
+            }
+        }
+        for (hash, key) in chunks {
+            if !referenced.contains(&hash) {
+                self.delete(key).await?;
+            }
         }
         Ok(())
     }
 
-    /// Starts a segment generation: fold the WAL at a TRUNCATE
-    /// checkpoint, ship the main file as the base, and count frames
-    /// from zero. The raw copy of the main file is safe exactly here:
-    /// only the shipper checkpoints, and its flights never overlap, so
+    async fn delete(&self, key: String) -> Result<(), String> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| e.into_service_error().to_string())
+    }
+
+    /// Starts a generation: fold the WAL into the main file at a
+    /// checkpoint, ship the file as chunks, and count frames from zero.
+    /// With `prev` (the generation being rotated) only the chunks the
+    /// folded frames dirtied are hashed and shipped; every other entry
+    /// keeps its hash. Without it, or when the WAL restarted behind the
+    /// shipper so frames were folded that nobody walked, every chunk is
+    /// hashed. The raw read of the main file is safe exactly here: only
+    /// the shipper checkpoints, and its flights never overlap, so
     /// between checkpoints the main file does not change.
+    ///
+    /// The order is chunks, replicas, manifest: a chunk is inert until a
+    /// manifest lists it, so a zombie's chunk puts are garbage the next
+    /// sweep collects, and a replica laid before the manifest holds a
+    /// generation the manifest will name or the next flight relays.
     async fn start_generation(
         &self,
         object_id: &str,
         epoch: u64,
         file: &Path,
         base: u64,
+        prev: Option<&Generation>,
         replication: Option<&Replication>,
-        may_release: bool,
     ) -> Result<Generation, String> {
         let source = file.to_path_buf();
-        let (bytes, directory) =
-            tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, DirectoryRow), String> {
-                let mut storage = actias_worker_core::storage::SqliteStorage::open(&source)?;
-                storage.checkpoint()?;
-                let directory = read_directory_row(&mut storage);
-                let bytes = std::fs::read(&source).map_err(|e| e.to_string())?;
-                Ok((bytes, directory))
-            })
-            .await
-            .map_err(|e| e.to_string())??;
+        let prev_chunks = prev.map(|g| g.chunks.clone()).unwrap_or_default();
+        let prev_salts = prev.and_then(|g| g.salts);
+        let folded = tokio::task::spawn_blocking(move || -> Result<Folded, String> {
+            fold_and_hash(&source, &prev_chunks, prev_salts)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let Folded {
+            chunks,
+            dirty,
+            base_len,
+            directory,
+        } = folded;
+        let chunks = Arc::new(chunks);
+        let dirty = Arc::new(dirty);
 
-        // The replicas get the base before the store does; a generation
-        // start is the one flight where a replica needs more than an
-        // append.
-        // A generation start releases at the manifest, never on the
-        // quorum: a takeover asks replicas for the generation the
-        // manifest names, and a quorum holding a generation no manifest
-        // names yet is a quorum nobody can find.
-        let _ = may_release;
-        let bytes = Bytes::from(bytes);
+        // The store gets the dirty chunks first, in parallel.
+        {
+            use futures::StreamExt;
+            let indices: Vec<u32> = dirty.as_ref().clone();
+            let list = chunks.clone();
+            let puts = futures::stream::iter(indices)
+                .map(move |index| {
+                    let chunks = list.clone();
+                    async move {
+                        let bytes = read_chunk(file, index).await?;
+                        self.chunk_puts
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        self.chunk_bytes_put
+                            .fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                        self.put(Self::chunk_key(object_id, &chunks[index as usize]), bytes)
+                            .await
+                    }
+                })
+                .buffer_unordered(self.parallel);
+            futures::pin_mut!(puts);
+            while let Some(outcome) = puts.next().await {
+                outcome?;
+            }
+        }
+        let record = GenerationRecord {
+            base_len,
+            chunks: chunks.as_ref().clone(),
+        };
+        self.put(
+            Self::gen_key(object_id, epoch, base),
+            serde_json::to_vec(&record).map_err(|e| e.to_string())?,
+        )
+        .await?;
+        actias_worker_core::drill::fault("after-chunks");
+
+        // The replicas next: a generation start releases at the
+        // manifest, never on the quorum, since a takeover asks replicas
+        // for the generation the manifest names, and a quorum holding a
+        // generation no manifest names yet is a quorum nobody can find.
         if let Some(replication) = replication {
             replication
                 .send(
                     FanoutRequest {
                         epoch,
                         base,
-                        offset: 0,
-                        wal: Bytes::new(),
-                        base_bytes: Some(bytes.clone()),
-                        covered: 0,
                         quorum: replication.quorum,
+                        payload: Payload::Lay {
+                            from_list: prev.map(|g| list_hash(&g.chunks)).unwrap_or_default(),
+                            base_len,
+                            chunks: chunks.clone(),
+                            dirty: dirty.clone(),
+                            file: file.to_path_buf(),
+                        },
                     },
                     false,
                 )
                 .await?;
         }
-        self.put(Self::base_key(object_id, epoch, base), bytes.to_vec())
-            .await?;
+        actias_worker_core::drill::fault("after-lay");
         self.put_manifest(
             object_id,
             &Manifest {
-                version: 2,
+                version: MANIFEST_VERSION,
                 epoch,
                 shipped_at: actias_worker_core::extensions::objects::unix_now_ms(),
                 base,
@@ -580,6 +775,8 @@ impl ObjectStore {
                 directory,
                 replicas: replication.map(|r| r.node_ids.clone()).unwrap_or_default(),
                 wal_len: 0,
+                base_len,
+                chunks: chunks.as_ref().clone(),
             },
         )
         .await?;
@@ -588,6 +785,8 @@ impl ObjectStore {
             segments: 0,
             salts: None,
             offset: 0,
+            base_len,
+            chunks,
         })
     }
 
@@ -609,6 +808,8 @@ impl ObjectStore {
             segments,
             salts,
             offset,
+            base_len,
+            chunks,
         } = generation;
         let wal = match tokio::fs::read(wal_path(file)).await {
             Ok(bytes) => bytes,
@@ -623,6 +824,8 @@ impl ObjectStore {
                 segments,
                 salts,
                 offset,
+                base_len,
+                chunks,
             });
         }
 
@@ -639,6 +842,8 @@ impl ObjectStore {
                 segments,
                 salts: salts.or(Some(prefix.salts)),
                 offset,
+                base_len,
+                chunks,
             });
         }
 
@@ -669,11 +874,12 @@ impl ObjectStore {
                     FanoutRequest {
                         epoch,
                         base,
-                        offset: offset as u64,
-                        wal: Bytes::from(prefix_bytes),
-                        base_bytes: None,
-                        covered: offset as u64,
                         quorum: replication.quorum,
+                        payload: Payload::Append {
+                            offset: offset as u64,
+                            wal: Bytes::from(prefix_bytes),
+                            covered: offset as u64,
+                        },
                     },
                     may_release,
                 )
@@ -685,7 +891,7 @@ impl ObjectStore {
         self.put_manifest(
             object_id,
             &Manifest {
-                version: 2,
+                version: MANIFEST_VERSION,
                 epoch,
                 shipped_at: actias_worker_core::extensions::objects::unix_now_ms(),
                 base,
@@ -694,6 +900,8 @@ impl ObjectStore {
                 directory,
                 replicas: replication.map(|r| r.node_ids.clone()).unwrap_or_default(),
                 wal_len: prefix.len as u64,
+                base_len,
+                chunks: chunks.as_ref().clone(),
             },
         )
         .await?;
@@ -703,6 +911,8 @@ impl ObjectStore {
             segments: segments + 1,
             salts: Some(prefix.salts),
             offset: prefix.len,
+            base_len,
+            chunks,
         })
     }
 
@@ -717,7 +927,7 @@ impl ObjectStore {
         self.put_manifest(
             object_id,
             &Manifest {
-                version: 2,
+                version: MANIFEST_VERSION,
                 epoch,
                 shipped_at: actias_worker_core::extensions::objects::unix_now_ms(),
                 base: 0,
@@ -728,6 +938,8 @@ impl ObjectStore {
                 directory: None,
                 replicas: Vec::new(),
                 wal_len: 0,
+                base_len: 0,
+                chunks: Vec::new(),
             },
         )
         .await?;
@@ -793,12 +1005,7 @@ impl ObjectStore {
         let _ = tokio::fs::remove_file(wal_path(file)).await;
         let _ = tokio::fs::remove_file(shm_path(file)).await;
 
-        let base = self
-            .get(Self::base_key(object_id, manifest.epoch, manifest.base))
-            .await?;
-        tokio::fs::write(file, base)
-            .await
-            .map_err(|e| e.to_string())?;
+        self.lay_base(object_id, &manifest, file).await?;
 
         if manifest.segments > 0 {
             // Segments are consecutive slices of one WAL: concatenated
@@ -832,6 +1039,86 @@ impl ObjectStore {
         Ok(true)
     }
 
+    /// Lays the manifest's base into `file` from its chunks: the file is
+    /// sized first, then every chunk is fetched (the cache first, the
+    /// store on a miss) and written at its offset, `parallel` at a time.
+    /// Nothing holds the file whole.
+    async fn lay_base(
+        &self,
+        object_id: &str,
+        manifest: &Manifest,
+        file: &Path,
+    ) -> Result<(), String> {
+        use futures::StreamExt;
+        if manifest.chunks.len() != chunk_count(manifest.base_len) {
+            return Err(format!(
+                "the manifest lists {} chunks for {} bytes",
+                manifest.chunks.len(),
+                manifest.base_len
+            ));
+        }
+        let target = Arc::new(
+            tokio::task::spawn_blocking({
+                let file = file.to_path_buf();
+                let len = manifest.base_len;
+                move || -> Result<std::fs::File, String> {
+                    let target = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&file)
+                        .map_err(|e| e.to_string())?;
+                    target.set_len(len).map_err(|e| e.to_string())?;
+                    Ok(target)
+                }
+            })
+            .await
+            .map_err(|e| e.to_string())??,
+        );
+        let listed: Vec<(usize, String)> = manifest.chunks.iter().cloned().enumerate().collect();
+        let lays = futures::stream::iter(listed)
+            .map(move |(index, hash)| {
+                let target = target.clone();
+                async move {
+                    let bytes = self.chunk(object_id, &hash).await?;
+                    tokio::task::spawn_blocking(move || -> Result<(), String> {
+                        use std::os::unix::fs::FileExt;
+                        target
+                            .write_all_at(&bytes, index as u64 * CHUNK_BYTES)
+                            .map_err(|e| e.to_string())
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                }
+            })
+            .buffer_unordered(self.parallel);
+        futures::pin_mut!(lays);
+        while let Some(outcome) = lays.next().await {
+            outcome?;
+        }
+        Ok(())
+    }
+
+    /// One chunk by hash, through the content-addressed cache. A fetched
+    /// chunk is hashed before it is trusted or cached.
+    async fn chunk(&self, object_id: &str, hash: &str) -> Result<Arc<[u8]>, String> {
+        let key = Self::chunk_key(object_id, hash);
+        let expected = hash.to_owned();
+        self.files
+            .try_get_with(key.clone(), async {
+                self.chunk_gets
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let bytes = self.get(key.clone()).await?;
+                let actual = blake3::hash(&bytes).to_hex().to_string();
+                if actual != expected {
+                    return Err(format!("chunk {key} does not hash to its name"));
+                }
+                Ok::<_, String>(Arc::from(bytes))
+            })
+            .await
+            .map_err(|error: Arc<String>| error.to_string())
+    }
+
     pub async fn manifest(&self, object_id: &str) -> Result<Option<Manifest>, String> {
         let result = self
             .client
@@ -849,9 +1136,15 @@ impl ObjectStore {
                     .await
                     .map_err(|e| e.to_string())?
                     .into_bytes();
-                serde_json::from_slice(&bytes)
-                    .map(Some)
-                    .map_err(|e| e.to_string())
+                let manifest: Manifest =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                if manifest.version != MANIFEST_VERSION {
+                    return Err(format!(
+                        "manifest version {} for {object_id}; this store reads version {MANIFEST_VERSION} only, and a bucket from before chunked bases is wiped, not migrated",
+                        manifest.version
+                    ));
+                }
+                Ok(Some(manifest))
             }
             Err(error) => {
                 let service = error.into_service_error();
@@ -1214,6 +1507,120 @@ impl ObjectStore {
     }
 }
 
+/// What `gen.json` records for one generation: enough for garbage
+/// collection to know what the rollback margin references without the
+/// manifest.
+#[derive(Serialize, Deserialize)]
+struct GenerationRecord {
+    base_len: u64,
+    chunks: Vec<String>,
+}
+
+/// What a checkpoint left: the new chunk list, which entries changed,
+/// the file's length, and the directory row read on the way.
+struct Folded {
+    chunks: Vec<String>,
+    dirty: Vec<u32>,
+    base_len: u64,
+    directory: DirectoryRow,
+}
+
+/// Folds the WAL into the main file and hashes what changed. The dirty
+/// set comes from the frames themselves: every frame names its page,
+/// so the chunks the checkpoint is about to rewrite are known before it
+/// runs. A PASSIVE checkpoint does the bulk of the fold without the
+/// write lock; the TRUNCATE after it folds what landed meanwhile and
+/// empties the WAL. With no previous list, or a WAL from another
+/// incarnation than the previous generation's, every chunk is hashed.
+fn fold_and_hash(
+    file: &Path,
+    prev_chunks: &[String],
+    prev_salts: Option<(u32, u32)>,
+) -> Result<Folded, String> {
+    let wal = match std::fs::read(wal_path(file)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut everything = prev_chunks.is_empty();
+    let mut dirty: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    if !everything {
+        match actias_worker_core::wal::frames(&wal) {
+            Ok((prefix, frames)) => {
+                if prev_salts.is_some_and(|salts| salts != prefix.salts) {
+                    everything = true;
+                } else {
+                    let page_size = prefix.page_size as u64;
+                    for frame in frames {
+                        let at = (frame.page as u64 - 1) * page_size;
+                        dirty.insert((at / CHUNK_BYTES) as u32);
+                    }
+                }
+            }
+            Err(actias_worker_core::wal::WalError::NotAWal) if wal.len() < 32 => {}
+            Err(_) => everything = true,
+        }
+    }
+
+    let mut storage = actias_worker_core::storage::SqliteStorage::open(file)?;
+    storage.checkpoint_passive()?;
+    storage.checkpoint()?;
+    let directory = read_directory_row(&mut storage);
+    drop(storage);
+
+    let base_len = std::fs::metadata(file).map_err(|e| e.to_string())?.len();
+    let count = chunk_count(base_len);
+    let source = std::fs::File::open(file).map_err(|e| e.to_string())?;
+    let mut chunks = Vec::with_capacity(count);
+    let mut changed = Vec::new();
+    let mut buffer = vec![0u8; CHUNK_BYTES as usize];
+    for index in 0..count {
+        let known = prev_chunks
+            .get(index)
+            .filter(|_| !everything && !dirty.contains(&(index as u32)));
+        match known {
+            Some(hash) => chunks.push(hash.clone()),
+            None => {
+                use std::os::unix::fs::FileExt;
+                let at = index as u64 * CHUNK_BYTES;
+                let len = (base_len - at).min(CHUNK_BYTES) as usize;
+                source
+                    .read_exact_at(&mut buffer[..len], at)
+                    .map_err(|e| e.to_string())?;
+                chunks.push(blake3::hash(&buffer[..len]).to_hex().to_string());
+                changed.push(index as u32);
+            }
+        }
+    }
+    Ok(Folded {
+        chunks,
+        dirty: changed,
+        base_len,
+        directory,
+    })
+}
+
+/// One chunk of the main file, read off the caller's thread.
+pub(crate) async fn read_chunk(file: &Path, index: u32) -> Result<Vec<u8>, String> {
+    let file = file.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        use std::os::unix::fs::FileExt;
+        let source = std::fs::File::open(&file).map_err(|e| e.to_string())?;
+        let len = source.metadata().map_err(|e| e.to_string())?.len();
+        let at = index as u64 * CHUNK_BYTES;
+        if at >= len {
+            return Err(format!("chunk {index} is past the file"));
+        }
+        let mut bytes = vec![0u8; (len - at).min(CHUNK_BYTES) as usize];
+        source
+            .read_exact_at(&mut bytes, at)
+            .map_err(|e| e.to_string())?;
+        Ok(bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// A generation directory's name back as (epoch, base).
 fn parse_generation(dir: &str) -> Option<(u64, u64)> {
     let (epoch, base) = dir.strip_prefix('e')?.split_once("-b")?;
@@ -1239,42 +1646,125 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manifests_from_before_the_marker_read_as_live() {
-        let old: Manifest = serde_json::from_str(r#"{ "epoch": 5, "shipped_at": 1 }"#)
-            .expect("a bare manifest parses");
-        assert_eq!(old.version, 2);
-        assert!(!old.deleted, "absence of the field means live data");
-        assert!(
-            old.replicas.is_empty(),
-            "absence of the field means no replicas"
-        );
-
+    fn a_deletion_marker_outranks_the_epoch_it_fences() {
         let marker: Manifest = serde_json::from_str(
-            r#"{ "version": 2, "epoch": 6, "shipped_at": 2, "deleted": true }"#,
+            r#"{ "version": 3, "epoch": 6, "shipped_at": 2, "deleted": true }"#,
         )
         .expect("marker parses");
         assert!(marker.deleted);
-
+        assert!(marker.chunks.is_empty() && marker.base_len == 0);
+        let live: Manifest = serde_json::from_str(
+            r#"{ "version": 3, "epoch": 5, "shipped_at": 1, "base_len": 4096, "chunks": ["ab"] }"#,
+        )
+        .expect("a live manifest parses");
+        assert!(!live.deleted);
+        assert_eq!(live.chunks, vec!["ab".to_owned()]);
         // The fence a zombie's late ship must lose: a marker at the
         // bumped epoch beats the epoch the zombie still holds.
-        assert!(marker.epoch > old.epoch);
+        assert!(marker.epoch > live.epoch);
     }
 
-    /// The directory row is additive on the manifest, so it needs no
-    /// version ladder: every manifest written before the field reads
-    /// as carrying no row, which is exactly true of anything shipped
-    /// before its class had a directory.
     #[test]
     fn a_manifest_without_a_directory_row_still_reads() {
-        let old: Manifest = serde_json::from_str(r#"{ "epoch": 5, "shipped_at": 1 }"#)
-            .expect("a v1 manifest parses");
-        assert!(old.directory.is_none());
-
-        let v2: Manifest = serde_json::from_str(
-            r#"{ "version": 2, "epoch": 6, "shipped_at": 2, "base": 1, "segments": 3 }"#,
+        let v3: Manifest = serde_json::from_str(
+            r#"{ "version": 3, "epoch": 6, "shipped_at": 2, "base": 1, "segments": 3 }"#,
         )
-        .expect("a v2 manifest without the field parses");
-        assert!(v2.directory.is_none());
+        .expect("a manifest without the field parses");
+        assert!(v3.directory.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_dirty_set_is_the_frames_pages_and_nothing_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("o.db");
+        // A base of several chunks: rows of a fixed size until the file
+        // is past two chunks, checkpointed.
+        {
+            let mut storage =
+                actias_worker_core::storage::SqliteStorage::open(&file).expect("opens");
+            storage
+                .exec("CREATE TABLE t (k INTEGER PRIMARY KEY, v BLOB)", &[])
+                .expect("schema");
+            let blob = "x".repeat(4000);
+            for k in 0..600 {
+                storage
+                    .exec(
+                        "INSERT INTO t VALUES (?, ?)",
+                        &[serde_json::json!(k), serde_json::json!(blob)],
+                    )
+                    .expect("row");
+            }
+        }
+        // The object's own connection stays open across the flights, as
+        // the task's does for a residency.
+        let _resident = actias_worker_core::storage::SqliteStorage::open(&file).expect("opens");
+        let first = fold_and_hash(&file, &[], None).expect("folds");
+        assert!(first.chunks.len() >= 3, "the base spans chunks");
+        assert_eq!(first.dirty.len(), first.chunks.len(), "everything hashed");
+        assert_eq!(
+            first.base_len,
+            std::fs::metadata(&file).expect("meta").len()
+        );
+
+        // One row in the first table page rewritten: its chunk is dirty,
+        // the rest keep their hashes.
+        {
+            let mut storage =
+                actias_worker_core::storage::SqliteStorage::open(&file).expect("opens");
+            storage
+                .exec(
+                    "UPDATE t SET v = ? WHERE k = 1",
+                    &[serde_json::json!("y".repeat(4000))],
+                )
+                .expect("update");
+        }
+        let salts = {
+            let wal = std::fs::read(wal_path(&file)).expect("wal");
+            actias_worker_core::wal::committed_prefix(&wal)
+                .expect("prefix")
+                .salts
+        };
+        let second = fold_and_hash(&file, &first.chunks, Some(salts)).expect("folds");
+        assert_eq!(second.chunks.len(), first.chunks.len());
+        assert!(!second.dirty.is_empty() && second.dirty.len() < first.chunks.len());
+        for (index, hash) in second.chunks.iter().enumerate() {
+            if second.dirty.contains(&(index as u32)) {
+                assert_ne!(hash, &first.chunks[index], "a dirty chunk rehashed");
+            } else {
+                assert_eq!(hash, &first.chunks[index], "a clean chunk kept its hash");
+            }
+        }
+        // The dirty hashes are the file's actual content.
+        for index in &second.dirty {
+            let bytes = read_chunk(&file, *index).await.expect("chunk");
+            assert_eq!(
+                blake3::hash(&bytes).to_hex().to_string(),
+                second.chunks[*index as usize]
+            );
+        }
+
+        // A WAL from another incarnation than the one the list was
+        // built under hashes everything again.
+        {
+            let mut storage =
+                actias_worker_core::storage::SqliteStorage::open(&file).expect("opens");
+            storage
+                .exec(
+                    "UPDATE t SET v = ? WHERE k = 2",
+                    &[serde_json::json!("z".repeat(4000))],
+                )
+                .expect("update");
+        }
+        let third = fold_and_hash(&file, &second.chunks, Some((1, 2))).expect("folds");
+        assert_eq!(third.dirty.len(), third.chunks.len());
+        // What it hashed is what a fresh hash of the folded file says.
+        let fresh = fold_and_hash(&file, &[], None).expect("folds");
+        assert_eq!(list_hash(&third.chunks), list_hash(&fresh.chunks));
+        assert_ne!(
+            list_hash(&third.chunks),
+            list_hash(&second.chunks),
+            "the update changed the file"
+        );
     }
 
     /// The row survives the manifest round trip with its fields, its
@@ -1285,7 +1775,7 @@ mod tests {
         use actias_worker_core::directory::row::{Pair, RowSnapshot};
 
         let manifest = Manifest {
-            version: 2,
+            version: 3,
             epoch: 7,
             shipped_at: 3,
             base: 0,
@@ -1293,6 +1783,8 @@ mod tests {
             deleted: false,
             replicas: vec!["n1".to_owned()],
             wal_len: 0,
+            base_len: 0,
+            chunks: Vec::new(),
             directory: Some(RowSnapshot {
                 rev: 42,
                 dver: 0,

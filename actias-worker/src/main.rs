@@ -135,6 +135,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ),
         config.s3_bucket.clone(),
         config.directory_cache_bytes,
+        config.object_store_parallel,
     ));
     let directory_gauges: std::sync::Arc<directory::gauges::DirectoryGauges> =
         std::sync::Arc::default();
@@ -202,6 +203,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ),
             config.s3_bucket,
             config.directory_cache_bytes,
+            config.object_store_parallel,
         )),
         egress,
         redis: Some(redis),
@@ -219,6 +221,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         object_db_max_bytes: config.object_db_max_bytes,
         ship_thresholds: objects::store::ShipThresholds {
             rotate_bytes: config.object_wal_rotate_bytes,
+            rotate_fraction: config.object_wal_rotate_fraction,
             max_segments: config.object_max_segments,
         },
         ack_gate: std::time::Duration::from_millis(config.object_ack_gate_ms),
