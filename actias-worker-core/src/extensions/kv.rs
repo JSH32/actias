@@ -143,6 +143,15 @@ impl UserData for KvNamespace {
             |lua, mut this, (key, value): (String, mlua::Value)| async move {
                 crate::platform::workflow::assert_effects_allowed(&lua)?;
                 crate::runtime::ActiasRuntime::assert_writes_allowed(&lua, "kv set")?;
+                // A request that deferred its object writes settles them
+                // before a kv write asserts a state they may not have
+                // reached yet.
+                let gates = lua
+                    .app_data_ref::<std::sync::Arc<crate::objects::PendingGates>>()
+                    .map(|gates| gates.clone());
+                if let Some(gates) = gates {
+                    gates.settle().await.map_err(mlua::Error::runtime)?;
+                }
                 match value.into_service_value()? {
                     Some((val_type, val)) => {
                         let request = SetPairsRequest {
@@ -187,6 +196,15 @@ impl UserData for KvNamespace {
             |lua, mut this, values: mlua::Table| async move {
                 crate::platform::workflow::assert_effects_allowed(&lua)?;
                 crate::runtime::ActiasRuntime::assert_writes_allowed(&lua, "kv set_batch")?;
+                // A request that deferred its object writes settles them
+                // before a kv write asserts a state they may not have
+                // reached yet.
+                let gates = lua
+                    .app_data_ref::<std::sync::Arc<crate::objects::PendingGates>>()
+                    .map(|gates| gates.clone());
+                if let Some(gates) = gates {
+                    gates.settle().await.map_err(mlua::Error::runtime)?;
+                }
                 let mut to_set = vec![];
                 let mut to_delete = vec![];
 
@@ -285,6 +303,15 @@ impl UserData for KvNamespace {
             |lua, mut this, keys: mlua::MultiValue| async move {
                 crate::platform::workflow::assert_effects_allowed(&lua)?;
                 crate::runtime::ActiasRuntime::assert_writes_allowed(&lua, "kv delete")?;
+                // A request that deferred its object writes settles them
+                // before a kv write asserts a state they may not have
+                // reached yet.
+                let gates = lua
+                    .app_data_ref::<std::sync::Arc<crate::objects::PendingGates>>()
+                    .map(|gates| gates.clone());
+                if let Some(gates) = gates {
+                    gates.settle().await.map_err(mlua::Error::runtime)?;
+                }
                 let keys: Vec<PairRequest> = keys
                     .into_vec()
                     .into_iter()

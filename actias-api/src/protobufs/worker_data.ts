@@ -106,6 +106,104 @@ export namespace worker_data {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<DirectoryRebuilt>;
+        // Tail replication. The lease holder appends its committed WAL
+    // prefix to K replica nodes as it ships it, and a written call is
+    // answered once Q of them have it durably; the blob store keeps
+    // shipping behind the answer. A replica appends bytes at an offset
+    // and checks a fence; it never interprets them. A duplicate at an
+    // offset it already holds is acked, a gap is refused with the
+    // length it does hold so the owner resends from there, and an
+    // epoch below its fence is refused outright.
+        appendWal(
+            data: WalAppend,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<WalAppended>;
+        // What a replica holds for one generation, raising its fence to
+    // &#x60;fence_to&#x60; first: a takeover at epoch e+1 asks every replica the
+    // manifest names, and once Q have answered, an owner at e can never
+    // assemble Q acks again.
+        replicaState(
+            data: ReplicaQuery,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ReplicaInfo>;
+        // The replica&#x27;s copy, base then WAL, in chunks: what a takeover lays
+    // down instead of restoring from the store.
+        fetchReplica(
+            data: ReplicaQuery,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ReplicaChunk>;
+        // What the owner has answered to callers so far for one object: the
+    // generation and the WAL length its last released flight reached. A
+    // replica serves a read from its own copy only once the copy has
+    // reached this, so a read on any node sees every write a caller was
+    // told succeeded, without any token crossing requests.
+        watermark(
+            data: WatermarkQuery,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<WatermarkInfo>;
+    }
+    export interface WatermarkQuery {
+        objectId?: string;
+    }
+    export interface WatermarkInfo {
+        // False when this node does not hold the object resident.
+        held?: boolean;
+        // The residency&#x27;s lease epoch, whether or not a flight has released.
+        epoch?: number;
+        base?: number;
+        // WAL bytes the owner&#x27;s last released flight reached.
+        length?: number;
+        // False until the residency&#x27;s first flight has released: no copy
+    // anywhere can be vouched for before that, and a reader forwards.
+        released?: boolean;
+    }
+    export interface WalAppend {
+        objectId?: string;
+        // The owner&#x27;s lease epoch and the generation&#x27;s base index; together
+    // they name the WAL these bytes belong to.
+        epoch?: number;
+        base?: number;
+        // Byte offset in the generation&#x27;s WAL these bytes start at.
+        offset?: number;
+        bytes?: Uint8Array;
+        // The generation&#x27;s base file, sent with offset 0 when a generation
+    // starts, and again when a replica answers that it lacks it.
+        baseBytes?: Uint8Array;
+        // How far the store&#x27;s manifest covers this WAL; informational, for
+    // eviction.
+        covered?: number;
+    }
+    export interface WalAppended {
+        // The WAL length the replica holds after the call.
+        length?: number;
+        // True when the bytes were appended (or already held). False with
+    // &#x60;refusal&#x60; set: a gap (resend from &#x60;length&#x60;), a missing generation
+    // (resend with the base), or a fence.
+        applied?: boolean;
+        refusal?: string;
+    }
+    export interface ReplicaQuery {
+        objectId?: string;
+        epoch?: number;
+        base?: number;
+        // Raise the replica&#x27;s fence to this epoch before answering; 0
+    // leaves it.
+        fenceTo?: number;
+    }
+    export interface ReplicaInfo {
+        // Whether the replica holds this generation at all.
+        held?: boolean;
+        length?: number;
+        fence?: number;
+    }
+    export interface ReplicaChunk {
+        // Base bytes come first, then WAL bytes; a chunk carries one kind.
+        base?: Uint8Array;
+        wal?: Uint8Array;
     }
     export interface DirectoryRebuild {
         scopeId?: string;

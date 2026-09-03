@@ -70,7 +70,7 @@ async fn live_nodes_cached(state: &AppState) -> Arc<Vec<String>> {
 
 /// Resolves a node's data-plane address the way object forwarding
 /// does: the cache, then the registry, remembered.
-async fn address_of(state: &AppState, node_id: &str) -> Result<String, String> {
+pub(crate) async fn address_of(state: &AppState, node_id: &str) -> Result<String, String> {
     if let Some(address) = state.node_addrs.get(node_id).await {
         return Ok(address);
     }

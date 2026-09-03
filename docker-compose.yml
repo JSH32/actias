@@ -150,6 +150,8 @@ services:
       dockerfile: ./docker/Dockerfile.rust
       args:
         CRATE_NAME: actias-worker
+        # Crash points for scripts/crash-drill.sh; compose only.
+        CARGO_FLAGS: --features actias-worker/drill
     environment:
       # Observability, pluggable: empty ACTIAS_OTEL unplugs it.
       - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
@@ -186,8 +188,19 @@ services:
       - CONNECTION_HIBERNATE_SECS=${CONNECTION_HIBERNATE_SECS:-300}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
       - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
-      # WAL shipping sizes: whole-file cutoff, generation rotation.
-      - OBJECT_SHIP_WHOLE_MAX_KB=${OBJECT_SHIP_WHOLE_MAX_KB:-256}
+      # Warm vms per revision, built ahead of requests and objects.
+      - OBJECT_VM_POOL=${OBJECT_VM_POOL:-4}
+      # Tail replication: replicas per object, acks that answer a write
+      # (0 keeps the store as the release, fan-out in shadow), how a
+      # replica makes an append durable, and the per-ack budget.
+      - OBJECT_REPLICAS=${OBJECT_REPLICAS:-3}
+      - OBJECT_QUORUM=${OBJECT_QUORUM:-2}
+      - OBJECT_REPLICA_SYNC=${OBJECT_REPLICA_SYNC:-fsync}
+      - OBJECT_REPLICA_ACK_MS=${OBJECT_REPLICA_ACK_MS:-2000}
+      - OBJECT_REPLICA_IDLE_SECS=${OBJECT_REPLICA_IDLE_SECS:-1800}
+      # A crash point for scripts/crash-drill.sh; empty everywhere else.
+      - ACTIAS_DRILL_FAULT=${ACTIAS_DRILL_FAULT:-}
+      # WAL shipping: generation rotation sizes.
       - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
       - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
       # Flights this node may have in the air at once (0 unbounded), and
@@ -225,6 +238,8 @@ services:
       dockerfile: ./docker/Dockerfile.rust
       args:
         CRATE_NAME: actias-worker
+        # Crash points for scripts/crash-drill.sh; compose only.
+        CARGO_FLAGS: --features actias-worker/drill
     environment:
       # Observability, pluggable: empty ACTIAS_OTEL unplugs it.
       - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
@@ -254,8 +269,19 @@ services:
       - CONNECTION_HIBERNATE_SECS=${CONNECTION_HIBERNATE_SECS:-300}
       - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
       - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
-      # WAL shipping sizes: whole-file cutoff, generation rotation.
-      - OBJECT_SHIP_WHOLE_MAX_KB=${OBJECT_SHIP_WHOLE_MAX_KB:-256}
+      # Warm vms per revision, built ahead of requests and objects.
+      - OBJECT_VM_POOL=${OBJECT_VM_POOL:-4}
+      # Tail replication: replicas per object, acks that answer a write
+      # (0 keeps the store as the release, fan-out in shadow), how a
+      # replica makes an append durable, and the per-ack budget.
+      - OBJECT_REPLICAS=${OBJECT_REPLICAS:-3}
+      - OBJECT_QUORUM=${OBJECT_QUORUM:-2}
+      - OBJECT_REPLICA_SYNC=${OBJECT_REPLICA_SYNC:-fsync}
+      - OBJECT_REPLICA_ACK_MS=${OBJECT_REPLICA_ACK_MS:-2000}
+      - OBJECT_REPLICA_IDLE_SECS=${OBJECT_REPLICA_IDLE_SECS:-1800}
+      # A crash point for scripts/crash-drill.sh; empty everywhere else.
+      - ACTIAS_DRILL_FAULT=${ACTIAS_DRILL_FAULT:-}
+      # WAL shipping: generation rotation sizes.
       - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
       - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
       # Flights this node may have in the air at once (0 unbounded), and

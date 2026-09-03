@@ -140,6 +140,10 @@ pub struct ObjectRouting {
     state: AppState,
     /// The caller context: whose project and script derive identities.
     pub(crate) prepared: Arc<PreparedRevision>,
+    /// Set for a request vm: local object writes answer at commit and
+    /// their gates collect here, to be settled once before the response
+    /// leaves. Object and connection vms hold every answer as before.
+    deferred: Option<Arc<actias_worker_core::objects::PendingGates>>,
 }
 
 /// Why an object could not be made resident here.
@@ -203,6 +207,21 @@ impl ObjectRouting {
         Arc::new(Self {
             state: state.clone(),
             prepared,
+            deferred: None,
+        })
+    }
+
+    /// Routing for a request vm, which settles its writes' gates itself
+    /// (see [`actias_worker_core::objects::PendingGates`]).
+    pub fn deferring(
+        state: &AppState,
+        prepared: Arc<PreparedRevision>,
+        gates: Arc<actias_worker_core::objects::PendingGates>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            state: state.clone(),
+            prepared,
+            deferred: Some(gates),
         })
     }
 
@@ -345,6 +364,16 @@ impl ObjectRouting {
                     return Err(ResolveError::Elsewhere(holder));
                 }
             }
+            // The placement rung: a cold object whose last replicas
+            // include a live node comes up there, on its own bytes, one
+            // hop away. Only on the first pass, so a forwarded call
+            // claims where it lands and two nodes never trade it.
+            if use_cache
+                && self.state.replica_quorum > 0
+                && let Some(replica) = self.replica_home(&object_id).await
+            {
+                return Err(ResolveError::Elsewhere(replica));
+            }
             let lease = self
                 .claim_lease(key, &owner)
                 .await
@@ -368,6 +397,35 @@ impl ObjectRouting {
             .map_err(ResolveError::Other)
     }
 
+    /// A live node other than this one that the object's manifest names
+    /// as a replica, when the object is not held anywhere; [`None`]
+    /// means claim here.
+    async fn replica_home(&self, object_id: &str) -> Option<String> {
+        let manifest = self.state.object_store.manifest(object_id).await.ok()??;
+        if manifest.replicas.is_empty() || manifest.deleted {
+            return None;
+        }
+        let own = self
+            .state
+            .node_identity
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if manifest
+            .replicas
+            .iter()
+            .any(|node| own.as_deref() == Some(node.as_str()))
+        {
+            // Our own bytes: claim here.
+            return None;
+        }
+        let live = crate::directory::rebuild::live_nodes(&self.state).await;
+        manifest
+            .replicas
+            .into_iter()
+            .find(|node| live.contains(node))
+    }
+
     /// The spawn itself, lease already settled (or re-settled by the
     /// factory for the resident-revision-bump edge, where it is our own).
     async fn resolve_local(
@@ -385,7 +443,8 @@ impl ObjectRouting {
         let identity = key.clone();
         let marker = owner.revision_id.clone();
 
-        self.state
+        let handle = self
+            .state
             .objects
             .get_or_spawn(&key.to_string(), &marker, || async move {
                 // A recently refused name answers from the cache: junk
@@ -416,8 +475,8 @@ impl ObjectRouting {
                 // The sidecar records the epoch of this node's last
                 // residency; a store manifest with a newer epoch wins.
                 let resident_epoch = read_resident_epoch(&file);
-                let manifest_epoch = match routing.state.object_store.manifest(&object_id).await {
-                    Ok(manifest) => manifest.map(|m| m.epoch),
+                let manifest = match routing.state.object_store.manifest(&object_id).await {
+                    Ok(manifest) => manifest,
                     Err(error) if file.exists() => {
                         // Store unreachable but the file is here: serving
                         // it keeps today's availability posture; the next
@@ -435,17 +494,48 @@ impl ObjectRouting {
                         )));
                     }
                 };
+                let manifest_epoch = manifest.as_ref().map(|m| m.epoch);
                 if manifest_epoch.is_some_and(|shipped| shipped > resident_epoch) || !file.exists()
                 {
-                    match routing.state.object_store.restore(&object_id, &file).await {
-                        Ok(true) => {
-                            actias_common::tracing::info!(object_id, "object restored from store")
+                    // The replicas named by the manifest hold the tail the
+                    // store may not have yet; a quorum of them is the copy
+                    // to take over from, and the store is the fallback.
+                    let mut laid = false;
+                    if let Some(manifest) = manifest.as_ref()
+                        && !manifest.deleted
+                    {
+                        match crate::objects::takeover::from_replicas(
+                            &routing.state,
+                            &object_id,
+                            manifest,
+                            lease.epoch,
+                            &file,
+                        )
+                        .await
+                        {
+                            Ok(true) => laid = true,
+                            Ok(false) => {}
+                            Err(error) => actias_common::tracing::warn!(
+                                object_id,
+                                %error,
+                                "takeover from a replica failed; restoring from the store"
+                            ),
                         }
-                        Ok(false) => {}
-                        Err(error) => {
-                            return Err(mlua::Error::RuntimeError(format!(
-                                "The object's snapshot could not be restored: {error}"
-                            )));
+                    }
+                    if !laid {
+                        match routing.state.object_store.restore(&object_id, &file).await {
+                            Ok(true) => {
+                                actias_common::tracing::info!(
+                                    object_id,
+                                    "object restored from store"
+                                )
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                return Err(mlua::Error::RuntimeError(format!(
+                                    "The object's snapshot could not be restored: {error}"
+                                )));
+                            }
                         }
                     }
                 }
@@ -502,15 +592,40 @@ impl ObjectRouting {
                     runtime.set_app_data(shared);
                     runtime
                 } else {
-                    ActiasRuntime::new(
-                        prepared.clone(),
-                        routing.state.clients.kv.clone(),
-                        routing.state.egress.clone(),
-                        logs,
-                        routing.state.secret_client.clone(),
-                        None,
-                    )
-                    .await?
+                    // A warm vm of this revision when the pool has one:
+                    // an object's first call no longer pays for running
+                    // the whole entry point.
+                    let build_state = routing.state.clone();
+                    let build_prepared = prepared.clone();
+                    let build: crate::vm_pool::VmBuild = Arc::new(move || {
+                        let state = build_state.clone();
+                        let prepared = build_prepared.clone();
+                        let logs = logs.clone();
+                        Box::pin(async move {
+                            ActiasRuntime::new(
+                                prepared,
+                                state.clients.kv.clone(),
+                                state.egress.clone(),
+                                logs,
+                                state.secret_client.clone(),
+                                None,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())
+                        })
+                    });
+                    routing
+                        .state
+                        .vm_pool
+                        .take(
+                            crate::vm_pool::VmKey {
+                                revision_id: prepared.revision_id.clone(),
+                                flavor: crate::vm_pool::Flavor::Object,
+                            },
+                            build,
+                        )
+                        .await
+                        .map_err(mlua::Error::RuntimeError)?
                 };
                 routing.state.guest_limits.apply(&runtime);
                 // The admission gate, fresh identities only: existing
@@ -626,9 +741,31 @@ impl ObjectRouting {
                 let ship_file = file.clone();
                 let epoch = lease.epoch;
                 let ship_state = Arc::new(tokio::sync::Mutex::new(
-                    crate::objects::store::ShipState::default(),
+                    crate::objects::store::ShipState::for_epoch(lease.epoch),
                 ));
                 let thresholds = routing.state.ship_thresholds;
+                let membership = routing.state.membership_generation.clone();
+                // The residency's replica set and the fan-out to it. With
+                // no other live node there is nothing to fan out to and
+                // the store's manifest stays the release, as it always
+                // was on a single node.
+                let replicas =
+                    crate::objects::fanout::choose_replicas(&routing.state, &object_id).await;
+                let quorum = if replicas.is_empty() {
+                    0
+                } else {
+                    routing.state.replica_quorum.min(replicas.len())
+                };
+                let fanout = (!replicas.is_empty()).then(|| {
+                    crate::objects::fanout::fanout_for(
+                        routing.state.clone(),
+                        object_id.clone(),
+                        file.clone(),
+                        replicas.clone(),
+                    )
+                });
+                let replica_gauges = routing.state.replica_store.gauges.clone();
+                let fanout_short = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 // Settle-fed, not commit-fed: the row is offered to the
                 // syncer only after the flight carrying it wrote the
                 // object's manifest, so the index describes the durable
@@ -646,7 +783,11 @@ impl ObjectRouting {
                 // runs), so the version stamped on the row and the one
                 // riding the delta always name the same declaration.
                 let ship_declaration = owner.directory_spec(identity.class());
-                let ship_fn: crate::objects::shipper::ShipFn = Arc::new(move || {
+                let ship_state_for_watermark = ship_state
+                    .try_lock()
+                    .map(|state| state.watermark())
+                    .unwrap_or_default();
+                let ship_fn: crate::objects::shipper::ShipFn = Arc::new(move |release| {
                     let store = ship_store.clone();
                     let object_id = ship_id.clone();
                     let file = ship_file.clone();
@@ -655,10 +796,41 @@ impl ObjectRouting {
                     let class = ship_class.clone();
                     let name = ship_name.clone();
                     let declaration = ship_declaration.clone();
+                    let membership = membership.load(std::sync::atomic::Ordering::SeqCst);
+                    let replication =
+                        fanout
+                            .clone()
+                            .map(|fanout| crate::objects::store::Replication {
+                                fanout,
+                                node_ids: replicas.clone(),
+                                quorum,
+                                release: std::sync::Mutex::new(Some(release)),
+                                gauges: replica_gauges.clone(),
+                                short: fanout_short.clone(),
+                            });
+                    let gauges = replica_gauges.clone();
                     Box::pin(async move {
                         store
-                            .ship(&object_id, epoch, &file, &state, thresholds)
+                            .ship(
+                                &object_id,
+                                epoch,
+                                &file,
+                                &state,
+                                thresholds,
+                                membership,
+                                replication.as_ref(),
+                            )
                             .await?;
+                        // A flight the quorum did not release is released
+                        // here, at the manifest, as before.
+                        if replication
+                            .as_ref()
+                            .is_none_or(|r| r.release.lock().map(|r| r.is_some()).unwrap_or(true))
+                        {
+                            gauges
+                                .store_releases
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
                         // The manifest landed, so whatever row it
                         // carries is durable and may be indexed. A
                         // class with no directory carries none, and
@@ -683,6 +855,12 @@ impl ObjectRouting {
                     .lock()
                     .expect("no poisoned lock")
                     .insert(object_id.clone(), ship.clone());
+                routing
+                    .state
+                    .ship_states
+                    .lock()
+                    .expect("no poisoned lock")
+                    .insert(object_id.clone(), ship_state_for_watermark);
                 let ack_gate = routing.state.ack_gate;
                 let after_write: actias_worker_core::objects::AfterWrite = Arc::new(move || {
                     // Marking here rather than inside the future is what
@@ -767,6 +945,11 @@ impl ObjectRouting {
                             .expect("no poisoned lock")
                             .remove(&object_id);
                         state
+                            .ship_states
+                            .lock()
+                            .expect("no poisoned lock")
+                            .remove(&object_id);
+                        state
                             .registry
                             .clone()
                             .purge_instance(
@@ -823,7 +1006,51 @@ impl ObjectRouting {
                 ))
             })
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // The residency's registries let go with its task: once the
+        // mailbox has closed and the last flight has settled, the shipper
+        // and its state are forgotten, so a node whose objects come and
+        // go holds nothing for the ones that went. Bounded, so a flight
+        // that never settles cannot pin an entry forever.
+        {
+            let registries = self.state.clone();
+            let registry_id = key.object_id();
+            let watched = handle.clone();
+            tokio::spawn(async move {
+                watched.ended().await;
+                let shipper = registries
+                    .shippers
+                    .lock()
+                    .expect("no poisoned lock")
+                    .get(&registry_id)
+                    .cloned();
+                if let Some(shipper) = shipper {
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+                    while !shipper.settled() && tokio::time::Instant::now() < deadline {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    let current = registries
+                        .shippers
+                        .lock()
+                        .expect("no poisoned lock")
+                        .get(&registry_id)
+                        .is_some_and(|s| Arc::ptr_eq(s, &shipper));
+                    if current {
+                        registries
+                            .shippers
+                            .lock()
+                            .expect("no poisoned lock")
+                            .remove(&registry_id);
+                        registries
+                            .ship_states
+                            .lock()
+                            .expect("no poisoned lock")
+                            .remove(&registry_id);
+                    }
+                }
+            });
+        }
+        Ok(handle)
     }
 
     async fn route(self: Arc<Self>, mut target: ObjectTarget) -> Result<serde_json::Value, String> {
@@ -840,10 +1067,103 @@ impl ObjectRouting {
             .map_err(RouteError::into_message)
     }
 
-    /// The replica file for one object, [`None`] when nothing was ever
-    /// shipped: the caller falls through to the owner.
-    async fn fresh_replica(&self, object_id: &str) -> Result<Option<std::path::PathBuf>, String> {
-        fresh_replica_file(&self.state, object_id).await
+    /// The node holding the object's lease and the lease's epoch, when
+    /// the holder is another node; [`None`] when nobody holds it or this
+    /// node does. Read from the registry every time: a read served from
+    /// a copy is only as correct as the lease it was checked against,
+    /// and the holder cache is allowed to be a residency behind.
+    async fn live_holder(&self, object_id: &str) -> Option<(String, u64)> {
+        let own = self
+            .state
+            .node_identity
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone());
+        let lease = self
+            .state
+            .registry
+            .clone()
+            .get_lease(actias_worker_core::proto::node_registry::GetLeaseRequest {
+                object_id: object_id.to_owned(),
+            })
+            .await
+            .ok()?
+            .into_inner();
+        self.state
+            .holders
+            .insert(object_id.to_owned(), lease.node_id.clone())
+            .await;
+        (own.as_deref() != Some(lease.node_id.as_str())).then_some((lease.node_id, lease.epoch))
+    }
+
+    /// A read from this node's replica copy, once the owner has vouched
+    /// for it: the owner's watermark names the generation and WAL length
+    /// its callers have been told is durable, and the copy is served only
+    /// after reaching it. [`None`] when this node holds no copy, the
+    /// owner did not answer, or the copy did not catch up in time; the
+    /// caller forwards the read to the owner instead.
+    async fn confirmed_replica_read(
+        &self,
+        holder: &str,
+        lease_epoch: u64,
+        object_id: &str,
+        target: &ObjectTarget,
+    ) -> Option<serde_json::Value> {
+        let (epoch, base, _) = self.state.replica_store.held_generation(object_id).await?;
+        let address = crate::directory::route::address_of(&self.state, holder)
+            .await
+            .ok()?;
+        let mut client = crate::data_plane::peer_client(&self.state, &address)
+            .await
+            .ok()?;
+        let watermark = tokio::time::timeout(
+            self.state.replica_ack,
+            client.watermark(crate::data_plane::authed(
+                &self.state.internal_token,
+                actias_worker_core::proto::worker_data::WatermarkQuery {
+                    object_id: object_id.to_owned(),
+                },
+            )),
+        )
+        .await
+        .ok()?
+        .ok()?
+        .into_inner();
+        // The owner must hold the object under the lease the registry
+        // names, must have released a flight in this residency, and the
+        // copy must be of that flight's generation: an owner that lost
+        // the lease without knowing, or a copy from an older residency,
+        // vouches for nothing.
+        if !watermark.held
+            || !watermark.released
+            || watermark.epoch != lease_epoch
+            || (watermark.epoch, watermark.base) != (epoch, base)
+        {
+            return None;
+        }
+        let already = self
+            .state
+            .replica_store
+            .held_generation(object_id)
+            .await
+            .is_some_and(|(_, _, len)| len >= watermark.length);
+        if !already {
+            let reached = self
+                .state
+                .replica_store
+                .wait_for(object_id, epoch, base, watermark.length, REPLICA_READ_WAIT)
+                .await;
+            if !reached {
+                return None;
+            }
+            self.state
+                .replica_store
+                .gauges
+                .reads_waited
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let copy = self.state.replica_store.read_copy(object_id).await.ok()??;
+        read_bypass(&copy, target).await.ok()?
     }
 
     /// One hop to the lease holder's data plane; its answer is the answer.
@@ -1024,8 +1344,24 @@ impl ObjectRouting {
         // story: reads never need the home. A database nothing has shipped
         // yet falls through, so first touch still creates and migrates it
         // through the owner.
+        // A request reads its own writes: an object it already called
+        // through the mailbox is read there too, never from a copy.
+        // A forwarded call arrives with its chain already extended through
+        // this target; extending again would refuse it as its own cycle.
+        let chain = if target.chain.last().map(String::as_str) == Some(key_string.as_str()) {
+            target.chain.clone()
+        } else {
+            actias_worker_core::objects::extend_call_chain(&target.chain, &key_string)
+                .map_err(RouteError::Failed)?
+        };
+
+        let called_it = self
+            .deferred
+            .as_ref()
+            .is_some_and(|gates| gates.called(&key_string));
         if target.class == actias_worker_core::extensions::objects::DATABASE_CLASS
             && matches!(target.method.as_str(), "read" | "read_one")
+            && !called_it
         {
             let object_id = key.object_id();
             let file = self.state.object_data_dir.join(key.db_file_name());
@@ -1037,30 +1373,49 @@ impl ObjectRouting {
                 {
                     return Ok(result);
                 }
-            } else if let Some(replica) = self
-                .fresh_replica(&object_id)
-                .await
-                .map_err(RouteError::Failed)?
-                && let Some(result) = read_bypass(&replica, &target)
-                    .await
-                    .map_err(RouteError::Failed)?
+            } else if allow_forward
+                && let Some((holder, lease_epoch)) = self.live_holder(&object_id).await
             {
-                self.state
-                    .metrics
-                    .replica_reads
+                // The owner lives elsewhere. This node's own copy serves
+                // the read once the owner has vouched for it: the
+                // watermark is what callers were told is durable, and the
+                // append carrying it is already on its way here. Otherwise
+                // the owner answers the read itself, from its live file.
+                let gauges = self.state.replica_store.gauges.clone();
+                if let Some(result) = self
+                    .confirmed_replica_read(&holder, lease_epoch, &object_id, &target)
+                    .await
+                {
+                    gauges
+                        .reads_confirmed
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.state
+                        .metrics
+                        .replica_reads
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(result);
+                }
+                gauges
+                    .reads_forwarded
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return Ok(result);
+                match self.forward(&holder, &key, &target, chain.clone()).await {
+                    Ok(value) => return Ok(value),
+                    Err(ForwardError::Call(error)) => return Err(RouteError::Failed(error)),
+                    // A stale home: the object is cold or moved, and the
+                    // ordinary path below wakes it where it belongs.
+                    Err(ForwardError::StaleHome(_)) => {}
+                }
             }
+            // Cold, or held here without a file yet: the ordinary path
+            // wakes the object and reads its live file.
         }
 
-        // A forwarded call arrives with its chain already extended through
-        // this target; extending again would refuse it as its own cycle.
-        let chain = if target.chain.last().map(String::as_str) == Some(key_string.as_str()) {
-            target.chain.clone()
-        } else {
-            actias_worker_core::objects::extend_call_chain(&target.chain, &key_string)
-                .map_err(RouteError::Failed)?
-        };
+        // Past the bypass, this call reaches the object's mailbox, local
+        // or forwarded: the request's later reads of it go there too.
+        if let Some(gates) = &self.deferred {
+            gates.note_call(&key_string);
+        }
+
         // First pass trusts the holder cache; a stale-home answer
         // invalidates it and asks the placement store once for the truth.
         // A call that already crossed the transport skips the cache:
@@ -1100,23 +1455,35 @@ impl ObjectRouting {
             }
         };
 
-        handle
-            .call(
-                "__dispatch",
-                serde_json::json!({
-                    "class": target.class,
-                    "name": target.name,
-                    "method": target.method,
-                    "args": target.arguments,
-                    "chain": chain,
-                    "caller": target.caller.as_ref().map(|caller| serde_json::json!({
-                        "script": caller.script,
-                        "revision": caller.revision,
-                    })),
-                }),
-            )
-            .await
-            .map_err(|e| RouteError::Failed(e.to_string()))
+        let payload = serde_json::json!({
+            "class": target.class,
+            "name": target.name,
+            "method": target.method,
+            "args": target.arguments,
+            "chain": chain,
+            "caller": target.caller.as_ref().map(|caller| serde_json::json!({
+                "script": caller.script,
+                "revision": caller.revision,
+            })),
+        });
+        match &self.deferred {
+            // A request's call answers at commit; the gate joins the
+            // request's, settled once before anything leaves.
+            Some(gates) => {
+                let (value, gate) = handle
+                    .call_deferred("__dispatch", payload)
+                    .await
+                    .map_err(|e| RouteError::Failed(e.to_string()))?;
+                if let Some(gate) = gate {
+                    gates.push(gate);
+                }
+                Ok(value)
+            }
+            None => handle
+                .call("__dispatch", payload)
+                .await
+                .map_err(|e| RouteError::Failed(e.to_string())),
+        }
     }
 }
 
@@ -1197,10 +1564,14 @@ fn write_resident_epoch(file: &std::path::Path, epoch: u64) {
     }
 }
 
+/// Longest a replica read waits for the append carrying the owner's
+/// watermark, which is already in flight when the wait begins.
+const REPLICA_READ_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// The replica file for one object, restored from the last shipped
 /// snapshot and reused until it ages past the ttl. [`None`] when nothing
-/// was ever shipped. Serves the read bypass on non-holders and the stats
-/// read, so neither ever depends on where the object is homed.
+/// was ever shipped. Serves the console's stats read on a node holding
+/// no copy, so it never depends on where the object is homed.
 pub(crate) async fn fresh_replica_file(
     state: &AppState,
     object_id: &str,

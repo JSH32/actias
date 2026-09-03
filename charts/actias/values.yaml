@@ -257,8 +257,17 @@ workers:
     objectReplicaTtlSecs: 30
     # Size cap per object database, MB.
     objectDbMaxMb: 64
-    # WAL shipping: whole-file cutoff and generation rotation sizes.
-    objectShipWholeMaxKb: 256
+    # Warm vms per revision, built ahead of requests and objects.
+    objectVmPool: 4
+    # Tail replication: replicas per object, acks that answer a write (0
+    # is shadow mode), how a replica makes an append durable, per-ack
+    # budget in milliseconds.
+    objectReplicas: 3
+    objectQuorum: 2
+    objectReplicaSync: fsync
+    objectReplicaAckMs: 2000
+    objectReplicaIdleSecs: 1800
+    # WAL shipping: generation rotation sizes.
     objectWalRotateKb: 4096
     objectMaxSegments: 64
     # How long a write's reply may wait for durable storage before the

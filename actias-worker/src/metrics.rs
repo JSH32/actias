@@ -40,11 +40,16 @@ impl Metrics {
 
     /// The whole exposition: per-script counters plus whatever gauges the
     /// caller measured at scrape time.
+    // One gauge set per subsystem; the list is the inventory of what the
+    // node exposes, and a struct would only rename it.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         objects_resident: usize,
         connections: &actias_worker_core::connections::actor::ConnectionGauges,
         ships: &crate::objects::shipper::ShipGauges,
+        replicas: &crate::objects::replica::ReplicaGauges,
+        vms: (&crate::vm_pool::VmPoolGauges, usize),
         directory: &crate::directory::gauges::DirectoryGauges,
         directory_files: (u64, u64),
     ) -> String {
@@ -129,6 +134,101 @@ impl Metrics {
         out.push_str(&format!(
             "actias_ship_duration_ms_total {}\n",
             count(&ships.ship_ms_total)
+        ));
+        for (name, kind, value) in [
+            (
+                "actias_replica_appends_total",
+                "counter",
+                count(&replicas.appends),
+            ),
+            (
+                "actias_replica_append_refusals_total",
+                "counter",
+                count(&replicas.append_refusals),
+            ),
+            (
+                "actias_replica_append_ms_total",
+                "counter",
+                count(&replicas.append_ms_total),
+            ),
+            (
+                "actias_replica_fetches_total",
+                "counter",
+                count(&replicas.fetches),
+            ),
+            (
+                "actias_replica_reads_confirmed_total",
+                "counter",
+                count(&replicas.reads_confirmed),
+            ),
+            (
+                "actias_replica_reads_waited_total",
+                "counter",
+                count(&replicas.reads_waited),
+            ),
+            (
+                "actias_replica_reads_forwarded_total",
+                "counter",
+                count(&replicas.reads_forwarded),
+            ),
+            (
+                "actias_replica_fanout_appends_total",
+                "counter",
+                count(&replicas.fanout_appends),
+            ),
+            (
+                "actias_replica_fanout_ack_ms_total",
+                "counter",
+                count(&replicas.fanout_ack_ms_total),
+            ),
+            (
+                "actias_replica_fanout_failures_total",
+                "counter",
+                count(&replicas.fanout_failures),
+            ),
+            (
+                "actias_replica_quorum_releases_total",
+                "counter",
+                count(&replicas.quorum_releases),
+            ),
+            (
+                "actias_replica_store_releases_total",
+                "counter",
+                count(&replicas.store_releases),
+            ),
+            (
+                "actias_replica_takeovers_total",
+                "counter",
+                count(&replicas.takeovers),
+            ),
+            (
+                "actias_replica_takeover_incidents_total",
+                "counter",
+                count(&replicas.takeover_incidents),
+            ),
+        ] {
+            out.push_str(&format!("# TYPE {name} {kind}\n{name} {value}\n"));
+        }
+        out.push_str(&format!(
+            "# TYPE actias_replica_bytes_held gauge\nactias_replica_bytes_held {}\n# TYPE actias_replica_objects_held gauge\nactias_replica_objects_held {}\n",
+            replicas.bytes_held.load(std::sync::atomic::Ordering::Relaxed),
+            replicas.objects_held.load(std::sync::atomic::Ordering::Relaxed),
+        ));
+        for (name, value) in [
+            ("actias_vm_pool_hits_total", count(&vms.0.hits)),
+            ("actias_vm_pool_misses_total", count(&vms.0.misses)),
+            ("actias_vm_pool_builds_total", count(&vms.0.builds)),
+            (
+                "actias_vm_pool_build_ms_total",
+                count(&vms.0.build_ms_total),
+            ),
+            ("actias_vm_pool_expired_total", count(&vms.0.expired)),
+        ] {
+            out.push_str(&format!("# TYPE {name} counter\n{name} {value}\n"));
+        }
+        out.push_str(&format!(
+            "# TYPE actias_vm_pool_warm gauge\nactias_vm_pool_warm {}\n",
+            vms.1
         ));
         out.push_str("# TYPE actias_ack_gate_waits_total counter\n");
         out.push_str(&format!(
@@ -271,6 +371,8 @@ mod tests {
             3,
             &Default::default(),
             &Default::default(),
+            &crate::objects::replica::ReplicaGauges::default(),
+            (&crate::vm_pool::VmPoolGauges::default(), 0),
             &directory,
             (7, 2),
         );

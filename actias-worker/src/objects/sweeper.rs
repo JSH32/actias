@@ -261,6 +261,11 @@ async fn finish_deletion(state: &AppState, key: &ObjectKey, epoch: u64) -> Resul
         .lock()
         .expect("no poisoned lock")
         .remove(&object_id);
+    state
+        .ship_states
+        .lock()
+        .expect("no poisoned lock")
+        .remove(&object_id);
     state.holders.invalidate(&object_id).await;
     remove_object_files(&state.object_data_dir.join(key.db_file_name())).await;
 

@@ -125,8 +125,18 @@ spec:
               value: {{ .Values.workers.tuning.objectReplicaTtlSecs | quote }}
             - name: OBJECT_DB_MAX_MB
               value: {{ .Values.workers.tuning.objectDbMaxMb | quote }}
-            - name: OBJECT_SHIP_WHOLE_MAX_KB
-              value: {{ .Values.workers.tuning.objectShipWholeMaxKb | quote }}
+            - name: OBJECT_VM_POOL
+              value: {{ .Values.workers.tuning.objectVmPool | quote }}
+            - name: OBJECT_REPLICAS
+              value: {{ .Values.workers.tuning.objectReplicas | quote }}
+            - name: OBJECT_QUORUM
+              value: {{ .Values.workers.tuning.objectQuorum | quote }}
+            - name: OBJECT_REPLICA_SYNC
+              value: {{ .Values.workers.tuning.objectReplicaSync | quote }}
+            - name: OBJECT_REPLICA_ACK_MS
+              value: {{ .Values.workers.tuning.objectReplicaAckMs | quote }}
+            - name: OBJECT_REPLICA_IDLE_SECS
+              value: {{ .Values.workers.tuning.objectReplicaIdleSecs | quote }}
             - name: OBJECT_WAL_ROTATE_KB
               value: {{ .Values.workers.tuning.objectWalRotateKb | quote }}
             - name: OBJECT_MAX_SEGMENTS

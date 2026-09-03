@@ -8,6 +8,7 @@
 pub mod budget;
 pub mod connections;
 pub mod directory;
+pub mod drill;
 pub mod egress;
 pub mod extensions;
 pub mod identity;
@@ -30,6 +31,9 @@ pub fn plain_grpc(channel: tonic::transport::Channel) -> Grpc {
 }
 
 pub mod proto {
+    /// The buffer type of the replication payloads.
+    pub use prost::bytes::Bytes;
+
     pub mod bundle {
         tonic::include_proto!("bundle");
     }

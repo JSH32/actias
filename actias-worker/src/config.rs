@@ -49,9 +49,6 @@ pub struct Config {
     pub object_data_dir: String,
     /// Size cap per object database, bytes.
     pub object_db_max_bytes: u64,
-    /// Databases at or past this size ship WAL segments instead of the
-    /// whole file, bytes.
-    pub object_ship_whole_max_bytes: u64,
     /// A WAL this large rotates the shipping generation, bytes.
     pub object_wal_rotate_bytes: u64,
     /// So does this many shipped segments.
@@ -65,6 +62,22 @@ pub struct Config {
     pub object_ship_reserved: usize,
     /// Idle seconds before a pinned object vm hibernates.
     pub object_idle_secs: u64,
+    /// Warm vms kept per revision and flavor, built ahead of the request
+    /// or object that takes them; 0 builds every vm inline.
+    pub object_vm_pool: usize,
+    /// Replica nodes an owner fans its WAL out to; 0 disables fan-out.
+    pub object_replicas: usize,
+    /// Replica acks that answer a written call; 0 is shadow mode, where
+    /// the fan-out runs and the store's manifest stays the release.
+    pub object_quorum: usize,
+    /// How a replica makes an append durable before acking: "fsync" or
+    /// "os".
+    pub object_replica_sync: String,
+    /// Longest an owner waits for one replica's ack, milliseconds.
+    pub object_replica_ack_ms: u64,
+    /// Idle seconds after which a replica copy the store covers leaves
+    /// the disk.
+    pub object_replica_idle_secs: u64,
     /// Idle seconds before a connection's vm hibernates; 0 never does.
     pub connection_hibernate_secs: u64,
     /// Deliveries attempted before a queue message dead-letters.
@@ -160,13 +173,18 @@ impl Config {
             ),
             object_data_dir: get_env_or("OBJECT_DATA_DIR", "./objects-data".to_owned()),
             object_db_max_bytes: get_env_or::<u64>("OBJECT_DB_MAX_MB", 64) * 1024 * 1024,
-            object_ship_whole_max_bytes: get_env_or::<u64>("OBJECT_SHIP_WHOLE_MAX_KB", 256) * 1024,
             object_wal_rotate_bytes: get_env_or::<u64>("OBJECT_WAL_ROTATE_KB", 4096) * 1024,
             object_max_segments: get_env_or("OBJECT_MAX_SEGMENTS", 64),
             object_ack_gate_ms: get_env_or("OBJECT_ACK_GATE_MS", 10_000),
             object_ship_concurrency: get_env_or("OBJECT_SHIP_CONCURRENCY", 32),
             object_ship_reserved: get_env_or("OBJECT_SHIP_RESERVED", 8),
             object_idle_secs: get_env_or("OBJECT_IDLE_SECS", 300),
+            object_vm_pool: get_env_or("OBJECT_VM_POOL", 4),
+            object_replicas: get_env_or("OBJECT_REPLICAS", 3),
+            object_quorum: get_env_or("OBJECT_QUORUM", 2),
+            object_replica_sync: get_env_or("OBJECT_REPLICA_SYNC", "fsync".to_owned()),
+            object_replica_ack_ms: get_env_or("OBJECT_REPLICA_ACK_MS", 2000),
+            object_replica_idle_secs: get_env_or("OBJECT_REPLICA_IDLE_SECS", 1800),
             connection_hibernate_secs: get_env_or("CONNECTION_HIBERNATE_SECS", 300),
             queue_max_attempts: get_env_or("QUEUE_MAX_ATTEMPTS", 5),
             queue_backoff_base_ms: get_env_or("QUEUE_BACKOFF_BASE_MS", 2000),

@@ -8,9 +8,13 @@
 
 use std::path::Path;
 
-/// SQLite on a local file, durability by fsync: `synchronous=FULL` under
-/// WAL, so every committed write survives a crash without an explicit
-/// flush step. Checkpoint trims the WAL so files stay small.
+/// SQLite on a local file in WAL mode with `synchronous=NORMAL`: a
+/// commit reaches the OS, not the disk. The file is a leased cache of
+/// state whose commit point is elsewhere (the shipped manifest, the
+/// replica quorum), so the per-commit fsync bought nothing any promise
+/// depends on and cost every write a disk round trip. The WAL is still
+/// fsynced at each checkpoint, and the shipper reads committed frames
+/// from the OS's copy. Checkpoint trims the WAL so files stay small.
 pub struct SqliteStorage {
     connection: rusqlite::Connection,
     /// Whether script-issued statements and the platform's own
@@ -42,7 +46,7 @@ impl SqliteStorage {
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| e.to_string())?;
         connection
-            .pragma_update(None, "synchronous", "FULL")
+            .pragma_update(None, "synchronous", "NORMAL")
             .map_err(|e| e.to_string())?;
         // The WAL folds when the shipper decides, never behind our back:
         // an implicit checkpoint mid-flight would move bytes the frame
@@ -100,7 +104,7 @@ impl SqliteStorage {
 
         Ok(Self {
             connection,
-            read_only: false,
+            read_only: true,
         })
     }
 
@@ -272,8 +276,14 @@ impl SqliteStorage {
     /// # Errors
     /// Returns SQLite's message.
     pub fn begin(&mut self) -> Result<(), String> {
+        // IMMEDIATE, not DEFERRED: the object is the file's only writer,
+        // so taking the write lock up front costs nothing, and it is what
+        // keeps the shipper's TRUNCATE checkpoint from resetting the WAL
+        // between a call's first read and its first write. A deferred
+        // transaction that read before the reset cannot upgrade and fails
+        // at once with SQLITE_BUSY, past the busy handler.
         self.connection
-            .execute_batch("BEGIN")
+            .execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| e.to_string())
     }
 
@@ -604,7 +614,8 @@ impl SqliteStorage {
     }
 
     /// Called after each handler completes; keeps the WAL from growing
-    /// between calls (writes are already durable under synchronous=FULL).
+    /// between calls; the checkpoint is also the fsync under
+    /// synchronous=NORMAL.
     ///
     /// # Errors
     /// Returns SQLite's own message.

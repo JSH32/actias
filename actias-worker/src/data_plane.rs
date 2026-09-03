@@ -18,7 +18,9 @@ use actias_worker_core::proto::worker_data::worker_data_server::WorkerData;
 use actias_worker_core::proto::worker_data::{
     CallResult, DirectoryEntry, DirectoryPage, DirectoryQuery, DirectoryRebuild, DirectoryRebuilt,
     InboxBatch, InboxEdge, InboxReceipts, ObjectCall, ReadRequest, ReadValue, ReceiveBatch,
-    ReceiveEntry, ReceiveOutcome, ReceiveReceipts, ShellOutcome, ShellRun, VisitEntry, VisitPage,
+    ReceiveEntry, ReceiveOutcome, ReceiveReceipts, ReplicaChunk, ReplicaInfo, ReplicaQuery,
+    ShellOutcome, ShellRun, VisitEntry, VisitPage, WalAppend, WalAppended, WatermarkInfo,
+    WatermarkQuery,
 };
 
 use crate::routing::{ObjectRouting, fresh_replica_file, owner_prepared};
@@ -66,8 +68,8 @@ pub(crate) async fn peer_client(
     address: &str,
 ) -> Result<WorkerDataClient<actias_worker_core::Grpc>, String> {
     if let Some(channel) = state.peers.get(address).await {
-        return Ok(WorkerDataClient::new(actias_worker_core::plain_grpc(
-            channel,
+        return Ok(sized(WorkerDataClient::new(
+            actias_worker_core::plain_grpc(channel),
         )));
     }
     let endpoint = Channel::from_shared(format!("http://{address}"))
@@ -77,9 +79,21 @@ pub(crate) async fn peer_client(
         .peers
         .insert(address.to_owned(), channel.clone())
         .await;
-    Ok(WorkerDataClient::new(actias_worker_core::plain_grpc(
-        channel,
+    Ok(sized(WorkerDataClient::new(
+        actias_worker_core::plain_grpc(channel),
     )))
+}
+
+/// A replica fan-out carries a generation's base, up to an object's
+/// whole file; the default 4 MB message bound is too small for it.
+pub const PEER_MESSAGE_BYTES: usize = 256 << 20;
+
+fn sized(
+    client: WorkerDataClient<actias_worker_core::Grpc>,
+) -> WorkerDataClient<actias_worker_core::Grpc> {
+    client
+        .max_decoding_message_size(PEER_MESSAGE_BYTES)
+        .max_encoding_message_size(PEER_MESSAGE_BYTES)
 }
 
 /// The read a request asks for; `sql` outranks `messages` outranks the
@@ -126,9 +140,16 @@ impl WorkerDataService {
             {
                 return Ok(Response::new(value));
             }
-            fresh_replica_file(&self.state, &key.object_id())
-                .await
-                .map_err(Status::invalid_argument)?
+            // This node's own replica copy is one flight behind the owner;
+            // the store's is a ttl behind.
+            match self.state.replica_store.read_copy(&key.object_id()).await {
+                Ok(Some(copy)) => Some(copy),
+                // No copy here, or one that could not be laid (a sweep
+                // took the generation under it): the store's copy serves.
+                _ => fresh_replica_file(&self.state, &key.object_id())
+                    .await
+                    .map_err(Status::invalid_argument)?,
+            }
         };
         let Some(file) = file else {
             // Nothing local and nothing ever shipped: the object has no
@@ -222,6 +243,152 @@ impl WorkerDataService {
 
 #[tonic::async_trait]
 impl WorkerData for WorkerDataService {
+    type FetchReplicaStream = std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<ReplicaChunk, Status>> + Send + 'static>,
+    >;
+
+    async fn append_wal(
+        &self,
+        request: Request<WalAppend>,
+    ) -> Result<Response<WalAppended>, Status> {
+        let append = request.into_inner();
+        let outcome = self
+            .state
+            .replica_store
+            .append(
+                &append.object_id,
+                append.epoch,
+                append.base,
+                append.offset,
+                &append.bytes,
+                append.base_bytes.as_deref(),
+                append.covered,
+            )
+            .await
+            .map_err(|error| {
+                actias_common::tracing::warn!(%error, object_id = append.object_id, "replica append failed");
+                Status::internal("The replica could not append.")
+            })?;
+        Ok(Response::new(WalAppended {
+            length: outcome.length,
+            applied: outcome.applied,
+            refusal: outcome.refusal,
+        }))
+    }
+
+    async fn watermark(
+        &self,
+        request: Request<WatermarkQuery>,
+    ) -> Result<Response<WatermarkInfo>, Status> {
+        let object_id = request.into_inner().object_id;
+        let state = self
+            .state
+            .ship_states
+            .lock()
+            .expect("no poisoned lock")
+            .get(&object_id)
+            .cloned();
+        let Some(state) = state else {
+            return Ok(Response::new(WatermarkInfo::default()));
+        };
+        let (residency_epoch, released) = (state.epoch(), state.released());
+        Ok(Response::new(match released {
+            Some((epoch, base, length)) => WatermarkInfo {
+                held: true,
+                epoch,
+                base,
+                length,
+                released: true,
+            },
+            // Resident, nothing released in this residency yet: no copy
+            // can be vouched for, and the reader asks the owner itself.
+            None => WatermarkInfo {
+                held: true,
+                epoch: residency_epoch,
+                released: false,
+                ..Default::default()
+            },
+        }))
+    }
+
+    async fn replica_state(
+        &self,
+        request: Request<ReplicaQuery>,
+    ) -> Result<Response<ReplicaInfo>, Status> {
+        let query = request.into_inner();
+        let info = self
+            .state
+            .replica_store
+            .state(&query.object_id, query.epoch, query.base, query.fence_to)
+            .await
+            .map_err(|error| {
+                actias_common::tracing::warn!(%error, object_id = query.object_id, "replica fence could not be written");
+                Status::internal("The replica could not record the fence.")
+            })?;
+        Ok(Response::new(ReplicaInfo {
+            held: info.held,
+            length: info.length,
+            fence: info.fence,
+        }))
+    }
+
+    async fn fetch_replica(
+        &self,
+        request: Request<ReplicaQuery>,
+    ) -> Result<Response<Self::FetchReplicaStream>, Status> {
+        let query = request.into_inner();
+        // The fence rises here too: handing a copy over is part of a
+        // takeover, and the old owner must not extend it afterwards.
+        self.state
+            .replica_store
+            .state(&query.object_id, query.epoch, query.base, query.fence_to)
+            .await
+            .map_err(|error| {
+                actias_common::tracing::warn!(%error, object_id = query.object_id, "replica fence could not be written");
+                Status::internal("The replica could not record the fence.")
+            })?;
+        let copy = self
+            .state
+            .replica_store
+            .fetch(&query.object_id, query.epoch, query.base)
+            .await
+            .map_err(|error| {
+                actias_common::tracing::warn!(%error, object_id = query.object_id, "replica fetch failed");
+                Status::internal("The replica could not be read.")
+            })?;
+        let Some((base, wal)) = copy else {
+            return Err(Status::not_found(
+                "This node does not hold that generation.",
+            ));
+        };
+        const CHUNK: usize = 1 << 20;
+        let base = actias_worker_core::proto::Bytes::from(base);
+        let wal = actias_worker_core::proto::Bytes::from(wal);
+        let base_chunks = base.len().div_ceil(CHUNK);
+        let wal_chunks = wal.len().div_ceil(CHUNK);
+        // Sliced as the stream is polled; the copy is held once and
+        // every chunk is a view of it.
+        let chunks = (0..base_chunks + wal_chunks).map(move |i| {
+            if i < base_chunks {
+                let at = i * CHUNK;
+                ReplicaChunk {
+                    base: base.slice(at..(at + CHUNK).min(base.len())),
+                    wal: actias_worker_core::proto::Bytes::new(),
+                }
+            } else {
+                let at = (i - base_chunks) * CHUNK;
+                ReplicaChunk {
+                    base: actias_worker_core::proto::Bytes::new(),
+                    wal: wal.slice(at..(at + CHUNK).min(wal.len())),
+                }
+            }
+        });
+        Ok(Response::new(Box::pin(futures::StreamExt::map(
+            futures::stream::iter(chunks),
+            Ok,
+        ))))
+    }
+
     /// One object method call: resolve the owner's current code, route to
     /// the pinned vm (forwarding once to the lease holder when this is a
     /// first hop). Method failures ride the envelope; they are the

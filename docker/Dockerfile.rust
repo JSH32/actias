@@ -38,9 +38,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 ARG CRATE_NAME
+# Extra cargo flags, such as a feature the compose image wants and a
+# production image must never carry (`--features actias-worker/drill`).
+ARG CARGO_FLAGS=""
 
 COPY . .
-RUN cargo build --release --bin ${CRATE_NAME} \
+RUN cargo build --release --bin ${CRATE_NAME} ${CARGO_FLAGS} \
     && mkdir -p /output \
     && cp target/release/${CRATE_NAME} /output/target
 

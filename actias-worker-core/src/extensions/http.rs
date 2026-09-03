@@ -42,6 +42,15 @@ impl LuaExtension for HttpExtension {
 
                     debug!(request = ?lua_request, "Making outbound request");
 
+                    // A request that deferred its object writes settles
+                    // them before anything it says leaves the machine.
+                    let gates = lua
+                        .app_data_ref::<std::sync::Arc<crate::objects::PendingGates>>()
+                        .map(|gates| gates.clone());
+                    if let Some(gates) = gates {
+                        gates.settle().await.map_err(mlua::Error::runtime)?;
+                    }
+
                     let response = lua_request.send(&egress).await?;
                     lua.to_value(&response)
                 }

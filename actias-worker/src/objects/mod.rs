@@ -3,6 +3,9 @@
 //! moves committed frames there behind the output gate, and the sweeper
 //! that wakes objects whose alarms came due while they were cold.
 
+pub mod fanout;
+pub mod replica;
 pub mod shipper;
 pub mod store;
 pub mod sweeper;
+pub mod takeover;

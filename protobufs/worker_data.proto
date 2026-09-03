@@ -74,6 +74,99 @@ service WorkerData {
     // is why total loss is an operator's verb rather than a timer's
     // job.
     rpc RebuildDirectory(DirectoryRebuild) returns (DirectoryRebuilt);
+
+    // Tail replication. The lease holder appends its committed WAL
+    // prefix to K replica nodes as it ships it, and a written call is
+    // answered once Q of them have it durably; the blob store keeps
+    // shipping behind the answer. A replica appends bytes at an offset
+    // and checks a fence; it never interprets them. A duplicate at an
+    // offset it already holds is acked, a gap is refused with the
+    // length it does hold so the owner resends from there, and an
+    // epoch below its fence is refused outright.
+    rpc AppendWal(WalAppend) returns (WalAppended);
+
+    // What a replica holds for one generation, raising its fence to
+    // `fence_to` first: a takeover at epoch e+1 asks every replica the
+    // manifest names, and once Q have answered, an owner at e can never
+    // assemble Q acks again.
+    rpc ReplicaState(ReplicaQuery) returns (ReplicaInfo);
+
+    // The replica's copy, base then WAL, in chunks: what a takeover lays
+    // down instead of restoring from the store.
+    rpc FetchReplica(ReplicaQuery) returns (stream ReplicaChunk);
+
+    // What the owner has answered to callers so far for one object: the
+    // generation and the WAL length its last released flight reached. A
+    // replica serves a read from its own copy only once the copy has
+    // reached this, so a read on any node sees every write a caller was
+    // told succeeded, without any token crossing requests.
+    rpc Watermark(WatermarkQuery) returns (WatermarkInfo);
+}
+
+message WatermarkQuery {
+    string object_id = 1;
+}
+
+message WatermarkInfo {
+    // False when this node does not hold the object resident.
+    bool held = 1;
+    // The residency's lease epoch, whether or not a flight has released.
+    uint64 epoch = 2;
+    uint64 base = 3;
+    // WAL bytes the owner's last released flight reached.
+    uint64 length = 4;
+    // False until the residency's first flight has released: no copy
+    // anywhere can be vouched for before that, and a reader forwards.
+    bool released = 5;
+}
+
+message WalAppend {
+    string object_id = 1;
+    // The owner's lease epoch and the generation's base index; together
+    // they name the WAL these bytes belong to.
+    uint64 epoch = 2;
+    uint64 base = 3;
+    // Byte offset in the generation's WAL these bytes start at.
+    uint64 offset = 4;
+    bytes bytes = 5;
+    // The generation's base file, sent with offset 0 when a generation
+    // starts, and again when a replica answers that it lacks it.
+    optional bytes base_bytes = 6;
+    // How far the store's manifest covers this WAL; informational, for
+    // eviction.
+    uint64 covered = 7;
+}
+
+message WalAppended {
+    // The WAL length the replica holds after the call.
+    uint64 length = 1;
+    // True when the bytes were appended (or already held). False with
+    // `refusal` set: a gap (resend from `length`), a missing generation
+    // (resend with the base), or a fence.
+    bool applied = 2;
+    string refusal = 3;
+}
+
+message ReplicaQuery {
+    string object_id = 1;
+    uint64 epoch = 2;
+    uint64 base = 3;
+    // Raise the replica's fence to this epoch before answering; 0
+    // leaves it.
+    uint64 fence_to = 4;
+}
+
+message ReplicaInfo {
+    // Whether the replica holds this generation at all.
+    bool held = 1;
+    uint64 length = 2;
+    uint64 fence = 3;
+}
+
+message ReplicaChunk {
+    // Base bytes come first, then WAL bytes; a chunk carries one kind.
+    bytes base = 1;
+    bytes wal = 2;
 }
 
 message DirectoryRebuild {

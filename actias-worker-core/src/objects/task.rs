@@ -226,6 +226,10 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
 
             // A caller that stopped waiting is its own problem; the state
             // change it asked for has already happened either way.
+            if call.defer_gate {
+                let _ = call.reply.send(Reply { result, gate });
+                continue;
+            }
             match gate {
                 // The output gate waits off this task, so the next call
                 // runs while this answer is held. That is what keeps the
@@ -240,11 +244,14 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                             Ok(()) => result,
                             Err(error) => Err(ObjectError::NotDurable(error)),
                         };
-                        let _ = reply.send(answer);
+                        let _ = reply.send(Reply {
+                            result: answer,
+                            gate: None,
+                        });
                     });
                 }
                 None => {
-                    let _ = call.reply.send(result);
+                    let _ = call.reply.send(Reply { result, gate: None });
                 }
             }
 
@@ -276,9 +283,10 @@ pub(super) async fn destroy_teardown(
 ) {
     receiver.close();
     while let Some(queued) = receiver.recv().await {
-        let _ = queued.reply.send(Err(ObjectError::Call(
-            "The object was destroyed.".to_owned(),
-        )));
+        let _ = queued.reply.send(Reply {
+            result: Err(ObjectError::Call("The object was destroyed.".to_owned())),
+            gate: None,
+        });
     }
     if let Some(destroy) = destroy
         && let Err(error) = destroy().await
@@ -471,6 +479,13 @@ pub(super) async fn guarded_dispatch(
         match &result {
             Ok(_) => {
                 if let Err(error) = home.with_storage(|storage| storage.commit()) {
+                    // The transaction is still open on a connection that
+                    // lives for the residency; left there, every later call
+                    // would fail to begin. Roll it back like a failed call.
+                    if let Err(rollback) = home.with_storage(|storage| storage.rollback()) {
+                        actias_common::tracing::warn!(%rollback, "rollback after a failed commit failed");
+                    }
+                    home.resync_alarm_from_storage();
                     return Dispatched {
                         result: Err(ObjectError::Call(format!(
                             "The call's writes could not commit: {error}"
@@ -487,11 +502,13 @@ pub(super) async fn guarded_dispatch(
             }
         }
 
-        // No checkpoint here: synchronous=FULL already fsynced the WAL
-        // frame at commit, so a per-call TRUNCATE would fold the log on
-        // every call and buy no durability. The shipper owns
-        // checkpoints, and an implicit fold mid-flight would move bytes
-        // its frame reader is about to ship.
+        // No checkpoint here: the ship is the durability point (the
+        // replica quorum, or the store's manifest), not the local file,
+        // which runs synchronous=NORMAL. The shipper owns checkpoints,
+        // and an implicit fold mid-flight would move bytes its frame
+        // reader is about to ship.
+
+        crate::drill::fault("after-commit");
 
         // The output gate: calling the hook starts the write on its way,
         // and the future it hands back is what the answer waits behind.

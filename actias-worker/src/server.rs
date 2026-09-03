@@ -177,6 +177,30 @@ pub struct AppState {
     pub object_store: Arc<ObjectStore>,
     /// How long a snapshot replica serves reads before refreshing.
     pub replica_ttl: Duration,
+    /// Bumped each time this node registers with the placement store.
+    /// A residency's shipper re-reads the store's fence when it moves,
+    /// because a re-registration is the one event under which another
+    /// node can have taken a lease this node believed it held.
+    pub membership_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// What this node holds for other owners' objects, and the counters
+    /// of both sides of tail replication.
+    pub replica_store: Arc<crate::objects::replica::ReplicaStore>,
+    /// Replica nodes an owner on this node fans out to.
+    pub replica_count: usize,
+    /// Acks that answer a written call; 0 is shadow mode.
+    pub replica_quorum: usize,
+    /// Longest a fan-out waits for one replica.
+    pub replica_ack: Duration,
+    /// Warm vms per revision, taken by requests, connections and objects.
+    pub vm_pool: Arc<crate::vm_pool::VmPool>,
+    /// This node's data-plane address as registered, so a stale
+    /// incarnation of this very node is never chosen as its replica.
+    pub node_address: String,
+    /// Every resident object's shipping state, for the watermark a
+    /// replica asks before serving a read.
+    pub ship_states: Arc<
+        std::sync::Mutex<std::collections::HashMap<String, Arc<crate::objects::store::Watermark>>>,
+    >,
     /// Channels to peer workers' data planes, by address; lazy, so a dead
     /// peer costs its caller the failure, never a held-up cache.
     pub peers: moka::future::Cache<String, Channel>,
@@ -534,6 +558,8 @@ async fn metrics_handler(State(state): State<AppState>) -> Response {
             resident,
             &state.connection_gauges,
             &state.ship_gauges,
+            &state.replica_store.gauges,
+            (&state.vm_pool.gauges, state.vm_pool.warm_count()),
             &state.directory_gauges,
             (
                 state
@@ -932,12 +958,16 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // Lua futures are Send under mlua's send feature, so the runtime runs
     // directly on the async executor. Never wrap it in block_in_place or
     // a LocalSet: that blocks a worker thread for the whole script.
-    let kv_client = state.clients.kv.clone();
 
     // Kept rather than discarded: the call seam and the listing seam
     // are both cut from one routing, so they cannot disagree about
     // whose project a vm is running in.
-    let request_routing = ObjectRouting::new(&state, prepared.clone());
+    // The request's output gate: local object writes answer at commit,
+    // and every gate they defer is settled once, before the response or
+    // any outbound request leaves. A chain of writes waits one flight,
+    // not one per hop.
+    let gates = Arc::new(actias_worker_core::objects::PendingGates::default());
+    let request_routing = ObjectRouting::deferring(&state, prepared.clone(), gates.clone());
     let router = request_routing.as_router();
 
     // First touch of a revision on this worker arms its cron events: each
@@ -1004,22 +1034,27 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         }
     }
 
-    let lua = ActiasRuntime::new(
-        prepared.clone(),
-        kv_client,
-        state.egress.clone(),
-        logs.clone(),
-        state.secret_client.clone(),
-        Some(state.guest_limits.wall_secs),
-    )
-    .await?;
+    let lua = state
+        .vm_pool
+        .take(
+            crate::vm_pool::VmKey {
+                revision_id: prepared.revision_id.clone(),
+                flavor: crate::vm_pool::Flavor::Request,
+            },
+            request_vm_build(state.clone(), prepared.clone(), logs.clone()),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
     state.guest_limits.apply(&lua);
-    let connection_router = router.clone();
+    // A connection outlives the request and settles no gates: its edge
+    // writes are held until durable like any object's.
+    let connection_router = ObjectRouting::new(&state, prepared.clone()).as_router();
     lua.set_app_data::<ObjectRouter>(router);
     // The listing seam. Without it every `Class:list` in a request
     // handler refuses, because the verb resolves against app data that
     // only this call installs.
     lua.set_app_data::<DirectoryLister>(request_routing.as_lister());
+    lua.set_app_data::<Arc<actias_worker_core::objects::PendingGates>>(gates.clone());
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
 
@@ -1033,6 +1068,12 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     lua.start_timer();
 
     let value: mlua::Value = listener.call_async(request_value).await?;
+
+    // Nothing leaves before the writes it may describe are durable.
+    gates
+        .settle()
+        .await
+        .map_err(|error| anyhow::anyhow!("a write's outcome is unknown: {error}"))?;
 
     // The handler upgraded: the response is the handshake and the
     // request vm is released like any other response. The pending
@@ -1076,6 +1117,33 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     lua_response_into_response(lua_response)
 }
 
+/// The request-flavoured construction: a vm of one revision with the
+/// wall backstop armed, before the request's own pieces are attached.
+/// The pool refills through the same closure.
+fn request_vm_build(
+    state: AppState,
+    prepared: Arc<PreparedRevision>,
+    logs: Option<LogPublisher>,
+) -> crate::vm_pool::VmBuild {
+    Arc::new(move || {
+        let state = state.clone();
+        let prepared = prepared.clone();
+        let logs = logs.clone();
+        Box::pin(async move {
+            ActiasRuntime::new(
+                prepared,
+                state.clients.kv.clone(),
+                state.egress.clone(),
+                logs,
+                state.secret_client.clone(),
+                Some(state.guest_limits.wall_secs),
+            )
+            .await
+            .map_err(|error| error.to_string())
+        })
+    })
+}
+
 /// Builds vms of one revision for a connection's actor: the same
 /// construction the request path uses, minus the request.
 fn vm_factory(
@@ -1088,16 +1156,16 @@ fn vm_factory(
         let prepared = prepared.clone();
         let logs = logs.clone();
         Box::pin(async move {
-            let lua = ActiasRuntime::new(
-                prepared.clone(),
-                state.clients.kv.clone(),
-                state.egress.clone(),
-                logs,
-                state.secret_client.clone(),
-                Some(state.guest_limits.wall_secs),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+            let lua = state
+                .vm_pool
+                .take(
+                    crate::vm_pool::VmKey {
+                        revision_id: prepared.revision_id.clone(),
+                        flavor: crate::vm_pool::Flavor::Request,
+                    },
+                    request_vm_build(state.clone(), prepared.clone(), logs),
+                )
+                .await?;
             state.guest_limits.apply(&lua);
             let routing = ObjectRouting::new(&state, prepared);
             lua.set_app_data::<ObjectRouter>(routing.as_router());
@@ -1259,6 +1327,18 @@ pub(crate) mod test_state {
             objects: Arc::default(),
             metrics: Arc::default(),
             replica_ttl: Duration::from_secs(30),
+            membership_generation: Arc::default(),
+            replica_store: crate::objects::replica::ReplicaStore::new(
+                std::env::temp_dir().join(format!("actias-replicas-{}", uuid::Uuid::new_v4())),
+                crate::objects::replica::SyncMode::Os,
+                Duration::from_secs(1800),
+            ),
+            replica_count: 0,
+            replica_quorum: 0,
+            replica_ack: Duration::from_secs(2),
+            vm_pool: crate::vm_pool::VmPool::new(0),
+            node_address: "127.0.0.1:0".to_owned(),
+            ship_states: Arc::default(),
             peers: moka::future::Cache::new(100),
             holders: moka::future::Cache::builder()
                 .max_capacity(200_000)
@@ -1279,7 +1359,6 @@ pub(crate) mod test_state {
             object_data_dir: std::env::temp_dir(),
             object_db_max_bytes: 64 * 1024 * 1024,
             ship_thresholds: crate::objects::store::ShipThresholds {
-                whole_max: 256 * 1024,
                 rotate_bytes: 4096 * 1024,
                 max_segments: 64,
             },

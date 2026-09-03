@@ -47,9 +47,26 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use tokio::sync::watch;
 
-/// The actual ship, boxed so tests can count instead of upload.
+/// The actual ship, boxed so tests can count instead of upload. It is
+/// handed a [`Release`] it may fire before it completes, once the
+/// flight's frames are durable somewhere the gate accepts (a replica
+/// quorum); a flight that never fires it releases when it completes.
 pub type ShipFn =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+    Arc<dyn Fn(Release) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
+/// A flight's early release: firing it resolves every ticket the flight
+/// covers before the store has been written. Dropping it unfired means
+/// the flight's completion is the release, as before.
+pub struct Release(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Release {
+    /// Releases the flight's tickets now.
+    pub fn now(mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
 
 /// Consecutive failed flights before the loop stops retrying and waits
 /// for the next write to re-arm it. Tickets are bounded by their own
@@ -211,7 +228,24 @@ impl Shipper {
                 this.gauges.queued.fetch_sub(1, Ordering::Relaxed);
                 this.gauges.in_flight.fetch_add(1, Ordering::Relaxed);
                 let started = std::time::Instant::now();
-                let outcome = (this.ship)().await;
+                let (early, released) = tokio::sync::oneshot::channel();
+                let flight = (this.ship)(Release(Some(early)));
+                tokio::pin!(flight);
+                let mut released_early = false;
+                let outcome = tokio::select! {
+                    outcome = &mut flight => outcome,
+                    fired = released => {
+                        // Fired: the frames are durable on a quorum, so the
+                        // callers are answered now and the store catches
+                        // up. Dropped unfired: the flight's completion is
+                        // the release, as before.
+                        if fired.is_ok() {
+                            released_early = true;
+                            this.landed.send_replace(number);
+                        }
+                        flight.await
+                    }
+                };
                 drop(permit);
                 this.gauges.in_flight.fetch_sub(1, Ordering::Relaxed);
                 this.gauges.ships.fetch_add(1, Ordering::Relaxed);
@@ -221,12 +255,18 @@ impl Shipper {
                 match outcome {
                     Ok(()) => {
                         failures = 0;
-                        this.landed.send_replace(number);
+                        if !released_early {
+                            this.landed.send_replace(number);
+                        }
                     }
                     Err(error) => {
+                        // After an early release the callers were already
+                        // answered on the quorum; what remains unshipped is
+                        // the store's copy, which the retry below carries.
                         actias_common::tracing::warn!(
                             %error,
                             object = this.label,
+                            released_early,
                             "object snapshot did not ship"
                         );
                         this.gauges.failures.fetch_add(1, Ordering::Relaxed);
@@ -252,8 +292,12 @@ impl Shipper {
             }
             this.running.store(false, Ordering::SeqCst);
             // A mark that landed between the last check and the flag
-            // going down would otherwise wait for the next write.
-            if this.dirty.load(Ordering::SeqCst) && failures < MAX_CONSECUTIVE_FAILURES {
+            // going down would otherwise wait for the next write. After
+            // a run of failures the re-arm waits the full backoff first.
+            if this.dirty.load(Ordering::SeqCst) {
+                if failures >= MAX_CONSECUTIVE_FAILURES {
+                    tokio::time::sleep(MAX_BACKOFF).await;
+                }
                 this.ensure_flight();
             }
         });
@@ -380,7 +424,7 @@ mod tests {
         let ships = Arc::new(AtomicUsize::new(0));
         let ship: ShipFn = {
             let ships = ships.clone();
-            Arc::new(move || {
+            Arc::new(move |_release| {
                 let ships = ships.clone();
                 Box::pin(async move {
                     ships.fetch_add(1, Ordering::SeqCst);
@@ -415,7 +459,7 @@ mod tests {
         let (allow, allowed) = watch::channel(0u64);
         let flights = Arc::new(AtomicU64::new(0));
         let counted = flights.clone();
-        let ship: ShipFn = Arc::new(move || {
+        let ship: ShipFn = Arc::new(move |_release| {
             // Each flight parks until the test lets that many finish, so
             // "which flight confirmed the ticket" is decidable.
             let number = counted.fetch_add(1, Ordering::SeqCst) + 1;
@@ -463,7 +507,7 @@ mod tests {
     async fn a_burst_of_writes_shares_one_flight() {
         let ships = Arc::new(AtomicUsize::new(0));
         let counted = ships.clone();
-        let ship: ShipFn = Arc::new(move || {
+        let ship: ShipFn = Arc::new(move |_release| {
             let ships = counted.clone();
             Box::pin(async move {
                 ships.fetch_add(1, Ordering::SeqCst);
@@ -499,7 +543,7 @@ mod tests {
     async fn the_gauges_track_the_backlog_and_the_gate() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let counted = attempts.clone();
-        let ship: ShipFn = Arc::new(move || {
+        let ship: ShipFn = Arc::new(move |_release| {
             // Fails once, so the re-mark path is exercised rather than
             // only the happy one.
             let n = counted.fetch_add(1, Ordering::SeqCst);
@@ -548,7 +592,7 @@ mod tests {
         let shippers: Vec<_> = (0..OBJECTS)
             .map(|n| {
                 let (peak, live) = (peak.clone(), live.clone());
-                let ship: ShipFn = Arc::new(move || {
+                let ship: ShipFn = Arc::new(move |_release| {
                     let (peak, live) = (peak.clone(), live.clone());
                     Box::pin(async move {
                         let now = live.fetch_add(1, Ordering::SeqCst) + 1;
@@ -579,11 +623,43 @@ mod tests {
         assert_eq!(gauges.queued.load(Ordering::SeqCst), 0, "queue drained");
     }
 
+    /// A flight that fires its release answers the caller before it has
+    /// finished with the store, and a store failure after that does not
+    /// take the answer back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_early_release_answers_before_the_flight_completes() {
+        let (finish, finished) = watch::channel(false);
+        let watched = finished.clone();
+        let ship: ShipFn = Arc::new(move |release: Release| {
+            let mut finished = watched.clone();
+            Box::pin(async move {
+                release.now();
+                while !*finished.borrow_and_update() {
+                    if finished.changed().await.is_err() {
+                        break;
+                    }
+                }
+                Err("the store blinked after the quorum".to_owned())
+            })
+        });
+        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
+
+        let ticket = shipper.mark_and_ticket();
+        ticket
+            .wait(std::time::Duration::from_secs(2))
+            .await
+            .expect("released on the quorum, before the store");
+        assert!(!shipper.settled(), "the store's copy is still owed");
+        finish.send_replace(true);
+        drop(finished);
+    }
+
     /// A store that never answers costs the write its acknowledgment
     /// rather than hanging the caller forever.
     #[tokio::test(flavor = "multi_thread")]
     async fn an_unconfirmable_write_gives_up_on_its_budget() {
-        let ship: ShipFn = Arc::new(move || Box::pin(async move { Err("no store".to_owned()) }));
+        let ship: ShipFn =
+            Arc::new(move |_release| Box::pin(async move { Err("no store".to_owned()) }));
         let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
 
         let error = shipper

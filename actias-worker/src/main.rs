@@ -12,6 +12,7 @@ mod objects;
 mod routing;
 mod server;
 mod shell_run;
+mod vm_pool;
 
 use std::net::SocketAddr;
 
@@ -92,11 +93,13 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let node_identity = std::sync::Arc::new(std::sync::RwLock::new(None));
+    let membership_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     tokio::spawn(heartbeat::register_and_heartbeat(
         registry_client.clone(),
         config.node_address.clone(),
         in_flight.clone(),
         node_identity.clone(),
+        membership_generation.clone(),
     ));
 
     let redis = redis::aio::ConnectionManager::new(
@@ -169,6 +172,18 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             cache_bytes: config.blob_cache_bytes,
         }),
         replica_ttl: std::time::Duration::from_secs(config.replica_ttl_secs),
+        membership_generation: membership_generation.clone(),
+        replica_store: objects::replica::ReplicaStore::new(
+            std::path::PathBuf::from(&config.object_data_dir).join("replicas-held"),
+            objects::replica::SyncMode::parse(&config.object_replica_sync),
+            std::time::Duration::from_secs(config.object_replica_idle_secs),
+        ),
+        replica_count: config.object_replicas,
+        replica_quorum: config.object_quorum,
+        replica_ack: std::time::Duration::from_millis(config.object_replica_ack_ms),
+        vm_pool: vm_pool::VmPool::new(config.object_vm_pool),
+        node_address: config.node_address.clone(),
+        ship_states: std::sync::Arc::default(),
         peers: moka::future::Cache::new(100),
         holders: moka::future::Cache::builder()
             .max_capacity(200_000)
@@ -203,7 +218,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         object_data_dir: std::path::PathBuf::from(config.object_data_dir),
         object_db_max_bytes: config.object_db_max_bytes,
         ship_thresholds: objects::store::ShipThresholds {
-            whole_max: config.object_ship_whole_max_bytes,
             rotate_bytes: config.object_wal_rotate_bytes,
             max_segments: config.object_max_segments,
         },
@@ -302,15 +316,37 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     health_reporter
         .set_service_status("", tonic_health::ServingStatus::Serving)
         .await;
+    // Idle replica copies leave once the store covers them; a copy whose
+    // owner went quiet asks the manifest.
+    {
+        let store = state.object_store.clone();
+        let coverage: objects::replica::Coverage =
+            std::sync::Arc::new(move |object_id, epoch, base| {
+                let store = store.clone();
+                Box::pin(async move {
+                    match store.manifest(&object_id).await.ok().flatten() {
+                        Some(m) if m.deleted => objects::replica::Cover::Forgotten,
+                        Some(m) if (m.epoch, m.base) == (epoch, base) => {
+                            objects::replica::Cover::Through(m.wal_len)
+                        }
+                        _ => objects::replica::Cover::Unknown,
+                    }
+                })
+            });
+        state.replica_store.start_sweep(coverage);
+    }
+
     let data_plane = tonic::transport::Server::builder()
         .layer(actias_common::otel::TraceExtract)
         .add_service(health_service)
-        .add_service(
-            actias_worker_core::proto::worker_data::worker_data_server::WorkerDataServer::with_interceptor(
+        .add_service(tonic::service::interceptor::InterceptedService::new(
+            actias_worker_core::proto::worker_data::worker_data_server::WorkerDataServer::new(
                 data_plane::WorkerDataService::new(state.clone()),
-                data_plane::require_internal_token(state.internal_token.clone()),
-            ),
-        )
+            )
+            .max_decoding_message_size(data_plane::PEER_MESSAGE_BYTES)
+            .max_encoding_message_size(data_plane::PEER_MESSAGE_BYTES),
+            data_plane::require_internal_token(state.internal_token.clone()),
+        ))
         .serve_with_shutdown(grpc_addr, shutdown_signal());
 
     let app = server::router(state.clone(), config.max_body_bytes)

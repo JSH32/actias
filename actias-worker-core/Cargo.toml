@@ -4,6 +4,10 @@ version.workspace = true
 edition = "2024"
 license = "AGPL-3.0-only"
 
+[features]
+# Crash points for the durability drills; never in a production binary.
+drill = []
+
 [dependencies]
 actias-declarations = { workspace = true }
 actias-common = { workspace = true, features = ["otel"] }
