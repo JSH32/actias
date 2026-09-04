@@ -1082,8 +1082,6 @@
       },
       "delete": {
         "operationId": "deleteProject",
-        "summary": "",
-        "description": "Delete a project by its ID.",
         "parameters": [
           {
             "name": "project",
@@ -1101,6 +1099,172 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "project"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/project/{project}/policy": {
+      "get": {
+        "operationId": "getPolicy",
+        "summary": "",
+        "description": "Delete a project by its ID.\nThe project's runtime policy: rates and egress lists, the defaults\nwhen none was set. Lives in the script service, which is what the\nworkers read it from.",
+        "parameters": [
+          {
+            "name": "project",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPolicyViewDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "project"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "setPolicy",
+        "summary": "",
+        "description": "Replaces the project's runtime policy. Every field is set: a rate of\n0 is unbounded, an empty allow list admits everything not denied.",
+        "parameters": [
+          {
+            "name": "project",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectPolicyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPolicyViewDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "project"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/project/{project}/region": {
+      "patch": {
+        "operationId": "moveProject",
+        "summary": "",
+        "description": "Moves the project to another home: marks it moving, drains, copies\nits objects between the regions' buckets, flips the home (FLEET.md\n6.3). Answers at once with the move to follow; both regions must be\nregistered.",
+        "parameters": [
+          {
+            "name": "project",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetProjectRegionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMoveDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "project"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/project/{project}/move": {
+      "get": {
+        "operationId": "getMove",
+        "summary": "",
+        "description": "The project's latest move between homes; an empty step means it\nnever moved.",
+        "parameters": [
+          {
+            "name": "project",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMoveDto"
                 }
               }
             }
@@ -2203,6 +2367,112 @@
         ]
       }
     },
+    "/api/regions": {
+      "get": {
+        "operationId": "listRegions",
+        "summary": "",
+        "description": "Every registered region. Empty on a single-region deployment.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RegionDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "regions"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/regions/{name}": {
+      "put": {
+        "operationId": "putRegion",
+        "summary": "",
+        "description": "Registers or updates a region: its data-plane address and bucket.",
+        "parameters": [
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutRegionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegionDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "regions"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteRegion",
+        "summary": "",
+        "description": "Forgets a region. Refused while any project calls it home.",
+        "parameters": [
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "regions"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/project/{project}/queues": {
       "get": {
         "operationId": "listQueues",
@@ -2672,7 +2942,7 @@
       "get": {
         "operationId": "listObjects",
         "summary": "",
-        "description": "Instances the directory knows, filterable by class and name\nprefix, always paged, because a per-user class holds one instance\nper user.",
+        "description": "Instances the directory knows of one class, filterable by name\nprefix, always paged, because a per-user class holds one instance\nper user. The classes come from the counts endpoint.",
         "parameters": [
           {
             "name": "project",
@@ -2684,7 +2954,7 @@
           },
           {
             "name": "class",
-            "required": false,
+            "required": true,
             "in": "query",
             "schema": {
               "type": "string"
@@ -4431,6 +4701,142 @@
           "updatedAt"
         ]
       },
+      "ProjectPolicyViewDto": {
+        "type": "object",
+        "properties": {
+          "region": {
+            "type": "string",
+            "description": "The project's home region: where its named objects are born and its\ndirectory lives."
+          },
+          "moving": {
+            "type": "boolean",
+            "description": "Whether the project is between homes; calls are refused, retryably, until it settles."
+          },
+          "requestsPerSec": {
+            "type": "number",
+            "description": "Requests a node admits for the project per second, burst of the\nsame size; 0 is unbounded.",
+            "minimum": 0
+          },
+          "workUnitsPerSec": {
+            "type": "number",
+            "description": "Work units a node lets the project spend per second; 0 is unbounded.",
+            "minimum": 0
+          },
+          "egressAllow": {
+            "description": "Hosts outbound requests and dials may reach; a leading dot matches\nsubdomains. Empty admits everything not denied.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "egressDeny": {
+            "description": "Hosts refused before the allow list is consulted.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "region",
+          "moving",
+          "requestsPerSec",
+          "workUnitsPerSec",
+          "egressAllow",
+          "egressDeny"
+        ]
+      },
+      "SetProjectRegionDto": {
+        "type": "object",
+        "properties": {
+          "region": {
+            "type": "string",
+            "description": "A region token: one to sixteen of a-z, 0-9 and '-', not starting with '-'.",
+            "pattern": "/^[a-z0-9][a-z0-9-]{0,15}$/"
+          }
+        },
+        "required": [
+          "region"
+        ]
+      },
+      "ProjectMoveDto": {
+        "type": "object",
+        "properties": {
+          "fromRegion": {
+            "type": "string"
+          },
+          "toRegion": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string",
+            "description": "marking, draining, copying, flipping, done, failed; empty when the project never moved."
+          },
+          "objectsTotal": {
+            "type": "number"
+          },
+          "objectsCopied": {
+            "type": "number"
+          },
+          "error": {
+            "type": "string",
+            "description": "Set when the step is failed; the move may be started again."
+          },
+          "startedAt": {
+            "type": "number",
+            "description": "Unix milliseconds; 0 when the project never moved."
+          },
+          "finishedAt": {
+            "type": "number",
+            "description": "Unix milliseconds; 0 while the move runs."
+          }
+        },
+        "required": [
+          "fromRegion",
+          "toRegion",
+          "step",
+          "objectsTotal",
+          "objectsCopied",
+          "error",
+          "startedAt",
+          "finishedAt"
+        ]
+      },
+      "ProjectPolicyDto": {
+        "type": "object",
+        "properties": {
+          "requestsPerSec": {
+            "type": "number",
+            "description": "Requests a node admits for the project per second, burst of the\nsame size; 0 is unbounded.",
+            "minimum": 0
+          },
+          "workUnitsPerSec": {
+            "type": "number",
+            "description": "Work units a node lets the project spend per second; 0 is unbounded.",
+            "minimum": 0
+          },
+          "egressAllow": {
+            "description": "Hosts outbound requests and dials may reach; a leading dot matches\nsubdomains. Empty admits everything not denied.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "egressDeny": {
+            "description": "Hosts refused before the allow list is consulted.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "requestsPerSec",
+          "workUnitsPerSec",
+          "egressAllow",
+          "egressDeny"
+        ]
+      },
       "CreateServiceTokenDto": {
         "type": "object",
         "properties": {
@@ -4840,6 +5246,73 @@
           "name",
           "ownerUsername",
           "createdAt"
+        ]
+      },
+      "RegionDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "A region token: one to sixteen of a-z, 0-9 and '-', not starting with '-'."
+          },
+          "dataPlaneAddr": {
+            "type": "string",
+            "description": "The region's data-plane ingress, host:port, what other regions forward to."
+          },
+          "bucket": {
+            "type": "string",
+            "description": "The region's object bucket."
+          },
+          "placementAddr": {
+            "type": "string",
+            "description": "The region's placement service as the control plane reaches it; a\nmove lists the project's objects there. Empty for the control\nplane's own region, which it reaches by its own setting."
+          },
+          "s3Endpoint": {
+            "type": "string",
+            "description": "The region's own object storage endpoint, when it is not the\ncontrol plane's; empty means the control plane's S3 settings reach\nthe bucket. The access key is shown; the secret never is."
+          },
+          "s3AccessKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "dataPlaneAddr",
+          "bucket",
+          "placementAddr",
+          "s3Endpoint",
+          "s3AccessKey"
+        ]
+      },
+      "PutRegionDto": {
+        "type": "object",
+        "properties": {
+          "dataPlaneAddr": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bucket": {
+            "type": "string",
+            "minLength": 1
+          },
+          "placementAddr": {
+            "type": "string"
+          },
+          "s3Endpoint": {
+            "type": "string",
+            "description": "The region's own S3 endpoint with its scheme; omit for the control plane's."
+          },
+          "s3AccessKey": {
+            "type": "string"
+          },
+          "s3SecretKey": {
+            "type": "string",
+            "description": "Write-only; never read back."
+          }
+        },
+        "required": [
+          "dataPlaneAddr",
+          "bucket"
         ]
       },
       "ResourceInstanceDto": {

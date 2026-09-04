@@ -56,6 +56,7 @@ const projectNav: { label: string; slug: string; icon: IconName }[] = [
   { label: 'Secrets', slug: 'secrets', icon: 'secrets' },
   { label: 'Members', slug: 'members', icon: 'members' },
   { label: 'Tokens', slug: 'tokens', icon: 'tokens' },
+  { label: 'Policy', slug: 'policy', icon: 'shield' },
 ];
 
 /** The landing's own sections, offered as anchors in the public bar so

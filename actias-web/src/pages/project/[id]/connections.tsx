@@ -40,89 +40,93 @@ function Connections({ project }: { project: ProjectDto }) {
   const nodes = new Set(all.map((row) => row.node)).size;
 
   return (
-    <div>
-      <div className={classes.headTop}>
-        <div className={classes.headMain}>
-          <div className={classes.pageHead}>
-            <h1 className={classes.pageTitle}>Connections</h1>
-            <DocsHint slug="runtime/sockets" label="Sockets" />
-            <StatePill state="live" color="var(--luna)" pulse />
+    <div className={classes.frame}>
+      <div className={classes.frameHead}>
+        <div className={classes.headTop}>
+          <div className={classes.headMain}>
+            <div className={classes.pageHead}>
+              <h1 className={classes.pageTitle}>Connections</h1>
+              <DocsHint slug="runtime/sockets" label="Sockets" />
+              <StatePill state="live" color="var(--luna)" pulse />
+            </div>
+            <p className={classes.lede}>
+              Wires open right now: the sockets clients hold to this project,
+              and the ones its code dialled outward. A connection keeps its wire
+              while its vm hibernates, so a quiet one is still here.
+            </p>
           </div>
-          <p className={classes.lede}>
-            Wires open right now: the sockets clients hold to this project, and
-            the ones its code dialled outward. A connection keeps its wire while
-            its vm hibernates, so a quiet one is still here.
-          </p>
+        </div>
+
+        <div className={classes.statRow}>
+          <StatCard label="Open" value={all.length} />
+          <StatCard label="Inbound" value={inbound.length} />
+          <StatCard
+            label="Outbound"
+            value={outbound.length}
+            tone="var(--viola)"
+          />
+          <StatCard label="Warm" value={warm} />
+          <StatCard label="Hibernated" value={hibernated} tone="var(--ink-3)" />
+          <StatCard label="Nodes" value={nodes} />
+        </div>
+
+        <div className={classes.tabRow}>
+          <FilterTabs<Tab>
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: 'all', label: 'All' },
+              {
+                value: 'inbound',
+                label: 'Inbound',
+                count: inbound.length || undefined,
+              },
+              {
+                value: 'outbound',
+                label: 'Outbound',
+                count: outbound.length || undefined,
+              },
+            ]}
+          />
         </div>
       </div>
 
-      <div className={classes.statRow}>
-        <StatCard label="Open" value={all.length} />
-        <StatCard label="Inbound" value={inbound.length} />
-        <StatCard
-          label="Outbound"
-          value={outbound.length}
-          tone="var(--viola)"
-        />
-        <StatCard label="Warm" value={warm} />
-        <StatCard label="Hibernated" value={hibernated} tone="var(--ink-3)" />
-        <StatCard label="Nodes" value={nodes} />
-      </div>
-
-      <div className={classes.tabRow}>
-        <FilterTabs<Tab>
-          value={tab}
-          onChange={setTab}
-          options={[
-            { value: 'all', label: 'All' },
-            {
-              value: 'inbound',
-              label: 'Inbound',
-              count: inbound.length || undefined,
-            },
-            {
-              value: 'outbound',
-              label: 'Outbound',
-              count: outbound.length || undefined,
-            },
-          ]}
-        />
-      </div>
-
-      <div className={classes.tableScroll}>
-        <div
-          className={classes.tableMin}
-          style={{ '--table-min': '980px' } as React.CSSProperties}
-        >
+      <div className={classes.splitSolo}>
+        <div className={classes.tableScroll}>
           <div
-            className={classes.tableHead}
-            style={{ gridTemplateColumns: COLUMNS }}
+            className={classes.tableMin}
+            style={{ '--table-min': '980px' } as React.CSSProperties}
           >
-            <span>class</span>
-            <span>speaks as</span>
-            <span>direction</span>
-            <span>peer</span>
-            <span>node</span>
-            <span>state</span>
-            <span style={{ textAlign: 'right' }}>follows</span>
-            <span style={{ textAlign: 'right' }}>opened</span>
-          </div>
-          {isLoading ? (
-            <div className={classes.emptyRows}>Asking every node.</div>
-          ) : shown.length === 0 ? (
-            <div className={classes.emptyRows}>
-              {all.length === 0 ? (
-                <EmptyState
-                  title="No wires open"
-                  body="A client's upgrade or a Class:open from your code puts one here, until it closes."
-                />
-              ) : (
-                'Nothing in this direction right now.'
-              )}
+            <div
+              className={classes.tableHead}
+              style={{ gridTemplateColumns: COLUMNS }}
+            >
+              <span>class</span>
+              <span>speaks as</span>
+              <span>direction</span>
+              <span>peer</span>
+              <span>node</span>
+              <span>state</span>
+              <span style={{ textAlign: 'right' }}>follows</span>
+              <span style={{ textAlign: 'right' }}>opened</span>
             </div>
-          ) : (
-            shown.map((row) => <Row key={row.id} row={row} />)
-          )}
+            {isLoading ? (
+              <div className={classes.emptyRows}>Asking every node.</div>
+            ) : shown.length === 0 ? (
+              <div className={classes.emptyRows}>
+                {all.length === 0 ? (
+                  <EmptyState
+                    title="No wires open"
+                    body="A client's upgrade or a Class:open from your code puts one here, until it closes."
+                  />
+                ) : (
+                  'Nothing in this direction right now.'
+                )}
+              </div>
+            ) : (
+              shown.map((row) => <Row key={row.id} row={row} />)
+            )}
+          </div>
         </div>
       </div>
     </div>

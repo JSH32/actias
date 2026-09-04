@@ -16,6 +16,7 @@ import { KvService } from './services/KvService';
 import { ObjectsService } from './services/ObjectsService';
 import { ProjectService } from './services/ProjectService';
 import { QueuesService } from './services/QueuesService';
+import { RegionsService } from './services/RegionsService';
 import { RevisionsService } from './services/RevisionsService';
 import { ScriptsService } from './services/ScriptsService';
 import { SecretsService } from './services/SecretsService';
@@ -39,6 +40,7 @@ export class ActiasClient {
     public readonly objects: ObjectsService;
     public readonly project: ProjectService;
     public readonly queues: QueuesService;
+    public readonly regions: RegionsService;
     public readonly revisions: RevisionsService;
     public readonly scripts: ScriptsService;
     public readonly secrets: SecretsService;
@@ -73,6 +75,7 @@ export class ActiasClient {
         this.objects = new ObjectsService(this.request);
         this.project = new ProjectService(this.request);
         this.queues = new QueuesService(this.request);
+        this.regions = new RegionsService(this.request);
         this.revisions = new RevisionsService(this.request);
         this.scripts = new ScriptsService(this.request);
         this.secrets = new SecretsService(this.request);

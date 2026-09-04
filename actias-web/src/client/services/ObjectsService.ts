@@ -24,9 +24,9 @@ export class ObjectsService {
     constructor(public readonly httpRequest: BaseHttpRequest) {}
 
     /**
-     * Instances the directory knows, filterable by class and name
+     * Instances the directory knows of one class, filterable by name
      * prefix, always paged, because a per-user class holds one instance
-     * per user.
+     * per user. The classes come from the counts endpoint.
      * @param project
      * @param _class
      * @param prefix
@@ -37,7 +37,7 @@ export class ObjectsService {
      */
     public listObjects(
         project: string,
-        _class?: string,
+        _class: string,
         prefix?: string,
         page?: number,
         pageSize?: number,
