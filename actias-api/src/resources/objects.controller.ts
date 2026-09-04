@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -51,13 +52,13 @@ export class ObjectsController {
 
   constructor(private readonly resources: ResourcesService) {}
 
-  /** Instances the directory knows, filterable by class and name
+  /** Instances the directory knows of one class, filterable by name
    * prefix, always paged, because a per-user class holds one instance
-   * per user. */
+   * per user. The classes come from the counts endpoint. */
   @Get()
   @AclByProject(AccessFields.SCRIPT_READ)
   @ApiParam({ name: 'project', schema: { type: 'string' }, type: 'string' })
-  @ApiQuery({ name: 'class', required: false, type: String })
+  @ApiQuery({ name: 'class', required: true, type: String })
   @ApiQuery({ name: 'prefix', required: false, type: String })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'pageSize', required: false, type: Number })
@@ -68,6 +69,11 @@ export class ObjectsController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
   ): Promise<ObjectPageDto> {
+    if (!className) {
+      throw new BadRequestException(
+        'A listing names its class; the classes endpoint lists them.',
+      );
+    }
     const scripts = await lastValueFrom(
       this.resources.scripts
         .listScripts({ projectId: project.id, pageSize: 500, page: 1 })
@@ -84,7 +90,7 @@ export class ObjectsController {
       this.resources.registry
         .listInstances({
           projectIds: [project.id],
-          class: className ?? '',
+          class: className,
           namePrefix: prefix ?? '',
           pageSize: clampPageSize(Number(pageSize)),
           page: Math.max(0, Math.floor(Number(page) || 0)),

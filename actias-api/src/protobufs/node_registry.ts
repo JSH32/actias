@@ -6,10 +6,10 @@ import { Observable } from 'rxjs';
 import { Metadata } from '@grpc/grpc-js';
 
 export namespace node_registry {
-    // Membership half of the placement store: every worker node announces
-    // itself here and proves liveness by heartbeat. Object leases will share
-    // this store later; today it answers &quot;which nodes are alive and how busy
-    // are they&quot;.
+    // The placement store, served by the placement service, one per region:
+    // every worker node announces itself here and proves liveness by
+    // heartbeat, claims objects under leases that live as long as it does,
+    // mirrors its alarms, and reads the instance directory.
     export interface NodeRegistryService {
         // A booting node introduces itself and receives its identity and the
     // cadence it must heartbeat at.
@@ -61,6 +61,33 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<Lease>;
+        // Raises the holder&#x27;s epoch to at least &#x60;at_least&#x60;: the wake path
+    // asks this when the store&#x27;s manifest (or deletion marker) sits at
+    // or above the epoch the claim minted, so the residency ships above
+    // everything the identity ever landed. Answers the lease as it
+    // stands; NOT_FOUND when the caller does not hold the object.
+        raiseEpoch(
+            data: RaiseEpochRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Lease>;
+        // The forwarding row for an object born here: a claim against it
+    // answers &#x60;moved_to&#x60; instead of a lease (FLEET.md 4.2).
+        setMove(
+            data: SetMoveRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
+        getMove(
+            data: MoveRef,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Move>;
+        clearMove(
+            data: MoveRef,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
         // A graceful shutdown&#x27;s goodbye: deletes the node row immediately,
     // freeing its leases through the same cascade age-out uses, so a
     // deploy never serves a minute of dead forwards while the ttl runs
@@ -85,6 +112,13 @@ export namespace node_registry {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<CountInstancesResponse>;
+        // One identity&#x27;s directory row; NOT_FOUND when nothing ever
+    // claimed it. The script service&#x27;s orphan fallback reads it.
+        getInstance(
+            data: InstanceRef,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ObjectInstance>;
         // Mirrors one object&#x27;s armed alarm; setting replaces. Written by the
     // hosting node asynchronously, OFF the call&#x27;s transaction, so a
     // spurious row (a rolled-back arm) only ever costs a wasted wake.
@@ -174,7 +208,8 @@ export namespace node_registry {
     }
     export interface ListInstancesRequest {
         projectIds?: string[];
-        // Only this class&#x27;s identities; empty lists every class.
+        // The class listed; required, so every listing is one class of one
+    // scope. The classes themselves come from CountInstances.
         class?: string;
         // Only names starting with this prefix; how a type-ahead picker
     // narrows a class too large to browse. Empty matches everything.
@@ -183,6 +218,11 @@ export namespace node_registry {
         pageSize?: number;
         // Zero-based page over the filtered, (class, name)-ordered rows.
         page?: number;
+    }
+    export interface InstanceRef {
+        scopeId?: string;
+        class?: string;
+        name?: string;
     }
     export interface CountInstancesRequest {
         projectIds?: string[];
@@ -224,6 +264,9 @@ export namespace node_registry {
         // Own-key of the creating object when the first claim originated
     // inside another object&#x27;s call; empty otherwise. Cascade data.
         createdBy?: string;
+        // The identity&#x27;s hash: the lease key, the file name, the store
+    // prefix. What a move copies by.
+        objectId?: string;
     }
     export interface ListInstancesResponse {
         instances?: node_registry.ObjectInstance[];
@@ -321,6 +364,29 @@ export namespace node_registry {
         // True when this claim created the directory row: a fresh identity,
     // the only kind an admission gate examines.
         fresh?: boolean;
+        // Set when this store, the object&#x27;s birth region, holds a forwarding
+    // row: the object lives in that region now, no lease was taken, and
+    // the caller forwards there once. Empty otherwise.
+        movedTo?: string;
+    }
+    // A forwarding row at the object&#x27;s birth region: where the object
+    // lives now. Written by a move, cleared when the object comes home.
+    export interface SetMoveRequest {
+        objectId?: string;
+        region?: string;
+    }
+    export interface MoveRef {
+        objectId?: string;
+    }
+    export interface Move {
+        objectId?: string;
+        // Empty when the object is at its birth region.
+        region?: string;
+    }
+    export interface RaiseEpochRequest {
+        objectId?: string;
+        nodeId?: string;
+        atLeast?: number;
     }
     export interface ReleaseLeaseRequest {
         objectId?: string;

@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { of } from 'rxjs';
 import { ObjectsController } from './objects.controller';
 import { ResourcesService, clampPageSize } from './resources.service';
@@ -57,18 +58,27 @@ describe('the directory page cap', () => {
     });
   });
 
-  it('defaults to a bounded first page when nothing is asked', async () => {
+  it('defaults to a bounded first page of the class', async () => {
     const { instance, listInstances } = controller();
 
-    await instance.listObjects(PROJECT);
+    await instance.listObjects(PROJECT, 'UserCart');
 
     expect(listInstances).toHaveBeenCalledWith({
       projectIds: ['project-1'],
-      class: '',
+      class: 'UserCart',
       namePrefix: '',
       pageSize: 100,
       page: 0,
     });
+  });
+
+  it('refuses a listing that names no class', async () => {
+    const { instance, listInstances } = controller();
+
+    await expect(instance.listObjects(PROJECT)).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(listInstances).not.toHaveBeenCalled();
   });
 });
 

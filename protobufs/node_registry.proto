@@ -4,10 +4,10 @@ import "google/protobuf/empty.proto";
 
 package node_registry;
 
-// Membership half of the placement store: every worker node announces
-// itself here and proves liveness by heartbeat. Object leases will share
-// this store later; today it answers "which nodes are alive and how busy
-// are they".
+// The placement store, served by the placement service, one per region:
+// every worker node announces itself here and proves liveness by
+// heartbeat, claims objects under leases that live as long as it does,
+// mirrors its alarms, and reads the instance directory.
 service NodeRegistryService {
     // A booting node introduces itself and receives its identity and the
     // cadence it must heartbeat at.
@@ -38,6 +38,19 @@ service NodeRegistryService {
     // with the freshest copy.
     rpc GetLease(GetLeaseRequest) returns (Lease);
 
+    // Raises the holder's epoch to at least `at_least`: the wake path
+    // asks this when the store's manifest (or deletion marker) sits at
+    // or above the epoch the claim minted, so the residency ships above
+    // everything the identity ever landed. Answers the lease as it
+    // stands; NOT_FOUND when the caller does not hold the object.
+    rpc RaiseEpoch(RaiseEpochRequest) returns (Lease);
+
+    // The forwarding row for an object born here: a claim against it
+    // answers `moved_to` instead of a lease (FLEET.md 4.2).
+    rpc SetMove(SetMoveRequest) returns (google.protobuf.Empty);
+    rpc GetMove(MoveRef) returns (Move);
+    rpc ClearMove(MoveRef) returns (google.protobuf.Empty);
+
     // A graceful shutdown's goodbye: deletes the node row immediately,
     // freeing its leases through the same cascade age-out uses, so a
     // deploy never serves a minute of dead forwards while the ttl runs
@@ -52,6 +65,9 @@ service NodeRegistryService {
     // How many directory identities each class holds, per project: what
     // a console rail shows before anyone asks for actual names.
     rpc CountInstances(CountInstancesRequest) returns (CountInstancesResponse);
+    // One identity's directory row; NOT_FOUND when nothing ever
+    // claimed it. The script service's orphan fallback reads it.
+    rpc GetInstance(InstanceRef) returns (ObjectInstance);
 
     // Mirrors one object's armed alarm; setting replaces. Written by the
     // hosting node asynchronously, OFF the call's transaction, so a
@@ -116,7 +132,8 @@ message Departure {
 
 message ListInstancesRequest {
     repeated string project_ids = 1;
-    // Only this class's identities; empty lists every class.
+    // The class listed; required, so every listing is one class of one
+    // scope. The classes themselves come from CountInstances.
     string class = 2;
     // Only names starting with this prefix; how a type-ahead picker
     // narrows a class too large to browse. Empty matches everything.
@@ -125,6 +142,12 @@ message ListInstancesRequest {
     uint32 page_size = 4;
     // Zero-based page over the filtered, (class, name)-ordered rows.
     uint32 page = 5;
+}
+
+message InstanceRef {
+    string scope_id = 1;
+    string class = 2;
+    string name = 3;
 }
 
 message CountInstancesRequest {
@@ -170,6 +193,9 @@ message ObjectInstance {
     // Own-key of the creating object when the first claim originated
     // inside another object's call; empty otherwise. Cascade data.
     string created_by = 10;
+    // The identity's hash: the lease key, the file name, the store
+    // prefix. What a move copies by.
+    string object_id = 11;
 }
 
 message ListInstancesResponse {
@@ -279,6 +305,33 @@ message Lease {
     // True when this claim created the directory row: a fresh identity,
     // the only kind an admission gate examines.
     bool fresh = 5;
+    // Set when this store, the object's birth region, holds a forwarding
+    // row: the object lives in that region now, no lease was taken, and
+    // the caller forwards there once. Empty otherwise.
+    string moved_to = 6;
+}
+
+// A forwarding row at the object's birth region: where the object
+// lives now. Written by a move, cleared when the object comes home.
+message SetMoveRequest {
+    string object_id = 1;
+    string region = 2;
+}
+
+message MoveRef {
+    string object_id = 1;
+}
+
+message Move {
+    string object_id = 1;
+    // Empty when the object is at its birth region.
+    string region = 2;
+}
+
+message RaiseEpochRequest {
+    string object_id = 1;
+    string node_id = 2;
+    uint64 at_least = 3;
 }
 
 message ReleaseLeaseRequest {
