@@ -72,6 +72,10 @@ jobs:
             context: .
             dockerfile: ./docker/Dockerfile.rust
             build-args: "CRATE_NAME=actias-kv"
+          - name: actias_placement_service
+            context: .
+            dockerfile: ./docker/Dockerfile.rust
+            build-args: "CRATE_NAME=actias-placement"
           - name: actias_worker_service
             context: .
             dockerfile: ./docker/Dockerfile.rust

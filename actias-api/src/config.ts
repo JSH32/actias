@@ -2,10 +2,16 @@ export default () => ({
   port: parseInt(process.env.PORT, 10),
   externalServices: {
     scriptServiceUri: process.env.SCRIPT_SERVICE_URL,
+    placementServiceUri: process.env.PLACEMENT_SERVICE_URL,
     kvServiceUri: process.env.KV_SERVICE_URL,
     secretServiceUri: process.env.SECRET_SERVICE_URL,
   },
   databaseUrl: process.env.DATABASE_URL,
+  // A read replica for the console's reads; the primary when unset.
+  readDatabaseUrl: process.env.READ_DATABASE_URL || undefined,
+  // The region this control plane runs in: the home of a project created
+  // through it when the regional ingress sent no x-actias-region.
+  region: process.env.REGION || 'local',
   jwtKey: process.env.JWT_KEY,
   webOrigin: process.env.WEB_ORIGIN,
   // Cluster-internal worker access for dashboard work: object dispatch

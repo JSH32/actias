@@ -13,3 +13,9 @@ SELECT 'CREATE DATABASE actias_secret_service'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'actias_secret_service')\gexec
 SELECT 'CREATE DATABASE actias_kv'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'actias_kv')\gexec
+SELECT 'CREATE DATABASE actias_placement'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'actias_placement')\gexec
+-- A second region's placement store, for the two-region compose
+-- overlay (docker-compose.regions.yml); harmless on a single region.
+SELECT 'CREATE DATABASE actias_placement_b'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'actias_placement_b')\gexec

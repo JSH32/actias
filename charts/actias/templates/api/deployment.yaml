@@ -49,6 +49,10 @@ spec:
               value: "{{ $full }}-script:3000"
             - name: KV_SERVICE_URL
               value: "{{ $full }}-kv:3000"
+            - name: PLACEMENT_SERVICE_URL
+              value: "{{ $full }}-placement:3000"
+            - name: REGION
+              value: {{ .Values.placement.region | quote }}
             - name: SECRET_SERVICE_URL
               value: "{{ $full }}-secret:3000"
             # Dashboard object dispatch and typed reads go straight to a

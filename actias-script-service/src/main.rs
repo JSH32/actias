@@ -1,9 +1,9 @@
 //! The script service binary: the control plane's record of projects,
-//! scripts, revisions and bundles, plus the node registry workers
-//! heartbeat into. Also its own migrator, under `--migrate`.
+//! scripts, revisions, bundles and project policy. Also its own
+//! migrator, under `--migrate`.
 
 use crate::live_script::LiveScriptManager;
-use crate::proto_node_registry::node_registry_service_server::NodeRegistryServiceServer;
+use crate::proto_node_registry::node_registry_service_client::NodeRegistryServiceClient;
 use crate::proto_script_service::script_service_server::ScriptServiceServer;
 use crate::{config::Config, script_service::ScriptService};
 use actias_common::setup_tracing;
@@ -15,7 +15,7 @@ mod blob_store;
 mod config;
 mod database_types;
 mod live_script;
-mod node_registry;
+mod mover;
 mod script_service;
 mod util;
 
@@ -57,6 +57,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Script Service listening on {}", addr);
 
     let pool = PgPoolOptions::new().connect(&config.database_url).await?;
+    // Worker-facing reads go to a regional replica when there is one.
+    let reads = match &config.read_database_url {
+        Some(url) => {
+            info!("worker-facing reads use the read replica");
+            PgPoolOptions::new()
+                .max_connections(20)
+                .connect(url)
+                .await?
+        }
+        None => pool.clone(),
+    };
     let live_script_manager = LiveScriptManager::new(&config.redis_url);
 
     let blobs = blob_store::BlobStore::new(blob_store::BlobStoreConfig {
@@ -74,30 +85,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_service_status("", tonic_health::ServingStatus::Serving)
         .await;
 
-    // The age-out sweep on its own timer: several beats per ttl, so a
-    // dead node's rows go without any claim paying for the delete.
-    let sweeper = node_registry::NodeRegistry::new(pool.clone(), config.node_ttl_secs);
-    tokio::spawn(async move {
-        let period = std::time::Duration::from_secs((config.node_ttl_secs / 3).max(1) as u64);
-        loop {
-            tokio::time::sleep(period).await;
-            if let Err(error) = sweeper.reap_expired().await {
-                actias_common::tracing::warn!(%error, "node age-out sweep failed");
-            }
-        }
-    });
+    // The placement service, for the instance directory's orphan
+    // fallback; lazy, so booting never waits on it.
+    let placement = NodeRegistryServiceClient::new(
+        tonic::transport::Endpoint::from_shared(config.placement_service_uri.clone())?
+            .connect_lazy(),
+    );
 
     Server::builder()
         .layer(actias_common::otel::TraceExtract)
         .add_service(health_service)
         .add_service(ScriptServiceServer::new(ScriptService::new(
-            pool.clone(),
+            script_service::Databases {
+                writes: pool.clone(),
+                reads,
+            },
             live_script_manager,
             blobs,
+            placement,
+            config.region.clone(),
+            config.placement_service_uri.clone(),
+            std::time::Duration::from_secs(config.move_drain_secs),
         )))
-        .add_service(NodeRegistryServiceServer::new(
-            node_registry::NodeRegistry::new(pool, config.node_ttl_secs),
-        ))
         .serve(addr)
         .await?;
 

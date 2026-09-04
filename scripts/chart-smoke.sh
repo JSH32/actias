@@ -73,7 +73,7 @@ kubectl config use-context "kind-$CLUSTER" >/dev/null
 echo "== loading images into the cluster"
 # Every image the chart references, so nothing is pulled from a registry
 # the CI runner may not reach.
-for image in actias_script_service actias_secret_service actias_kv_service \
+for image in actias_script_service actias_secret_service actias_kv_service actias_placement_service \
              actias_api actias_web actias_worker_service; do
     ref="$REGISTRY/$image:$IMAGE_TAG"
     docker image inspect "$ref" >/dev/null 2>&1 \

@@ -439,15 +439,67 @@ echo "== lifecycle: destroy from inside, recreate fresh, expire, refuse"
 # sql. Deletion leaves NOTHING behind: epochs come from a sequence, so
 # the fence a recreated name has to clear is the sequence's own forward
 # march rather than a row anybody has to keep.
-pg() { compose exec -T postgres psql -U actias -d actias_script_service -tA -c "$1"; }
+# The placement peeks speak whichever backend the stack runs. On
+# postgres, one query. On scylla, the same fact from the region-local
+# keyspace: instances partition by (scope, class), so the peek names
+# the project; leases and alarms are by object id; a join is two
+# lookups. cqlsh prints a table; the last data row is the value.
+PLACEMENT_BACKEND="${PLACEMENT_BACKEND:-postgres}"
+pg() { compose exec -T postgres psql -U actias -d actias_placement -tA -c "$1"; }
+cql() {
+    compose exec -T scylla cqlsh --no-color -e "$1" 2>/dev/null \
+        | awk 'NR > 3 && !/^\(.* rows?\)/ && NF { gsub(/^ +| +$/, ""); print }'
+}
+# The object id an instance carries; empty when no row.
+peek_object_id() {
+    if [ "$PLACEMENT_BACKEND" = scylla ]; then
+        cql "SELECT object_id FROM placement.instances WHERE scope_id = $PROJECT_ID AND class = '$1' AND name = '$2'"
+    else
+        pg "SELECT object_id FROM object_instances WHERE class='$1' AND name='$2'"
+    fi
+}
+# How many instance rows a (class, name) has: 0 or 1.
+peek_instances() {
+    if [ "$PLACEMENT_BACKEND" = scylla ]; then
+        cql "SELECT name FROM placement.instances WHERE scope_id = $PROJECT_ID AND class = '$1' AND name = '$2'" | wc -l
+    else
+        pg "SELECT count(*) FROM object_instances WHERE class='$1' AND name='$2'"
+    fi
+}
+# The lease epoch an object id holds, 0 when unheld.
+peek_epoch() {
+    local epoch
+    if [ "$PLACEMENT_BACKEND" = scylla ]; then
+        epoch=$(cql "SELECT epoch FROM placement.leases WHERE object_id = '$1'")
+    else
+        epoch=$(pg "SELECT COALESCE(MAX(epoch),0) FROM leases WHERE object_id='$1'")
+    fi
+    echo "${epoch:-0}"
+}
+# How many leases an object id has: 0 or 1.
+peek_leases() {
+    if [ "$PLACEMENT_BACKEND" = scylla ]; then
+        cql "SELECT node_id FROM placement.leases WHERE object_id = '$1'" | wc -l
+    else
+        pg "SELECT count(*) FROM leases WHERE object_id='$1'"
+    fi
+}
+# How many alarms an object id has: 0 or 1.
+peek_alarms() {
+    if [ "$PLACEMENT_BACKEND" = scylla ]; then
+        cql "SELECT due_ms FROM placement.alarms_by_object WHERE object_id = '$1'" | wc -l
+    else
+        pg "SELECT count(*) FROM object_alarms WHERE object_id='$1'"
+    fi
+}
 
 T1=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
 T2=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
 [ "$T2" = 2 ] 2>/dev/null \
     || { echo "the store-face counter did not accumulate ($T1 -> '$T2')"; exit 1; }
-VISIT_HASH=$(pg "SELECT object_id FROM object_instances WHERE class='Visit' AND name='roomy'")
+VISIT_HASH=$(peek_object_id Visit roomy)
 [ -n "$VISIT_HASH" ] || { echo "the directory never learned the identity hash"; exit 1; }
-EPOCH_BEFORE=$(pg "SELECT COALESCE(MAX(epoch),0) FROM leases WHERE object_id='$VISIT_HASH'")
+EPOCH_BEFORE=$(peek_epoch "$VISIT_HASH")
 
 # Destroy answers first: the reply carries the state the object died with.
 FIN=$(curl -sf "$WORKER/$IDENT/visit?name=roomy&act=finish" | jq .finished)
@@ -458,14 +510,14 @@ FIN=$(curl -sf "$WORKER/$IDENT/visit?name=roomy&act=finish" | jq .finished)
 # all empty, with nothing at all left behind for the identity.
 LEFT=1
 for _ in $(seq 1 20); do
-    LEFT=$(pg "SELECT count(*) FROM object_instances WHERE class='Visit' AND name='roomy'")
+    LEFT=$(peek_instances Visit roomy)
     [ "$LEFT" = 0 ] && break
     sleep 2
 done
 [ "$LEFT" = 0 ] || { echo "the destroyed instance never left the directory"; exit 1; }
-[ "$(pg "SELECT count(*) FROM leases WHERE object_id='$VISIT_HASH'")" = 0 ] \
+[ "$(peek_leases "$VISIT_HASH")" = 0 ] \
     || { echo "a lease outlived the object"; exit 1; }
-[ "$(pg "SELECT count(*) FROM object_alarms WHERE object_id='$VISIT_HASH'")" = 0 ] \
+[ "$(peek_alarms "$VISIT_HASH")" = 0 ] \
     || { echo "an alarm outlived the object"; exit 1; }
 # The name is legal again and starts fresh: forget, never a ban. Its
 # new residency must also claim ABOVE the epoch the old one held, or
@@ -473,7 +525,7 @@ done
 T3=$(curl -sf "$WORKER/$IDENT/visit?name=roomy" | jq .touched)
 [ "$T3" = 1 ] 2>/dev/null \
     || { echo "recreation did not start fresh (touched '$T3')"; exit 1; }
-EPOCH_AFTER=$(pg "SELECT COALESCE(MAX(epoch),0) FROM leases WHERE object_id='$VISIT_HASH'")
+EPOCH_AFTER=$(peek_epoch "$VISIT_HASH")
 [ "$EPOCH_AFTER" -gt "$EPOCH_BEFORE" ] 2>/dev/null \
     || { echo "the reborn name did not claim above its tombstone ($EPOCH_BEFORE -> '$EPOCH_AFTER')"; exit 1; }
 
@@ -481,7 +533,7 @@ EPOCH_AFTER=$(pg "SELECT COALESCE(MAX(epoch),0) FROM leases WHERE object_id='$VI
 curl -sf "$WORKER/$IDENT/visit?name=brief" -o /dev/null
 SWEPT=1
 for _ in $(seq 1 20); do
-    SWEPT=$(pg "SELECT count(*) FROM object_instances WHERE class='Visit' AND name='brief'")
+    SWEPT=$(peek_instances Visit brief)
     [ "$SWEPT" = 0 ] && break
     sleep 2
 done
@@ -491,9 +543,9 @@ done
 REFUSED_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$WORKER/$IDENT/visit?name=zz")
 [ "$REFUSED_CODE" != 200 ] \
     || { echo "the admission gate admitted a two-letter name"; exit 1; }
-[ "$(pg "SELECT count(*) FROM object_instances WHERE class='Visit' AND name='zz'")" = 0 ] \
+[ "$(peek_instances Visit zz)" = 0 ] \
     || { echo "a refused name reached the directory"; exit 1; }
-[ "$(pg "SELECT count(*) FROM leases l JOIN object_instances i ON i.object_id = l.object_id WHERE i.class='Visit' AND i.name='zz'")" = 0 ] \
+[ "$(peek_leases "$(peek_object_id Visit zz)")" = 0 ] \
     || { echo "a refused name left a lease"; exit 1; }
 echo "lifecycle round-tripped: destroy answered $FIN, rebirth claimed $EPOCH_BEFORE -> $EPOCH_AFTER, recreation fresh, expiry swept, refusal residue-free"
 
@@ -775,10 +827,20 @@ done
 echo "returned node forwards to the new home: $HD"
 
 echo "== reads on the non-holder serve from the replica"
-# The object now lives on worker two; worker one's db reads must answer
-# locally from a restored snapshot, never entering the owner's mailbox.
-# The request above already exercised them; the counter is the witness.
-REPLICA_READS=$(curl -sf "$WORKER/_metrics" | sed -n 's/^actias_replica_reads_total //p')
+# The object now lives on worker two, and worker one is back as a new
+# node with a wiped disk. The owner's replica set lost it twice over;
+# once the membership snapshot lists the newcomer, a flight adds it and
+# the next lays the generation there, after which worker one's db reads
+# answer locally from that copy, never entering the owner's mailbox.
+# Each request here bumps (one flight) and reads; the counter is the
+# witness.
+REPLICA_READS=""
+for _ in $(seq 1 30); do
+    curl -sf "$WORKER/$IDENT/" >/dev/null 2>&1
+    REPLICA_READS=$(curl -sf "$WORKER/_metrics" | sed -n 's/^actias_replica_reads_total //p')
+    [ -n "$REPLICA_READS" ] && [ "$REPLICA_READS" -ge 1 ] 2>/dev/null && break
+    sleep 2
+done
 [ -n "$REPLICA_READS" ] && [ "$REPLICA_READS" -ge 1 ] 2>/dev/null \
     || { echo "the non-holder served no replica reads (got '$REPLICA_READS')"; exit 1; }
 echo "worker one answered $REPLICA_READS read(s) from its replica"

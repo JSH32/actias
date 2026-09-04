@@ -38,3 +38,6 @@ prost-build = { workspace = true }
 
 [dev-dependencies]
 testcontainers-modules = { version = "0.15.0", features = ["redis", "postgres", "minio"] }
+# The orphan fallback reads the placement store; its tests serve one in-process.
+actias-placement = { path = "../actias-placement" }
+tokio-stream = "0.1"

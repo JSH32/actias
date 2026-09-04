@@ -27,6 +27,7 @@ differs:
   (dict "name" "script" "component" .Values.scriptService "database" "actias_script_service" "command" (list "/app/target" "--migrate"))
   (dict "name" "secret" "component" .Values.secretService "database" "actias_secret_service" "command" (list "/app/target" "--migrate"))
   (dict "name" "kv" "component" .Values.kv "database" "actias_kv" "command" (list "/app/target" "--migrate"))
+  (dict "name" "placement" "component" .Values.placement "placement" true "command" (list "/app/target" "--migrate"))
   (dict "name" "api" "component" .Values.api "database" "actias_api" "command" (list "npx" "mikro-orm" "migration:up"))
 }}
 {{- range $job := $jobs }}
@@ -68,5 +69,9 @@ spec:
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command: {{ toYaml $job.command | nindent 12 }}
           env:
+            {{- if $job.placement }}
+            {{- include "actias.placementStoreEnv" $ | nindent 12 }}
+            {{- else }}
             {{- include "actias.databaseUrlEnv" (dict "root" $ "database" $job.database) | nindent 12 }}
+            {{- end }}
 {{- end }}

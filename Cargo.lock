@@ -25,6 +25,7 @@ dependencies = [
  "prettytable-rs",
  "progenitor",
  "prost 0.13.5",
+ "regress",
  "reqwest 0.11.27",
  "rustyline",
  "schemars 0.8.22",
@@ -93,11 +94,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "actias-placement"
+version = "0.1.0"
+dependencies = [
+ "actias-common",
+ "async-trait",
+ "include_dir",
+ "prost 0.13.5",
+ "scylla",
+ "serial_test",
+ "sqlx 0.7.2",
+ "testcontainers",
+ "testcontainers-modules",
+ "tokio",
+ "tonic 0.13.0",
+ "tonic-build",
+ "tonic-health",
+ "uuid",
+]
+
+[[package]]
 name = "actias-script-service"
 version = "0.1.0"
 dependencies = [
  "actias-common",
  "actias-declarations",
+ "actias-placement",
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
@@ -111,6 +133,7 @@ dependencies = [
  "sqlx 0.7.2",
  "testcontainers-modules",
  "tokio",
+ "tokio-stream",
  "tonic 0.13.0",
  "tonic-build",
  "tonic-health",

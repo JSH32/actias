@@ -23,6 +23,7 @@ COPY ./actias-secret-service ./actias-secret-service
 COPY ./actias-worker ./actias-worker
 COPY ./actias-worker-core ./actias-worker-core
 COPY ./actias-kv ./actias-kv
+COPY ./actias-placement ./actias-placement
 COPY ./actias-cli ./actias-cli
 RUN cargo chef prepare --recipe-path recipe.json
 

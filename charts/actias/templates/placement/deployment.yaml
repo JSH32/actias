@@ -1,0 +1,74 @@
+{{- $name := printf "%s-placement" (include "actias.fullname" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "placement") | nindent 4 }}
+spec:
+  ports:
+    - name: grpc
+      port: 3000
+      targetPort: grpc
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "placement") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "placement") | nindent 4 }}
+spec:
+  replicas: {{ .Values.placement.replicas }}
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "placement") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" . "component" "placement") | nindent 8 }}
+    spec:
+      {{- include "actias.scheduling" (dict "root" . "component" .Values.placement) | nindent 6 }}
+      initContainers:
+        {{- include "actias.waitFor" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.placement)) "name" "postgres" "host" (include "actias.postgresHost" .) "port" (include "actias.postgresPort" .)) | nindent 8 }}
+      containers:
+        - name: placement-service
+          image: {{ include "actias.image" (dict "root" . "component" .Values.placement) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: PORT
+              value: "3000"
+            {{- include "actias.placementStoreEnv" . | nindent 12 }}
+            - name: REGION
+              value: {{ .Values.placement.region | quote }}
+            # Leases live this long past a heartbeat, so it bounds how
+            # long a crashed worker's objects stay unreachable.
+            - name: NODE_TTL_SECS
+              value: {{ .Values.placement.nodeTtlSecs | quote }}
+            {{- include "actias.otelEnv" (dict "root" . "service" "actias_placement_service") | nindent 12 }}
+            {{- with .Values.placement.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: 3000
+          readinessProbe:
+            grpc:
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          {{- with .Values.placement.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.placement.extraVolumeMounts }}
+          volumeMounts: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.placement.extraVolumes }}
+      volumes: {{- toYaml . | nindent 8 }}
+      {{- end }}

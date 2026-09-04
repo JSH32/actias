@@ -1,0 +1,31 @@
+[package]
+name = "actias-placement"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+actias-common = { workspace = true, features = ["otel", "postgres"] }
+uuid = { version = "1.2.2", features = ["v4"] }
+sqlx = { version = "0.7", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "migrate",
+] }
+
+async-trait = "0.1.92"
+scylla = "1"
+include_dir = "0.7"
+prost = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tonic-health = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
+
+[dev-dependencies]
+testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
+testcontainers = "0.27"
+serial_test = "3"

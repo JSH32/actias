@@ -27,8 +27,8 @@ import { ConnectionsController } from './connections.controller';
         'NODE_REGISTRY',
         'node_registry',
         ['google/protobuf/empty.proto', `${protoBasePath}/node_registry.proto`],
-        // The registry lives inside the script service binary.
-        'externalServices.scriptServiceUri',
+        // The region's placement service.
+        'externalServices.placementServiceUri',
       ),
     ),
     ClientsModule.registerAsync(

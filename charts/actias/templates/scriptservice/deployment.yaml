@@ -45,10 +45,10 @@ spec:
             - name: REDIS_URL
               value: {{ include "actias.redisUrl" . | quote }}
             {{- include "actias.s3Env" . | nindent 12 }}
-            # Leases live this long past a heartbeat, so it bounds how
-            # long a crashed worker's objects stay unreachable.
-            - name: NODE_TTL_SECS
-              value: {{ .Values.scriptService.nodeTtlSecs | quote }}
+            - name: PLACEMENT_SERVICE_URI
+              value: "http://{{ include "actias.fullname" . }}-placement:3000"
+            - name: REGION
+              value: {{ .Values.placement.region | quote }}
             {{- include "actias.otelEnv" (dict "root" . "service" "actias_script_service") | nindent 12 }}
             {{- with .Values.scriptService.extraEnv }}
             {{- toYaml . | nindent 12 }}
