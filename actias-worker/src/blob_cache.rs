@@ -28,6 +28,24 @@ pub struct BlobCache {
 
 /// One configured client for the platform's object storage; shared by the
 /// hash-keyed blob cache and the object snapshot shipper.
+/// Makes sure `bucket` exists. Creating an existing bucket is a
+/// conflict, not a failure; anything else is a connectivity or
+/// credential problem, and this runs at boot, where dying loudly is
+/// the right outcome.
+///
+/// # Panics
+/// When the bucket can neither be found nor created.
+pub async fn ensure_bucket(client: &aws_sdk_s3::Client, bucket: &str) {
+    if let Err(error) = client.create_bucket().bucket(bucket).send().await {
+        let service_error = error.into_service_error();
+        if !service_error.is_bucket_already_owned_by_you()
+            && !service_error.is_bucket_already_exists()
+        {
+            panic!("object bucket '{bucket}' could not be ensured: {service_error}");
+        }
+    }
+}
+
 pub fn s3_client(endpoint: &str, access_key: &str, secret_key: &str) -> aws_sdk_s3::Client {
     let credentials =
         aws_credential_types::Credentials::new(access_key, secret_key, None, None, "worker");

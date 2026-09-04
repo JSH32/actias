@@ -502,6 +502,10 @@ export namespace worker_data {
     // the home is stale, and it should re-resolve instead of retrying
     // here. &#x60;error&#x60; still carries a message for logs.
         wrongHome?: boolean;
+        // Set when this node is in the object&#x27;s birth region and the object
+    // lives in another region now: the caller remembers the region and
+    // forwards there once (FLEET.md 4.2). &#x60;error&#x60; says so for logs.
+        movedTo?: string;
     }
     // What one read asks for; ReadStats and ReadJournal share it because
     // both name an object and route the same way.

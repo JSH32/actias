@@ -32,6 +32,7 @@ impl From<BlobStoreError> for tonic::Status {
 /// Object storage scoped to one bucket of hash-keyed blobs. Only platform
 /// services reach it; client bytes arrive through the api, which is what
 /// keeps every stored hash server-computed.
+#[derive(Clone)]
 pub struct BlobStore {
     client: aws_sdk_s3::Client,
     bucket: String,
@@ -138,6 +139,118 @@ impl BlobStore {
             .await
             .map(|data| data.into_bytes().to_vec())
             .map_err(|e| BlobStoreError::Storage(e.to_string()))
+    }
+
+    /// A client for a region's own object storage, with its credentials;
+    /// this store's own client when the region has none of its own.
+    pub fn region_client(
+        &self,
+        endpoint: &str,
+        access_key: &str,
+        secret_key: &str,
+    ) -> aws_sdk_s3::Client {
+        if endpoint.is_empty() {
+            return self.client.clone();
+        }
+        Self::client_for(
+            &BlobStoreConfig {
+                endpoint: endpoint.to_owned(),
+                access_key: access_key.to_owned(),
+                secret_key: secret_key.to_owned(),
+                bucket: String::new(),
+            },
+            endpoint,
+        )
+    }
+
+    /// Copies every object under `prefix` modified after `since_ms`
+    /// from one bucket to another, `manifest.json` files last so a
+    /// reader of the target never sees a manifest whose chunks are not
+    /// there yet. On one endpoint the copy is server side; across two
+    /// it streams through this process. Idempotent: an existing target
+    /// key is overwritten with the same content-addressed bytes. Returns
+    /// the keys copied and the newest modification time seen, so a
+    /// caller can copy again from there until a pass copies nothing.
+    ///
+    /// # Errors
+    /// Returns [`BlobStoreError::Storage`] with the store's message.
+    pub async fn copy_prefix_between(
+        from: &aws_sdk_s3::Client,
+        from_bucket: &str,
+        to: &aws_sdk_s3::Client,
+        to_bucket: &str,
+        same_endpoint: bool,
+        prefix: &str,
+        since_ms: i64,
+    ) -> Result<(u64, i64), BlobStoreError> {
+        let mut keys = Vec::new();
+        let mut newest = since_ms;
+        let mut token: Option<String> = None;
+        loop {
+            let mut request = from.list_objects_v2().bucket(from_bucket).prefix(prefix);
+            if let Some(next) = token.take() {
+                request = request.continuation_token(next);
+            }
+            let page = request
+                .send()
+                .await
+                .map_err(|e| BlobStoreError::Storage(e.into_service_error().to_string()))?;
+            for object in page.contents() {
+                let Some(key) = object.key() else { continue };
+                let modified_ms = object
+                    .last_modified()
+                    .map(|at| at.to_millis().unwrap_or(0))
+                    .unwrap_or(0);
+                if modified_ms > since_ms {
+                    keys.push(key.to_owned());
+                    newest = newest.max(modified_ms);
+                }
+            }
+            match page.next_continuation_token() {
+                Some(next) if page.is_truncated().unwrap_or(false) => {
+                    token = Some(next.to_owned());
+                }
+                _ => break,
+            }
+        }
+        let (manifests, rest): (Vec<String>, Vec<String>) = keys
+            .into_iter()
+            .partition(|key| key.ends_with("/manifest.json"));
+        let mut copied = 0u64;
+        for key in rest.into_iter().chain(manifests) {
+            if same_endpoint {
+                to.copy_object()
+                    .bucket(to_bucket)
+                    .key(&key)
+                    .copy_source(format!("{from_bucket}/{key}"))
+                    .send()
+                    .await
+                    .map_err(|e| BlobStoreError::Storage(e.into_service_error().to_string()))?;
+            } else {
+                let object = from
+                    .get_object()
+                    .bucket(from_bucket)
+                    .key(&key)
+                    .send()
+                    .await
+                    .map_err(|e| BlobStoreError::Storage(e.into_service_error().to_string()))?;
+                let bytes = object
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|e| BlobStoreError::Storage(e.to_string()))?
+                    .into_bytes();
+                to.put_object()
+                    .bucket(to_bucket)
+                    .key(&key)
+                    .body(ByteStream::from(bytes))
+                    .send()
+                    .await
+                    .map_err(|e| BlobStoreError::Storage(e.into_service_error().to_string()))?;
+            }
+            copied += 1;
+        }
+        Ok((copied, newest))
     }
 
     /// Size in bytes of the blob with this hash, or [`None`] when it is not

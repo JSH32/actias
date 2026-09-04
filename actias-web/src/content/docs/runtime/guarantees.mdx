@@ -97,6 +97,7 @@ Defaults, all operator-tunable on a self-hosted worker.
     <tr><td>Object call chain</td><td>32 deep; an object calling itself, directly or through others, is a cycle</td><td>refused, naming the cycle or the depth</td></tr>
     <tr><td>Writes from one request</td><td>answered at commit; the response waits once for all of them; a later <code>read</code> of the same object in that request sees them</td><td>a write that cannot be confirmed makes the whole response fail with an unknown outcome</td></tr>
     <tr><td>Database <code>read</code> anywhere</td><td>sees every write answered before it began, whichever node serves it</td><td>nothing</td></tr>
+    <tr><td>Any reply from an object</td><td>waits while the object has writes still in flight, whoever wrote them; a settled object answers at once</td><td>the same unknown outcome as a write, after the durability gate's ten seconds</td></tr>
     <tr><td>Durability gate</td><td>10 seconds for a write to reach a quorum of its replicas, or the store</td><td>the call fails with an unknown outcome; the write keeps trying to ship</td></tr>
     <tr><td>Object idle</td><td>300 seconds without a call, delivery or alarm</td><td>the instance goes cold; the next call wakes it</td></tr>
     <tr><td><code>state.store</code> value</td><td>65,536 bytes as stored text</td><td>refused, naming the key</td></tr>
@@ -110,6 +111,11 @@ Defaults, all operator-tunable on a self-hosted worker.
     <tr><td><code>conn.state</code></td><td>64 KB serialized</td><td>the handler raises and the connection ends; a bigger session belongs in an object</td></tr>
     <tr><td>Connection idle</td><td>300 seconds</td><td>the vm hibernates; the socket stays open</td></tr>
     <tr><td>Directory row</td><td>4 KB encoded, 5 ms to derive</td><td>the derivation fails; the last good row stands</td></tr>
+    <tr><td>Requests per second</td><td>unbounded by default; a project policy sets a rate, burst of the same size</td><td>429 with <code>Retry-After</code>; the refusal costs no vm</td></tr>
+    <tr><td>Work units per second</td><td>unbounded by default; a project policy sets a rate, charged after each call</td><td>the project is in debt and refused until it refills</td></tr>
+    <tr><td>A node's pools</td><td>requests, blocking work, connections, resident objects, directory queries, shipping lanes, each split fairly among the projects using the node with a floor of 5%</td><td>over its share a project is refused with 429; under contention the floor is what it keeps</td></tr>
+    <tr><td>Egress hosts</td><td>a project's deny list, then its allow list (empty admits everything not denied), then the node's own policy: private and local addresses are refused unless the operator allows them</td><td>the request or dial is refused, naming the rule</td></tr>
+    <tr><td>Cross-region call</td><td>one hop to the object's region</td><td>one region's round trip added; a project being moved answers "moving", retryably</td></tr>
   </tbody>
 </table>
 
@@ -132,9 +138,14 @@ warm.
 A hard crash cannot take back a call the platform answered. A method
 that wrote is not answered until its writes have reached durable
 storage off the machine: a quorum of the object's replica nodes, or
-the blob store when there are none. Anything you were told succeeded
-survives the loss of the node that ran it, and the next node to hold
-the object takes it over from a replica without touching the store.
+the blob store when there are none. Nor is any other reply from that
+object while those writes are still in flight: a read, a method that
+wrote nothing, a database read served from the object's own file, all
+wait the same few milliseconds, so nothing outside the object ever
+acts on state a crash could take back. Anything you were told
+succeeded survives the loss of the node that ran it, and the next
+node to hold the object takes it over from a replica without touching
+the store.
 
 <table>
   <thead>
@@ -145,5 +156,6 @@ the object takes it over from a replica without touching the store.
     <tr><td>a machine crashes</td><td>every answered call; alarms re-arm from storage, runs resume from their journal, queue messages redeliver, subscriptions follow their follower's rehoming</td><td>calls still waiting for an answer (the caller sees an unknown outcome) and platform work with no caller, such as an alarm handler's writes</td></tr>
     <tr><td>durable storage is unreachable</td><td>reads keep answering</td><td>writes stop being acknowledged: the call fails with an unknown outcome after ten seconds while the platform keeps trying to store it, so a retry needs the same idempotence any timed-out request needs</td></tr>
     <tr><td>a node goes away</td><td>objects, runs, queues</td><td>connections: clients reconnect and re-follow, which happens often enough (deploys, scaling) to be part of the client from the start</td></tr>
+    <tr><td>a region becomes unreachable</td><td>everything the region's bucket had replicated elsewhere; the operator rehomes the project and the next touch restores it there</td><td>writes inside the replication lag, stated as such; a region that returns cannot write, because an object's home is a fence on every flight</td></tr>
   </tbody>
 </table>

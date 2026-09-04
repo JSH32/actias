@@ -1,0 +1,197 @@
+# A second region, `b`, beside the base stack's region: its own
+# placement store (a second postgres database), its own object bucket,
+# and two workers. The control plane (api, script-service, postgres,
+# redis, minio) is shared, which is the fleet's shape (FLEET.md 9.1).
+#
+#   ACTIAS_REGION=a docker compose -f docker-compose.yml -f docker-compose.regions.yml up -d --build
+#
+# The base stack's workers and placement service then say `a`; these
+# say `b`. `scripts/region-drill.sh` registers both with the control
+# plane and walks a project between them.
+services:
+  placement_migration_b:
+    image: ghcr.io/jsh32/actias_placement_service:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-placement
+    command: ["/app/target", "--migrate"]
+    environment:
+      - PLACEMENT_BACKEND=postgres
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_placement_b
+
+  placement_service_b:
+    image: ghcr.io/jsh32/actias_placement_service:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      placement_migration_b:
+        condition: service_completed_successfully
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-placement
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - OTEL_SERVICE_NAME=actias_placement_service_b
+      - PORT=3000
+      - PLACEMENT_BACKEND=postgres
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_placement_b
+      - REGION=b
+      - NODE_TTL_SECS=${NODE_TTL_SECS:-45}
+
+  worker_service_3:
+    image: ghcr.io/jsh32/actias_worker_service:latest
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+      script_service:
+        condition: service_started
+      kv_service:
+        condition: service_started
+      secret_service:
+        condition: service_started
+      placement_service_b:
+        condition: service_started
+      redis:
+        condition: service_started
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-worker
+        CARGO_FLAGS: --features actias-worker/drill
+    environment:
+      - OTEL_SERVICE_NAME=actias_worker_3
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - PORT=3000
+      - SCRIPT_SERVICE_URI=http://script_service:3000
+      - KV_SERVICE_URI=http://kv_service:3000
+      - PLACEMENT_SERVICE_URI=http://placement_service_b:3000
+      - REGION=b
+      - OBJECT_BUCKET=actias-b
+      - REDIS_URL=redis://redis:6379
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - SECRET_SERVICE_URI=http://secret_service:3000
+      - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
+      - OBJECT_DATA_DIR=/data/objects
+      - DIRECTORY_REBUILD_SECS=${ACTIAS_DIRECTORY_REBUILD_SECS:-900}
+      - DIRECTORY_FLUSH_MS=${ACTIAS_DIRECTORY_FLUSH_MS:-200}
+      - DIRECTORY_OVERLAY_TTL_SECS=${ACTIAS_DIRECTORY_OVERLAY_TTL_SECS:-1800}
+      - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
+      - CONNECTION_HIBERNATE_SECS=${CONNECTION_HIBERNATE_SECS:-300}
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
+      - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
+      - OBJECT_VM_POOL=${OBJECT_VM_POOL:-4}
+      - OBJECT_REPLICAS=${OBJECT_REPLICAS:-3}
+      - OBJECT_QUORUM=${OBJECT_QUORUM:-2}
+      - OBJECT_REPLICA_SYNC=${OBJECT_REPLICA_SYNC:-fsync}
+      - OBJECT_REPLICA_ACK_MS=${OBJECT_REPLICA_ACK_MS:-2000}
+      - OBJECT_REPLICA_IDLE_SECS=${OBJECT_REPLICA_IDLE_SECS:-1800}
+      - ACTIAS_DRILL_FAULT=${ACTIAS_DRILL_FAULT:-}
+      - EGRESS_ALLOW_PRIVATE=${EGRESS_ALLOW_PRIVATE:-false}
+      - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
+      - OBJECT_WAL_ROTATE_FRACTION=${OBJECT_WAL_ROTATE_FRACTION:-0.125}
+      - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
+      - OBJECT_STORE_PARALLEL=${OBJECT_STORE_PARALLEL:-8}
+      - OBJECT_SHIP_CONCURRENCY=${OBJECT_SHIP_CONCURRENCY:-32}
+      - OBJECT_SHIP_RESERVED=${OBJECT_SHIP_RESERVED:-8}
+      - REQUEST_CONCURRENCY=${REQUEST_CONCURRENCY:-1024}
+      - BLOCKING_CONCURRENCY=${BLOCKING_CONCURRENCY:-64}
+      - CONNECTION_LIMIT=${CONNECTION_LIMIT:-4096}
+      - OBJECT_RESIDENT_LIMIT=${OBJECT_RESIDENT_LIMIT:-10000}
+      - DIRECTORY_QUERY_CONCURRENCY=${DIRECTORY_QUERY_CONCURRENCY:-64}
+      - SHARE_FLOOR=${SHARE_FLOOR:-0.05}
+      - OBJECT_ACK_GATE_MS=${OBJECT_ACK_GATE_MS:-10000}
+      - WORKER_GRPC_PORT=3100
+    volumes:
+      - objects_data_3:/data/objects
+    ports:
+      - "${ACTIAS_WORKER3_PORT:-3004}:3000"
+      - "${ACTIAS_WORKER3_DATA_PORT:-3104}:3100"
+
+  worker_service_4:
+    image: ghcr.io/jsh32/actias_worker_service:latest
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+      script_service:
+        condition: service_started
+      kv_service:
+        condition: service_started
+      secret_service:
+        condition: service_started
+      placement_service_b:
+        condition: service_started
+      redis:
+        condition: service_started
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-worker
+        CARGO_FLAGS: --features actias-worker/drill
+    environment:
+      - OTEL_SERVICE_NAME=actias_worker_4
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - PORT=3000
+      - SCRIPT_SERVICE_URI=http://script_service:3000
+      - KV_SERVICE_URI=http://kv_service:3000
+      - PLACEMENT_SERVICE_URI=http://placement_service_b:3000
+      - REGION=b
+      - OBJECT_BUCKET=actias-b
+      - REDIS_URL=redis://redis:6379
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - SECRET_SERVICE_URI=http://secret_service:3000
+      - BASE_DOMAIN=${BASE_DOMAIN:-scripts.localhost}
+      - OBJECT_DATA_DIR=/data/objects
+      - DIRECTORY_REBUILD_SECS=${ACTIAS_DIRECTORY_REBUILD_SECS:-900}
+      - DIRECTORY_FLUSH_MS=${ACTIAS_DIRECTORY_FLUSH_MS:-200}
+      - DIRECTORY_OVERLAY_TTL_SECS=${ACTIAS_DIRECTORY_OVERLAY_TTL_SECS:-1800}
+      - OBJECT_SWEEP_SECS=${OBJECT_SWEEP_SECS:-30}
+      - CONNECTION_HIBERNATE_SECS=${CONNECTION_HIBERNATE_SECS:-300}
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN:-dev-internal-token}
+      - OBJECT_REPLICA_TTL_SECS=${OBJECT_REPLICA_TTL_SECS:-30}
+      - OBJECT_VM_POOL=${OBJECT_VM_POOL:-4}
+      - OBJECT_REPLICAS=${OBJECT_REPLICAS:-3}
+      - OBJECT_QUORUM=${OBJECT_QUORUM:-2}
+      - OBJECT_REPLICA_SYNC=${OBJECT_REPLICA_SYNC:-fsync}
+      - OBJECT_REPLICA_ACK_MS=${OBJECT_REPLICA_ACK_MS:-2000}
+      - OBJECT_REPLICA_IDLE_SECS=${OBJECT_REPLICA_IDLE_SECS:-1800}
+      - ACTIAS_DRILL_FAULT=${ACTIAS_DRILL_FAULT:-}
+      - EGRESS_ALLOW_PRIVATE=${EGRESS_ALLOW_PRIVATE:-false}
+      - OBJECT_WAL_ROTATE_KB=${OBJECT_WAL_ROTATE_KB:-4096}
+      - OBJECT_WAL_ROTATE_FRACTION=${OBJECT_WAL_ROTATE_FRACTION:-0.125}
+      - OBJECT_MAX_SEGMENTS=${OBJECT_MAX_SEGMENTS:-64}
+      - OBJECT_STORE_PARALLEL=${OBJECT_STORE_PARALLEL:-8}
+      - OBJECT_SHIP_CONCURRENCY=${OBJECT_SHIP_CONCURRENCY:-32}
+      - OBJECT_SHIP_RESERVED=${OBJECT_SHIP_RESERVED:-8}
+      - REQUEST_CONCURRENCY=${REQUEST_CONCURRENCY:-1024}
+      - BLOCKING_CONCURRENCY=${BLOCKING_CONCURRENCY:-64}
+      - CONNECTION_LIMIT=${CONNECTION_LIMIT:-4096}
+      - OBJECT_RESIDENT_LIMIT=${OBJECT_RESIDENT_LIMIT:-10000}
+      - DIRECTORY_QUERY_CONCURRENCY=${DIRECTORY_QUERY_CONCURRENCY:-64}
+      - SHARE_FLOOR=${SHARE_FLOOR:-0.05}
+      - OBJECT_ACK_GATE_MS=${OBJECT_ACK_GATE_MS:-10000}
+      - WORKER_GRPC_PORT=3100
+    volumes:
+      - objects_data_4:/data/objects
+    ports:
+      - "${ACTIAS_WORKER4_PORT:-3005}:3000"
+      - "${ACTIAS_WORKER4_DATA_PORT:-3105}:3100"
+
+volumes:
+  objects_data_3:
+  objects_data_4:
