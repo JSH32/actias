@@ -104,6 +104,10 @@ list, so order here is load-bearing. Usage:
       key: password
 - name: DATABASE_URL
   value: "postgresql://$(PG_USER):$(PG_PASSWORD)@{{ include "actias.postgresHost" .root }}:{{ include "actias.postgresPort" .root }}/{{ .database }}"
+{{- if .root.Values.postgres.readReplicaHost }}
+- name: READ_DATABASE_URL
+  value: "postgresql://$(PG_USER):$(PG_PASSWORD)@{{ .root.Values.postgres.readReplicaHost }}:{{ include "actias.postgresPort" .root }}/{{ .database }}"
+{{- end }}
 {{- end -}}
 
 {{/*
@@ -302,3 +306,24 @@ priorityClassName: {{ . }}
 imagePullSecrets: {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end -}}
+
+{{/*
+The placement service's store: the bundled postgres by default, or the
+scylla cluster the values name, replicated in this datacenter alone.
+*/}}
+{{- define "actias.placementStoreEnv" -}}
+{{- if eq .Values.placement.backend "scylla" }}
+- name: PLACEMENT_BACKEND
+  value: "scylla"
+- name: SCYLLA_NODES
+  value: {{ required "placement.scyllaNodes names the cluster when placement.backend is scylla" .Values.placement.scyllaNodes | quote }}
+- name: SCYLLA_DC
+  value: {{ .Values.placement.scyllaDc | quote }}
+- name: SCYLLA_REPLICATION_FACTOR
+  value: {{ .Values.placement.replicationFactor | quote }}
+{{- else }}
+- name: PLACEMENT_BACKEND
+  value: "postgres"
+{{ include "actias.databaseUrlEnv" (dict "root" . "database" "actias_placement") }}
+{{- end }}
+{{- end }}
