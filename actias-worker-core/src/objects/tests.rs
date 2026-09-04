@@ -2096,6 +2096,74 @@ async fn the_after_write_gate_fires_for_writes_only() {
     assert_eq!(shipped.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
+/// A reply that wrote nothing waits when the object has writes in the
+/// air, and pays nothing once it is settled: the read gate asks the
+/// hook, and the hook decides.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_waits_while_earlier_writes_are_in_flight() {
+    const SOURCE: &str = r#"
+        local Keeper = object "Keeper" {
+            init = function(state)
+                state.sql:exec("CREATE TABLE t (n INTEGER)")
+            end,
+            put = function(state)
+                state.sql:exec("INSERT INTO t VALUES (1)")
+            end,
+            peek = function(state)
+                return state.sql:query_one("SELECT COUNT(*) AS n FROM t").n
+            end,
+        }
+    "#;
+    let call =
+        |method: &str| serde_json::json!({ "class": "Keeper", "method": method, "args": [] });
+
+    let unsettled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let waited = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handle = spawn_object_task(
+        runtime_with(SOURCE).await,
+        TaskOptions {
+            storage: Some(
+                crate::storage::SqliteStorage::open(&dir.path().join("k.db")).expect("opens"),
+            ),
+            after_write: Some(Arc::new(|| Box::pin(async { Ok(()) }))),
+            after_read: Some({
+                let unsettled = unsettled.clone();
+                let asked = asked.clone();
+                let waited = waited.clone();
+                Arc::new(move || {
+                    asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if !unsettled.load(std::sync::atomic::Ordering::SeqCst) {
+                        return None;
+                    }
+                    let waited = waited.clone();
+                    Some(Box::pin(async move {
+                        waited.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    }))
+                })
+            }),
+            ..Default::default()
+        },
+    );
+
+    handle.call("__dispatch", call("put")).await.expect("put");
+    // A write's own gate answers it; the read gate is not asked.
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // Unsettled: the read asks and waits.
+    handle.call("__dispatch", call("peek")).await.expect("peek");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(waited.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Settled: the read asks and is answered at once.
+    unsettled.store(false, std::sync::atomic::Ordering::SeqCst);
+    handle.call("__dispatch", call("peek")).await.expect("peek");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(waited.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 /// A write is answered only after its gate resolves, and a gate that
 /// cannot confirm turns the answer into an unknown outcome rather
 /// than a success or a method failure.
