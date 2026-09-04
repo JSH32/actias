@@ -23,20 +23,49 @@ pub async fn choose_replicas(state: &AppState, object_id: &str) -> Vec<String> {
     if state.replica_count == 0 {
         return Vec::new();
     }
+    ranked(state, object_id)
+        .await
+        .into_iter()
+        .take(state.replica_count)
+        .collect()
+}
+
+enum Sent {
+    Acked,
+    Fenced,
+    /// The replica did not take the flight; which one, so a dead one
+    /// can be replaced.
+    Failed(String),
+}
+
+/// A residency's replica set, shared by its fan-out and the manifests
+/// that record it: a member that died leaves it, the next live node in
+/// rendezvous order joins when the set is short, and the next flight
+/// lays the generation on a newcomer.
+pub type ReplicaSet = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// Every live node other than this one, best rank first, for
+/// `object_id`; [`choose_replicas`] takes the head of it. Membership is
+/// the reader snapshot (`AppState::reader_membership`), so ranking
+/// costs no registry read.
+async fn ranked(state: &AppState, object_id: &str) -> Vec<String> {
     let own = state
         .node_identity
         .read()
         .ok()
         .and_then(|guard| guard.clone());
     let mut ranked: Vec<(String, String)> = Vec::new();
-    for node in crate::directory::rebuild::live_nodes(state).await {
+    for node in crate::directory::route::live_nodes_cached(state)
+        .await
+        .iter()
+    {
         if own.as_deref() == Some(node.as_str()) {
             continue;
         }
         // A registration this node left behind (a restart before the
         // registry reaped it) answers at our own address; a copy there
         // is no copy at all.
-        if crate::directory::route::address_of(state, &node)
+        if crate::directory::route::address_of(state, node)
             .await
             .is_ok_and(|address| address == state.node_address)
         {
@@ -45,21 +74,62 @@ pub async fn choose_replicas(state: &AppState, object_id: &str) -> Vec<String> {
         let rank = blake3::hash(format!("replica:{object_id}:{node}").as_bytes())
             .to_hex()
             .to_string();
-        ranked.push((rank, node));
+        ranked.push((rank, node.clone()));
     }
     ranked.sort();
     ranked.reverse();
-    ranked
-        .into_iter()
-        .take(state.replica_count)
-        .map(|(_, node)| node)
-        .collect()
+    ranked.into_iter().map(|(_, node)| node).collect()
 }
 
-enum Sent {
-    Acked,
-    Fenced,
-    Failed,
+/// Repairs the set after a flight. A member that failed and is no
+/// longer listed is dropped: a node that merely missed a flight is
+/// resent from its length next time, but a node that is gone would
+/// fail every flight for the rest of the residency. A set short of
+/// `replica_count`, then or since (a death with nobody to take its
+/// place), is filled with the best-ranked live nodes it lacks, so a
+/// node that arrives later joins at the next flight. True when a node
+/// joined, so the next flight lays the generation on it.
+///
+/// Membership is the shared snapshot, refreshed every few seconds and
+/// never fetched per flight: a death shows within it, and until then
+/// the member fails another flight and is asked about again.
+async fn repair(state: &AppState, object_id: &str, set: &ReplicaSet, failed: &[String]) -> bool {
+    let short = set
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len()
+        < state.replica_count;
+    if failed.is_empty() && !short {
+        return false;
+    }
+    let live = ranked(state, object_id).await;
+    let mut members = set.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    for dead in failed {
+        if live.iter().any(|node| node == dead) {
+            continue;
+        }
+        if let Some(slot) = members.iter().position(|member| member == dead) {
+            actias_common::tracing::info!(object_id, dead, "a replica died; leaving the set");
+            members.remove(slot);
+        }
+    }
+    let mut joined = false;
+    for node in live {
+        if members.len() >= state.replica_count {
+            break;
+        }
+        if members.contains(&node) {
+            continue;
+        }
+        actias_common::tracing::info!(
+            object_id,
+            replica = %node,
+            "the next live node joins the replica set"
+        );
+        members.push(node);
+        joined = true;
+    }
+    joined
 }
 
 /// Builds the fan-out for one residency: every request goes to every
@@ -67,11 +137,21 @@ enum Sent {
 /// replica reports; a generation lay reaches a replica not on the
 /// delta's list as every chunk; a fence from any of them marks the
 /// flight as lost to a newer owner.
-pub fn fanout_for(state: AppState, object_id: String, replicas: Vec<String>) -> FanoutFn {
+pub fn fanout_for(
+    state: AppState,
+    object_id: String,
+    replicas: ReplicaSet,
+    relay: Arc<std::sync::atomic::AtomicBool>,
+) -> FanoutFn {
     Arc::new(move |request: FanoutRequest| {
         let state = state.clone();
         let object_id = object_id.clone();
-        let replicas = replicas.clone();
+        let set = replicas.clone();
+        let relay = relay.clone();
+        let replicas = set
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let request = Arc::new(request);
         Box::pin(async move {
             use futures::StreamExt;
@@ -89,6 +169,7 @@ pub fn fanout_for(state: AppState, object_id: String, replicas: Vec<String>) -> 
                 .collect();
             let mut acks = 0;
             let mut fenced = false;
+            let mut failed: Vec<String> = Vec::new();
             // The quorum answers as soon as it exists; the stragglers get
             // a short grace so a dead replica never holds the flight to
             // its whole budget. They are resent from their length next
@@ -107,12 +188,19 @@ pub fn fanout_for(state: AppState, object_id: String, replicas: Vec<String>) -> 
                 match next {
                     Some(Sent::Acked) => acks += 1,
                     Some(Sent::Fenced) => fenced = true,
-                    Some(Sent::Failed) => {}
+                    Some(Sent::Failed(node)) => failed.push(node),
                     None => break,
                 }
                 if quorum > 0 && acks >= quorum && grace.is_none() {
                     grace = Some(Box::pin(tokio::time::sleep(STRAGGLER_GRACE)));
                 }
+            }
+            // After the answer, never before it: the repair is
+            // bookkeeping for the next flight, not this one's wait. A
+            // newcomer has no generation; the next flight rotates so the
+            // lay reaches it with everything.
+            if repair(&state, &object_id, &set, &failed).await {
+                relay.store(true, std::sync::atomic::Ordering::SeqCst);
             }
             FanoutOutcome { acks, fenced }
         })
@@ -135,10 +223,10 @@ async fn send_to(
     request: Arc<FanoutRequest>,
 ) -> Sent {
     let Ok(address) = crate::directory::route::address_of(&state, &node).await else {
-        return Sent::Failed;
+        return Sent::Failed(node.clone());
     };
     let Ok(mut client) = peer_client(&state, &address).await else {
-        return Sent::Failed;
+        return Sent::Failed(node.clone());
     };
     match &request.payload {
         Payload::Append {
@@ -171,10 +259,10 @@ async fn send_to(
                     }
                     // A replica without the generation waits for the next
                     // lay; this flight goes on without it.
-                    Answer::Refused(_) | Answer::Failed => return Sent::Failed,
+                    Answer::Refused(_) | Answer::Failed => return Sent::Failed(node.clone()),
                 }
             }
-            Sent::Failed
+            Sent::Failed(node.clone())
         }
         Payload::Lay {
             from_list,
@@ -211,10 +299,10 @@ async fn send_to(
                     Answer::Refused(reply) if reply.refusal == refusal::FENCED => {
                         return Sent::Fenced;
                     }
-                    Answer::Refused(_) | Answer::Failed => return Sent::Failed,
+                    Answer::Refused(_) | Answer::Failed => return Sent::Failed(node.clone()),
                 }
             }
-            Sent::Failed
+            Sent::Failed(node.clone())
         }
     }
 }

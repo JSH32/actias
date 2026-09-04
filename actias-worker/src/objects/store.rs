@@ -270,7 +270,7 @@ pub type FanoutFn = Arc<
 /// release itself.
 pub struct Replication {
     pub fanout: FanoutFn,
-    pub node_ids: Vec<String>,
+    pub node_ids: crate::objects::fanout::ReplicaSet,
     pub quorum: usize,
     pub release: std::sync::Mutex<Option<crate::objects::shipper::Release>>,
     pub gauges: Arc<crate::objects::replica::ReplicaGauges>,
@@ -278,6 +278,10 @@ pub struct Replication {
     /// could not have spoken, so the store's fence is re-read before the
     /// next put. Shared across a residency's flights.
     pub short: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the fan-out replaced a dead replica: the next flight
+    /// rotates, so the lay reaches the newcomer with the whole
+    /// generation.
+    pub relay: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Replication {
@@ -465,6 +469,8 @@ impl ObjectStore {
             .map(|g| g.chunks.clone())
             .unwrap_or_default();
 
+        let relay =
+            replication.is_some_and(|r| r.relay.swap(false, std::sync::atomic::Ordering::SeqCst));
         let next = match state.generation.as_ref() {
             None => {
                 let base = state.must_rotate.unwrap_or(0);
@@ -474,6 +480,7 @@ impl ObjectStore {
             }
             Some(generation)
                 if state.must_rotate.is_some()
+                    || relay
                     || generation.segments >= thresholds.max_segments
                     || wal_len >= thresholds.rotate_at(generation.base_len) =>
             {
@@ -773,7 +780,9 @@ impl ObjectStore {
                 segments: 0,
                 deleted: false,
                 directory,
-                replicas: replication.map(|r| r.node_ids.clone()).unwrap_or_default(),
+                replicas: replication
+                    .map(|r| r.node_ids.lock().unwrap_or_else(|p| p.into_inner()).clone())
+                    .unwrap_or_default(),
                 wal_len: 0,
                 base_len,
                 chunks: chunks.as_ref().clone(),
@@ -898,7 +907,9 @@ impl ObjectStore {
                 segments: segments + 1,
                 deleted: false,
                 directory,
-                replicas: replication.map(|r| r.node_ids.clone()).unwrap_or_default(),
+                replicas: replication
+                    .map(|r| r.node_ids.lock().unwrap_or_else(|p| p.into_inner()).clone())
+                    .unwrap_or_default(),
                 wal_len: prefix.len as u64,
                 base_len,
                 chunks: chunks.as_ref().clone(),
