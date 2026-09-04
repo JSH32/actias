@@ -669,6 +669,51 @@ pub async fn rebuild_on_demand(
     Ok(Some(rebuilt))
 }
 
+/// The class lease is held by whichever node folds the class, for as
+/// long as that node lives, so an operator's rebuild that lands on any
+/// other node loses its claim. The rebuild is the holder's to run, one
+/// hop away, exactly as an object call reaches its holder; [`None`]
+/// when the holder cannot be reached, which the caller answers as
+/// "held elsewhere".
+pub async fn forward_to_holder(
+    state: &AppState,
+    class: &ClassKey,
+    request: actias_worker_core::proto::worker_data::DirectoryRebuild,
+) -> Option<actias_worker_core::proto::worker_data::DirectoryRebuilt> {
+    let lease = state
+        .registry
+        .clone()
+        .get_lease(actias_worker_core::proto::node_registry::GetLeaseRequest {
+            object_id: crate::directory::compact::lease_id(class),
+        })
+        .await
+        .ok()?
+        .into_inner();
+    let own = state.node_identity.read().ok()?.clone()?;
+    if lease.node_id == own {
+        return None;
+    }
+    let address = crate::directory::route::address_of(state, &lease.node_id)
+        .await
+        .ok()?;
+    let mut client = crate::data_plane::peer_client(state, &address).await.ok()?;
+    match client
+        .rebuild_directory(crate::directory::route::hopped(state, request))
+        .await
+    {
+        Ok(response) => Some(response.into_inner()),
+        Err(error) => {
+            actias_common::tracing::debug!(
+                class = %class.class,
+                holder = %lease.node_id,
+                %error,
+                "the class's holder did not run the rebuild"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

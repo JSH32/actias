@@ -72,8 +72,15 @@ pub(crate) async fn peer_client(
             actias_worker_core::plain_grpc(channel),
         )));
     }
-    let endpoint = Channel::from_shared(format!("http://{address}"))
-        .map_err(|_| "The peer's address is not routable.".to_owned())?;
+    // A peer inside the region is host:port; another region's ingress
+    // carries its own scheme (https, behind the operator's TLS).
+    let uri = if address.contains("://") {
+        address.to_owned()
+    } else {
+        format!("http://{address}")
+    };
+    let endpoint =
+        Channel::from_shared(uri).map_err(|_| "The peer's address is not routable.".to_owned())?;
     let channel = endpoint.connect_lazy();
     state
         .peers
@@ -587,6 +594,15 @@ impl WorkerData for WorkerDataService {
                 result_json: result.to_string(),
                 error: String::new(),
                 wrong_home: false,
+                moved_to: String::new(),
+            },
+            // The object was born here and lives elsewhere: the caller
+            // remembers the region and forwards there once.
+            Err(crate::routing::RouteError::Moved { region }) => CallResult {
+                result_json: String::new(),
+                error: format!("Object lives in region {region}; this region cannot serve it."),
+                wrong_home: false,
+                moved_to: region,
             },
             // The typed refusal crosses the wire as its own flag, so the
             // sender re-resolves instead of parsing message text.
@@ -594,11 +610,13 @@ impl WorkerData for WorkerDataService {
                 result_json: String::new(),
                 error: format!("Object is homed on {holder}; this node cannot serve it."),
                 wrong_home: true,
+                moved_to: String::new(),
             },
             Err(crate::routing::RouteError::Failed(error)) => CallResult {
                 result_json: String::new(),
                 error,
                 wrong_home: false,
+                moved_to: String::new(),
             },
         }))
     }
@@ -837,6 +855,7 @@ impl WorkerData for WorkerDataService {
         &self,
         request: Request<DirectoryRebuild>,
     ) -> Result<Response<DirectoryRebuilt>, Status> {
+        let hop = crate::directory::route::is_hop(&request);
         let request = request.into_inner();
         if request.scope_id.is_empty() || request.class.is_empty() {
             return Err(Status::invalid_argument(
@@ -844,18 +863,25 @@ impl WorkerData for WorkerDataService {
             ));
         }
         let class = crate::directory::sync::ClassKey {
-            scope_id: request.scope_id,
-            class: request.class,
+            scope_id: request.scope_id.clone(),
+            class: request.class.clone(),
         };
 
         let rebuilt = crate::directory::rebuild::rebuild_on_demand(&self.state, &class)
             .await
             .map_err(Status::unavailable)?;
 
-        // Another node holding the class is not a failure: it is
-        // already doing exactly this work, and the answer says so
-        // rather than pretending the counts are zero.
+        // The class is held by the node that folds it, so the rebuild
+        // is that node's to run: one hop, never two, so a request that
+        // already hopped and still lost answers "held elsewhere" rather
+        // than bouncing.
         let Some(rebuilt) = rebuilt else {
+            if !hop
+                && let Some(forwarded) =
+                    crate::directory::rebuild::forward_to_holder(&self.state, &class, request).await
+            {
+                return Ok(Response::new(forwarded));
+            }
             return Ok(Response::new(DirectoryRebuilt {
                 held: false,
                 ..Default::default()
