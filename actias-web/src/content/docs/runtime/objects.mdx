@@ -162,11 +162,11 @@ its own state, queryable with `Auction:list`, `Auction:find` and
 
 ```mermaid
 stateDiagram-v2
-    [*] --> admitted: first call; admit(name) is truthy
+    [*] --> admitted: first call, admit(name) truthy
     [*] --> refused: admit(name) is false or throws
     admitted --> resident: migrations, then init once
-    resident --> cold: 300 s idle, no pending alarm
-    cold --> resident: a call, a delivery or a due alarm
+    resident --> cold: idle 300 s, no alarm pending
+    cold --> resident: a call, delivery or due alarm
     resident --> deleted: state:destroy(), or expire elapsed
     cold --> deleted: expire elapsed
     deleted --> [*]: the name may be created again, fresh
