@@ -94,6 +94,15 @@ impl ObjectKey {
     pub fn db_file_name(&self) -> String {
         format!("{}.db", self.object_id())
     }
+
+    /// The region this object is born in: the class's pin, else the
+    /// project's home. Computed from what the caller holds, never looked
+    /// up, which is what keeps placement free of a global namespace; an
+    /// object the platform has since moved is found by the forwarding
+    /// row at this region (FLEET.md section 4.2).
+    pub fn region<'a>(&'a self, home: &'a str, pin: Option<&'a str>) -> &'a str {
+        pin.unwrap_or(home)
+    }
 }
 
 impl std::fmt::Display for ObjectKey {
@@ -138,6 +147,15 @@ mod tests {
         assert_eq!(parsed.name(), "cron:0 0 * * *");
 
         assert!(ObjectKey::parse("not-a-key").is_none());
+    }
+
+    #[test]
+    fn the_birth_region_is_the_pins_then_the_homes() {
+        let pinned = ObjectKey::scoped("proj-1", "script-1", "EuCustomer", "alice");
+        assert_eq!(pinned.region("us-east", Some("eu-west")), "eu-west");
+
+        let named = ObjectKey::scoped("proj-1", "script-1", "Auction", "lot-42");
+        assert_eq!(named.region("us-east", None), "us-east");
         assert!(ObjectKey::parse("scope/class-only").is_none());
         assert!(ObjectKey::parse("//name").is_none());
     }

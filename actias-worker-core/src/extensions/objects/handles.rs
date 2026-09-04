@@ -6,6 +6,15 @@ use mlua::{Lua, LuaSerdeExt, Table};
 
 use super::dispatch::{CallChain, ObjectRouter, ObjectTarget, callable_method};
 
+/// Passes a name a caller chose or is holding, or refuses it with the
+/// rule it broke (an empty name): the one spelling lives in
+/// [`actias_common::naming`].
+fn checked_name(name: String) -> mlua::Result<String> {
+    actias_common::naming::validate_name(&name)
+        .map(|()| name)
+        .map_err(|error| mlua::Error::RuntimeError(error.to_string()))
+}
+
 /// Answers one directory request through the runtime's lister seam.
 ///
 /// # Errors
@@ -36,7 +45,7 @@ pub(super) fn class_handle(lua: &Lua, class: String) -> mlua::Result<Table> {
         "get",
         lua.create_function(|lua, (this, name): (Table, String)| {
             let class: String = this.get("__class")?;
-            instance_handle(lua, class, name)
+            instance_handle(lua, class, checked_name(name)?)
         })?,
     )?;
 
@@ -86,7 +95,7 @@ pub(super) fn class_handle(lua: &Lua, class: String) -> mlua::Result<Table> {
         "__call",
         lua.create_function(|lua, (this, name): (Table, String)| {
             let class: String = this.get("__class")?;
-            instance_handle(lua, class, name)
+            instance_handle(lua, class, checked_name(name)?)
         })?,
     )?;
     handle.set_metatable(Some(meta))?;
@@ -184,4 +193,33 @@ pub(super) fn instance_handle(lua: &Lua, class: String, name: String) -> mlua::R
 
     handle.set_metatable(Some(meta))?;
     Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    const ROOM: &str = r#"
+        Room = object "Room" {
+            join = function(state, who) state.store:set("last", who) end,
+        }
+        on "fetch" (function() return { body = "ok" } end)
+    "#;
+
+    /// An empty name is refused where a user types it, naming the rule,
+    /// in both spellings of a call.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_name_is_refused() {
+        let runtime = crate::objects::testing::runtime_with(ROOM).await;
+        let error = runtime
+            .load(r#"return Room:get("")"#)
+            .eval_async::<mlua::Value>()
+            .await
+            .expect_err("refused");
+        assert!(error.to_string().contains("non-empty"), "{error}");
+        let error = runtime
+            .load(r#"return Room("")"#)
+            .eval_async::<mlua::Value>()
+            .await
+            .expect_err("refused");
+        assert!(error.to_string().contains("non-empty"), "{error}");
+    }
 }
