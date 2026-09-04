@@ -258,6 +258,18 @@ impl PreparedRevision {
         })
     }
 
+    /// The region the contract pins `class` to (`placement = { region
+    /// = ".." }`); [`None`] means the project's home.
+    pub fn placement_region_for(&self, class: &str) -> Option<String> {
+        let contract = self.contract.as_ref()?;
+        let prefix = format!("{class}:placement.region=");
+        contract
+            .lifecycle
+            .iter()
+            .find_map(|entry| entry.strip_prefix(&prefix))
+            .map(str::to_owned)
+    }
+
     /// The lifespan the contract declares for `class`, in seconds;
     /// [`None`] means the class never expires. The claim stamps this.
     pub fn expire_secs_for(&self, class: &str) -> Option<u64> {

@@ -102,6 +102,7 @@ pub async fn run(state: AppState, every: Duration) {
 
     loop {
         tokio::time::sleep(every).await;
+        evict_misplaced(&state).await;
 
         let due = state
             .registry
@@ -239,6 +240,46 @@ async fn janitor_pass(state: &AppState) {
     }
 }
 
+/// Residents that no longer belong here go cold, exactly as an idle
+/// object does: the vm is evicted, its task ends once in-flight callers
+/// finish, and the residency's own watcher settles the shipper (every
+/// dirty write reaches the bucket) before forgetting it. Nothing is
+/// destroyed and the lease stays, as a cold object's does; the move's
+/// flip and the home fence make it moot. Which residents: an object
+/// whose project is between homes (its claims are refused everywhere
+/// until the move settles) or whose home is another region now (the
+/// column flipped, or the platform moved it). Cached facts only, so a
+/// walk is cheap (FLEET.md 6.3 step 2, P4.c).
+async fn evict_misplaced(state: &AppState) {
+    for id in state.objects.resident_ids().await {
+        let Some(key) = ObjectKey::parse(&id) else {
+            continue;
+        };
+        let Ok(owner) = owner_prepared(state, &key).await else {
+            continue;
+        };
+        let policy = crate::server::project_policy(state, &owner.script.project_id).await;
+        let home = crate::routing::current_home(
+            state,
+            &key,
+            &owner.script.project_id,
+            owner.placement_region_for(key.class()).as_deref(),
+        )
+        .await;
+        if !policy.moving && home == state.region {
+            continue;
+        }
+        debug!(
+            own_key = %key,
+            moving = policy.moving,
+            %home,
+            "resident no longer belongs here; going cold"
+        );
+        state.objects.evict(&id).await;
+        state.holders.invalidate(&key.object_id()).await;
+    }
+}
+
 /// The retryable tail of the deletion sequence: marker, local residue,
 /// purge. Files on other nodes heal through the marker at their next
 /// touch or their node's boot sweep.
@@ -352,6 +393,10 @@ async fn wake(state: &AppState, own_key: &str) -> Result<(), WakeError> {
         .map(|_| ())
         .map_err(|error| match error {
             crate::routing::ResolveError::Elsewhere(holder) => WakeError::Elsewhere(holder),
+            // Its region's own sweep wakes it; this one has nothing to do.
+            crate::routing::ResolveError::Moved(region) => {
+                WakeError::Other(format!("Object lives in region {region}."))
+            }
             crate::routing::ResolveError::Other(error) => WakeError::Other(error),
         })
 }

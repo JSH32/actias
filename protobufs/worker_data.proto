@@ -486,6 +486,10 @@ message CallResult {
     // the home is stale, and it should re-resolve instead of retrying
     // here. `error` still carries a message for logs.
     bool wrong_home = 3;
+    // Set when this node is in the object's birth region and the object
+    // lives in another region now: the caller remembers the region and
+    // forwards there once (FLEET.md 4.2). `error` says so for logs.
+    string moved_to = 4;
 }
 
 // What one read asks for; ReadStats and ReadJournal share it because
