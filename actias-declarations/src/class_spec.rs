@@ -67,6 +67,9 @@ pub struct ClassSpec {
     pub expire_secs: Option<u64>,
     /// Whether the class gates creation with an `admit` function.
     pub admits: bool,
+    /// The region the class's instances are born in, `placement = {
+    /// region = "eu-west" }`; [`None`] means the project's home.
+    pub placement_region: Option<String>,
     /// The directory field set the class declares, at version zero:
     /// publish mints the real version by comparing this set against
     /// the previous contract's. [`None`] for a class with no directory.
@@ -209,6 +212,34 @@ impl ClassSpec {
                 )));
             }
         };
+        // The pin: a region token, so a class whose data must stay in a
+        // jurisdiction says so by declaration, and check refuses a
+        // region no deployment could have.
+        let placement_region = match body.get::<mlua::Value>("placement")? {
+            mlua::Value::Nil => None,
+            mlua::Value::Table(placement) => match placement.get::<mlua::Value>("region")? {
+                mlua::Value::Nil => None,
+                mlua::Value::String(region) => {
+                    let region = region.to_str()?.to_string();
+                    if !actias_common::naming::is_region_token(&region) {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "'{name}' placement.region: '{region}' is not a region: 1 to 16 of a-z, 0-9 and '-', not starting with '-'."
+                        )));
+                    }
+                    Some(region)
+                }
+                _ => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "'{name}' placement.region must be a region name like \"eu-west\"."
+                    )));
+                }
+            },
+            _ => {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "'{name}' placement must be a table with `region`."
+                )));
+            }
+        };
         // The directory row: a function of state alone, so it can be
         // re-derived from any restored copy without a lease. A class
         // with no storage has no state to derive from, which is a
@@ -267,6 +298,7 @@ impl ClassSpec {
             expire_raw,
             expire_secs,
             admits,
+            placement_region,
             directory,
         })
     }
@@ -487,6 +519,7 @@ mod tests {
                 r#"{
                     expire = "30d",
                     admit = function(name) return #name > 3 end,
+                    placement = { region = "eu-west" },
                     close = function(state) end,
                 }"#,
             )
@@ -496,6 +529,7 @@ mod tests {
         assert_eq!(spec.expire_raw.as_deref(), Some("30d"));
         assert_eq!(spec.expire_secs, Some(30 * 86400));
         assert!(spec.admits);
+        assert_eq!(spec.placement_region.as_deref(), Some("eu-west"));
         assert!(
             !spec.methods.contains("admit"),
             "the gate is platform-invoked, never routable"
@@ -507,6 +541,9 @@ mod tests {
             (r#"{ expire = 30 }"#, "duration string"),
             (r#"{ expire = "200ms" }"#, "under a second"),
             (r#"{ admit = "please" }"#, "admit must be a function"),
+            (r#"{ placement = "eu-west" }"#, "placement must be a table"),
+            (r#"{ placement = { region = 7 } }"#, "region name"),
+            (r#"{ placement = { region = "EU" } }"#, "is not a region"),
         ] {
             let body: Table = lua.load(bad).eval().expect("evaluates");
             let refused = ClassSpec::parse("Session", &body).expect_err("must refuse");

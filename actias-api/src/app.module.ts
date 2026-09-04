@@ -13,6 +13,7 @@ import { ResourcesModule } from './resources/resources.module';
 import { KvModule } from './kv/kv.module';
 import { SecretsModule } from './secrets/secrets.module';
 import { AdminModule } from './admin/admin.module';
+import { RegionsModule } from './regions/regions.module';
 import { InterestModule } from './interest/interest.module';
 
 @Module({
@@ -30,6 +31,7 @@ import { InterestModule } from './interest/interest.module';
     KvModule,
     SecretsModule,
     AdminModule,
+    RegionsModule,
     ResourcesModule,
     InterestModule,
   ],

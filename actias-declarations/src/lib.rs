@@ -306,6 +306,11 @@ fn install_declarations(lua: &Lua, recorded: &Arc<Mutex<Declarations>>) -> mlua:
                 if spec.admits {
                     recorded.lifecycle.push(format!("{class}:admit"));
                 }
+                if let Some(region) = &spec.placement_region {
+                    recorded
+                        .lifecycle
+                        .push(format!("{class}:placement.region={region}"));
+                }
                 // The method names, so a shell or a console can offer
                 // what an instance answers to without the source in
                 // hand. Names only: which of them write is not
