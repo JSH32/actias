@@ -34,6 +34,87 @@ message DeleteProjectRequest {
     string project_id = 1;
 }
 
+message ProjectRef {
+    string project_id = 1;
+}
+
+// A project's runtime policy: what its scripts may spend on a node and
+// where they may reach. A zero rate means the platform default
+// (unbounded); an empty allow list admits every host the deny list and
+// the node's own policy do not refuse.
+message ProjectPolicy {
+    string project_id = 1;
+    // Requests a node admits for the project per second, with a burst
+    // of the same size.
+    uint32 requests_per_sec = 2;
+    // Work units a node lets the project spend per second; a request
+    // that overspends puts the project in debt until it refills.
+    uint64 work_units_per_sec = 3;
+    // Hosts outbound requests and dials may reach; a leading dot
+    // matches subdomains. Empty admits everything not denied.
+    repeated string egress_allow = 4;
+    // Hosts refused before the allow list is consulted.
+    repeated string egress_deny = 5;
+    // The project's home region: where its named objects are born and
+    // its directory lives. Read here, set by SetProjectRegion.
+    string region = 6;
+    // Whether the project is between homes: claims for its scope are
+    // refused with a retryable answer until the move completes.
+    bool moving = 7;
+}
+
+// Sets a project's home region; the region must be a token of the
+// grammar and, when regions are registered, a registered one.
+message SetProjectRegionRequest {
+    string project_id = 1;
+    string region = 2;
+}
+
+// A region the control plane knows: how its data plane is reached and
+// which bucket holds its bytes.
+message Region {
+    string name = 1;
+    string data_plane_addr = 2;
+    // The region's object bucket: what its workers ship to and a move
+    // copies between.
+    string bucket = 3;
+    // The region's placement service, as the control plane reaches it;
+    // a move lists the project's objects there. Workers never cross
+    // regions to a placement service.
+    string placement_addr = 4;
+    // The region's own object storage, when it is not the control
+    // plane's: the endpoint and the credentials a move copies with.
+    // Empty means the control plane's S3 settings reach the bucket.
+    string s3_endpoint = 5;
+    string s3_access_key = 6;
+    string s3_secret_key = 7;
+}
+
+// A project's move between homes, as the console follows it: one row
+// per project, the latest move.
+message ProjectMove {
+    string project_id = 1;
+    string from_region = 2;
+    string to_region = 3;
+    // marking, draining, copying, flipping, done, failed.
+    string step = 4;
+    uint64 objects_total = 5;
+    uint64 objects_copied = 6;
+    // Set when the step is failed; the move may be started again.
+    string error = 7;
+    int64 started_ms = 8;
+    // 0 while the move runs.
+    int64 finished_ms = 9;
+}
+
+message Regions {
+    repeated Region regions = 1;
+}
+
+message RegionRef {
+    string name = 1;
+}
+
 // What a script declared at its top level, extracted from the code at
 // publish; the code is the manifest.
 message Capabilities {
@@ -276,4 +357,24 @@ service ScriptService {
     rpc SetAlias(SetAliasRequest) returns (Alias);
     rpc GetAlias(GetAliasRequest) returns (Alias);
     rpc ListAliases(ListAliasesRequest) returns (ListAliasesResponse);
+
+    // A project's runtime policy; get answers the defaults for a project
+    // that never set one, set is an upsert.
+    rpc GetProjectPolicy(ProjectRef) returns (ProjectPolicy);
+    // Replaces the rates and the host lists; the region and the moving
+    // flag are not part of it and stay as they were.
+    rpc SetProjectPolicy(ProjectPolicy) returns (ProjectPolicy);
+    rpc SetProjectRegion(SetProjectRegionRequest) returns (ProjectPolicy);
+    // Moves a project to another home: marks it moving, drains, copies
+    // its objects' bytes between the regions' buckets, flips the home,
+    // clears the mark (FLEET.md 6.3). Returns at once; GetProjectMove
+    // follows it. Both regions must be registered.
+    rpc MoveProject(SetProjectRegionRequest) returns (ProjectMove);
+    rpc GetProjectMove(ProjectRef) returns (ProjectMove);
+    // The regions registered with the control plane. Empty on a
+    // single-region deployment, which routes everything home.
+    rpc ListRegions(google.protobuf.Empty) returns (Regions);
+    // Registers or updates a region; the name is its identity.
+    rpc PutRegion(Region) returns (Region);
+    rpc DeleteRegion(RegionRef) returns (google.protobuf.Empty);
 }

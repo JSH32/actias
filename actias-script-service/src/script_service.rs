@@ -15,6 +15,8 @@ use crate::blob_store::BlobStore;
 use crate::bundle::{Bundle, File};
 use crate::database_types::{DbFile, DbRevision, DbScript, ScriptConfig};
 use crate::live_script::LiveScriptManager;
+use crate::proto_node_registry::InstanceRef;
+use crate::proto_node_registry::node_registry_service_client::NodeRegistryServiceClient;
 use crate::proto_script_service::find_script_request::{self};
 use crate::proto_script_service::{
     ListRevisionResponse, ListScriptResponse, Revision, Script, script_service_server, *,
@@ -29,8 +31,23 @@ use crate::util::safe_divide;
 /// - Explore light ORM's like [rbatis](https://github.com/rbatis/rbatis).
 pub struct ScriptService {
     database: Pool<Postgres>,
+    /// The pool worker-facing reads use: a regional read replica when
+    /// the deployment has one, else the primary. Reads a publisher
+    /// expects to see at once (listings, the console) stay on
+    /// `database`.
+    reads: Pool<Postgres>,
     live_script_manager: LiveScriptManager,
     blobs: BlobStore,
+    /// The placement service, whose instance directory remembers whose
+    /// code claimed an identity after the declaring contract is gone.
+    placement: NodeRegistryServiceClient<tonic::transport::Channel>,
+    /// The control plane's own region: the home of a project that has
+    /// not been given one, and always a legal home.
+    default_region: String,
+    /// The own region's placement service, for a move that leaves it.
+    placement_uri: String,
+    /// How long a move waits for the old region's residencies to end.
+    move_drain: std::time::Duration,
 }
 
 /// The contract arrays an object owner can be resolved from; a closed
@@ -91,16 +108,32 @@ impl ContractMember {
     }
 }
 
+/// The service's two connections: every write and any read that must
+/// see it go to the primary; worker-facing reads may go to a replica.
+pub struct Databases {
+    pub writes: Pool<Postgres>,
+    pub reads: Pool<Postgres>,
+}
+
 impl ScriptService {
     pub fn new(
-        database: Pool<Postgres>,
+        databases: Databases,
         live_script_manager: LiveScriptManager,
         blobs: BlobStore,
+        placement: NodeRegistryServiceClient<tonic::transport::Channel>,
+        default_region: String,
+        placement_uri: String,
+        move_drain: std::time::Duration,
     ) -> Self {
         Self {
-            database,
+            database: databases.writes,
+            reads: databases.reads,
             live_script_manager,
             blobs,
+            placement,
+            default_region,
+            placement_uri,
+            move_drain,
         }
     }
 
@@ -127,7 +160,7 @@ impl ScriptService {
         };
 
         query
-            .fetch_optional(&self.database)
+            .fetch_optional(&self.reads)
             .await
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or(Status::not_found(format!(
@@ -169,7 +202,7 @@ impl ScriptService {
         sqlx::query_scalar(&sql)
             .bind(project_id)
             .bind(member.needle(class, name))
-            .fetch_optional(&self.database)
+            .fetch_optional(&self.reads)
             .await
             .map_err(|e| Status::internal(e.to_string()))
     }
@@ -316,7 +349,7 @@ impl ScriptService {
                 Uuid::parse_str(revision_id)
                     .map_err(|_| Status::invalid_argument("'id' was not a valid uuid"))?,
             )
-            .fetch_optional(&self.database)
+            .fetch_optional(&self.reads)
             .await
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or(Status::not_found("Revision with that ID was not found"))
@@ -464,6 +497,92 @@ impl ScriptService {
     }
 }
 
+impl ScriptService {
+    /// The project's policy row, or the defaults (every zero, empty
+    /// lists) for a project that never set one.
+    async fn project_policy(&self, project_id: Uuid) -> Result<ProjectPolicy, Status> {
+        /// The policy row as stored: rates, the two host lists, the home
+        /// region and the moving flag.
+        type PolicyRow = (i32, i64, Vec<String>, Vec<String>, String, bool);
+        let row: Option<PolicyRow> = sqlx::query_as(
+            "SELECT requests_per_sec, work_units_per_sec, egress_allow, egress_deny, region, moving
+             FROM project_policies WHERE project_id = $1",
+        )
+        .bind(project_id)
+        .fetch_optional(&self.reads)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(match row {
+            Some((requests, work, allow, deny, region, moving)) => ProjectPolicy {
+                project_id: project_id.to_string(),
+                requests_per_sec: u32::try_from(requests).unwrap_or(0),
+                work_units_per_sec: u64::try_from(work).unwrap_or(0),
+                egress_allow: allow,
+                egress_deny: deny,
+                region,
+                moving,
+            },
+            None => ProjectPolicy {
+                project_id: project_id.to_string(),
+                region: self.default_region.clone(),
+                ..Default::default()
+            },
+        })
+    }
+
+    /// Whether `region` may be a project's home: a token of the grammar,
+    /// and, once any region is registered, the control plane's own or a
+    /// registered one. A single-region deployment registers nothing.
+    async fn known_region(&self, region: &str) -> Result<(), Status> {
+        if !actias_common::naming::is_region_token(region) {
+            return Err(Status::invalid_argument(format!(
+                "'{region}' is not a region: 1 to 16 of a-z, 0-9 and '-', not starting with '-'"
+            )));
+        }
+        let registered: Vec<(String,)> = sqlx::query_as("SELECT name FROM regions")
+            .fetch_all(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        if registered.is_empty()
+            || region == self.default_region
+            || registered.iter().any(|(name,)| name == region)
+        {
+            return Ok(());
+        }
+        Err(Status::not_found(format!(
+            "'{region}' is not a registered region"
+        )))
+    }
+}
+
+/// Host entries as stored: lowercase and trimmed, empties dropped, and
+/// nothing that is not a host (a scheme, a path, a space), so a policy
+/// that could never match is refused rather than kept.
+///
+/// # Errors
+/// Returns the entry that is not a host name.
+fn egress_hosts(entries: &[String]) -> Result<Vec<String>, String> {
+    let mut hosts = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let host = entry.trim().to_ascii_lowercase();
+        if host.is_empty() {
+            continue;
+        }
+        if host.contains(['/', ' ', ':']) {
+            return Err(entry.clone());
+        }
+        hosts.push(host);
+    }
+    Ok(hosts)
+}
+
+/// The refusal for a policy entry that is not a host name.
+fn not_a_host(entry: String) -> Status {
+    Status::invalid_argument(format!(
+        "'{entry}' is not a host name; egress entries are host names, a leading dot matching subdomains"
+    ))
+}
+
 #[tonic::async_trait]
 impl script_service_server::ScriptService for ScriptService {
     async fn delete_project(
@@ -490,6 +609,11 @@ impl script_service_server::ScriptService for ScriptService {
                 .map_err(|e| Status::internal(e.to_string()))?;
 
         sqlx::query("DELETE FROM scripts WHERE project_id = $1")
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        sqlx::query("DELETE FROM project_policies WHERE project_id = $1")
             .bind(project_id)
             .execute(&mut *tx)
             .await
@@ -548,7 +672,7 @@ impl script_service_server::ScriptService for ScriptService {
         let revision_info =
             sqlx::query_as::<_, DbRevision>("SELECT * FROM revisions WHERE id = $1")
                 .bind(id)
-                .fetch_optional(&self.database)
+                .fetch_optional(&self.reads)
                 .await
                 .map_err(|e| Status::internal(e.to_string()))?
                 .ok_or(Status::not_found("Revision with that ID was not found"))?;
@@ -563,7 +687,7 @@ impl script_service_server::ScriptService for ScriptService {
                 "#,
             )
             .bind(revision_info.id)
-            .fetch_all(&self.database)
+            .fetch_all(&self.reads)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -968,24 +1092,26 @@ impl script_service_server::ScriptService for ScriptService {
             }
         }
 
-        let remembered: Option<Uuid> = sqlx::query_scalar(
-            "SELECT script_id FROM object_instances
-             WHERE scope_id = $1 AND class = $2 AND name = $3",
-        )
-        .bind(project_id)
-        .bind(&request.class)
-        .bind(&request.name)
-        .fetch_optional(&self.database)
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-
+        let remembered = self
+            .placement
+            .clone()
+            .get_instance(InstanceRef {
+                scope_id: project_id.to_string(),
+                class: request.class.clone(),
+                name: request.name.clone(),
+            })
+            .await;
         match remembered {
-            Some(script_id) => Ok(Response::new(ClassOwner {
-                script_id: script_id.to_string(),
+            Ok(instance) => Ok(Response::new(ClassOwner {
+                script_id: instance.into_inner().script_id,
             })),
-            None => Err(Status::not_found(
+            Err(status) if status.code() == tonic::Code::NotFound => Err(Status::not_found(
                 "No current contract in the project owns that identity.",
             )),
+            Err(status) => {
+                actias_common::tracing::error!(error = %status, "placement store unreachable");
+                Err(Status::unavailable("The placement store did not answer."))
+            }
         }
     }
 
@@ -1049,7 +1175,7 @@ impl script_service_server::ScriptService for ScriptService {
         )
         .bind(script_id)
         .bind(&request.name)
-        .fetch_optional(&self.database)
+        .fetch_optional(&self.reads)
         .await
         .map_err(|e| Status::internal(e.to_string()))?;
 
@@ -1061,6 +1187,239 @@ impl script_service_server::ScriptService for ScriptService {
             })),
             None => Err(Status::not_found("No alias with that name.")),
         }
+    }
+
+    async fn get_project_policy(
+        &self,
+        request: tonic::Request<ProjectRef>,
+    ) -> Result<tonic::Response<ProjectPolicy>, tonic::Status> {
+        let project_id = Uuid::from_str(&request.get_ref().project_id)
+            .map_err(|_| Status::invalid_argument("project_id is not a uuid"))?;
+        Ok(Response::new(self.project_policy(project_id).await?))
+    }
+
+    async fn set_project_policy(
+        &self,
+        request: tonic::Request<ProjectPolicy>,
+    ) -> Result<tonic::Response<ProjectPolicy>, tonic::Status> {
+        let policy = request.get_ref();
+        let project_id = Uuid::from_str(&policy.project_id)
+            .map_err(|_| Status::invalid_argument("project_id is not a uuid"))?;
+        let allow = egress_hosts(&policy.egress_allow).map_err(not_a_host)?;
+        let deny = egress_hosts(&policy.egress_deny).map_err(not_a_host)?;
+        sqlx::query(
+            "INSERT INTO project_policies
+                 (project_id, requests_per_sec, work_units_per_sec, egress_allow, egress_deny)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (project_id) DO UPDATE
+             SET requests_per_sec = EXCLUDED.requests_per_sec,
+                 work_units_per_sec = EXCLUDED.work_units_per_sec,
+                 egress_allow = EXCLUDED.egress_allow,
+                 egress_deny = EXCLUDED.egress_deny,
+                 updated_at = now()",
+        )
+        .bind(project_id)
+        .bind(i32::try_from(policy.requests_per_sec).unwrap_or(i32::MAX))
+        .bind(i64::try_from(policy.work_units_per_sec).unwrap_or(i64::MAX))
+        .bind(&allow)
+        .bind(&deny)
+        .execute(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(self.project_policy(project_id).await?))
+    }
+
+    async fn set_project_region(
+        &self,
+        request: tonic::Request<SetProjectRegionRequest>,
+    ) -> Result<tonic::Response<ProjectPolicy>, tonic::Status> {
+        let request = request.get_ref();
+        let project_id = Uuid::from_str(&request.project_id)
+            .map_err(|_| Status::invalid_argument("project_id is not a uuid"))?;
+        self.known_region(&request.region).await?;
+        sqlx::query(
+            "INSERT INTO project_policies (project_id, region)
+             VALUES ($1, $2)
+             ON CONFLICT (project_id) DO UPDATE
+             SET region = EXCLUDED.region, updated_at = now()",
+        )
+        .bind(project_id)
+        .bind(&request.region)
+        .execute(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(self.project_policy(project_id).await?))
+    }
+
+    async fn list_regions(
+        &self,
+        _request: tonic::Request<()>,
+    ) -> Result<tonic::Response<Regions>, tonic::Status> {
+        type RegionTuple = (String, String, String, String, String, String, String);
+        let rows: Vec<RegionTuple> = sqlx::query_as(
+            "SELECT name, data_plane_addr, bucket, placement_addr, s3_endpoint, s3_access_key,
+                    s3_secret_key
+             FROM regions ORDER BY name",
+        )
+        .fetch_all(&self.reads)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Regions {
+            regions: rows
+                .into_iter()
+                .map(
+                    |(
+                        name,
+                        data_plane_addr,
+                        bucket,
+                        placement_addr,
+                        s3_endpoint,
+                        s3_access_key,
+                        s3_secret_key,
+                    )| Region {
+                        name,
+                        data_plane_addr,
+                        bucket,
+                        placement_addr,
+                        s3_endpoint,
+                        s3_access_key,
+                        s3_secret_key,
+                    },
+                )
+                .collect(),
+        }))
+    }
+
+    async fn put_region(
+        &self,
+        request: tonic::Request<Region>,
+    ) -> Result<tonic::Response<Region>, tonic::Status> {
+        let region = request.into_inner();
+        if !actias_common::naming::is_region_token(&region.name) {
+            return Err(Status::invalid_argument(format!(
+                "'{}' is not a region: 1 to 16 of a-z, 0-9 and '-', not starting with '-'",
+                region.name
+            )));
+        }
+        let data_plane_addr = region.data_plane_addr.trim().to_owned();
+        let bucket = region.bucket.trim().to_owned();
+        if data_plane_addr.is_empty() || bucket.is_empty() {
+            return Err(Status::invalid_argument(
+                "A region names its data-plane address and its bucket.",
+            ));
+        }
+        let placement_addr = region.placement_addr.trim().to_owned();
+        let s3_endpoint = region.s3_endpoint.trim().to_owned();
+        if !s3_endpoint.is_empty() && !s3_endpoint.contains("://") {
+            return Err(Status::invalid_argument(
+                "A region's S3 endpoint carries its scheme, like http://minio-b:9000.",
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO regions
+                 (name, data_plane_addr, bucket, placement_addr, s3_endpoint, s3_access_key,
+                  s3_secret_key)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (name) DO UPDATE
+             SET data_plane_addr = EXCLUDED.data_plane_addr, bucket = EXCLUDED.bucket,
+                 placement_addr = EXCLUDED.placement_addr, s3_endpoint = EXCLUDED.s3_endpoint,
+                 s3_access_key = EXCLUDED.s3_access_key, s3_secret_key = EXCLUDED.s3_secret_key",
+        )
+        .bind(&region.name)
+        .bind(&data_plane_addr)
+        .bind(&bucket)
+        .bind(&placement_addr)
+        .bind(&s3_endpoint)
+        .bind(region.s3_access_key.trim())
+        .bind(region.s3_secret_key.trim())
+        .execute(&self.database)
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Region {
+            name: region.name,
+            data_plane_addr,
+            bucket,
+            placement_addr,
+            s3_endpoint,
+            s3_access_key: region.s3_access_key.trim().to_owned(),
+            s3_secret_key: region.s3_secret_key.trim().to_owned(),
+        }))
+    }
+
+    async fn delete_region(
+        &self,
+        request: tonic::Request<RegionRef>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        let name = &request.get_ref().name;
+        let homes: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM project_policies WHERE region = $1")
+                .bind(name)
+                .fetch_one(&self.database)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        if homes.0 > 0 {
+            return Err(Status::failed_precondition(format!(
+                "'{name}' is home to {} project(s); move them first",
+                homes.0
+            )));
+        }
+        sqlx::query("DELETE FROM regions WHERE name = $1")
+            .bind(name)
+            .execute(&self.database)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(()))
+    }
+
+    async fn move_project(
+        &self,
+        request: tonic::Request<SetProjectRegionRequest>,
+    ) -> Result<tonic::Response<ProjectMove>, tonic::Status> {
+        let request = request.get_ref();
+        let project_id = Uuid::from_str(&request.project_id)
+            .map_err(|_| Status::invalid_argument("project_id is not a uuid"))?;
+        let to = request.region.clone();
+        self.known_region(&to).await?;
+        let policy = self.project_policy(project_id).await?;
+        if policy.moving {
+            return Err(Status::failed_precondition(
+                "The project is already moving; follow that move.",
+            ));
+        }
+        let from = policy.region.clone();
+        if from == to {
+            return Err(Status::failed_precondition(format!(
+                "The project is already homed in '{to}'."
+            )));
+        }
+        let mover = crate::mover::Mover {
+            database: self.database.clone(),
+            blobs: self.blobs.clone(),
+            default_region: self.default_region.clone(),
+            placement_uri: self.placement_uri.clone(),
+            drain: self.move_drain,
+        };
+        let row = mover.start(project_id, &from, &to).await?;
+        tokio::spawn(async move {
+            mover.run(project_id, from, to).await;
+        });
+        Ok(Response::new(row))
+    }
+
+    async fn get_project_move(
+        &self,
+        request: tonic::Request<ProjectRef>,
+    ) -> Result<tonic::Response<ProjectMove>, tonic::Status> {
+        let project_id = Uuid::from_str(&request.get_ref().project_id)
+            .map_err(|_| Status::invalid_argument("project_id is not a uuid"))?;
+        Ok(Response::new(
+            crate::mover::read_move(&self.reads, project_id)
+                .await?
+                .unwrap_or(ProjectMove {
+                    project_id: project_id.to_string(),
+                    ..Default::default()
+                }),
+        ))
     }
 
     async fn list_aliases(
@@ -1150,6 +1509,7 @@ mod tests {
         database: Pool<Postgres>,
         redis_url: String,
         service: ScriptService,
+        placement: NodeRegistryServiceClient<tonic::transport::Channel>,
     }
 
     async fn service() -> TestService {
@@ -1196,9 +1556,61 @@ mod tests {
         })
         .await;
 
+        // The placement store: a second database in the same container,
+        // migrated with the placement crate's schema and served
+        // in-process, so the orphan fallback reads through it the way
+        // production does.
+        sqlx::query("CREATE DATABASE placement")
+            .execute(&database)
+            .await
+            .expect("placement database creates");
+        let placement_database = PgPoolOptions::new()
+            .connect(&format!(
+                "postgresql://postgres:postgres@127.0.0.1:{postgres_port}/placement"
+            ))
+            .await
+            .expect("placement database accepts connections");
+        sqlx::migrate!("../actias-placement/migrations")
+            .run(&placement_database)
+            .await
+            .expect("placement migrations apply");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port for the placement service");
+        let placement_addr = listener.local_addr().expect("the port");
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(
+                    actias_placement::proto_node_registry::node_registry_service_server::NodeRegistryServiceServer::new(
+                        actias_placement::registry::NodeRegistry::new(
+                            std::sync::Arc::new(actias_placement::postgres::PostgresStore::new(
+                                placement_database,
+                            )),
+                            45,
+                        ),
+                    ),
+                )
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+        );
+        let placement = NodeRegistryServiceClient::new(
+            tonic::transport::Endpoint::from_shared(format!("http://{placement_addr}"))
+                .expect("a uri")
+                .connect_lazy(),
+        );
+
         let redis_url = format!("redis://127.0.0.1:{redis_port}");
-        let service =
-            ScriptService::new(database.clone(), LiveScriptManager::new(&redis_url), blobs);
+        let service = ScriptService::new(
+            crate::script_service::Databases {
+                writes: database.clone(),
+                reads: database.clone(),
+            },
+            LiveScriptManager::new(&redis_url),
+            blobs,
+            placement.clone(),
+            "local".to_owned(),
+            "http://127.0.0.1:1".to_owned(),
+            std::time::Duration::from_millis(50),
+        );
 
         TestService {
             _postgres: postgres,
@@ -1207,6 +1619,7 @@ mod tests {
             database,
             redis_url,
             service,
+            placement,
         }
     }
 
@@ -1418,17 +1831,37 @@ mod tests {
         assert_eq!(owner.get_ref().script_id, lone_producer.to_string());
 
         // Orphaned data: no current contract declares it, but the
-        // directory remembers whose code claimed it.
+        // placement store's directory remembers whose code claimed it.
         let ghost_owner = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO object_instances (scope_id, class, name, script_id)
-             VALUES ($1, '__queue', 'ghost', $2)",
-        )
-        .bind(project)
-        .bind(ghost_owner)
-        .execute(&harness.database)
-        .await
-        .expect("directory row inserts");
+        let node = harness
+            .placement
+            .clone()
+            .register(tonic::Request::new(
+                crate::proto_node_registry::RegisterNodeRequest {
+                    address: "ghost:3100".to_owned(),
+                    capabilities: vec!["http".to_owned()],
+                },
+            ))
+            .await
+            .expect("a node registers")
+            .into_inner()
+            .node_id;
+        harness
+            .placement
+            .clone()
+            .acquire_lease(tonic::Request::new(
+                crate::proto_node_registry::AcquireLeaseRequest {
+                    object_id: "g".repeat(64),
+                    node_id: node,
+                    scope_id: project.to_string(),
+                    class: "__queue".to_owned(),
+                    name: "ghost".to_owned(),
+                    script_id: ghost_owner.to_string(),
+                    ..Default::default()
+                },
+            ))
+            .await
+            .expect("the ghost claims");
         let owner = resolve("__queue", "ghost").await.expect("resolves");
         assert_eq!(owner.get_ref().script_id, ghost_owner.to_string());
 
@@ -1497,6 +1930,214 @@ mod tests {
                 .is_none(),
             "live session outlived the project"
         );
+    }
+
+    /// A project that never set a policy reads as the defaults; a set
+    /// policy reads back normalized and leaves with the project.
+    #[tokio::test]
+    async fn a_project_has_a_home_region_and_the_control_plane_knows_regions() {
+        let harness = service().await;
+        let project = Uuid::new_v4();
+        let policy = |project: Uuid| ProjectRef {
+            project_id: project.to_string(),
+        };
+
+        // Unset: the control plane's own region, not moving.
+        let unset = harness
+            .service
+            .get_project_policy(tonic::Request::new(policy(project)))
+            .await
+            .expect("answers")
+            .into_inner();
+        assert_eq!(unset.region, "local");
+        assert!(!unset.moving);
+
+        // With nothing registered, any token is a home; a non-token is not.
+        for bad in ["", "EU", "eu_west", "-eu"] {
+            let refused = harness
+                .service
+                .set_project_region(tonic::Request::new(SetProjectRegionRequest {
+                    project_id: project.to_string(),
+                    region: bad.to_owned(),
+                }))
+                .await
+                .expect_err("refused");
+            assert_eq!(refused.code(), tonic::Code::InvalidArgument, "{bad}");
+        }
+        let set = harness
+            .service
+            .set_project_region(tonic::Request::new(SetProjectRegionRequest {
+                project_id: project.to_string(),
+                region: "eu-west".to_owned(),
+            }))
+            .await
+            .expect("sets")
+            .into_inner();
+        assert_eq!(set.region, "eu-west");
+
+        // Setting the rates leaves the region alone.
+        let rated = harness
+            .service
+            .set_project_policy(tonic::Request::new(ProjectPolicy {
+                project_id: project.to_string(),
+                requests_per_sec: 5,
+                ..Default::default()
+            }))
+            .await
+            .expect("sets")
+            .into_inner();
+        assert_eq!(
+            (rated.requests_per_sec, rated.region.as_str()),
+            (5, "eu-west")
+        );
+
+        // Once a region is registered, only registered ones and the
+        // control plane's own are homes.
+        let registered = harness
+            .service
+            .put_region(tonic::Request::new(Region {
+                name: "ap-south".to_owned(),
+                data_plane_addr: " worker-ap-south:3100 ".to_owned(),
+                bucket: "actias-ap-south".to_owned(),
+                ..Default::default()
+            }))
+            .await
+            .expect("registers")
+            .into_inner();
+        assert_eq!(registered.data_plane_addr, "worker-ap-south:3100");
+        let listed = harness
+            .service
+            .list_regions(tonic::Request::new(()))
+            .await
+            .expect("lists")
+            .into_inner();
+        assert_eq!(listed.regions.len(), 1);
+        let unknown = harness
+            .service
+            .set_project_region(tonic::Request::new(SetProjectRegionRequest {
+                project_id: project.to_string(),
+                region: "us-east".to_owned(),
+            }))
+            .await
+            .expect_err("unregistered");
+        assert_eq!(unknown.code(), tonic::Code::NotFound);
+        for home in ["ap-south", "local"] {
+            harness
+                .service
+                .set_project_region(tonic::Request::new(SetProjectRegionRequest {
+                    project_id: project.to_string(),
+                    region: home.to_owned(),
+                }))
+                .await
+                .expect("a registered region or the control plane's own");
+        }
+
+        // A region that is somebody's home cannot be forgotten.
+        harness
+            .service
+            .set_project_region(tonic::Request::new(SetProjectRegionRequest {
+                project_id: project.to_string(),
+                region: "ap-south".to_owned(),
+            }))
+            .await
+            .expect("sets");
+        let held = harness
+            .service
+            .delete_region(tonic::Request::new(RegionRef {
+                name: "ap-south".to_owned(),
+            }))
+            .await
+            .expect_err("a home");
+        assert_eq!(held.code(), tonic::Code::FailedPrecondition);
+        harness
+            .service
+            .set_project_region(tonic::Request::new(SetProjectRegionRequest {
+                project_id: project.to_string(),
+                region: "local".to_owned(),
+            }))
+            .await
+            .expect("moves home");
+        harness
+            .service
+            .delete_region(tonic::Request::new(RegionRef {
+                name: "ap-south".to_owned(),
+            }))
+            .await
+            .expect("forgotten");
+        assert!(
+            harness
+                .service
+                .list_regions(tonic::Request::new(()))
+                .await
+                .expect("lists")
+                .into_inner()
+                .regions
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_project_policy_round_trips_and_defaults_when_unset() {
+        let harness = service().await;
+        let project = Uuid::new_v4();
+
+        let unset = harness
+            .service
+            .get_project_policy(tonic::Request::new(ProjectRef {
+                project_id: project.to_string(),
+            }))
+            .await
+            .expect("answers")
+            .into_inner();
+        assert_eq!(unset.requests_per_sec, 0);
+        assert_eq!(unset.work_units_per_sec, 0);
+        assert!(unset.egress_allow.is_empty() && unset.egress_deny.is_empty());
+
+        let set = harness
+            .service
+            .set_project_policy(tonic::Request::new(ProjectPolicy {
+                project_id: project.to_string(),
+                requests_per_sec: 50,
+                work_units_per_sec: 1_000_000,
+                egress_allow: vec![" Api.Example.com ".to_owned(), String::new()],
+                egress_deny: vec![".internal.example.com".to_owned()],
+                ..Default::default()
+            }))
+            .await
+            .expect("sets")
+            .into_inner();
+        assert_eq!(set.requests_per_sec, 50);
+        assert_eq!(set.work_units_per_sec, 1_000_000);
+        assert_eq!(set.egress_allow, vec!["api.example.com"]);
+        assert_eq!(set.egress_deny, vec![".internal.example.com"]);
+
+        let bad = harness
+            .service
+            .set_project_policy(tonic::Request::new(ProjectPolicy {
+                project_id: project.to_string(),
+                egress_allow: vec!["https://example.com/path".to_owned()],
+                ..Default::default()
+            }))
+            .await
+            .expect_err("not a host");
+        assert_eq!(bad.code(), tonic::Code::InvalidArgument);
+
+        harness
+            .service
+            .delete_project(tonic::Request::new(DeleteProjectRequest {
+                project_id: project.to_string(),
+            }))
+            .await
+            .expect("project deletes");
+        let gone = harness
+            .service
+            .get_project_policy(tonic::Request::new(ProjectRef {
+                project_id: project.to_string(),
+            }))
+            .await
+            .expect("answers")
+            .into_inner();
+        assert_eq!(gone.requests_per_sec, 0, "the policy left with the project");
     }
 
     #[tokio::test]

@@ -31,6 +31,80 @@ export namespace script_service {
     export interface DeleteProjectRequest {
         projectId?: string;
     }
+    export interface ProjectRef {
+        projectId?: string;
+    }
+    // A project&#x27;s runtime policy: what its scripts may spend on a node and
+    // where they may reach. A zero rate means the platform default
+    // (unbounded); an empty allow list admits every host the deny list and
+    // the node&#x27;s own policy do not refuse.
+    export interface ProjectPolicy {
+        projectId?: string;
+        // Requests a node admits for the project per second, with a burst
+    // of the same size.
+        requestsPerSec?: number;
+        // Work units a node lets the project spend per second; a request
+    // that overspends puts the project in debt until it refills.
+        workUnitsPerSec?: number;
+        // Hosts outbound requests and dials may reach; a leading dot
+    // matches subdomains. Empty admits everything not denied.
+        egressAllow?: string[];
+        // Hosts refused before the allow list is consulted.
+        egressDeny?: string[];
+        // The project&#x27;s home region: where its named objects are born and
+    // its directory lives. Read here, set by SetProjectRegion.
+        region?: string;
+        // Whether the project is between homes: claims for its scope are
+    // refused with a retryable answer until the move completes.
+        moving?: boolean;
+    }
+    // Sets a project&#x27;s home region; the region must be a token of the
+    // grammar and, when regions are registered, a registered one.
+    export interface SetProjectRegionRequest {
+        projectId?: string;
+        region?: string;
+    }
+    // A region the control plane knows: how its data plane is reached and
+    // which bucket holds its bytes.
+    export interface Region {
+        name?: string;
+        dataPlaneAddr?: string;
+        // The region&#x27;s object bucket: what its workers ship to and a move
+    // copies between.
+        bucket?: string;
+        // The region&#x27;s placement service, as the control plane reaches it;
+    // a move lists the project&#x27;s objects there. Workers never cross
+    // regions to a placement service.
+        placementAddr?: string;
+        // The region&#x27;s own object storage, when it is not the control
+    // plane&#x27;s: the endpoint and the credentials a move copies with.
+    // Empty means the control plane&#x27;s S3 settings reach the bucket.
+        s3Endpoint?: string;
+        s3AccessKey?: string;
+        s3SecretKey?: string;
+    }
+    // A project&#x27;s move between homes, as the console follows it: one row
+    // per project, the latest move.
+    export interface ProjectMove {
+        projectId?: string;
+        fromRegion?: string;
+        toRegion?: string;
+        // marking, draining, copying, flipping, done, failed.
+        step?: string;
+        objectsTotal?: number;
+        objectsCopied?: number;
+        // Set when the step is failed; the move may be started again.
+        error?: string;
+        startedMs?: number;
+        // 0 while the move runs.
+        finishedMs?: number;
+    }
+    export interface Regions {
+        regions?: script_service.Region[];
+    }
+    export interface RegionRef {
+        name?: string;
+    }
     // What a script declared at its top level, extracted from the code at
     // publish; the code is the manifest.
     export interface Capabilities {
@@ -318,6 +392,57 @@ export namespace script_service {
             metadata?: Metadata,
             ...rest: any[]
         ): Observable<ListAliasesResponse>;
+        // A project&#x27;s runtime policy; get answers the defaults for a project
+    // that never set one, set is an upsert.
+        getProjectPolicy(
+            data: ProjectRef,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ProjectPolicy>;
+        // Replaces the rates and the host lists; the region and the moving
+    // flag are not part of it and stay as they were.
+        setProjectPolicy(
+            data: ProjectPolicy,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ProjectPolicy>;
+        setProjectRegion(
+            data: SetProjectRegionRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ProjectPolicy>;
+        // Moves a project to another home: marks it moving, drains, copies
+    // its objects&#x27; bytes between the regions&#x27; buckets, flips the home,
+    // clears the mark (FLEET.md 6.3). Returns at once; GetProjectMove
+    // follows it. Both regions must be registered.
+        moveProject(
+            data: SetProjectRegionRequest,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ProjectMove>;
+        getProjectMove(
+            data: ProjectRef,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<ProjectMove>;
+        // The regions registered with the control plane. Empty on a
+    // single-region deployment, which routes everything home.
+        listRegions(
+            data: google.protobuf.Empty,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Regions>;
+        // Registers or updates a region; the name is its identity.
+        putRegion(
+            data: Region,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<Region>;
+        deleteRegion(
+            data: RegionRef,
+            metadata?: Metadata,
+            ...rest: any[]
+        ): Observable<google.protobuf.Empty>;
     }
 }
 export namespace bundle {
