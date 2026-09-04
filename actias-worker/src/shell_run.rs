@@ -125,6 +125,8 @@ pub async fn run(state: &AppState, run: ShellRun) -> Result<ShellOutcome, String
     let routing = ObjectRouting::new(state, prepared.clone());
     runtime.set_app_data::<ObjectRouter>(routing.as_router());
     runtime.set_app_data::<DirectoryLister>(routing.as_lister());
+    let policy = crate::server::project_policy(state, &prepared.script.project_id).await;
+    runtime.set_app_data(crate::server::scope_egress(&policy));
     // A shell statement may open a wire too, for trying a provider by
     // hand; the connection outlives the statement like any other.
     runtime.set_app_data::<actias_worker_core::extensions::sockets::Dialer>(

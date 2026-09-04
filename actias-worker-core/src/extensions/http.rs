@@ -51,7 +51,12 @@ impl LuaExtension for HttpExtension {
                         gates.settle().await.map_err(mlua::Error::runtime)?;
                     }
 
-                    let response = lua_request.send(&egress).await?;
+                    // The project's egress lists ride the vm as app data;
+                    // a vm nobody gave a policy runs on the node's alone.
+                    let scope = lua
+                        .app_data_ref::<crate::egress::ScopeEgress>()
+                        .map(|scope| scope.clone());
+                    let response = lua_request.send(&egress, scope.as_ref()).await?;
                     lua.to_value(&response)
                 }
             })?,
@@ -193,14 +198,18 @@ impl Request {
     /// The url is checked before anything is sent; this is the layer that
     /// catches literal ip destinations, which never reach the client's dns
     /// resolver. Hostnames are checked again at resolution time.
-    async fn send(self, egress: &EgressClient) -> mlua::Result<Response> {
+    async fn send(
+        self,
+        egress: &EgressClient,
+        scope: Option<&crate::egress::ScopeEgress>,
+    ) -> mlua::Result<Response> {
         let uri_string = {
             let uri: http::Result<http::Uri> = self.uri.to_uri().into_lua_err()?.into();
             uri.into_lua_err()?.to_string()
         };
 
         let url = url::Url::parse(&uri_string).into_lua_err()?;
-        egress.policy.check_url(&url).into_lua_err()?;
+        egress.policy.check_url(&url, scope).into_lua_err()?;
 
         let method =
             reqwest::Method::from_str(self.method.as_deref().unwrap_or("GET")).into_lua_err()?;

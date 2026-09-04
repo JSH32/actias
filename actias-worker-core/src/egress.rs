@@ -51,25 +51,34 @@ impl EgressPolicy {
     /// Checks a url before any request is made and again at each redirect hop.
     ///
     /// Hostnames are re-checked at resolution time; literal ips only pass
-    /// through here, because they never reach dns.
+    /// through here, because they never reach dns. A `scope` policy is
+    /// consulted first and can only narrow: nothing it allows overrides
+    /// what this node denies.
     ///
     /// # Errors
     /// Returns [`EgressDenied`] when the url carries no host, or when its
     /// host or address is one the policy denies.
-    pub fn check_url(&self, url: &url::Url) -> Result<(), EgressDenied> {
+    pub fn check_url(
+        &self,
+        url: &url::Url,
+        scope: Option<&ScopeEgress>,
+    ) -> Result<(), EgressDenied> {
         match url.host() {
-            Some(url::Host::Domain(host)) => self.check_host(host),
+            Some(url::Host::Domain(host)) => self.check_host(host, scope),
             Some(url::Host::Ipv4(ip)) => self.check_ip(IpAddr::V4(ip)),
             Some(url::Host::Ipv6(ip)) => self.check_ip(IpAddr::V6(ip)),
             None => Err(EgressDenied("the url has no host".into())),
         }
     }
 
-    /// Checks a hostname against the denied list.
+    /// Checks a hostname against the scope's lists, then the denied list.
     ///
     /// # Errors
-    /// Returns [`EgressDenied`] naming the host when the policy denies it.
-    pub fn check_host(&self, host: &str) -> Result<(), EgressDenied> {
+    /// Returns [`EgressDenied`] naming the host when either policy denies it.
+    pub fn check_host(&self, host: &str, scope: Option<&ScopeEgress>) -> Result<(), EgressDenied> {
+        if let Some(scope) = scope {
+            scope.check_host(host)?;
+        }
         if self.denied_hosts.contains(&host.to_ascii_lowercase()) {
             return Err(EgressDenied(format!("'{host}' is not reachable")));
         }
@@ -90,6 +99,61 @@ impl EgressPolicy {
         }
 
         Ok(())
+    }
+}
+
+/// What a project's policy says about hosts, consulted before the node's
+/// own lists. Entries are lowercase host names; a leading dot names a
+/// domain and every subdomain of it. An empty allow list admits every
+/// host the deny list does not name.
+#[derive(Clone, Debug, Default)]
+pub struct ScopeEgress {
+    allow: Vec<String>,
+    deny: Vec<String>,
+}
+
+impl ScopeEgress {
+    pub fn new(allow: Vec<String>, deny: Vec<String>) -> Self {
+        let lower = |entries: Vec<String>| {
+            entries
+                .into_iter()
+                .map(|entry| entry.to_ascii_lowercase())
+                .collect()
+        };
+        Self {
+            allow: lower(allow),
+            deny: lower(deny),
+        }
+    }
+
+    /// Checks a hostname: denied entries first, then the allow list when
+    /// there is one.
+    ///
+    /// # Errors
+    /// Returns [`EgressDenied`] naming the host when the project's policy
+    /// does not reach it.
+    pub fn check_host(&self, host: &str) -> Result<(), EgressDenied> {
+        let host = host.to_ascii_lowercase();
+        if self.deny.iter().any(|entry| entry_matches(entry, &host)) {
+            return Err(EgressDenied(format!(
+                "'{host}' is denied by the project's egress policy"
+            )));
+        }
+        if !self.allow.is_empty() && !self.allow.iter().any(|entry| entry_matches(entry, &host)) {
+            return Err(EgressDenied(format!(
+                "'{host}' is not on the project's egress allow list"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Whether a policy entry names `host`: exactly, or as a domain whose
+/// subdomains it covers when the entry starts with a dot.
+fn entry_matches(entry: &str, host: &str) -> bool {
+    match entry.strip_prefix('.') {
+        Some(domain) => host == domain || host.ends_with(entry),
+        None => host == entry,
     }
 }
 
@@ -141,7 +205,7 @@ impl reqwest::dns::Resolve for GuardedResolver {
         let policy = self.policy.clone();
 
         Box::pin(async move {
-            policy.check_host(name.as_str())?;
+            policy.check_host(name.as_str(), None)?;
 
             let addrs: Vec<_> = tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
 
@@ -179,7 +243,7 @@ impl EgressClient {
                     return attempt.error(EgressDenied("too many redirects".into()));
                 }
 
-                match policy.check_url(attempt.url()) {
+                match policy.check_url(attempt.url(), None) {
                     Ok(()) => attempt.follow(),
                     Err(denied) => attempt.error(denied),
                 }
@@ -251,20 +315,69 @@ mod tests {
     fn denied_hostnames_are_rejected_case_insensitively() {
         let policy = EgressPolicy::new(["script_service".to_owned()], false);
 
-        assert!(policy.check_host("script_service").is_err());
-        assert!(policy.check_host("SCRIPT_SERVICE").is_err());
-        assert!(policy.check_host("example.com").is_ok());
+        assert!(policy.check_host("script_service", None).is_err());
+        assert!(policy.check_host("SCRIPT_SERVICE", None).is_err());
+        assert!(policy.check_host("example.com", None).is_ok());
     }
 
     #[test]
     fn a_denied_url_never_names_more_than_the_destination() {
         // The message reaches script authors; it must not describe topology.
         let error = deny_all()
-            .check_url(&url::Url::parse("http://169.254.169.254/latest").unwrap())
+            .check_url(
+                &url::Url::parse("http://169.254.169.254/latest").unwrap(),
+                None,
+            )
             .unwrap_err();
 
         let message = error.to_string();
         assert!(message.contains("169.254.169.254"), "unhelpful: {message}");
         assert!(!message.to_lowercase().contains("metadata"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    fn node() -> EgressPolicy {
+        EgressPolicy::new(["kv_service".to_owned()], false)
+    }
+
+    #[test]
+    fn a_scope_deny_beats_its_allow_and_the_node_deny_beats_both() {
+        let scope = ScopeEgress::new(
+            vec!["api.example.com".to_owned(), ".partner.example".to_owned()],
+            vec!["bad.partner.example".to_owned()],
+        );
+        let policy = node();
+        assert!(policy.check_host("api.example.com", Some(&scope)).is_ok());
+        assert!(policy.check_host("API.Example.com", Some(&scope)).is_ok());
+        assert!(policy.check_host("partner.example", Some(&scope)).is_ok());
+        assert!(
+            policy
+                .check_host("deep.sub.partner.example", Some(&scope))
+                .is_ok()
+        );
+        assert!(
+            policy
+                .check_host("bad.partner.example", Some(&scope))
+                .is_err()
+        );
+        assert!(policy.check_host("other.example", Some(&scope)).is_err());
+
+        // A scope allow list cannot admit what the node denies.
+        let permissive = ScopeEgress::new(vec!["kv_service".to_owned()], Vec::new());
+        assert!(policy.check_host("kv_service", Some(&permissive)).is_err());
+    }
+
+    #[test]
+    fn an_empty_scope_admits_everything_not_denied() {
+        let scope = ScopeEgress::new(Vec::new(), vec![".example.com".to_owned()]);
+        let policy = node();
+        assert!(policy.check_host("anything.example", Some(&scope)).is_ok());
+        assert!(policy.check_host("example.com", Some(&scope)).is_err());
+        assert!(policy.check_host("www.example.com", Some(&scope)).is_err());
+        assert!(policy.check_host("notexample.com", Some(&scope)).is_ok());
     }
 }
