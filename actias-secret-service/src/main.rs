@@ -47,6 +47,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Secret Service listening on {}", addr);
 
     let database = Database::connect(&config.database_url).await?;
+    // A worker's resolve reads from a regional replica when there is one.
+    let reads = match &config.read_database_url {
+        Some(url) => sea_orm::Database::connect(url).await?,
+        None => database.clone(),
+    };
+
     let envelope = Envelope::new(
         config.master_key_id,
         config.master_key,
@@ -64,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(actias_common::otel::TraceExtract)
         .add_service(health_service)
         .add_service(SecretServiceServer::new(SecretService::new(
-            database, envelope,
+            database, reads, envelope,
         )))
         .serve(addr)
         .await?;

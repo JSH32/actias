@@ -21,6 +21,9 @@ use crate::proto_secret_service::{
 
 pub struct SecretService {
     database: DatabaseConnection,
+    /// What a worker's resolve reads from: a regional read replica when
+    /// the deployment has one, else the primary.
+    reads: DatabaseConnection,
     envelope: Envelope,
 }
 
@@ -59,8 +62,16 @@ fn by_name(project_id: &str, name: &str) -> sea_orm::Select<entity::Entity> {
 }
 
 impl SecretService {
-    pub fn new(database: DatabaseConnection, envelope: Envelope) -> Self {
-        SecretService { database, envelope }
+    pub fn new(
+        database: DatabaseConnection,
+        reads: DatabaseConnection,
+        envelope: Envelope,
+    ) -> Self {
+        SecretService {
+            database,
+            reads,
+            envelope,
+        }
     }
 
     /// The newest version row of a name, tombstoned or not.
@@ -71,7 +82,7 @@ impl SecretService {
     ) -> Result<Option<entity::Model>, sea_orm::DbErr> {
         by_name(project_id, name)
             .order_by_desc(entity::Column::Version)
-            .one(&self.database)
+            .one(&self.reads)
             .await
     }
 }
@@ -267,7 +278,7 @@ impl SecretServiceTrait for SecretService {
                 request.name.clone(),
                 request.version as i64,
             ))
-            .one(&self.database)
+            .one(&self.reads)
             .await
             .map_err(|err| storage_error("secret version read failed", err))?
         };
@@ -363,7 +374,7 @@ mod tests {
 
         let envelope = Envelope::new("kek-1".to_owned(), Zeroizing::new([7u8; KEY_LEN]), None);
         (
-            SecretService::new(database.clone(), envelope),
+            SecretService::new(database.clone(), database.clone(), envelope),
             database,
             postgres,
         )
@@ -606,6 +617,7 @@ mod tests {
             .expect("rewrap lands");
 
         let after = SecretService::new(
+            database.clone(),
             database.clone(),
             Envelope::new("kek-2".to_owned(), Zeroizing::new([9u8; KEY_LEN]), None),
         );

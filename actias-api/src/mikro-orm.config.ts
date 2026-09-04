@@ -13,6 +13,11 @@ export default defineConfig({
   entities: ['./dist/entities'],
   entitiesTs: ['./src/entities'],
   clientUrl: config().databaseUrl,
+  // Reads go to the replica when one is configured; a request that
+  // wrote keeps reading the primary within its own unit of work.
+  ...(config().readDatabaseUrl
+    ? { replicas: [{ clientUrl: config().readDatabaseUrl }] }
+    : {}),
   logger: logger.log.bind(logger),
   migrations: {
     disableForeignKeys: false,

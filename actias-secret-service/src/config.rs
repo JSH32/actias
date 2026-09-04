@@ -10,6 +10,9 @@ use crate::envelope::KEY_LEN;
 pub struct Config {
     pub port: u16,
     pub database_url: String,
+    /// A read replica for what workers resolve at runtime; the primary
+    /// when unset.
+    pub read_database_url: Option<String>,
     /// The active master key and its label; every new write wraps under it.
     pub master_key_id: String,
     pub master_key: Zeroizing<[u8; KEY_LEN]>,
@@ -44,6 +47,9 @@ impl Config {
         Config {
             port: get_env_or("PORT", 3000),
             database_url: get_env("DATABASE_URL"),
+            read_database_url: std::env::var("READ_DATABASE_URL")
+                .ok()
+                .filter(|url| !url.trim().is_empty()),
             master_key_id: get_env_or("SECRET_MASTER_KEY_ID", "kek-1".to_owned()),
             master_key: decode_key("SECRET_MASTER_KEY", &get_env::<String>("SECRET_MASTER_KEY")),
             previous_master,
