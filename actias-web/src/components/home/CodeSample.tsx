@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as RadixTabs from '@radix-ui/react-tabs';
-import { Icon } from '@/ui/icons';
+import { HomeIcon } from '@/components/home/HomeIcon';
 import { highlightLua } from './lua';
 import classes from './CodeSample.module.css';
 
@@ -11,7 +11,7 @@ export interface Sample {
   label: string;
   /** What the platform creates the first time this runs, said in the
    * same words the console uses for it. */
-  creates: string;
+  creates: string[];
   source: string;
 }
 
@@ -47,10 +47,16 @@ export function CodeSample({ samples }: { samples: Sample[] }) {
           </pre>
           <div className={classes.creates}>
             <span className={classes.tick}>
-              <Icon name="check" size={12} />
+              <HomeIcon name="check" size={12} />
             </span>
             <span className={classes.createsLabel}>creates</span>
-            <span className={classes.createsList}>{sample.creates}</span>
+            <span className={classes.createsList}>
+              {sample.creates.map((item) => (
+                <span key={item} className={classes.chip}>
+                  {item}
+                </span>
+              ))}
+            </span>
           </div>
         </RadixTabs.Content>
       ))}

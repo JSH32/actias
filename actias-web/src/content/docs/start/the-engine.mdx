@@ -1,0 +1,154 @@
+---
+title: The engine
+lead: "What runs under the Lua: a durable execution engine, its two kinds of work, the guarantees it makes, and how it differs from the platforms it resembles."
+order: 2
+---
+
+Actias is a durable execution engine with a Lua scripting layer on
+top. The engine runs units of work on a fleet of nodes, gives some of
+them an identity and a private database, and guarantees that
+anything it acknowledged survives the loss of the machine that
+produced it. The mechanisms are in [Internals](/docs/internals/cluster/topology).
+
+## Units and objects
+
+Everything that runs is one of two things.
+
+A **unit** is a script handler run once for one cause: an HTTP
+request, a queue message, a cron tick, a workflow step. It has no
+identity. Any node can run it from the bundle it caches by hash.
+Nothing about it outlives the run except what it wrote elsewhere.
+Units scale by adding nodes.
+
+An **object** is a named entity with a mailbox and its own SQLite
+database. `Auction("lot-42")` names one. The platform assigns it a
+home node, runs its methods one at a time, and keeps its database
+durable. An object is an actor with three things the actor model
+does not give you: a real database instead of in-memory state,
+durability without writing it yourself, and placement you never see.
+
+Units call objects. Objects call objects and publish to followers.
+Queues, workflows, connections, scheduled work and the directory are
+built from these two.
+
+## What durable execution means here
+
+Four properties, each with a mechanism.
+
+**Acknowledged means durable.** A caller that was told "done" finds
+the work done after any single failure. Every reply from an object
+is held until the object's writes are safe off the machine: on a
+quorum of replica nodes that hold the write-ahead log frames, or in
+the blob store's manifest when there are no replicas. A write's own
+reply waits. Every other reply from the object also waits while
+writes are in flight, because a read must not return state that
+may be lost. The cost is latency, not throughput: the mailbox keeps
+running while replies are held, and a burst of writes rides one
+flight and releases together.
+
+**One writer, always.** An object's file is written by one process
+at a time, chosen by a lease in a placement store and fenced by an
+epoch. A node that lost its lease without noticing cannot land a
+write: replicas refuse frames under a stale epoch, and the manifest
+check refuses them at the store. Failover replaces one writer with
+the next under a lease the store hands out. Primary-backup under an
+external lease, as in Aurora, Kafka and Cloudflare's object storage.
+No consensus group per object.
+
+**State outlives any node.** The object's SQLite file is a leased
+cache. The truth is the shipped log: content-addressed base chunks
+plus WAL segments in the region's bucket, indexed by a manifest. A
+new home restores from a live replica when there is one and from
+the bucket when there is not. Losing every node in a region loses
+nothing acknowledged, except what cross-region storage replication
+had not yet copied.
+
+**Retry is safe.** Queues redeliver until a handler accepts.
+Workflows replay a journal rather than rerunning steps. A call whose
+outcome is unknown returns a typed unknown, not a guess.
+
+## The actor model's problems, and what is done about them
+
+Objects are actors: one mailbox, one method at a time, private
+state, addressed by name. The model has four well-known problems.
+
+**Unbounded mailboxes.** Actor frameworks let a hot actor's queue
+grow until memory runs out. An Actias mailbox holds 128 waiting
+calls. Callers past that wait; nothing is dropped; the wait shows
+up as latency. Connection inboxes are bounded the same way, and a
+connection that cannot keep up has its subscriptions severed.
+
+**Lost messages.** In-memory actors lose their queue with the
+process. Here nothing an object was asked to do exists only in
+memory. A queue message is in a queue object's durable log. A
+delivery is a row in the publisher's log until the follower has it.
+An alarm is a row in the placement store until it fires. Work that
+was in flight when a node died is redone from those rows.
+
+**Reentrancy and deadlock.** An actor that calls another which calls
+back deadlocks. Every call carries its chain; an object already on
+the chain refuses the call and names the cycle. Depth is bounded at
+32. Reads that need only a snapshot skip the mailbox, so a read
+never queues behind a write it does not depend on.
+
+**Location.** Actors are addressed by a location you hold. Here you
+hold a name. The name hashes to an id, the id's lease names the
+node, the project names the region, and a forwarding row records
+where the platform moved it. A call that lands on the wrong node
+forwards once. A hot object cannot be split across nodes; that is
+true of every actor system. What you get instead is ten thousand
+objects of one class spread across the fleet with no configuration.
+
+## Reading order
+
+- [The cluster](/docs/internals/cluster/topology): services, one
+  request's path, caches, membership.
+- [Object placement](/docs/internals/objects/placement): leases,
+  epochs, the claim, takeover.
+- [The write path](/docs/internals/objects/write-path): the
+  transaction, the two gates, flights, replicas and the quorum.
+- [Replication and takeover](/docs/internals/objects/replication):
+  what a replica holds, how a flight fans out, what a takeover reads.
+- [Event delivery](/docs/internals/objects/delivery): the log, the
+  edges, fan-out by node.
+- [The directory](/docs/internals/objects/directory): one row per
+  object, rebuilt from state.
+- [Fair share](/docs/internals/cluster/fair-share): how one node's
+  pools split among projects.
+- [Regions](/docs/internals/regions/regions): a region's parts, what
+  crosses between regions, moving a project.
+
+## Compared with other platforms
+
+**Cloudflare Workers and Durable Objects.** The closest design: V8
+isolates as units, a single-writer object with SQLite as the stateful
+thing. Actias uses Luau vms instead of isolates: cheaper per instance
+and faster to start, one language. Objects here have a declared
+schema, a queryable directory across all instances of a class, and a
+bounded mailbox. Placement is per region with an explicit project
+home and an explicit move; Cloudflare's is global and implicit.
+Actias is open source and runs from one compose file or one Helm
+chart.
+
+**Temporal and Durable Functions.** Workflow engines that replay a
+history to make functions durable. Actias workflows do the same
+journal replay, but a workflow is one primitive among several. An
+object is the cheaper thing when you want a stateful entity rather
+than a long computation; a queue is the cheaper thing when you want
+retries.
+
+**Akka, Orleans, Erlang.** Actor runtimes with persistence and
+placement as libraries you assemble. Actias makes those choices for
+you: durability by default, placement by lease, a database per
+actor, a fleet-wide directory. You cannot choose otherwise.
+
+**Lambda and its relatives.** Stateless units only. Every stateful
+need becomes a database round trip and a consistency problem you
+own. An Actias unit is the same shape as a Lambda; the objects are
+what Lambda makes you build from DynamoDB.
+
+Each of these optimizes for something else: a language ecosystem,
+long-running computation, library-level control, or pure
+statelessness. Actias optimizes for one file that declares what
+exists, durability that needs no configuration, and one codebase
+from a laptop to a fleet.

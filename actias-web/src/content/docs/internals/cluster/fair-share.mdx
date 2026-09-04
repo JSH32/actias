@@ -1,0 +1,101 @@
+---
+title: Fair share
+lead: How one node's pools are divided among the projects using it, and when the division is enforced.
+order: 3
+---
+
+A node is shared. Its bounds are node-wide numbers, and the projects
+on it would otherwise compete for them by arrival order. Fair share
+turns every node-wide bound into a per-project one, computed from
+who is actually there, with no configuration per tenant.
+
+## The pools
+
+Six things on a node are bounded, each a pool of permits:
+
+<table>
+  <thead>
+    <tr><th>Pool</th><th>Permits</th><th>Setting</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>requests in flight</td><td>1,024</td><td><code>REQUEST_CONCURRENCY</code></td></tr>
+    <tr><td>blocking work (overlay builds, folds, scans)</td><td>64</td><td><code>BLOCKING_CONCURRENCY</code></td></tr>
+    <tr><td>open connections</td><td>4,096</td><td><code>CONNECTION_LIMIT</code></td></tr>
+    <tr><td>resident objects</td><td>10,000</td><td><code>OBJECT_RESIDENT_LIMIT</code></td></tr>
+    <tr><td>directory queries</td><td>64</td><td><code>DIRECTORY_QUERY_CONCURRENCY</code></td></tr>
+    <tr><td>shipping flights, general lane</td><td>24</td><td><code>OBJECT_SHIP_CONCURRENCY</code> minus the reserved lane</td></tr>
+  </tbody>
+</table>
+
+A request holds a permit for its life; a connection for its life; a
+resident object for its residency; a flight for its store call. The
+permit is released when the holder ends, and the release wakes
+whoever waits.
+
+## The rule
+
+```
+active(pool)   = projects that held or asked for a permit in the last second
+share(project) = max(FLOOR, POOL / active)
+FLOOR          = 5% of the pool, at least one permit     (SHARE_FLOOR)
+
+admit(project) = in_use < POOL           when project holds < share
+               = in_use < POOL - FLOOR   when project holds >= share
+```
+
+Three consequences:
+
+1. **A node with room refuses nothing.** A project alone on a node
+   gets the node. A project over its share keeps taking what nobody
+   else is using. The share is not a cap; it is a priority that
+   exists only under pressure.
+2. **A floor's worth stays free for a late arrival.** A project past
+   its share stops one floor short of filling the pool, so a project
+   that shows up to a busy node always finds its floor at once. That
+   floor is its guarantee: 5% of the pool, which on a real node is
+   fifty concurrent requests.
+3. **A full node refuses the project over its share first.** When the
+   pool is full and a permit is asked for, the project holding at or
+   past its share is the one refused (429 with `Retry-After` for a
+   request; `TOO_MANY_RESIDENTS` for a spawn). A project under its
+   share gets in as soon as anything is released, which for requests
+   is milliseconds.
+
+Nothing is reserved for a project that is not there, which is what
+makes a single-tenant cluster and a shared one the same code with
+the same numbers.
+
+## Resident objects: eviction, not refusal
+
+Objects are the one pool where refusing is the wrong answer, because
+the thing asking is a call that will succeed once something idle
+makes room. When the residents pool is full and a spawn cannot fit:
+
+- a project over its share puts its own idlest object to sleep (the
+  one with the oldest last call) and the spawn proceeds;
+- a project under its share puts to sleep the idlest object of
+  whichever project is furthest over its share.
+
+A sleeping object loses nothing: its state is on disk and shipped,
+and it wakes on its next call. Only a pool where nothing is evicted
+within a second refuses. Nothing is evicted on a node with room.
+
+## What it looks like
+
+The fair-share drill in the repository runs two projects on one node
+with the request pool cut to eight: a big one with sixteen writers,
+a small one with two. Under the rule the small project's p99 stays
+within three times its solo number while the big one is refused at
+the floor, and the big project alone afterwards holds the whole
+node. The numbers are in the drill's output.
+
+## Rates, by policy
+
+Fair share bounds what a project may hold on one node. A project's
+[policy](/docs/runtime/guarantees) bounds what it may spend per
+second: requests per second and work units per second, each a token
+bucket per node refilled from the policy, with a burst of one
+second's worth. Over the rate a request answers 429 before any vm is
+built; over the work rate the project is in debt until the bucket
+refills. Both are zero, meaning unbounded, unless set on the
+project's policy page.

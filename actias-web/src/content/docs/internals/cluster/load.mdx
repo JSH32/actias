@@ -36,12 +36,12 @@ global counter.
 ## What one node absorbs
 
 - Followers: delivery cost is per node for sockets, so co-located
-  sockets are nearly free. See [event delivery](/docs/internals/delivery).
+  sockets are nearly free. See [event delivery](/docs/internals/objects/delivery).
 - Database reads: `read` and `read_one` answer from a replica without
   touching the home. Every object method reaches the home. See
-  [placement](/docs/internals/placement).
+  [placement](/docs/internals/objects/placement).
 - Scripts: pointer and blob caches keep the steady state node-local.
-  See [the cluster](/docs/internals/topology).
+  See [the cluster](/docs/internals/cluster/topology).
 - Misrouted object calls: the holder cache forwards them from memory;
   the placement store is consulted on first touch and after a home
   moves, not per call.
@@ -78,7 +78,7 @@ a caller to answer.
 
 ## Related
 
-- [Event delivery](/docs/internals/delivery): the fan-out mechanics.
-- [Object placement](/docs/internals/placement): homes, replicas, and
+- [Event delivery](/docs/internals/objects/delivery): the fan-out mechanics.
+- [Object placement](/docs/internals/objects/placement): homes, replicas, and
   recovery.
 - [Guarantees and limits](/docs/runtime/guarantees): the numbers.

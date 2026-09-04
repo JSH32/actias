@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Icon } from '@/ui/icons';
+import { HomeIcon } from '@/components/home/HomeIcon';
 import classes from './CopyCommand.module.css';
 
 /**
@@ -37,7 +37,7 @@ export function CopyCommand({ command }: { command: string }) {
       <span className={classes.prompt}>$</span>
       <span className={classes.command}>{command}</span>
       <span className={classes.glyph}>
-        <Icon name={copied ? 'check' : 'copy'} size={14} />
+        <HomeIcon name={copied ? 'check' : 'copy'} size={14} />
       </span>
       <span className={classes.state}>{copied ? 'copied' : 'copy'}</span>
     </button>

@@ -1,13 +1,13 @@
 import * as React from 'react';
 import * as RadixTabs from '@radix-ui/react-tabs';
-import { Icon, IconName } from '@/ui/icons';
+import { HomeIcon, HomeIconName } from '@/components/home/HomeIcon';
 import classes from './IdeaRotator.module.css';
 
 /** One thing the primitives on this page add up to. */
 export interface Idea {
   title: string;
   note: string;
-  icon: IconName;
+  icon: HomeIconName;
   /** The capability the idea leans on, as a token reference; it colours
    * the icon so the rotation reads against the grid further down. */
   kind: string;
@@ -57,7 +57,7 @@ export function IdeaRotator({ ideas }: { ideas: Idea[] }) {
             style={{ color: idea.kind }}
             aria-hidden
           >
-            <Icon name={idea.icon} size={18} />
+            <HomeIcon name={idea.icon} size={18} />
           </span>
           <div className={classes.text}>
             <div className={classes.title}>{idea.title}</div>

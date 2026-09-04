@@ -3,7 +3,7 @@ import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { Button } from '@/ui';
 import { Mark } from '@/ui/Mark';
-import { Icon, IconName } from '@/ui/icons';
+import { HomeIcon, HomeIconName } from '@/components/home/HomeIcon';
 import { HeroBackdrop } from '@/components/home/HeroBackdrop';
 import { ArchitectureGraph } from '@/components/home/ArchitectureGraph';
 import { CodeSample, Sample } from '@/components/home/CodeSample';
@@ -62,7 +62,7 @@ const samples: Sample[] = [
   {
     id: 'kv',
     label: 'key-value',
-    creates: 'kv "visits"',
+    creates: ['kv "visits"'],
     source: `local visits = kv "visits"
 
 on "fetch" (function(request)
@@ -76,7 +76,7 @@ end)`,
   {
     id: 'object',
     label: 'durable object',
-    creates: 'object "Auction", sql "migrations/Auction", stream "bids"',
+    creates: ['object "Auction"', 'sql "migrations/Auction"', 'stream "bids"'],
     source: `local Auction = object "Auction" {
     migrations = "migrations/Auction",
     publishes = { bids = "public" },
@@ -95,7 +95,7 @@ end)`,
   {
     id: 'realtime',
     label: 'realtime',
-    creates: 'connection "Session", follows Channel’s message stream',
+    creates: ['connection "Session"', 'follows Channel’s message stream'],
     source: `local Session = connection "Session" {
     open = function(conn)
         conn:follow(Channel(conn.state.room), "message")
@@ -116,9 +116,38 @@ on "fetch" (function(request)
 end)`,
   },
   {
+    id: 'ai',
+    label: 'ai',
+    creates: ['connection "Model"', 'kv "drafts"'],
+    source: `local ChatHistory = objects "ChatHistory"  -- declared in another script
+local drafts = kv "drafts"
+
+local Model = connection "Model" {
+    frame = function(conn, data)  -- one wire per chat, dialled outward
+        local chat = conn.state.chat
+        if data.type == "token" then
+            local draft = (drafts:get(chat) or "") .. data.text
+            drafts:set(chat, draft)           -- kv: no flight per token
+            ChatHistory(chat):partial(draft)  -- fans out to followers
+        else
+            ChatHistory(chat):seal(drafts:get(chat))  -- one durable row
+            drafts:delete(chat)
+        end
+    end,
+}
+
+on "fetch" (function(request)
+    local chat = json.parse(request.body).chat
+    Model:open("wss://api.openai.com/v1/realtime", { chat = chat }, {
+        headers = { authorization = "Bearer " .. secret "OPENAI_API_KEY" },
+    })
+    return { status = 202 }
+end)`,
+  },
+  {
     id: 'workflow',
     label: 'workflow',
-    creates: 'workflow "Onboard", queue "refunds"',
+    creates: ['workflow "Onboard"', 'queue "refunds"'],
     source: `local refunds = queue "refunds"
 
 workflow "Onboard" (function(run, input)
@@ -136,7 +165,7 @@ end)`,
 /** The four commands that are the whole workflow, and where each one is
  * written up. */
 const commands: {
-  icon: IconName;
+  icon: HomeIconName;
   command: string;
   body: string;
   linkLabel: string;
@@ -168,7 +197,7 @@ const commands: {
     command: 'docker compose up',
     body: 'Or run the whole platform locally, workers and all.',
     linkLabel: 'the cluster',
-    href: '/docs/internals/topology',
+    href: '/docs/internals/cluster/topology',
   },
 ];
 
@@ -315,13 +344,13 @@ function MinimalLanding() {
           <Link href="/login">
             <Button variant="primary">
               <span className={classes.minimalButton}>
-                <Icon name="login" size={15} />
+                <HomeIcon name="login" size={15} />
                 Log in
               </span>
             </Button>
           </Link>
           <Link href="/docs" className={classes.minimalQuiet}>
-            <Icon name="book" size={15} />
+            <HomeIcon name="book" size={15} />
             Docs
           </Link>
           <a
@@ -330,7 +359,7 @@ function MinimalLanding() {
             rel="noreferrer"
             className={classes.minimalQuiet}
           >
-            <Icon name="github" size={15} />
+            <HomeIcon name="github" size={15} />
             Source
           </a>
         </div>
@@ -363,9 +392,9 @@ function DocLink({
 }: React.PropsWithChildren<{ href: string }>) {
   return (
     <Link href={href} className={classes.docLink}>
-      <Icon name="book" size={12} />
+      <HomeIcon name="book" size={12} />
       {children}
-      <Icon name="arrowRight" size={11} />
+      <HomeIcon name="arrowRight" size={11} />
     </Link>
   );
 }
@@ -418,7 +447,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
               className={classes.primaryAction}
             >
               Read the docs
-              <Icon name="arrowRight" size={15} />
+              <HomeIcon name="arrowRight" size={15} />
             </Link>
             <CopyCommand command={INIT_COMMAND} />
           </div>
@@ -438,7 +467,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
           {commands.map((entry) => (
             <div key={entry.command} className={classes.command}>
               <div className={classes.commandName}>
-                <Icon name={entry.icon} size={15} />
+                <HomeIcon name={entry.icon} size={15} />
                 <span>{entry.command}</span>
               </div>
               <p className={classes.commandBody}>{entry.body}</p>
@@ -590,7 +619,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
             {/* The console, drawn as the console draws it. */}
             <div className={classes.inspector}>
               <div className={classes.inspectorBar}>
-                <Icon name="kv" size={13} />
+                <HomeIcon name="kv" size={13} />
                 <span>databases</span>
                 <span className={classes.inspectorSlash}>/</span>
                 <span className={classes.inspectorPath}>Auction/lot-42</span>
@@ -630,7 +659,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
           <h2 className={classes.sectionTitleWide}>
             One writer is a placement decision, not a lock
           </h2>
-          <DocLink href="/docs/internals/placement">
+          <DocLink href="/docs/internals/objects/placement">
             leases and placement
           </DocLink>
         </div>
@@ -667,7 +696,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
                     className={classes.roadmapIcon}
                     style={{ color: item.tone }}
                   >
-                    <Icon name="clock" size={13} />
+                    <HomeIcon name="clock" size={13} />
                   </span>
                   <span className={classes.roadmapName}>{item.name}</span>
                   <span className={classes.roadmapNote}>{item.note}</span>
@@ -681,7 +710,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
            * the places that do publish today sit under the form. */}
           <div className={classes.keepUp}>
             <div className={classes.keepUpHead}>
-              <Icon name="mail" size={17} />
+              <HomeIcon name="mail" size={17} />
               <span>Keep up with the project</span>
             </div>
             <p className={classes.keepUpBody}>
@@ -691,7 +720,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
             <KeepPosted />
             <div className={classes.keepUpLinks}>
               <Link href="/blog" className={classes.keepUpLink}>
-                <Icon name="book" size={14} />
+                <HomeIcon name="book" size={14} />
                 Read the blog
               </Link>
               <a
@@ -700,7 +729,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
                 rel="noreferrer"
                 className={classes.keepUpLink}
               >
-                <Icon name="download" size={14} />
+                <HomeIcon name="download" size={14} />
                 Releases
               </a>
               <a
@@ -709,7 +738,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
                 rel="noreferrer"
                 className={classes.keepUpLink}
               >
-                <Icon name="github" size={14} />
+                <HomeIcon name="github" size={14} />
                 Watch the repository
               </a>
             </div>
@@ -734,7 +763,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
               className={classes.primaryAction}
             >
               Read the docs
-              <Icon name="arrowRight" size={15} />
+              <HomeIcon name="arrowRight" size={15} />
             </Link>
             <a
               href={SOURCE}
@@ -742,7 +771,7 @@ export default function Landing({ minimal }: { minimal: boolean }) {
               rel="noreferrer"
               className={classes.secondaryAction}
             >
-              <Icon name="github" size={15} />
+              <HomeIcon name="github" size={15} />
               Source
             </a>
           </div>

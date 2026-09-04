@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useMutation } from '@tanstack/react-query';
 import api from '@/helpers/api';
-import { Icon } from '@/ui/icons';
+import { HomeIcon } from '@/components/home/HomeIcon';
 import classes from './KeepPosted.module.css';
 
 /** The landing's one form. Nothing is sent from the list yet, so the
@@ -23,7 +23,7 @@ export function KeepPosted() {
     return (
       <div className={classes.done}>
         <span className={classes.tick}>
-          <Icon name="check" size={15} />
+          <HomeIcon name="check" size={15} />
         </span>
         <div>
           <p className={classes.doneTitle}>{email} is on the list.</p>
@@ -63,7 +63,7 @@ export function KeepPosted() {
           disabled={signUp.isPending}
         >
           {signUp.isPending ? 'Sending' : 'Keep me posted'}
-          <Icon name="arrowRight" size={14} />
+          <HomeIcon name="arrowRight" size={14} />
         </button>
       </div>
       {failure && (

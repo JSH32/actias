@@ -131,7 +131,10 @@ export function getDoc(slug: string) {
 /**
  * The sidebar tree. Top-level folders are groups; a page named after a
  * sibling folder becomes that folder's parent row, so `objects.mdx`
- * beside `objects/` renders as one branch.
+ * beside `objects/` renders as one branch. A subfolder with its own
+ * `group.json` is a branch of its own even with no page named after it:
+ * a category inside the group, its pages under it, placed by the
+ * folder's order among the group's pages.
  */
 export function getNav(): DocGroup[] {
   const docs = getAllDocs();
@@ -152,9 +155,8 @@ export function getNav(): DocGroup[] {
       .filter((doc) => doc.section.length === 1)
       .sort((a, b) => a.order - b.order);
 
-    group.items = roots.map((doc) => {
-      const name = doc.slug.split('/').pop() as string;
-      const children = inGroup
+    const childrenOf = (name: string): DocNode[] =>
+      inGroup
         .filter((child) => child.section[1] === name)
         .sort((a, b) => a.order - b.order)
         .map((child) => ({
@@ -162,9 +164,35 @@ export function getNav(): DocGroup[] {
           slug: child.slug,
           children: [],
         }));
-
-      return { label: doc.navLabel ?? doc.title, slug: doc.slug, children };
+    const rooted = new Set(roots.map((doc) => doc.slug.split('/').pop()));
+    const placed: { order: number; node: DocNode }[] = roots.map((doc) => {
+      const name = doc.slug.split('/').pop() as string;
+      return {
+        order: doc.order,
+        node: {
+          label: doc.navLabel ?? doc.title,
+          slug: doc.slug,
+          children: childrenOf(name),
+        },
+      };
     });
+    // Subfolders no page is named after: categories with a group.json.
+    const folders = new Set(
+      inGroup
+        .filter((doc) => doc.section.length === 2)
+        .map((doc) => doc.section[1]),
+    );
+    folders.forEach((folder) => {
+      if (rooted.has(folder)) return;
+      const meta = readGroup(path.join(DOCS_PATH, key, folder));
+      placed.push({
+        order: meta.order,
+        node: { label: meta.title, children: childrenOf(folder) },
+      });
+    });
+    group.items = placed
+      .sort((a, b) => a.order - b.order)
+      .map((entry) => entry.node);
   });
 
   return Array.from(groups.values()).sort((a, b) => a.order - b.order);

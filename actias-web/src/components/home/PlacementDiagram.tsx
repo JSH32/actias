@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as RadixTabs from '@radix-ui/react-tabs';
-import { Icon } from '@/ui/icons';
+import { HomeIcon } from '@/components/home/HomeIcon';
 import classes from './PlacementDiagram.module.css';
 
 /** One moment in an instance's life, and what the drawing shows at it. */
@@ -128,7 +128,7 @@ export function PlacementDiagram() {
               paused ? 'Resume the walkthrough' : 'Pause the walkthrough'
             }
           >
-            <Icon name={paused ? 'play' : 'pause'} size={11} />
+            <HomeIcon name={paused ? 'play' : 'pause'} size={11} />
             {paused ? 'resume' : 'pause'}
           </button>
         </div>

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as RadixTabs from '@radix-ui/react-tabs';
-import { Icon } from '@/ui/icons';
+import { HomeIcon } from '@/components/home/HomeIcon';
 import {
   AMBIENT_PULSES,
   GRAPH_EDGES,
@@ -483,9 +483,9 @@ export function ArchitectureGraph() {
               title={locked ? 'LOCKED' : reading ? 'READING' : 'STANDBY'}
             >
               {locked ? (
-                <Icon name="lock" size={13} />
+                <HomeIcon name="lock" size={13} />
               ) : reading ? (
-                <Icon name="eye" size={14} />
+                <HomeIcon name="eye" size={14} />
               ) : null}
             </span>
           </div>
@@ -521,7 +521,7 @@ export function ArchitectureGraph() {
               >
                 {more ? 'less' : 'read more'}
                 <span className={more ? classes.arrowUp : classes.arrow}>
-                  <Icon name="chevronDown" size={11} />
+                  <HomeIcon name="chevronDown" size={11} />
                 </span>
               </button>
             )}
@@ -546,7 +546,7 @@ export function ArchitectureGraph() {
       <details className={classes.legend}>
         <summary className={classes.legendSummary}>
           <span className={classes.legendChevron}>
-            <Icon name="chevronDown" size={11} />
+            <HomeIcon name="chevronDown" size={11} />
           </span>
           Every call in the drawing, in words
         </summary>
