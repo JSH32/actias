@@ -15,7 +15,10 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-actias}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-secret}
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-actias}" ]
+      # Over tcp on purpose: the image's init-time server answers on the
+      # unix socket alone, so a socket probe passes before the restart
+      # that follows init and dependents start against a closed port.
+      test: [ "CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-actias}" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -73,8 +76,18 @@ services:
       - S3_ENDPOINT=http://minio:9000
       - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
-      # Node liveness ttl; leases live exactly this long past a heartbeat.
-      - NODE_TTL_SECS=${NODE_TTL_SECS:-45}
+      # The orphan fallback of ResolveClassOwner reads the instance
+      # directory from the placement service.
+      - PLACEMENT_SERVICE_URI=http://placement_service:3000
+      # The control plane's own region: the home of a project not given
+      # one. The same token the placement service partitions by.
+      - REGION=${ACTIAS_REGION:-local}
+      # How long a project move waits for the old region's residencies to
+      # end before it copies: a worker pointer ttl plus a sweep.
+      - MOVE_DRAIN_SECS=${MOVE_DRAIN_SECS:-40}
+      # A read replica for what workers ask at runtime; empty means the
+      # primary above.
+      - READ_DATABASE_URL=${SCRIPT_SERVICE_READ_DATABASE_URL:-}
 
   # The service image IS the migrator: same artifact, same compiled-in
   # schema, one flag apart. It also creates its own database when the
@@ -113,6 +126,7 @@ services:
       - OTEL_SERVICE_NAME=actias_secret_service
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_secret_service
+      - READ_DATABASE_URL=${SECRET_SERVICE_READ_DATABASE_URL:-}
       # The active master key; it only ever wraps per-version data keys.
       - SECRET_MASTER_KEY=${SECRET_MASTER_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
       - SECRET_MASTER_KEY_ID=${SECRET_MASTER_KEY_ID:-kek-1}
@@ -159,6 +173,8 @@ services:
       - PORT=3000
       - SCRIPT_SERVICE_URI=http://script_service:3000
       - KV_SERVICE_URI=http://kv_service:3000
+      - PLACEMENT_SERVICE_URI=http://placement_service:3000
+      - REGION=${ACTIAS_REGION:-local}
       # Carries script log lines to the live tail subscribers.
       - REDIS_URL=redis://redis:6379
       # Bundle bytes are pulled straight from the blob store by hash;
@@ -214,6 +230,14 @@ services:
       # how many of those are held for writes a caller waits on.
       - OBJECT_SHIP_CONCURRENCY=${OBJECT_SHIP_CONCURRENCY:-32}
       - OBJECT_SHIP_RESERVED=${OBJECT_SHIP_RESERVED:-8}
+      # Fair share by project: every bound above and below is split among
+      # the projects using it, SHARE_FLOOR being the least any one gets.
+      - REQUEST_CONCURRENCY=${REQUEST_CONCURRENCY:-1024}
+      - BLOCKING_CONCURRENCY=${BLOCKING_CONCURRENCY:-64}
+      - CONNECTION_LIMIT=${CONNECTION_LIMIT:-4096}
+      - OBJECT_RESIDENT_LIMIT=${OBJECT_RESIDENT_LIMIT:-10000}
+      - DIRECTORY_QUERY_CONCURRENCY=${DIRECTORY_QUERY_CONCURRENCY:-64}
+      - SHARE_FLOOR=${SHARE_FLOOR:-0.05}
       - OBJECT_ACK_GATE_MS=${OBJECT_ACK_GATE_MS:-10000}
       # The WorkerData grpc service: object dispatch and typed reads;
       # the address the node registers is this listener's.
@@ -254,6 +278,8 @@ services:
       - PORT=3000
       - SCRIPT_SERVICE_URI=http://script_service:3000
       - KV_SERVICE_URI=http://kv_service:3000
+      - PLACEMENT_SERVICE_URI=http://placement_service:3000
+      - REGION=${ACTIAS_REGION:-local}
       - REDIS_URL=redis://redis:6379
       - S3_ENDPOINT=http://minio:9000
       - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
@@ -302,6 +328,14 @@ services:
       # how many of those are held for writes a caller waits on.
       - OBJECT_SHIP_CONCURRENCY=${OBJECT_SHIP_CONCURRENCY:-32}
       - OBJECT_SHIP_RESERVED=${OBJECT_SHIP_RESERVED:-8}
+      # Fair share by project: every bound above and below is split among
+      # the projects using it, SHARE_FLOOR being the least any one gets.
+      - REQUEST_CONCURRENCY=${REQUEST_CONCURRENCY:-1024}
+      - BLOCKING_CONCURRENCY=${BLOCKING_CONCURRENCY:-64}
+      - CONNECTION_LIMIT=${CONNECTION_LIMIT:-4096}
+      - OBJECT_RESIDENT_LIMIT=${OBJECT_RESIDENT_LIMIT:-10000}
+      - DIRECTORY_QUERY_CONCURRENCY=${DIRECTORY_QUERY_CONCURRENCY:-64}
+      - SHARE_FLOOR=${SHARE_FLOOR:-0.05}
       - OBJECT_ACK_GATE_MS=${OBJECT_ACK_GATE_MS:-10000}
       # The WorkerData grpc service: object dispatch and typed reads;
       # the address the node registers is this listener's.
@@ -327,6 +361,64 @@ services:
     command: ["/app/target", "--migrate"]
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_kv
+
+  # The placement store, one per region: claims, membership, alarms and
+  # the instance directory. The image is its own migrator, like kv's.
+  placement_migration:
+    image: ghcr.io/jsh32/actias_placement_service:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-placement
+    command: ["/app/target", "--migrate"]
+    environment:
+      # Postgres by default; PLACEMENT_BACKEND=scylla with the scylla
+      # profile up (COMPOSE_PROFILES=scylla) runs the fleet's backend.
+      - PLACEMENT_BACKEND=${PLACEMENT_BACKEND:-postgres}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_placement
+      - SCYLLA_NODES=${PLACEMENT_SCYLLA_NODES:-scylla:9042}
+      - SCYLLA_DC=${PLACEMENT_SCYLLA_DC:-datacenter1}
+      - SCYLLA_REPLICATION_FACTOR=${PLACEMENT_SCYLLA_RF:-1}
+
+  placement_service:
+    image: ghcr.io/jsh32/actias_placement_service:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      placement_migration:
+        condition: service_completed_successfully
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.rust
+      args:
+        CRATE_NAME: actias-placement
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4317}
+      - OTEL_SERVICE_NAME=actias_placement_service
+      - PORT=3000
+      - PLACEMENT_BACKEND=${PLACEMENT_BACKEND:-postgres}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_placement
+      - SCYLLA_NODES=${PLACEMENT_SCYLLA_NODES:-scylla:9042}
+      - SCYLLA_DC=${PLACEMENT_SCYLLA_DC:-datacenter1}
+      - SCYLLA_REPLICATION_FACTOR=${PLACEMENT_SCYLLA_RF:-1}
+      - REGION=${ACTIAS_REGION:-local}
+      # Node liveness ttl; leases live exactly this long past a heartbeat.
+      - NODE_TTL_SECS=${NODE_TTL_SECS:-45}
+
+  # The fleet's placement backend, behind a profile so the default stack
+  # stays on postgres: COMPOSE_PROFILES=scylla PLACEMENT_BACKEND=scylla.
+  # One node in developer mode; a real region runs a cluster.
+  scylla:
+    image: scylladb/scylla:6.2
+    profiles: ["scylla"]
+    command: --smp 1 --developer-mode 1 --overprovisioned 1
+    volumes:
+      - scylla_data:/var/lib/scylla
 
   kv_service:
     image: ghcr.io/jsh32/actias_kv_service:latest
@@ -384,6 +476,9 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${ACTIAS_OTEL:-http://otel:4318}
       - OTEL_SERVICE_NAME=actias_api
       - INVITE_ONLY=${INVITE_ONLY:-false}
+      # The home of a project created here when the ingress named none.
+      - REGION=${ACTIAS_REGION:-local}
+      - READ_DATABASE_URL=${API_READ_DATABASE_URL:-}
       # First-run admin for self-hosted instances; all three or nothing.
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
@@ -396,6 +491,7 @@ services:
       - SMTP_FROM=${SMTP_FROM:-}
       - SCRIPT_SERVICE_URL=script_service:3000
       - KV_SERVICE_URL=kv_service:3000
+      - PLACEMENT_SERVICE_URL=placement_service:3000
       - JWT_KEY=${JWT_KEY:-secret}
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-actias}:${POSTGRES_PASSWORD:-secret}@postgres/actias_api
@@ -449,6 +545,7 @@ services:
       - ./observability/dashboards:/otel-lgtm/actias-dashboards:ro
 
 volumes:
+  scylla_data:
   objects_data:
   objects_data_2:
   postgres_data:

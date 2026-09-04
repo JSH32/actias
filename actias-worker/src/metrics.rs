@@ -15,6 +15,11 @@ pub struct Metrics {
     /// Reads served from a restored snapshot replica instead of the
     /// owner's mailbox; the multi-node read story in one number.
     pub replica_reads: std::sync::atomic::AtomicU64,
+    /// Calls forwarded to another region's ingress, because the object's
+    /// home is there.
+    pub region_forwards: std::sync::atomic::AtomicU64,
+    /// Flights refused because the object's home is another region.
+    pub region_fenced: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default, Clone)]
@@ -53,6 +58,7 @@ impl Metrics {
         directory: &crate::directory::gauges::DirectoryGauges,
         directory_files: (u64, u64),
         chunks: (u64, u64, u64),
+        shares: &actias_worker_core::shares::ScopeShares,
     ) -> String {
         let scripts = self.scripts.lock().expect("no poisoned lock").clone();
 
@@ -82,6 +88,18 @@ impl Metrics {
         out.push_str(&format!(
             "actias_replica_reads_total {}\n",
             self.replica_reads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        ));
+        out.push_str("# TYPE actias_region_forwards_total counter\n");
+        out.push_str(&format!(
+            "actias_region_forwards_total {}\n",
+            self.region_forwards
+                .load(std::sync::atomic::Ordering::Relaxed)
+        ));
+        out.push_str("# TYPE actias_region_fenced_total counter\n");
+        out.push_str(&format!(
+            "actias_region_fenced_total {}\n",
+            self.region_fenced
                 .load(std::sync::atomic::Ordering::Relaxed)
         ));
         out.push_str("# TYPE actias_objects_resident gauge\n");
@@ -375,6 +393,36 @@ impl Metrics {
         ] {
             out.push_str(&format!("# TYPE {name} counter\n{name} {value}\n"));
         }
+        // Fair share: per pool, what was granted, refused or waited for,
+        // and the share the next scope would get right now. A pool whose
+        // refusals climb while its in_use sits under total is one scope
+        // at its share, which is the bound doing its job.
+        for (name, kind) in [
+            ("actias_share_granted_total", "counter"),
+            ("actias_share_refused_total", "counter"),
+            ("actias_share_waits_total", "counter"),
+            ("actias_share_wait_ms_total", "counter"),
+            ("actias_share_in_use", "gauge"),
+            ("actias_share_total", "gauge"),
+            ("actias_share_active_scopes", "gauge"),
+            ("actias_share_current", "gauge"),
+        ] {
+            out.push_str(&format!("# TYPE {name} {kind}\n"));
+            for pool in shares.pools() {
+                let snapshot = pool.snapshot();
+                let value = match name {
+                    "actias_share_granted_total" => count(&pool.gauges.granted),
+                    "actias_share_refused_total" => count(&pool.gauges.refused),
+                    "actias_share_waits_total" => count(&pool.gauges.waited),
+                    "actias_share_wait_ms_total" => count(&pool.gauges.wait_ms_total),
+                    "actias_share_in_use" => snapshot.in_use as u64,
+                    "actias_share_total" => snapshot.total as u64,
+                    "actias_share_active_scopes" => snapshot.active_scopes as u64,
+                    _ => (snapshot.share != usize::MAX) as u64 * snapshot.share as u64,
+                };
+                out.push_str(&format!("{name}{{pool=\"{}\"}} {value}\n", snapshot.name));
+            }
+        }
         out
     }
 }
@@ -401,6 +449,7 @@ mod tests {
             &directory,
             (7, 2),
             (0, 0, 0),
+            &actias_worker_core::shares::ScopeShares::unbounded(),
         );
 
         assert!(text.contains("actias_requests_total{project=\"proj-1\",script=\"my-script\"} 2"));

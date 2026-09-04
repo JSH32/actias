@@ -61,6 +61,10 @@ secrets:
 # Stores: bundled (single replica, one PVC, dev-grade) or external.
 # Production means external; bundled exists for kind and evaluation.
 postgres:
+  # A read replica's host for the control plane's runtime reads (script
+  # pointers, revisions, policy, secrets). Empty: every read goes to the
+  # primary. One per region in a multi-region deployment.
+  readReplicaHost: ""
   bundled: true
   # Version and volume path are coupled: postgres 18 moved the data
   # directory. Change image and manifest together or neither.
@@ -134,7 +138,6 @@ scriptService:
     targetCPUUtilizationPercentage: 80
   # Node liveness ttl, seconds. A crashed worker's objects are
   # unreachable for at most this long.
-  nodeTtlSecs: 45
   resources: {}
   nodeSelector: {}
   tolerations: []
@@ -153,6 +156,32 @@ secretService:
     minReplicas: 1
     maxReplicas: 5
     targetCPUUtilizationPercentage: 80
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  priorityClassName: ""
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# The placement store, one per region: claims, membership, alarms and
+# the instance directory.
+placement:
+  repository: actias_placement_service
+  replicas: 1
+  # Leases live this long past a heartbeat, so it bounds how long a
+  # crashed worker's objects stay unreachable.
+  nodeTtlSecs: 45
+  # The region this store serves; every regional table keys by it.
+  region: local
+  # postgres (the bundled store, the small-stack posture) or scylla (the
+  # fleet's: a keyspace replicated in this datacenter alone).
+  backend: postgres
+  scyllaNodes: ""
+  scyllaDc: datacenter1
+  replicationFactor: 3
   resources: {}
   nodeSelector: {}
   tolerations: []
@@ -271,6 +300,14 @@ workers:
     objectWalRotateKb: 4096
     objectWalRotateFraction: 0.125
     objectMaxSegments: 64
+    # Fair share by project: each bound is split among the projects using
+    # it; shareFloor is the least any one gets, as a fraction.
+    requestConcurrency: 1024
+    blockingConcurrency: 64
+    connectionLimit: 4096
+    objectResidentLimit: 10000
+    directoryQueryConcurrency: 64
+    shareFloor: 0.05
     objectStoreParallel: 8
     # How long a write's reply may wait for durable storage before the
     # caller gets an unknown-outcome error, ms.

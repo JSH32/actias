@@ -150,6 +150,9 @@ pub struct ObjectRouting {
 pub enum ResolveError {
     /// A live incumbent holds the lease; forward the call to it.
     Elsewhere(String),
+    /// The object was born here and the platform moved it to this
+    /// region; forward the call there.
+    Moved(String),
     Other(String),
 }
 
@@ -161,7 +164,34 @@ pub enum RouteError {
     WrongHome {
         holder: String,
     },
+    /// This node is in the object's birth region and the object lives
+    /// in `region` now; the caller forwards there.
+    Moved {
+        region: String,
+    },
     Failed(String),
+}
+
+/// The retryable refusal while a project is between homes.
+const MOVING: &str = "The project is moving between regions; retry shortly.";
+
+/// Where `key`'s object lives now: born at `pin` or the project's home,
+/// adjusted by the forwarding row the birth region answered with, if
+/// it ever did. Cached data only; never a store read.
+pub(crate) async fn current_home(
+    state: &AppState,
+    key: &ObjectKey,
+    project_id: &str,
+    pin: Option<&str>,
+) -> String {
+    let policy = crate::server::project_policy(state, project_id).await;
+    let born = key.region(&policy.region, pin).to_owned();
+    state
+        .caches
+        .moves
+        .get(&key.object_id())
+        .await
+        .unwrap_or(born)
 }
 
 impl From<String> for RouteError {
@@ -176,6 +206,12 @@ impl std::fmt::Display for RouteError {
             RouteError::WrongHome { holder } => {
                 write!(f, "Object is homed on {holder}; this node cannot serve it.")
             }
+            RouteError::Moved { region } => {
+                write!(
+                    f,
+                    "Object lives in region {region}; this region cannot serve it."
+                )
+            }
             RouteError::Failed(message) => write!(f, "{message}"),
         }
     }
@@ -188,6 +224,9 @@ impl RouteError {
             RouteError::WrongHome { holder } => {
                 format!("Object is homed on {holder}, but this call may not forward again.")
             }
+            RouteError::Moved { region } => {
+                format!("Object lives in region {region}, but this call may not forward again.")
+            }
             RouteError::Failed(message) => message,
         }
     }
@@ -197,6 +236,8 @@ impl RouteError {
 enum ForwardError {
     /// The home moved or died; invalidate and re-resolve once.
     StaleHome(String),
+    /// The birth region answered that the object lives in this region.
+    Moved(String),
     /// The object answered; this is its own failure, passed through.
     Call(String),
 }
@@ -374,10 +415,25 @@ impl ObjectRouting {
             {
                 return Err(ResolveError::Elsewhere(replica));
             }
+            // A project between homes takes no new claims anywhere; the
+            // caller retries once the move settles (FLEET.md 6.3).
+            let policy =
+                crate::server::project_policy(&self.state, &self.prepared.script.project_id).await;
+            if policy.moving {
+                return Err(ResolveError::Other(MOVING.to_owned()));
+            }
             let lease = self
                 .claim_lease(key, &owner)
                 .await
                 .map_err(ResolveError::Other)?;
+            if !lease.moved_to.is_empty() {
+                self.state
+                    .caches
+                    .moves
+                    .insert(object_id, lease.moved_to.clone())
+                    .await;
+                return Err(ResolveError::Moved(lease.moved_to));
+            }
             if !lease.acquired {
                 self.state
                     .holders
@@ -461,6 +517,12 @@ impl ObjectRouting {
                     .claim_lease(&identity, &owner)
                     .await
                     .map_err(mlua::Error::RuntimeError)?;
+                if !lease.moved_to.is_empty() {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Object lives in region {}.",
+                        lease.moved_to
+                    )));
+                }
                 if !lease.acquired {
                     return Err(mlua::Error::RuntimeError(
                         "Object is homed on another node.".to_owned(),
@@ -495,6 +557,36 @@ impl ObjectRouting {
                     }
                 };
                 let manifest_epoch = manifest.as_ref().map(|m| m.epoch);
+                // A manifest (or deletion marker) at or above the epoch
+                // the claim minted would fence this residency out of
+                // its own storage: raise the lease above it before
+                // anything ships. Rare, since epochs are the clock
+                // unless an identity's memory was purged.
+                let mut lease = lease;
+                if let Some(shipped) = manifest_epoch
+                    && shipped >= lease.epoch
+                {
+                    let raised = routing
+                        .state
+                        .registry
+                        .clone()
+                        .raise_epoch(
+                            actias_worker_core::proto::node_registry::RaiseEpochRequest {
+                                object_id: object_id.clone(),
+                                node_id: lease.node_id.clone(),
+                                at_least: shipped + 1,
+                            },
+                        )
+                        .await
+                        .map_err(|error| {
+                            mlua::Error::RuntimeError(format!(
+                                "The object's fence could not be raised: {}",
+                                error.message()
+                            ))
+                        })?
+                        .into_inner();
+                    lease.epoch = raised.epoch;
+                }
                 if manifest_epoch.is_some_and(|shipped| shipped > resident_epoch) || !file.exists()
                 {
                     // The replicas named by the manifest hold the tail the
@@ -690,6 +782,10 @@ impl ObjectRouting {
                 // refuses inside an object exactly as it did in a
                 // request handler.
                 runtime.set_app_data::<DirectoryLister>(vm_routing.as_lister());
+                let policy =
+                    crate::server::project_policy(&routing.state, &prepared.script.project_id)
+                        .await;
+                runtime.set_app_data(crate::server::scope_egress(&policy));
                 // An object may open a wire outward, the idiomatic owner
                 // of one: it decides exactly one exists and reopens it.
                 runtime.set_app_data::<actias_worker_core::extensions::sockets::Dialer>(
@@ -767,11 +863,16 @@ impl ObjectRouting {
                 } else {
                     routing.state.replica_quorum.min(replicas.len())
                 };
-                let fanout = (!replicas.is_empty()).then(|| {
+                let fanout_wanted = !replicas.is_empty();
+                let replicas: crate::objects::fanout::ReplicaSet =
+                    Arc::new(std::sync::Mutex::new(replicas));
+                let relay = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let fanout = fanout_wanted.then(|| {
                     crate::objects::fanout::fanout_for(
                         routing.state.clone(),
                         object_id.clone(),
                         replicas.clone(),
+                        relay.clone(),
                     )
                 });
                 let replica_gauges = routing.state.replica_store.gauges.clone();
@@ -793,6 +894,14 @@ impl ObjectRouting {
                 // runs), so the version stamped on the row and the one
                 // riding the delta always name the same declaration.
                 let ship_declaration = owner.directory_spec(identity.class());
+                // The home is a fence: a flight for an object whose home
+                // is another region (the column flipped under a failover,
+                // or the platform moved the object) ships nothing, and
+                // the residency ends on the error (FLEET.md 6.4, P4.c).
+                let fence_state = routing.state.clone();
+                let fence_key = identity.clone();
+                let fence_project = owner.script.project_id.clone();
+                let fence_pin = owner.placement_region_for(identity.class());
                 let ship_state_for_watermark = ship_state
                     .try_lock()
                     .map(|state| state.watermark())
@@ -817,9 +926,31 @@ impl ObjectRouting {
                                 release: std::sync::Mutex::new(Some(release)),
                                 gauges: replica_gauges.clone(),
                                 short: fanout_short.clone(),
+                                relay: relay.clone(),
                             });
                     let gauges = replica_gauges.clone();
+                    let fence_state = fence_state.clone();
+                    let fence_key = fence_key.clone();
+                    let fence_project = fence_project.clone();
+                    let fence_pin = fence_pin.clone();
                     Box::pin(async move {
+                        let home = current_home(
+                            &fence_state,
+                            &fence_key,
+                            &fence_project,
+                            fence_pin.as_deref(),
+                        )
+                        .await;
+                        if home != fence_state.region {
+                            fence_state
+                                .metrics
+                                .region_fenced
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return Err(format!(
+                                "fenced: the object's home is {home}; this node is in {}",
+                                fence_state.region
+                            ));
+                        }
                         store
                             .ship(
                                 &object_id,
@@ -855,6 +986,7 @@ impl ObjectRouting {
                 });
                 let ship = crate::objects::shipper::Shipper::new(
                     object_id.clone(),
+                    identity.scope().to_owned(),
                     ship_fn,
                     routing.state.ship_gauges.clone(),
                     routing.state.ship_limits.clone(),
@@ -872,12 +1004,21 @@ impl ObjectRouting {
                     .expect("no poisoned lock")
                     .insert(object_id.clone(), ship_state_for_watermark);
                 let ack_gate = routing.state.ack_gate;
+                let ship_for_reads = ship.clone();
                 let after_write: actias_worker_core::objects::AfterWrite = Arc::new(move || {
                     // Marking here rather than inside the future is what
                     // lets platform work with no caller drop the wait and
                     // keep the shipping.
                     let ticket = ship.mark_and_ticket();
                     Box::pin(async move { ticket.wait(ack_gate).await })
+                });
+                // A reply that wrote nothing waits only while earlier
+                // writes are in the air; a settled object answers at once.
+                let after_read: actias_worker_core::objects::AfterRead = Arc::new(move || {
+                    ship_for_reads.ticket_if_unsettled().map(|ticket| {
+                        Box::pin(async move { ticket.wait(ack_gate).await })
+                            as actias_worker_core::objects::GateFuture
+                    })
                 });
 
                 let alarm_sync = alarm_mirror(&routing.state, &object_id, &identity.to_string());
@@ -1008,10 +1149,13 @@ impl ObjectRouting {
                         storage: Some(storage),
                         hibernate_after: Some(routing.state.object_idle_after),
                         after_write: Some(after_write),
+                        after_read: Some(after_read),
                         alarm_sync: Some(alarm_sync),
                         queue: routing.state.queue_policy.clone(),
                         destroy: Some(destroy),
                         keep_claimed,
+                        // The host fills this in from the scope's share.
+                        residency: None,
                     },
                 ))
             })
@@ -1244,7 +1388,59 @@ impl ObjectRouting {
                 .map(|_| ())
                 .map_err(|error| match error {
                     ForwardError::StaleHome(text) | ForwardError::Call(text) => text,
+                    ForwardError::Moved(region) => format!("Object lives in region {region}."),
                 })
+        }
+    }
+
+    /// One hop to another region's ingress. A reply saying the object
+    /// moved on (the birth region answering for an object living in a
+    /// third region) is followed once more; anything else is final,
+    /// since a region's ingress is not a stale node id to re-resolve.
+    async fn forward_region(
+        &self,
+        region: &str,
+        address: &str,
+        key: &ObjectKey,
+        target: &ObjectTarget,
+    ) -> Result<serde_json::Value, RouteError> {
+        let chain = if target.chain.last().map(String::as_str) == Some(key.to_string().as_str()) {
+            target.chain.clone()
+        } else {
+            actias_worker_core::objects::extend_call_chain(&target.chain, &key.to_string())
+                .map_err(RouteError::Failed)?
+        };
+        self.state
+            .metrics
+            .region_forwards
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.forward_to(address, key, target, chain.clone()).await {
+            Ok(value) => Ok(value),
+            Err(ForwardError::Moved(next)) => {
+                self.state
+                    .caches
+                    .moves
+                    .insert(key.object_id(), next.clone())
+                    .await;
+                let Some(address) = crate::server::region_address(&self.state, &next).await else {
+                    return Err(RouteError::Failed(format!(
+                        "Object lives in region {next}, which this deployment does not know."
+                    )));
+                };
+                actias_common::tracing::debug!(from = region, to = %next, "the object moved on; one more hop");
+                match self.forward_to(&address, key, target, chain).await {
+                    Ok(value) => Ok(value),
+                    Err(ForwardError::Moved(_)) => Err(RouteError::Failed(
+                        "The object's region keeps pointing elsewhere; retry shortly.".to_owned(),
+                    )),
+                    Err(ForwardError::StaleHome(reason)) | Err(ForwardError::Call(reason)) => {
+                        Err(RouteError::Failed(reason))
+                    }
+                }
+            }
+            Err(ForwardError::StaleHome(reason)) | Err(ForwardError::Call(reason)) => {
+                Err(RouteError::Failed(reason))
+            }
         }
     }
 
@@ -1255,9 +1451,14 @@ impl ObjectRouting {
         target: &ObjectTarget,
         chain: Vec<String>,
     ) -> Result<serde_json::Value, ForwardError> {
-        // A node id's address never changes, so the cache spares the
-        // registry a read per forward; a gone id reads as a stale home.
-        let address = match self.state.node_addrs.get(holder).await {
+        let address = self.holder_address(holder).await?;
+        self.forward_to(&address, key, target, chain).await
+    }
+
+    /// A node id's address never changes, so the cache spares the
+    /// registry a read per forward; a gone id reads as a stale home.
+    async fn holder_address(&self, holder: &str) -> Result<String, ForwardError> {
+        Ok(match self.state.node_addrs.get(holder).await {
             Some(address) => address,
             None => {
                 let node = self
@@ -1284,9 +1485,19 @@ impl ObjectRouting {
                     .await;
                 node.address
             }
-        };
+        })
+    }
 
-        let mut client = crate::data_plane::peer_client(&self.state, &address)
+    /// One hop to `address`, a peer in this region or another region's
+    /// data-plane ingress; the reply's flags come back typed.
+    async fn forward_to(
+        &self,
+        address: &str,
+        key: &ObjectKey,
+        target: &ObjectTarget,
+        chain: Vec<String>,
+    ) -> Result<serde_json::Value, ForwardError> {
+        let mut client = crate::data_plane::peer_client(&self.state, address)
             .await
             .map_err(ForwardError::StaleHome)?;
         let call = actias_worker_core::proto::worker_data::ObjectCall {
@@ -1321,6 +1532,9 @@ impl ObjectRouting {
             })?
             .into_inner();
 
+        if !result.moved_to.is_empty() {
+            return Err(ForwardError::Moved(result.moved_to));
+        }
         if result.wrong_home {
             return Err(ForwardError::StaleHome(result.error));
         }
@@ -1346,6 +1560,33 @@ impl ObjectRouting {
             &target.name,
         );
         let key_string = key.to_string();
+
+        // Where the object lives: born at the class's pin or the
+        // project's home, moved by the platform if the birth region ever
+        // said so. A home elsewhere is one hop to that region's ingress;
+        // a home the control plane does not know is served here, never
+        // failed (FLEET.md 4.4, P4.b).
+        let policy =
+            crate::server::project_policy(&self.state, &self.prepared.script.project_id).await;
+        let pin = self.prepared.placement_region_for(&target.class);
+        let home = current_home(
+            &self.state,
+            &key,
+            &self.prepared.script.project_id,
+            pin.as_deref(),
+        )
+        .await;
+        if home != self.state.region
+            && let Some(address) = crate::server::region_address(&self.state, &home).await
+        {
+            if policy.moving {
+                return Err(RouteError::Failed(MOVING.to_owned()));
+            }
+            if !allow_forward {
+                return Err(RouteError::Moved { region: home });
+            }
+            return self.forward_region(&home, &address, &key, &target).await;
+        }
 
         // Reads that tolerate bounded staleness skip the mailbox entirely.
         // A resident object's own file is the freshest copy there is; a
@@ -1414,6 +1655,15 @@ impl ObjectRouting {
                     // A stale home: the object is cold or moved, and the
                     // ordinary path below wakes it where it belongs.
                     Err(ForwardError::StaleHome(_)) => {}
+                    // Living in another region: remembered, and the
+                    // ordinary path below forwards there.
+                    Err(ForwardError::Moved(region)) => {
+                        self.state
+                            .caches
+                            .moves
+                            .insert(object_id.clone(), region)
+                            .await;
+                    }
                 }
             }
             // Cold, or held here without a file yet: the ordinary path
@@ -1456,10 +1706,41 @@ impl ObjectRouting {
                         Err(ForwardError::Call(error)) => {
                             return Err(RouteError::Failed(error));
                         }
+                        // The holder we were told of sits in the birth
+                        // region and says the object moved on.
+                        Err(ForwardError::Moved(region)) => {
+                            self.state
+                                .caches
+                                .moves
+                                .insert(key.object_id(), region.clone())
+                                .await;
+                            let Some(address) =
+                                crate::server::region_address(&self.state, &region).await
+                            else {
+                                return Err(RouteError::Failed(format!(
+                                    "Object lives in region {region}, which this deployment does not know."
+                                )));
+                            };
+                            return self.forward_region(&region, &address, &key, &target).await;
+                        }
                     }
                 }
                 Err(ResolveError::Elsewhere(holder)) => {
                     return Err(RouteError::WrongHome { holder });
+                }
+                // Born here, living elsewhere: one hop to that region, or
+                // the answer a hop's sender needs to make it.
+                Err(ResolveError::Moved(region)) => {
+                    if !allow_forward {
+                        return Err(RouteError::Moved { region });
+                    }
+                    let Some(address) = crate::server::region_address(&self.state, &region).await
+                    else {
+                        return Err(RouteError::Failed(format!(
+                            "Object lives in region {region}, which this deployment does not know."
+                        )));
+                    };
+                    return self.forward_region(&region, &address, &key, &target).await;
                 }
                 Err(ResolveError::Other(error)) => return Err(RouteError::Failed(error)),
             }

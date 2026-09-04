@@ -22,6 +22,7 @@ use tonic::transport::Channel;
 
 use actias_common::logging::{live_log_channel, script_log_channel};
 use actias_worker_core::egress::EgressClient;
+use actias_worker_core::egress::ScopeEgress;
 use actias_worker_core::extensions;
 use actias_worker_core::extensions::http::Request as LuaRequest;
 use actias_worker_core::extensions::log::LogPublisher;
@@ -39,7 +40,9 @@ use actias_worker_core::proto::script_service::Revision;
 use actias_worker_core::proto::script_service::Script;
 use actias_worker_core::proto::script_service::find_script_request::Query;
 use actias_worker_core::proto::script_service::script_service_client::ScriptServiceClient;
+use actias_worker_core::proto::script_service::{ProjectPolicy, ProjectRef, Region};
 use actias_worker_core::runtime::{ActiasRuntime, PreparedRevision};
+use actias_worker_core::shares::{RateLimits, Refused, ScopeShares};
 
 use crate::blob_cache::BlobCache;
 use crate::metrics::Metrics;
@@ -70,6 +73,16 @@ pub struct WorkerCaches {
     /// revision. Mutable twice over (the owner can change on publish, the
     /// owner republishes), so it expires on the pointer ttl.
     pub(crate) owners: moka::future::Cache<String, Arc<PreparedRevision>>,
+    /// A project's runtime policy (rates, egress lists, the home region),
+    /// mutable in the console, so it expires on the pointer ttl.
+    pub(crate) policies: moka::future::Cache<String, Arc<ProjectPolicy>>,
+    /// Object id to the region the platform moved it to, learned from
+    /// the birth region's answer (its own claim here, a hop's reply
+    /// elsewhere); a move invalidates it by answering differently.
+    pub(crate) moves: moka::future::Cache<String, String>,
+    /// The regions the control plane knows, under one key; empty on a
+    /// single-region deployment, which forwards nothing.
+    pub(crate) regions: moka::future::Cache<String, Arc<Vec<Region>>>,
 }
 
 impl WorkerCaches {
@@ -85,6 +98,18 @@ impl WorkerCaches {
                 .build(),
             owners: moka::future::Cache::builder()
                 .max_capacity(10_000)
+                .time_to_live(pointer_ttl)
+                .build(),
+            policies: moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(pointer_ttl)
+                .build(),
+            moves: moka::future::Cache::builder()
+                .max_capacity(100_000)
+                .time_to_live(pointer_ttl)
+                .build(),
+            regions: moka::future::Cache::builder()
+                .max_capacity(1)
                 .time_to_live(pointer_ttl)
                 .build(),
             revisions: moka::future::Cache::builder()
@@ -197,6 +222,13 @@ pub struct AppState {
     /// This node's data-plane address as registered, so a stale
     /// incarnation of this very node is never chosen as its replica.
     pub node_address: String,
+    /// The region this node runs in; an object whose home is another
+    /// region is forwarded there, and never spawned here.
+    pub region: String,
+    /// This node's bounds, split fairly among the scopes using them.
+    pub shares: Arc<ScopeShares>,
+    /// Per-project request and work rates, from each project's policy.
+    pub rates: Arc<RateLimits>,
     /// Every resident object's shipping state, for the watermark a
     /// replica asks before serving a read.
     pub ship_states: Arc<
@@ -409,6 +441,23 @@ fn text_response(status: StatusCode, body: &'static str) -> Response {
     response
 }
 
+/// The answer to a project over its share of this node: refused at
+/// once rather than queued, with when to try again, so a saturating
+/// tenant costs no vm and no waiting slot.
+fn refused_response(refused: &Refused) -> Response {
+    let mut response = text_response(
+        StatusCode::TOO_MANY_REQUESTS,
+        "This project is over its share of this node; retry shortly.",
+    );
+    if let Ok(value) = axum::http::HeaderValue::from_str(&refused.retry_after.as_secs().to_string())
+    {
+        response
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, value);
+    }
+    response
+}
+
 /// Builds the response for a request the runtime could not complete.
 ///
 /// The cause is logged against a correlation id and the client is told only the
@@ -444,6 +493,71 @@ fn cache_load_error(error: Arc<anyhow::Error>) -> anyhow::Error {
 /// cached, so an unknown identifier costs a lookup every time. The error
 /// keeps its cause chain, so the caller can tell an absent script from
 /// infrastructure failing.
+/// The project's runtime policy, cached on the pointer ttl. The platform
+/// defaults when the control plane does not answer: policy narrows what
+/// a project may do, and is never a gate on serving it.
+/// The data-plane address of `region`, or [`None`] when the control
+/// plane does not know it: an unknown region is served where the call
+/// landed rather than failed (FLEET.md P4.b). The list is one cached
+/// read per pointer ttl; a fetch that fails reads as no regions.
+pub(crate) async fn region_address(state: &AppState, region: &str) -> Option<String> {
+    let client = state.clients.script.clone();
+    let regions = state
+        .caches
+        .regions
+        .get_with("all".to_owned(), async move {
+            let mut client = client;
+            match client.list_regions(()).await {
+                Ok(listed) => Arc::new(listed.into_inner().regions),
+                Err(error) => {
+                    actias_common::tracing::warn!(%error, "the regions could not be listed; forwarding nothing");
+                    Arc::new(Vec::new())
+                }
+            }
+        })
+        .await;
+    regions
+        .iter()
+        .find(|known| known.name == region)
+        .map(|known| known.data_plane_addr.clone())
+}
+
+pub(crate) async fn project_policy(state: &AppState, project_id: &str) -> Arc<ProjectPolicy> {
+    let client = state.clients.script.clone();
+    let key = project_id.to_owned();
+    state
+        .caches
+        .policies
+        .get_with(project_id.to_owned(), async move {
+            let mut client = client;
+            match client
+                .get_project_policy(ProjectRef {
+                    project_id: key.clone(),
+                })
+                .await
+            {
+                Ok(policy) => Arc::new(policy.into_inner()),
+                Err(status) => {
+                    actias_common::tracing::debug!(
+                        project_id = key,
+                        error = %status,
+                        "project policy unreadable; running on the defaults"
+                    );
+                    Arc::new(ProjectPolicy {
+                        project_id: key,
+                        ..Default::default()
+                    })
+                }
+            }
+        })
+        .await
+}
+
+/// The policy's host lists, as the egress check wants them.
+pub(crate) fn scope_egress(policy: &ProjectPolicy) -> ScopeEgress {
+    ScopeEgress::new(policy.egress_allow.clone(), policy.egress_deny.clone())
+}
+
 async fn resolve_script(
     caches: &WorkerCaches,
     client: &ScriptServiceClient<actias_worker_core::Grpc>,
@@ -586,6 +700,7 @@ async fn metrics_handler(State(state): State<AppState>) -> Response {
                     .chunk_gets
                     .load(std::sync::atomic::Ordering::Relaxed),
             ),
+            &state.shares,
         ),
     ));
     response.headers_mut().insert(
@@ -796,6 +911,27 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
         }
         Err(error) => return Err(cache_load_error(error)),
     };
+
+    // Admission by fair share: a project over its share of this node's
+    // requests is answered now, not queued, and the permit lives for
+    // the request. A connection the request upgrades into holds its own
+    // permit from the connections pool.
+    let _admitted = match state.shares.requests.try_acquire(&script.project_id) {
+        Ok(permit) => permit,
+        Err(refused) => return Ok(refused_response(&refused)),
+    };
+    // Then by the project's own rates: requests per second now, work
+    // units charged after the call so an overspending project pays on
+    // its next request rather than mid-call.
+    let project_id = script.project_id.clone();
+    let policy = project_policy(&state, &project_id).await;
+    if let Err(refused) = state.rates.admit(
+        &project_id,
+        policy.requests_per_sec,
+        policy.work_units_per_sec,
+    ) {
+        return Ok(refused_response(&refused));
+    }
 
     // Live output goes to the session's channel where `actias dev` tails it;
     // published scripts log to a per-script channel for `actias tail`.
@@ -1012,6 +1148,9 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
                         Err(ResolveError::Elsewhere(holder)) => {
                             Err(format!("homed on {holder}; its node arms it"))
                         }
+                        Err(ResolveError::Moved(region)) => {
+                            Err(format!("lives in region {region}; its region arms it"))
+                        }
                         Err(ResolveError::Other(error)) => Err(error),
                         Ok(handle) => handle
                             .call(
@@ -1071,6 +1210,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // handler refuses, because the verb resolves against app data that
     // only this call installs.
     lua.set_app_data::<DirectoryLister>(request_routing.as_lister());
+    lua.set_app_data(scope_egress(&policy));
     lua.set_app_data::<Arc<actias_worker_core::objects::PendingGates>>(gates.clone());
 
     let listener = lua.listener(ActiasRuntime::FETCH_EVENT)?;
@@ -1097,6 +1237,10 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     // carries a class name and a json seed, and the actor rebuilds a
     // vm of this same revision from the factory when a handler needs
     // one.
+    state
+        .rates
+        .charge(&project_id, lua.consumed().work, policy.work_units_per_sec);
+
     if let Some(pending) =
         lua.remove_app_data::<actias_worker_core::extensions::sockets::PendingUpgrade>()
     {
@@ -1122,6 +1266,22 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             script_id: prepared.script.id.clone(),
             opened_at_ms: actias_worker_core::extensions::objects::unix_now_ms(),
         };
+        // The connection's share is taken before the handshake answers,
+        // so a project at its bound is refused with a status, never
+        // with a wire that closes at once.
+        let permit = match state
+            .shares
+            .connections
+            .try_acquire(&prepared.script.project_id)
+        {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return Ok(text_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    TOO_MANY_CONNECTIONS,
+                ));
+            }
+        };
         let factory = vm_factory(state.clone(), prepared, logs);
         let hibernate_after = state.connection_hibernate_after;
         let gauges = state.connection_gauges.clone();
@@ -1134,6 +1294,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             hibernate_after,
             gauges,
             about,
+            permit,
         };
         return Ok(
             websocket.on_upgrade(move |socket| drive_wire(Wire::Inbound(Box::new(socket)), spawn))
@@ -1198,6 +1359,8 @@ fn vm_factory(
             let routing = ObjectRouting::new(&state, prepared.clone());
             lua.set_app_data::<ObjectRouter>(routing.as_router());
             lua.set_app_data::<DirectoryLister>(routing.as_lister());
+            let policy = project_policy(&state, &prepared.script.project_id).await;
+            lua.set_app_data(scope_egress(&policy));
             lua.set_app_data::<Dialer>(dialer_for(state.clone(), prepared, logs));
             Ok(lua)
         })
@@ -1218,7 +1381,12 @@ pub(crate) fn dialer_for(
         let prepared = prepared.clone();
         let logs = logs.clone();
         Box::pin(async move {
-            let (wire, host) = tokio::time::timeout(DIAL_BUDGET, dial(&state, &request))
+            let scope = scope_egress(
+                project_policy(&state, &prepared.script.project_id)
+                    .await
+                    .as_ref(),
+            );
+            let (wire, host) = tokio::time::timeout(DIAL_BUDGET, dial(&state, &request, &scope))
                 .await
                 .map_err(|_| "the handshake took too long.".to_owned())??;
             let name = uuid::Uuid::new_v4().simple().to_string()[..12].to_owned();
@@ -1236,6 +1404,11 @@ pub(crate) fn dialer_for(
                 script_id: prepared.script.id.clone(),
                 opened_at_ms: actias_worker_core::extensions::objects::unix_now_ms(),
             };
+            let permit = state
+                .shares
+                .connections
+                .try_acquire(&prepared.script.project_id)
+                .map_err(|_| TOO_MANY_CONNECTIONS.to_owned())?;
             let spawn = ConnectionSpawn {
                 factory: vm_factory(state.clone(), prepared.clone(), logs),
                 pending: actias_worker_core::extensions::sockets::PendingUpgrade {
@@ -1250,6 +1423,7 @@ pub(crate) fn dialer_for(
                 hibernate_after: state.connection_hibernate_after,
                 gauges: state.connection_gauges.clone(),
                 about,
+                permit: Some(permit),
             };
             tokio::spawn(drive_wire(wire, spawn));
             Ok(name)
@@ -1267,6 +1441,7 @@ const DIAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 async fn dial(
     state: &AppState,
     request: &actias_worker_core::extensions::sockets::DialRequest,
+    scope: &ScopeEgress,
 ) -> Result<(Wire, String), String> {
     let url = url::Url::parse(&request.url).map_err(|_| "the url does not parse.".to_owned())?;
     let secure = match url.scheme() {
@@ -1277,7 +1452,7 @@ async fn dial(
     state
         .egress
         .policy
-        .check_url(&url)
+        .check_url(&url, Some(scope))
         .map_err(|denied| denied.to_string())?;
     let host = url
         .host_str()
@@ -1353,7 +1528,14 @@ struct ConnectionSpawn {
     hibernate_after: Option<std::time::Duration>,
     gauges: Arc<actias_worker_core::connections::actor::ConnectionGauges>,
     about: actias_worker_core::extensions::sockets::About,
+    /// The project's share of this node's connections, held for as long
+    /// as the connection is registered.
+    permit: Option<actias_worker_core::shares::Permit>,
 }
+
+/// The refusal when a project holds its share of this node's connections.
+const TOO_MANY_CONNECTIONS: &str =
+    "This project has too many open connections on this node; retry shortly.";
 
 /// A live websocket, whichever side opened it. The bridge speaks in
 /// text frames and closes; the two libraries' message types stay here.
@@ -1441,6 +1623,7 @@ async fn drive_wire(mut wire: Wire, spawn: ConnectionSpawn) {
         hibernate_after,
         gauges,
         about,
+        permit,
     } = spawn;
     use actias_worker_core::connections::actor::ConnectionTask;
     use actias_worker_core::connections::{Closed, ClosedBy, InboxItem, OutboundFrame, inbox};
@@ -1459,7 +1642,7 @@ async fn drive_wire(mut wire: Wire, spawn: ConnectionSpawn) {
         router,
         about,
     );
-    registry.register_with(&connection_id, inbox_tx.clone(), shared.clone());
+    registry.register_with(&connection_id, inbox_tx.clone(), shared.clone(), permit);
 
     // One task owns the socket, both directions: uplink text frames
     // decode into the inbox (the wire speaks json; anything else is
@@ -1577,6 +1760,9 @@ pub(crate) mod test_state {
             replica_ack: Duration::from_secs(2),
             vm_pool: crate::vm_pool::VmPool::new(0),
             node_address: "127.0.0.1:0".to_owned(),
+            region: "local".to_owned(),
+            shares: ScopeShares::unbounded(),
+            rates: RateLimits::new(),
             ship_states: Arc::default(),
             peers: moka::future::Cache::new(100),
             holders: moka::future::Cache::builder()
@@ -1605,7 +1791,10 @@ pub(crate) mod test_state {
             },
             ack_gate: Duration::from_millis(10_000),
             ship_gauges: Arc::default(),
-            ship_limits: crate::objects::shipper::ShipLimits::new(32, 8),
+            ship_limits: crate::objects::shipper::ShipLimits::new(
+                actias_worker_core::shares::Pool::new("ships", 32, 0.0),
+                8,
+            ),
             directory_sync: crate::directory::sync::DirectorySyncer::new(
                 Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
                 std::env::temp_dir(),
@@ -1710,6 +1899,24 @@ mod tests {
         assert!(!body.contains("hunter2"), "leaked the cause: {body}");
         assert!(!body.contains("refused"), "leaked the cause: {body}");
         assert!(body.contains("Correlation ID"), "unusable message: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_share_answers_429_with_when_to_retry() {
+        let pool = actias_worker_core::shares::Pool::new("requests", 1, 0.0);
+        let _held = pool.try_acquire("proj").expect("granted");
+        let refused = pool.try_acquire("proj").expect_err("over its share");
+
+        let response = refused_response(&refused);
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

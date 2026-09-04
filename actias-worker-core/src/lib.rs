@@ -15,6 +15,7 @@ pub mod identity;
 pub mod objects;
 pub mod platform;
 pub mod runtime;
+pub mod shares;
 pub mod storage;
 pub mod streams;
 pub mod wal;

@@ -34,9 +34,24 @@ pub(super) struct Reply {
 #[derive(Clone)]
 pub struct ObjectHandle {
     pub(super) sender: mpsc::Sender<ObjectCall>,
+    /// Unix milliseconds of the last call sent through this handle;
+    /// what the host reads to pick the idlest resident of a scope.
+    pub(super) last_call: Arc<std::sync::atomic::AtomicI64>,
 }
 
 impl ObjectHandle {
+    /// When this object was last called, unix milliseconds; 0 when never.
+    pub fn last_call_ms(&self) -> i64 {
+        self.last_call.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn note_call(&self) {
+        self.last_call.store(
+            crate::extensions::objects::unix_now_ms(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
     /// Sends one call and waits for its result; calls from any number of
     /// tasks execute one at a time in arrival order.
     ///
@@ -50,6 +65,7 @@ impl ObjectHandle {
     ) -> Result<serde_json::Value, ObjectError> {
         let (reply, response) = oneshot::channel();
 
+        self.note_call();
         self.sender
             .send(ObjectCall {
                 method: method.to_owned(),
@@ -86,6 +102,7 @@ impl ObjectHandle {
     ) -> Result<(serde_json::Value, Option<GateFuture>), ObjectError> {
         let (reply, response) = oneshot::channel();
 
+        self.note_call();
         self.sender
             .send(ObjectCall {
                 method: method.to_owned(),
@@ -172,6 +189,13 @@ pub type GateFuture = std::pin::Pin<Box<dyn Future<Output = Result<(), String>> 
 /// The error is the reason durability could not be confirmed, for the
 /// caller to report as an unknown outcome ([`ObjectError::NotDurable`]).
 pub type AfterWrite = Arc<dyn Fn() -> GateFuture + Send + Sync>;
+
+/// The output gate for everything else: runs after a call that wrote
+/// nothing, and hands back a wait when the object still has writes in
+/// flight from earlier calls, so no reply ever describes state a crash
+/// could take back. [`None`] when the object is settled, which is the
+/// common case and costs nothing.
+pub type AfterRead = Arc<dyn Fn() -> Option<GateFuture> + Send + Sync>;
 
 /// One dispatched call's answer, plus the gate its answer waits behind.
 pub(super) struct Dispatched {

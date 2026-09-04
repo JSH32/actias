@@ -37,7 +37,8 @@ pub const HOP_KEY: &str = "x-actias-directory-hop";
 // The membership snapshot's ttl lives on the cache itself
 // (`AppState::reader_membership`, ten seconds): a node that joins or
 // leaves is seen within it, and until then a query may hop to a node
-// that is gone, which the fallback absorbs.
+// that is gone, which the fallback absorbs. Replica ranking reads the
+// same snapshot, so a flight never costs a registry read.
 
 /// The reader for one class among the nodes alive as of the last
 /// membership read; [`None`] when it is this node (or nobody is
@@ -56,7 +57,7 @@ async fn reader_for(state: &AppState, class: &ClassKey) -> Option<String> {
     (*winner != own).then(|| winner.clone())
 }
 
-async fn live_nodes_cached(state: &AppState) -> Arc<Vec<String>> {
+pub(crate) async fn live_nodes_cached(state: &AppState) -> Arc<Vec<String>> {
     if let Some(nodes) = state.reader_membership.get("nodes").await {
         return nodes;
     }
@@ -96,7 +97,7 @@ pub fn is_hop<T>(request: &tonic::Request<T>) -> bool {
     request.metadata().get(HOP_KEY).is_some()
 }
 
-fn hopped<T>(state: &AppState, message: T) -> tonic::Request<T> {
+pub(crate) fn hopped<T>(state: &AppState, message: T) -> tonic::Request<T> {
     let mut request = crate::data_plane::authed(&state.internal_token, message);
     if let Ok(value) = "1".parse() {
         request.metadata_mut().insert(HOP_KEY, value);
@@ -201,6 +202,11 @@ pub async fn list(
     class: &ClassKey,
     query: Query,
 ) -> Result<(Page, Vec<String>), String> {
+    let _query = state
+        .shares
+        .directory_queries
+        .acquire(&class.scope_id)
+        .await;
     if let Some(reader) = reader_for(state, class).await {
         match hop_list(state, &reader, class, &query).await {
             Ok(page) => {
@@ -229,6 +235,11 @@ pub async fn visit(
     class: &ClassKey,
     query: Query,
 ) -> Result<(VisitedPage, Vec<String>), String> {
+    let _query = state
+        .shares
+        .directory_queries
+        .acquire(&class.scope_id)
+        .await;
     if let Some(reader) = reader_for(state, class).await {
         match hop_visit(state, &reader, class, &query).await {
             Ok(page) => {

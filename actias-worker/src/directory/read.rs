@@ -236,6 +236,7 @@ pub async fn candidates(
     let built = ensure(state, class).await?;
     let manifest = declared_view(state, class, &built).await;
     let built = built.clone();
+    let _slot = state.shares.blocking.acquire(&class.scope_id).await;
     tokio::task::spawn_blocking(move || built.overlay.candidates(&query, &manifest))
         .await
         .map_err(|e| e.to_string())?
@@ -256,6 +257,7 @@ pub async fn rows_behind(
 ) -> Result<Vec<actias_worker_core::directory::repair::Indexed>, String> {
     let built = ensure(state, class).await?;
     let built = built.clone();
+    let _slot = state.shares.blocking.acquire(&class.scope_id).await;
     tokio::task::spawn_blocking(move || built.overlay.behind(dver, limit))
         .await
         .map_err(|e| e.to_string())?
@@ -275,6 +277,7 @@ pub async fn indexed_identities(
 ) -> Result<Vec<actias_worker_core::directory::repair::Indexed>, String> {
     let built = ensure(state, class).await?;
     let built = built.clone();
+    let _slot = state.shares.blocking.acquire(&class.scope_id).await;
     tokio::task::spawn_blocking(move || built.overlay.identities())
         .await
         .map_err(|e| e.to_string())?
@@ -382,6 +385,10 @@ async fn ensure(state: &AppState, class: &ClassKey) -> Result<Arc<Built>, String
         class.scope_id, class.class
     ));
     let scratch = state.object_data_dir.clone();
+    // The build is the scope's heaviest blocking work: one core for
+    // seconds at a large class, so it takes the scope's share of the
+    // blocking pool and waits its turn under contention.
+    let _slot = state.shares.blocking.acquire(&class.scope_id).await;
     let started = std::time::Instant::now();
     let for_build = manifest.clone();
     let overlay = tokio::task::spawn_blocking(move || {

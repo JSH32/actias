@@ -59,7 +59,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // The worker's own backends are denied to scripts by name as well as by
     // address, so the policy holds even where the services resolve publicly.
     let mut denied_hosts = config.egress_denied_hosts.clone();
-    for uri in [&config.script_service_uri, &config.kv_service_uri] {
+    for uri in [
+        &config.script_service_uri,
+        &config.kv_service_uri,
+        &config.placement_service_uri,
+    ] {
         if let Ok(uri) = uri.parse::<axum::http::Uri>()
             && let Some(host) = uri.host()
         {
@@ -84,13 +88,17 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     let kv_client = KvServiceClient::new(actias_worker_core::plain_grpc(kv_channel));
 
-    // The registry rides in the script-service binary, so it answers on the
-    // same channel. Membership is not on the request path: the loop retries
-    // forever and the worker serves regardless.
+    // The region's placement service. Membership is not on the request
+    // path: the loop retries forever and the worker serves regardless.
+    let placement_channel =
+        tonic::transport::Endpoint::from_shared(config.placement_service_uri.clone())?
+            .connect()
+            .await?;
     let registry_client =
         actias_worker_core::proto::node_registry::node_registry_service_client::NodeRegistryServiceClient::new(
-            actias_worker_core::plain_grpc(script_channel),
+            actias_worker_core::plain_grpc(placement_channel),
         );
+    drop(script_channel);
     let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let node_identity = std::sync::Arc::new(std::sync::RwLock::new(None));
     let membership_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -127,13 +135,24 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // The directory syncer needs the store before the state that holds
     // both, so it is built here and shared into the state and the flush
     // loop below.
+    // The region's object bucket exists before anything ships to it; a
+    // second region's bucket is created by its first worker.
+    blob_cache::ensure_bucket(
+        &blob_cache::s3_client(
+            &config.s3_endpoint,
+            &config.s3_access_key,
+            &config.s3_secret_key,
+        ),
+        &config.object_bucket,
+    )
+    .await;
     let directory_store = std::sync::Arc::new(objects::store::ObjectStore::new(
         blob_cache::s3_client(
             &config.s3_endpoint,
             &config.s3_access_key,
             &config.s3_secret_key,
         ),
-        config.s3_bucket.clone(),
+        config.object_bucket.clone(),
         config.directory_cache_bytes,
         config.object_store_parallel,
     ));
@@ -156,6 +175,18 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    // Every node-wide bound, split fairly among the projects using it.
+    let shares =
+        actias_worker_core::shares::ScopeShares::new(actias_worker_core::shares::ScopeLimits {
+            requests: config.request_concurrency,
+            blocking: config.blocking_concurrency,
+            ships: config.object_ship_concurrency,
+            connections: config.connection_limit,
+            residents: config.object_resident_limit,
+            directory_queries: config.directory_query_concurrency,
+            floor: config.share_floor,
+        });
+
     let state = server::AppState {
         clients: server::Clients {
             script: script_client,
@@ -184,6 +215,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         replica_ack: std::time::Duration::from_millis(config.object_replica_ack_ms),
         vm_pool: vm_pool::VmPool::new(config.object_vm_pool),
         node_address: config.node_address.clone(),
+        region: config.region.clone(),
+        shares: shares.clone(),
+        rates: actias_worker_core::shares::RateLimits::new(),
         ship_states: std::sync::Arc::default(),
         peers: moka::future::Cache::new(100),
         holders: moka::future::Cache::builder()
@@ -201,7 +235,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 &config.s3_access_key,
                 &config.s3_secret_key,
             ),
-            config.s3_bucket,
+            config.object_bucket.clone(),
             config.directory_cache_bytes,
             config.object_store_parallel,
         )),
@@ -214,7 +248,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             wall_secs: config.guest_wall_secs,
         },
         in_flight,
-        objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::default()),
+        objects: std::sync::Arc::new(actias_worker_core::objects::ObjectHost::bounded(
+            shares.residents.clone(),
+        )),
         metrics: std::sync::Arc::default(),
         armed_crons: std::sync::Arc::default(),
         object_data_dir: std::path::PathBuf::from(config.object_data_dir),
@@ -227,7 +263,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ack_gate: std::time::Duration::from_millis(config.object_ack_gate_ms),
         ship_gauges: std::sync::Arc::default(),
         ship_limits: objects::shipper::ShipLimits::new(
-            config.object_ship_concurrency,
+            shares.ships.clone(),
             config.object_ship_reserved,
         ),
         directory_sync: directory_sync.clone(),

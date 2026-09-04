@@ -84,36 +84,46 @@ const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
 /// shipping (alarm writes, a hibernating object's last flush) takes only
 /// general permits, so it starves first when the node is saturated.
 pub struct ShipLimits {
-    general: tokio::sync::Semaphore,
+    /// The general lane, split fairly by scope.
+    general: Arc<actias_worker_core::shares::Pool>,
     reserved: tokio::sync::Semaphore,
 }
 
+/// A flight's permission to talk to the store, from whichever lane.
+enum ShipPermit<'a> {
+    Reserved {
+        _held: tokio::sync::SemaphorePermit<'a>,
+    },
+    General {
+        _held: actias_worker_core::shares::Permit,
+    },
+}
+
 impl ShipLimits {
-    /// `concurrency` of 0 is unbounded, which the drills measure
-    /// against.
-    pub fn new(concurrency: usize, reserved: usize) -> Arc<Self> {
-        let (general, reserved) = if concurrency == 0 {
-            (tokio::sync::Semaphore::MAX_PERMITS, 0)
+    /// An unbounded `general` pool (the drills' posture) reserves
+    /// nothing, since nothing ever queues behind it.
+    pub fn new(general: Arc<actias_worker_core::shares::Pool>, reserved: usize) -> Arc<Self> {
+        let reserved = if general.total() == 0 {
+            0
         } else {
-            (concurrency, reserved.min(concurrency))
+            reserved.min(general.total())
         };
         Arc::new(Self {
-            general: tokio::sync::Semaphore::new(general),
+            general,
             reserved: tokio::sync::Semaphore::new(reserved),
         })
     }
 
     /// Waits for permission to talk to the store. A gated flight may
     /// take either pool, trying the reserve first; an ungated one may
-    /// only take a general permit.
-    async fn acquire(&self, gated: bool) -> tokio::sync::SemaphorePermit<'_> {
-        if gated && let Ok(permit) = self.reserved.try_acquire() {
-            return permit;
+    /// only take a general permit, which is the scope's share.
+    async fn acquire(&self, gated: bool, scope: &str) -> ShipPermit<'_> {
+        if gated && let Ok(held) = self.reserved.try_acquire() {
+            return ShipPermit::Reserved { _held: held };
         }
-        self.general
-            .acquire()
-            .await
-            .expect("the limiter is never closed")
+        ShipPermit::General {
+            _held: self.general.acquire(scope).await,
+        }
     }
 }
 
@@ -145,6 +155,8 @@ pub struct Shipper {
     dirty: AtomicBool,
     running: AtomicBool,
     label: String,
+    /// The scope the general lane charges this object's flights to.
+    scope: String,
     /// Flights begun; the number a flight takes as it starts.
     begun: AtomicU64,
     /// Highest flight number whose manifest landed. Tickets wait on it.
@@ -159,6 +171,7 @@ pub struct Shipper {
 impl Shipper {
     pub fn new(
         label: String,
+        scope: String,
         ship: ShipFn,
         gauges: Arc<ShipGauges>,
         limits: Arc<ShipLimits>,
@@ -168,6 +181,7 @@ impl Shipper {
             dirty: AtomicBool::new(false),
             running: AtomicBool::new(false),
             label,
+            scope,
             begun: AtomicU64::new(0),
             landed: watch::Sender::new(0),
             gauges,
@@ -208,6 +222,32 @@ impl Shipper {
         }
     }
 
+    /// A ticket for the flight that will carry everything unshipped so
+    /// far, without marking a new write: what a reply that wrote nothing
+    /// waits on when the object still has writes in the air. [`None`]
+    /// when nothing is dirty or flying, which costs one load each.
+    pub fn ticket_if_unsettled(self: &Arc<Self>) -> Option<Ticket> {
+        let dirty = self.dirty.load(Ordering::SeqCst);
+        let running = self.running.load(Ordering::SeqCst);
+        if !dirty && !running {
+            return None;
+        }
+        // Dirty means a flight after the current one carries the rest;
+        // flying alone means the current flight is the last.
+        let begun = self.begun.load(Ordering::SeqCst);
+        let target = if dirty { begun + 1 } else { begun };
+        if *self.landed.borrow() >= target {
+            return None;
+        }
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        Some(Ticket {
+            target,
+            landed: self.landed.subscribe(),
+            gauges: self.gauges.clone(),
+            shipper: self.clone(),
+        })
+    }
+
     fn ensure_flight(self: &Arc<Self>) {
         if self.running.swap(true, Ordering::SeqCst) {
             return;
@@ -224,7 +264,7 @@ impl Shipper {
                 // no reason.
                 let gated = this.waiting.load(Ordering::SeqCst) > 0;
                 this.gauges.queued.fetch_add(1, Ordering::Relaxed);
-                let permit = this.limits.acquire(gated).await;
+                let permit = this.limits.acquire(gated, &this.scope).await;
                 this.gauges.queued.fetch_sub(1, Ordering::Relaxed);
                 this.gauges.in_flight.fetch_add(1, Ordering::Relaxed);
                 let started = std::time::Instant::now();
@@ -433,7 +473,13 @@ mod tests {
                 })
             })
         };
-        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
+        let shipper = Shipper::new(
+            "t".into(),
+            "scope".into(),
+            ship,
+            Arc::default(),
+            ShipLimits::new(actias_worker_core::shares::Pool::unbounded("ships"), 0),
+        );
 
         for _ in 0..50 {
             shipper.mark_dirty();
@@ -473,7 +519,13 @@ mod tests {
                 Ok(())
             })
         });
-        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
+        let shipper = Shipper::new(
+            "t".into(),
+            "scope".into(),
+            ship,
+            Arc::default(),
+            ShipLimits::new(actias_worker_core::shares::Pool::unbounded("ships"), 0),
+        );
 
         // Flight 1 is in the air and parked.
         shipper.mark_dirty();
@@ -515,7 +567,13 @@ mod tests {
                 Ok(())
             })
         });
-        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
+        let shipper = Shipper::new(
+            "t".into(),
+            "scope".into(),
+            ship,
+            Arc::default(),
+            ShipLimits::new(actias_worker_core::shares::Pool::unbounded("ships"), 0),
+        );
 
         // The first write puts a flight in the air; the rest land while
         // it flies and are confirmed together by the one after it.
@@ -556,7 +614,13 @@ mod tests {
             })
         });
         let gauges: Arc<ShipGauges> = Arc::default();
-        let shipper = Shipper::new("t".into(), ship, gauges.clone(), ShipLimits::new(0, 0));
+        let shipper = Shipper::new(
+            "t".into(),
+            "scope".into(),
+            ship,
+            gauges.clone(),
+            ShipLimits::new(actias_worker_core::shares::Pool::unbounded("ships"), 0),
+        );
 
         shipper
             .mark_and_ticket()
@@ -587,7 +651,10 @@ mod tests {
         let peak = Arc::new(AtomicUsize::new(0));
         let live = Arc::new(AtomicUsize::new(0));
         let gauges: Arc<ShipGauges> = Arc::default();
-        let limits = ShipLimits::new(BOUND, 0);
+        let limits = ShipLimits::new(
+            actias_worker_core::shares::Pool::new("ships", BOUND, 0.0),
+            0,
+        );
 
         let shippers: Vec<_> = (0..OBJECTS)
             .map(|n| {
@@ -602,7 +669,13 @@ mod tests {
                         Ok(())
                     })
                 });
-                Shipper::new(format!("obj-{n}"), ship, gauges.clone(), limits.clone())
+                Shipper::new(
+                    format!("obj-{n}"),
+                    "scope".into(),
+                    ship,
+                    gauges.clone(),
+                    limits.clone(),
+                )
             })
             .collect();
 
@@ -642,7 +715,13 @@ mod tests {
                 Err("the store blinked after the quorum".to_owned())
             })
         });
-        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
+        let shipper = Shipper::new(
+            "t".into(),
+            "scope".into(),
+            ship,
+            Arc::default(),
+            ShipLimits::new(actias_worker_core::shares::Pool::unbounded("ships"), 0),
+        );
 
         let ticket = shipper.mark_and_ticket();
         ticket
@@ -660,7 +739,13 @@ mod tests {
     async fn an_unconfirmable_write_gives_up_on_its_budget() {
         let ship: ShipFn =
             Arc::new(move |_release| Box::pin(async move { Err("no store".to_owned()) }));
-        let shipper = Shipper::new("t".into(), ship, Arc::default(), ShipLimits::new(0, 0));
+        let shipper = Shipper::new(
+            "t".into(),
+            "scope".into(),
+            ship,
+            Arc::default(),
+            ShipLimits::new(actias_worker_core::shares::Pool::unbounded("ships"), 0),
+        );
 
         let error = shipper
             .mark_and_ticket()

@@ -5,11 +5,17 @@ use actias_common::config::{dotenv, get_env, get_env_or};
 
 pub struct Config {
     pub port: u16,
+    /// The region this node runs in, a region token: the fence every
+    /// object's home is checked against, and what a call from another
+    /// region is forwarded by.
+    pub region: String,
     /// Where the WorkerData grpc service listens: the data plane peers
     /// and the api dispatch object calls and reads over.
     pub grpc_port: u16,
     pub script_service_uri: String,
     pub kv_service_uri: String,
+    /// The region's placement service: claims, membership, alarms.
+    pub placement_service_uri: String,
     /// Redis carrying script log lines to their subscribers.
     pub redis_url: String,
     /// Secret service address resolving `secret` declarations; unset
@@ -38,6 +44,11 @@ pub struct Config {
     pub s3_access_key: String,
     pub s3_secret_key: String,
     pub s3_bucket: String,
+    /// The region's object bucket: objects and directories ship here,
+    /// and a move copies between regions' buckets. Bundles stay in the
+    /// control plane's `S3_BUCKET`, immutable and cached. Defaults to
+    /// the same bucket, which is the single-region layout.
+    pub object_bucket: String,
     /// Byte budget for the hash-keyed blob cache.
     pub blob_cache_bytes: u64,
     /// Address other platform services reach this node's WorkerData grpc
@@ -62,7 +73,23 @@ pub struct Config {
     /// object store before the caller is told the outcome is unknown.
     pub object_ack_gate_ms: u64,
     /// Flights this node may have in the air at once; 0 is unbounded.
+    /// Like every bound below, split fairly among the projects using it.
     pub object_ship_concurrency: usize,
+    /// Requests this node runs at once; a project over its share is
+    /// answered 429. 0 is unbounded.
+    pub request_concurrency: usize,
+    /// Blocking work (overlay builds, folds, candidate scans) at once.
+    pub blocking_concurrency: usize,
+    /// Open connections, both directions, at once.
+    pub connection_limit: usize,
+    /// Resident objects at once; a project over its share evicts its
+    /// idlest object to make room.
+    pub object_resident_limit: usize,
+    /// Directory listings and visits at once.
+    pub directory_query_concurrency: usize,
+    /// The least share of any bound a project gets under contention, as
+    /// a fraction of the bound.
+    pub share_floor: f64,
     /// How many of those are held for writes a caller is waiting on.
     pub object_ship_reserved: usize,
     /// Idle seconds before a pinned object vm hibernates.
@@ -145,12 +172,19 @@ impl Config {
 
         let port: u16 = get_env_or("PORT", 3000);
         let grpc_port: u16 = get_env_or("WORKER_GRPC_PORT", 3100);
+        let region: String = get_env_or("REGION", "local".to_owned());
+        assert!(
+            actias_common::naming::is_region_token(&region),
+            "REGION '{region}' is not a region token: 1 to 16 of a-z, 0-9 and '-', not starting with '-'"
+        );
 
         Config {
             port,
+            region,
             grpc_port,
             script_service_uri: get_env("SCRIPT_SERVICE_URI"),
             kv_service_uri: get_env("KV_SERVICE_URI"),
+            placement_service_uri: get_env("PLACEMENT_SERVICE_URI"),
             redis_url: get_env("REDIS_URL"),
             secret_service_uri: std::env::var("SECRET_SERVICE_URI").ok(),
             max_body_bytes: get_env_or("MAX_BODY_BYTES", 10 * 1024 * 1024),
@@ -166,6 +200,10 @@ impl Config {
             s3_access_key: get_env("S3_ACCESS_KEY"),
             s3_secret_key: get_env("S3_SECRET_KEY"),
             s3_bucket: get_env_or("S3_BUCKET", "actias-blobs".to_owned()),
+            object_bucket: get_env_or(
+                "OBJECT_BUCKET",
+                get_env_or("S3_BUCKET", "actias-blobs".to_owned()),
+            ),
             blob_cache_bytes: get_env_or::<u64>("BLOB_CACHE_MB", 256) * 1024 * 1024,
             // The container hostname resolves within a compose network,
             // which covers local; a deployment sets NODE_ADDRESS.
@@ -184,6 +222,12 @@ impl Config {
             object_max_segments: get_env_or("OBJECT_MAX_SEGMENTS", 64),
             object_ack_gate_ms: get_env_or("OBJECT_ACK_GATE_MS", 10_000),
             object_ship_concurrency: get_env_or("OBJECT_SHIP_CONCURRENCY", 32),
+            request_concurrency: get_env_or("REQUEST_CONCURRENCY", 1024),
+            blocking_concurrency: get_env_or("BLOCKING_CONCURRENCY", 64),
+            connection_limit: get_env_or("CONNECTION_LIMIT", 4096),
+            object_resident_limit: get_env_or("OBJECT_RESIDENT_LIMIT", 10_000),
+            directory_query_concurrency: get_env_or("DIRECTORY_QUERY_CONCURRENCY", 64),
+            share_floor: get_env_or("SHARE_FLOOR", 0.05),
             object_ship_reserved: get_env_or("OBJECT_SHIP_RESERVED", 8),
             object_idle_secs: get_env_or("OBJECT_IDLE_SECS", 300),
             object_vm_pool: get_env_or("OBJECT_VM_POOL", 4),

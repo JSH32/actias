@@ -220,6 +220,9 @@ impl InboxReceiver {
 struct Entry {
     sender: InboxSender,
     shared: Option<Arc<SockShared>>,
+    /// The scope's share of this node's connections, held while the
+    /// connection is registered; [`None`] on an unbounded node.
+    _permit: Option<crate::shares::Permit>,
 }
 
 /// Node-local connections by id: who can still be delivered to on this node.
@@ -242,13 +245,21 @@ impl ConnectionRegistry {
                 Entry {
                     sender,
                     shared: None,
+                    _permit: None,
                 },
             );
     }
 
     /// Registers a connection with what the listing needs to say about
-    /// it; the worker's bridge uses this, tests the bare form.
-    pub fn register_with(&self, id: &str, sender: InboxSender, shared: Arc<SockShared>) {
+    /// it and the share permit it holds; the worker's bridge uses this,
+    /// tests the bare form.
+    pub fn register_with(
+        &self,
+        id: &str,
+        sender: InboxSender,
+        shared: Arc<SockShared>,
+        permit: Option<crate::shares::Permit>,
+    ) {
         self.inner
             .lock()
             .expect("no panics hold the registry")
@@ -257,6 +268,7 @@ impl ConnectionRegistry {
                 Entry {
                     sender,
                     shared: Some(shared),
+                    _permit: permit,
                 },
             );
     }

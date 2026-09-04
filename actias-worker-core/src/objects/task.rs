@@ -19,6 +19,10 @@ pub struct TaskOptions {
     /// The output gate: runs after any call that wrote, before its caller
     /// hears the result. Snapshot shipping lives here.
     pub after_write: Option<AfterWrite>,
+    /// The output gate's other half: a call that wrote nothing still
+    /// waits when the object has earlier writes in flight, so a reply
+    /// never describes state that is not yet durable.
+    pub after_read: Option<AfterRead>,
     /// The registry mirror for this object's alarm; [`None`] keeps alarms
     /// file-local (tests, embedded runs).
     pub alarm_sync: Option<AlarmSync>,
@@ -37,6 +41,10 @@ pub struct TaskOptions {
     /// this work, and it runs on the object's pinned task, so it also
     /// bounds the mailbox stall. [`None`] takes the kernel default.
     pub directory_budget_ms: Option<u64>,
+    /// The scope's share of this node's residents, held for the task's
+    /// life so the host counts what is actually resident; [`None`] on
+    /// an unbounded host.
+    pub residency: Option<crate::shares::Permit>,
 }
 
 /// Moves `runtime` onto its own task forever and hands back its mailbox.
@@ -50,11 +58,13 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         mut storage,
         hibernate_after,
         after_write,
+        after_read,
         alarm_sync,
         queue,
         destroy,
         keep_claimed,
         directory_budget_ms,
+        residency,
     } = options;
     let directory_budget_ms =
         directory_budget_ms.unwrap_or(crate::directory::DEFAULT_EVAL_BUDGET_MS);
@@ -112,7 +122,10 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         .map(|id| format!("{}/{}.", id.class, id.name))
         .unwrap_or_default();
 
+    let last_call = Arc::new(std::sync::atomic::AtomicI64::new(0));
     tokio::spawn(async move {
+        // The residency permit lives exactly as long as the task.
+        let _residency = residency;
         // Popping only after the previous call finished is the input gate;
         // there is deliberately no concurrency inside this loop. A due
         // alarm is just one more message source, so it serializes with
@@ -217,7 +230,10 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
                     &call.method,
                     call.payload,
                     call_budget,
-                    after_write.as_ref(),
+                    Gates {
+                        after_write: after_write.as_ref(),
+                        after_read: after_read.as_ref(),
+                    },
                     directory_budget_ms,
                 ),
                 span,
@@ -270,7 +286,7 @@ pub fn spawn_object_task(runtime: ActiasRuntime, options: TaskOptions) -> Object
         }
     });
 
-    ObjectHandle { sender }
+    ObjectHandle { sender, last_call }
 }
 
 /// Ends a destroyed object's residency: the destroying call's answer is
@@ -336,7 +352,10 @@ pub(super) async fn fire_alarm(
             "chain": [alarm.own_key],
         }),
         call_budget,
-        after_write,
+        Gates {
+            after_write,
+            after_read: None,
+        },
         directory_budget_ms,
     )
     .await;
@@ -418,15 +437,28 @@ pub(super) fn record_directory(runtime: &ActiasRuntime, home: &ObjectHome, budge
     }
 }
 
+/// The output gates a dispatch answers behind: the write gate for a
+/// call that wrote, the read gate for one that did not but whose
+/// object still has writes in the air.
+#[derive(Clone, Copy)]
+pub(super) struct Gates<'a> {
+    pub after_write: Option<&'a AfterWrite>,
+    pub after_read: Option<&'a AfterRead>,
+}
+
 pub(super) async fn guarded_dispatch(
     runtime: &ActiasRuntime,
     home: &ObjectHome,
     method: &str,
     payload: serde_json::Value,
     call_budget: Option<u64>,
-    after_write: Option<&AfterWrite>,
+    gates: Gates<'_>,
     directory_budget_ms: u64,
 ) -> Dispatched {
+    let Gates {
+        after_write,
+        after_read,
+    } = gates;
     // The platform's own end-of-life verb: handles refuse every "__"
     // spelling, so its arrival here is provably platform-originated.
     // The answer goes out first; the task tears down after it.
@@ -522,6 +554,14 @@ pub(super) async fn guarded_dispatch(
             if result.is_ok() {
                 gate = Some(waiting);
             }
+        } else if let Some(after_read) = after_read
+            && result.is_ok()
+        {
+            // The other half of the promise: a reply that wrote nothing
+            // still waits while the object has earlier writes in
+            // flight, so nobody acts on state a crash could take back.
+            // Settled objects, the common case, answer at once.
+            gate = after_read();
         }
     }
 

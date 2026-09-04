@@ -163,6 +163,7 @@ pub async fn compact_class(state: &AppState, class: &ClassKey, now: bool) -> Res
 
     let scratch = state.object_data_dir.clone();
     let previous_base = manifest.base.clone();
+    let _slot = state.shares.blocking.acquire(&class.scope_id).await;
     let merged = {
         let base = base.clone();
         let manifest = manifest.clone();

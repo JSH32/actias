@@ -99,6 +99,8 @@ spec:
               value: "http://{{ $full }}-script:3000"
             - name: KV_SERVICE_URI
               value: "http://{{ $full }}-kv:3000"
+            - name: PLACEMENT_SERVICE_URI
+              value: "http://{{ $full }}-placement:3000"
             - name: SECRET_SERVICE_URI
               value: "http://{{ $full }}-secret:3000"
             - name: REDIS_URL
@@ -131,6 +133,20 @@ spec:
               value: {{ .Values.workers.tuning.objectReplicas | quote }}
             - name: OBJECT_QUORUM
               value: {{ .Values.workers.tuning.objectQuorum | quote }}
+            - name: REGION
+              value: {{ .Values.placement.region | quote }}
+            - name: REQUEST_CONCURRENCY
+              value: {{ .Values.workers.tuning.requestConcurrency | quote }}
+            - name: BLOCKING_CONCURRENCY
+              value: {{ .Values.workers.tuning.blockingConcurrency | quote }}
+            - name: CONNECTION_LIMIT
+              value: {{ .Values.workers.tuning.connectionLimit | quote }}
+            - name: OBJECT_RESIDENT_LIMIT
+              value: {{ .Values.workers.tuning.objectResidentLimit | quote }}
+            - name: DIRECTORY_QUERY_CONCURRENCY
+              value: {{ .Values.workers.tuning.directoryQueryConcurrency | quote }}
+            - name: SHARE_FLOOR
+              value: {{ .Values.workers.tuning.shareFloor | quote }}
             - name: OBJECT_REPLICA_SYNC
               value: {{ .Values.workers.tuning.objectReplicaSync | quote }}
             - name: OBJECT_REPLICA_ACK_MS
