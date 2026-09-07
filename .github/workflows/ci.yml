@@ -64,6 +64,20 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('actias-api/package-lock.json', 'actias-web/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      # The smoke's last section regenerates the web client against the
+      # live api, which runs the generator out of the web's node_modules;
+      # this job checks out fresh, so it installs them first.
+      - name: Install node dependencies
+        run: nix develop -c just deps
+
       # Boots the whole compose stack, publishes a script through the api,
       # requests it through the worker, and verifies the checked-in clients
       # match the live api.
