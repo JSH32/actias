@@ -111,10 +111,29 @@ list, so order here is load-bearing. Usage:
 {{- end -}}
 
 {{/*
-The redis url: the bundled service or the external endpoint.
+The control plane's services as this release's pods reach them: the
+release's own when it renders the control plane, else the external
+addresses a region-only release was given. Usage:
+  {{ include "actias.controlPlaneAddr" (dict "root" . "service" "scriptService" "suffix" "script") }}
+*/}}
+{{- define "actias.controlPlaneAddr" -}}
+{{- if .root.Values.controlPlane.enabled -}}
+{{- printf "http://%s-%s:3000" (include "actias.fullname" .root) .suffix -}}
+{{- else -}}
+{{- required (printf "controlPlane.external.%s is required when controlPlane.enabled is false" .service) (index .root.Values.controlPlane.external .service) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The redis url: the bundled service, the external endpoint, or the
+shared control plane's when this release renders no control plane
+(redis carries live sessions and the log tail, which are the control
+plane's).
 */}}
 {{- define "actias.redisUrl" -}}
-{{- if .Values.redis.bundled -}}
+{{- if not .Values.controlPlane.enabled -}}
+{{- required "controlPlane.external.redis is required when controlPlane.enabled is false" .Values.controlPlane.external.redis -}}
+{{- else if .Values.redis.bundled -}}
 {{- printf "redis://%s-redis:6379" (include "actias.fullname" .) -}}
 {{- else -}}
 {{- required "externalRedis.url is required when redis.bundled=false" .Values.externalRedis.url -}}
@@ -308,6 +327,21 @@ imagePullSecrets: {{- toYaml . | nindent 2 }}
 {{- end -}}
 
 {{/*
+What the placement service and its migration wait on before starting:
+the postgres it uses, or the first scylla node when that is the
+backend. A scylla region need not have a postgres at all.
+*/}}
+{{- define "actias.placementWait" -}}
+{{- if eq .root.Values.placement.backend "scylla" -}}
+{{- $first := splitList "," (include "actias.scyllaNodes" .root) | first | trim -}}
+{{- $parts := splitList ":" $first -}}
+{{- include "actias.waitFor" (dict "root" .root "image" .image "name" "scylla" "host" (first $parts) "port" (default "9042" (index $parts 1 | default ""))) -}}
+{{- else -}}
+{{- include "actias.waitFor" (dict "root" .root "image" .image "name" "postgres" "host" (include "actias.postgresHost" .root) "port" (include "actias.postgresPort" .root)) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 The placement service's store: the bundled postgres by default, or the
 scylla cluster the values name, replicated in this datacenter alone.
 */}}
@@ -316,14 +350,27 @@ scylla cluster the values name, replicated in this datacenter alone.
 - name: PLACEMENT_BACKEND
   value: "scylla"
 - name: SCYLLA_NODES
-  value: {{ required "placement.scyllaNodes names the cluster when placement.backend is scylla" .Values.placement.scyllaNodes | quote }}
+  value: {{ include "actias.scyllaNodes" . | quote }}
 - name: SCYLLA_DC
   value: {{ .Values.placement.scyllaDc | quote }}
 - name: SCYLLA_REPLICATION_FACTOR
-  value: {{ .Values.placement.replicationFactor | quote }}
+  value: {{ if .Values.scylla.bundled }}"1"{{ else }}{{ .Values.placement.replicationFactor | quote }}{{ end }}
 {{- else }}
 - name: PLACEMENT_BACKEND
   value: "postgres"
 {{ include "actias.databaseUrlEnv" (dict "root" . "database" "actias_placement") }}
 {{- end }}
 {{- end }}
+
+{{/*
+The scylla nodes the placement service dials: the bundled one-node
+store, or the cluster the values name. The bundled store has one node,
+so its replication factor is one whatever the values say.
+*/}}
+{{- define "actias.scyllaNodes" -}}
+{{- if .Values.scylla.bundled -}}
+{{- printf "%s-scylla:9042" (include "actias.fullname" .) -}}
+{{- else -}}
+{{- required "placement.scyllaNodes names the cluster when placement.backend is scylla and scylla.bundled is false" .Values.placement.scyllaNodes -}}
+{{- end -}}
+{{- end -}}

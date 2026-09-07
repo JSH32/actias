@@ -55,7 +55,9 @@ COPY --from=builder /output/target /app/
 
 # openssl for the tls stack, ca-certificates so outbound https from scripts can
 # actually verify a chain.
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+# curl and jq are for the chart's registration job, which runs in this
+# image so that no third image joins an install.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates curl jq \
     && rm -rf /var/lib/apt/lists/*
 
 CMD [ "/app/target" ]

@@ -23,13 +23,15 @@ differs:
   comes up beside the store and retries through the backoff until it
   answers, and `--wait` covers the whole convergence.
 */}}
-{{- $jobs := list
+{{- $jobs := list (dict "name" "placement" "component" .Values.placement "placement" true "command" (list "/app/target" "--migrate")) }}
+{{/* A region-only release owns one store, the placement store. */}}
+{{- if .Values.controlPlane.enabled }}
+{{- $jobs = concat $jobs (list
   (dict "name" "script" "component" .Values.scriptService "database" "actias_script_service" "command" (list "/app/target" "--migrate"))
   (dict "name" "secret" "component" .Values.secretService "database" "actias_secret_service" "command" (list "/app/target" "--migrate"))
   (dict "name" "kv" "component" .Values.kv "database" "actias_kv" "command" (list "/app/target" "--migrate"))
-  (dict "name" "placement" "component" .Values.placement "placement" true "command" (list "/app/target" "--migrate"))
-  (dict "name" "api" "component" .Values.api "database" "actias_api" "command" (list "npx" "mikro-orm" "migration:up"))
-}}
+  (dict "name" "api" "component" .Values.api "database" "actias_api" "command" (list "npx" "mikro-orm" "migration:up"))) }}
+{{- end }}
 {{- range $job := $jobs }}
 ---
 apiVersion: batch/v1
@@ -62,7 +64,11 @@ spec:
       # is what keeps the attempts below from being spent on a database
       # that simply is not listening yet.
       initContainers:
+        {{- if $job.placement }}
+        {{- include "actias.placementWait" (dict "root" $ "image" (include "actias.image" (dict "root" $ "component" $job.component))) | nindent 8 }}
+        {{- else }}
         {{- include "actias.waitFor" (dict "root" $ "image" (include "actias.image" (dict "root" $ "component" $job.component)) "name" "postgres" "host" (include "actias.postgresHost" $) "port" (include "actias.postgresPort" $)) | nindent 8 }}
+        {{- end }}
       containers:
         - name: migrate
           image: {{ include "actias.image" (dict "root" $ "component" $job.component) | quote }}

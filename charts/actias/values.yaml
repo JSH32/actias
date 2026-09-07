@@ -58,6 +58,51 @@ secrets:
     existingSecret: ""
     key: secret-master-key-id
 
+# One release is one control plane and one region. A second region is
+# another release of this chart with the control plane off and the
+# shared one's services named here: it renders the placement service,
+# the workers and their stores, registers itself with the control
+# plane (see `region.register`), and nothing else. See the README's
+# "Regions" section and values-region.yaml.
+controlPlane:
+  enabled: true
+  # The shared control plane's services, as this region's pods reach
+  # them; required when enabled is false. The api is needed only by
+  # the registration job.
+  external:
+    scriptService: ""    # http://host:3000
+    secretService: ""    # http://host:3000
+    kv: ""               # http://host:3000
+    redis: ""            # redis://host:6379
+    api: ""              # http://host:3000
+
+# The region this release serves. `placement.region` names it.
+region:
+  # The region's object bucket: objects and directories ship here, and
+  # a project move copies between regions' buckets. Empty means the
+  # blob bucket, which is the single-region layout. A second region
+  # needs its own, at an endpoint that also holds the control plane's
+  # bundle bucket (workers pull bundles by hash from `externalS3.bucket`
+  # at the same endpoint).
+  bucket: ""
+  # Register this region with the control plane: a Job after install
+  # and upgrade that PUTs /regions/<name> on the api as the instance
+  # admin. Without it a region exists only to its own pods; the
+  # control plane offers homes, forwards calls and moves projects only
+  # among the regions it knows.
+  register:
+    enabled: false
+    # This region's workers as other regions' workers reach them for a
+    # forwarded call: host:3100 of the worker service, routable across
+    # regions.
+    dataPlaneAddr: ""
+    # This region's placement service as the control plane reaches it,
+    # http://host:3000; a move lists the project's objects there.
+    placementAddr: ""
+    # The admin account the job logs in as: a Secret with keys
+    # username and password. Defaults to api.admin.existingSecret.
+    existingSecret: ""
+
 # Stores: bundled (single replica, one PVC, dev-grade) or external.
 # Production means external; bundled exists for kind and evaluation.
 postgres:
@@ -110,6 +155,19 @@ externalS3:
   endpoint: ""
   bucket: actias-blobs
   existingSecret: ""     # keys: access-key, secret-key
+
+scylla:
+  # A one-node scylla for trying the scylla backend on a single
+  # region: developer mode, one shard, one PVC. It has none of the
+  # benefit scylla exists for (see placement.backend) and is for kind
+  # and evaluation only; a real scylla region names its cluster in
+  # placement.scyllaNodes. Rendered only when placement.backend is
+  # scylla.
+  bundled: false
+  image: scylladb/scylla:6.2
+  storage:
+    size: 2Gi
+    storageClass: ""
 
 ingress:
   enabled: false
@@ -176,9 +234,28 @@ placement:
   nodeTtlSecs: 45
   # The region this store serves; every regional table keys by it.
   region: local
-  # postgres (the bundled store, the small-stack posture) or scylla (the
-  # fleet's: a keyspace replicated in this datacenter alone).
+  # postgres or scylla. The choice, in one paragraph:
+  #
+  # Postgres is one primary with transactions: a claim is one
+  # statement, failover is the database's own (a replica promoted by
+  # the operator or a managed service), and the whole store is a
+  # database you already run. It is the right store for one region on
+  # one node or a handful, which is every small deployment.
+  #
+  # Scylla is leaderless: every row lives on `replicationFactor` nodes
+  # of the datacenter and a claim is a lightweight transaction across
+  # them, so the placement store stays up through the loss of a node
+  # with no failover step, and a region's store scales with its
+  # workers. That is the benefit, and it exists only when the store
+  # spans several nodes: a one-node scylla is a slower postgres with
+  # more memory and no transactions across rows. Choose it for a
+  # region that must survive node loss without an operator, and for a
+  # fleet whose claim rate outgrows one primary; choose postgres
+  # otherwise. Either way the store is per region and never talks to
+  # another region's.
   backend: postgres
+  # Comma-separated host:port of the scylla cluster, when backend is
+  # scylla and scylla.bundled is false.
   scyllaNodes: ""
   scyllaDc: datacenter1
   replicationFactor: 3

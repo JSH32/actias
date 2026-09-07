@@ -141,6 +141,8 @@ chart-lint: chart-sync
     helm lint charts/actias -f charts/actias/values-kind.yaml
     ct lint --charts charts/actias
     helm template actias charts/actias -f charts/actias/values-kind.yaml | kubeconform -strict -summary
+    helm template actias charts/actias -f charts/actias/values-region.yaml | kubeconform -strict -summary
+    helm template actias charts/actias -f charts/actias/values-kind.yaml --set placement.backend=scylla --set scylla.bundled=true | kubeconform -strict -summary
 
 # Install the chart into a kind cluster and prove it serves a script.
 # Creates the cluster if it is missing. Needs `nix develop .#kube`.

@@ -47,6 +47,26 @@ region's workers read it, cached on the pointer ttl, the way they
 read the script pointer. Bundles live in its blob bucket, immutable
 and content-addressed, and workers everywhere cache them by hash.
 
+## The placement store
+
+A region's placement store is Postgres or Scylla, chosen per region
+at deployment. Both pass the same conformance suite; nothing above
+the store can tell them apart.
+
+Postgres is one primary with transactions. A claim is one statement
+and failover is the database's own. It is the right store for one
+region on one node or a few.
+
+Scylla is leaderless: every row lives on several nodes of one
+datacenter and a claim is a lightweight transaction across them, so
+the store survives the loss of a node with no failover step and
+scales with the region's workers. That benefit exists only when the
+store spans several nodes. A one-node Scylla is a slower Postgres
+with more memory and no transactions across rows. Scylla gives a
+region a store that survives node loss without an operator; it does
+not give regions a shared store. Placement stores never talk to
+each other under either backend.
+
 ## Where an object lives
 
 Every project has a **home region**, recorded when it is created:
@@ -128,3 +148,10 @@ workers on a second bucket. The region drill registers both with the
 control plane, homes a project in `a`, calls it through `b`, moves it
 under writes, and checks that every acknowledged write is present
 and that each side serves or forwards as it should.
+
+The Helm chart installs one control plane and one region per
+release. A second region is another release with the control plane
+turned off and the shared one's services named; it renders the
+placement service, the workers and their stores, and a job that
+registers the region with the control plane. The chart's README
+has the values.

@@ -1,0 +1,60 @@
+# A second region beside a control plane installed elsewhere: this
+# release renders the placement service, the workers, their stores and
+# the registration job, and nothing of the control plane. Pair it with
+# values-production.yaml's store choices; the values here are the ones
+# that differ.
+
+controlPlane:
+  enabled: false
+  external:
+    # The control plane's services as this cluster reaches them: a
+    # service mesh, a private load balancer, or cross-cluster DNS.
+    scriptService: http://actias-script.control.internal:3000
+    secretService: http://actias-secret.control.internal:3000
+    kv: http://actias-kv.control.internal:3000
+    redis: redis://actias-cache.control.internal:6379
+    api: http://actias-api.control.internal:3000
+
+placement:
+  region: eu-west
+  # Postgres is the region's own; scylla is the alternative.
+  backend: postgres
+
+region:
+  bucket: actias-eu-west
+  register:
+    enabled: true
+    # Other regions' workers dial this for a forwarded call.
+    dataPlaneAddr: actias-worker.eu-west.internal:3100
+    placementAddr: http://actias-placement.eu-west.internal:3000
+    existingSecret: actias-admin          # keys: username, password
+
+secrets:
+  # The one platform secret a region needs: the token workers present
+  # to each other and the control plane presents to them. The same
+  # value as the control plane's.
+  internalToken:
+    existingSecret: actias-platform
+    key: internal-token
+
+postgres:
+  bundled: false
+  # The control plane's read replica in this region, for the runtime
+  # reads; not this release's placement database.
+  readReplicaHost: ""
+externalPostgres:
+  host: actias-placement-db.eu-west.internal
+  port: 5432
+  existingSecret: actias-postgres
+
+minio:
+  bundled: false
+externalS3:
+  # One endpoint holding both the bundle bucket, which every region
+  # reads, and this region's object bucket.
+  endpoint: https://s3.eu-west-1.amazonaws.com
+  bucket: actias-production
+  existingSecret: actias-s3
+
+workers:
+  replicas: 3

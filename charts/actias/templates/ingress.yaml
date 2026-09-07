@@ -31,6 +31,7 @@ spec:
   tls: {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
+    {{- if .Values.controlPlane.enabled }}
     {{- with .Values.ingress.console }}
     - host: {{ . | quote }}
       http:
@@ -54,6 +55,7 @@ spec:
                 name: {{ $full }}-api
                 port:
                   number: 3000
+    {{- end }}
     {{- end }}
     {{- with .Values.baseDomain }}
     # Every published script answers under its own label here, and

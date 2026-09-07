@@ -1,3 +1,4 @@
+{{- if .Values.controlPlane.enabled }}
 {{- $name := printf "%s-kv" (include "actias.fullname" .) }}
 apiVersion: v1
 kind: Service
@@ -70,3 +71,4 @@ spec:
       {{- with .Values.kv.extraVolumes }}
       volumes: {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

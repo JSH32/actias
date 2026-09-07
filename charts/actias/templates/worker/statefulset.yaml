@@ -74,7 +74,11 @@ spec:
       # this the whole fleet crashloops through a fresh install while
       # the registry's own database is still coming up.
       initContainers:
+        {{- if .Values.controlPlane.enabled }}
         {{- include "actias.waitFor" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.workers)) "name" "script-service" "host" (printf "%s-script" $full) "port" 3000) | nindent 8 }}
+        {{- else }}
+        {{- include "actias.waitFor" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.workers)) "name" "placement" "host" (printf "%s-placement" $full) "port" 3000) | nindent 8 }}
+        {{- end }}
       containers:
         - name: worker
           image: {{ include "actias.image" (dict "root" . "component" .Values.workers) | quote }}
@@ -95,14 +99,16 @@ spec:
               value: "$(POD_NAME).{{ $headless }}.{{ .Release.Namespace }}.svc.cluster.local:3100"
             # Full uris here; the api addresses the same services as
             # bare host:port.
+            # The control plane's services: this release's own, or the
+            # shared ones a region-only release names.
             - name: SCRIPT_SERVICE_URI
-              value: "http://{{ $full }}-script:3000"
+              value: {{ include "actias.controlPlaneAddr" (dict "root" . "service" "scriptService" "suffix" "script") | quote }}
             - name: KV_SERVICE_URI
-              value: "http://{{ $full }}-kv:3000"
+              value: {{ include "actias.controlPlaneAddr" (dict "root" . "service" "kv" "suffix" "kv") | quote }}
             - name: PLACEMENT_SERVICE_URI
               value: "http://{{ $full }}-placement:3000"
             - name: SECRET_SERVICE_URI
-              value: "http://{{ $full }}-secret:3000"
+              value: {{ include "actias.controlPlaneAddr" (dict "root" . "service" "secretService" "suffix" "secret") | quote }}
             - name: REDIS_URL
               value: {{ include "actias.redisUrl" . | quote }}
             {{- include "actias.s3Env" . | nindent 12 }}
@@ -135,6 +141,11 @@ spec:
               value: {{ .Values.workers.tuning.objectQuorum | quote }}
             - name: REGION
               value: {{ .Values.placement.region | quote }}
+            {{- with .Values.region.bucket }}
+            # The region's object bucket; bundles stay in S3_BUCKET.
+            - name: OBJECT_BUCKET
+              value: {{ . | quote }}
+            {{- end }}
             - name: REQUEST_CONCURRENCY
               value: {{ .Values.workers.tuning.requestConcurrency | quote }}
             - name: BLOCKING_CONCURRENCY

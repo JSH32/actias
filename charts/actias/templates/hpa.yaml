@@ -14,7 +14,7 @@ an adapter the environment may not run.
   (dict "name" "script" "values" .Values.scriptService)
 }}
 {{- range $component := $components }}
-{{- if $component.values.autoscaling.enabled }}
+{{- if and $component.values.autoscaling.enabled $.Values.controlPlane.enabled }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

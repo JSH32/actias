@@ -1,6 +1,19 @@
 Actias {{ .Chart.AppVersion }} is installing as release {{ .Release.Name }}.
+{{- if not .Values.controlPlane.enabled }}
 
-{{- if .Values.ingress.enabled }}
+This release is region {{ .Values.placement.region }} only: its placement
+service and workers, joined to the control plane at
+{{ .Values.controlPlane.external.scriptService }}.
+{{- if .Values.region.register.enabled }}
+The registration job has named it to the control plane as
+{{ .Values.region.register.dataPlaneAddr }}; the console offers it as a
+home and moves projects to it.
+{{- else }}
+It is not registered with the control plane (region.register.enabled
+is false), so the control plane cannot forward to it or move projects
+to it until it is.
+{{- end }}
+{{- else if .Values.ingress.enabled }}
 
 Console:  https://{{ .Values.ingress.console }}
 API:      https://{{ .Values.ingress.api }}

@@ -31,7 +31,7 @@ spec:
     spec:
       {{- include "actias.scheduling" (dict "root" . "component" .Values.placement) | nindent 6 }}
       initContainers:
-        {{- include "actias.waitFor" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.placement)) "name" "postgres" "host" (include "actias.postgresHost" .) "port" (include "actias.postgresPort" .)) | nindent 8 }}
+        {{- include "actias.placementWait" (dict "root" . "image" (include "actias.image" (dict "root" . "component" .Values.placement))) | nindent 8 }}
       containers:
         - name: placement-service
           image: {{ include "actias.image" (dict "root" . "component" .Values.placement) | quote }}

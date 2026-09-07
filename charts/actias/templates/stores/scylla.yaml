@@ -1,0 +1,76 @@
+{{- if and .Values.scylla.bundled (eq .Values.placement.backend "scylla") }}
+{{- $name := printf "%s-scylla" (include "actias.fullname" .) }}
+{{/*
+A one-node scylla for trying the backend. Developer mode and one shard
+keep it inside a kind node's memory; the flags are the ones the
+repository's compose file uses for the same purpose. None of what
+scylla is chosen for (surviving a node's loss with no failover) exists
+with one node; see placement.backend in values.yaml.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "scylla") | nindent 4 }}
+spec:
+  ports:
+    - name: cql
+      port: 9042
+      targetPort: cql
+  selector:
+    {{- include "actias.selectorLabels" (dict "root" . "component" "scylla") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "actias.labels" (dict "root" . "component" "scylla") | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "actias.selectorLabels" (dict "root" . "component" "scylla") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "actias.labels" (dict "root" . "component" "scylla") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: scylla
+          image: {{ .Values.scylla.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--smp", "1", "--developer-mode", "1", "--overprovisioned", "1"]
+          ports:
+            - name: cql
+              containerPort: 9042
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "nodetool status | grep -q '^UN'"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: cql
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/scylla
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.scylla.storage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.scylla.storage.size }}
+{{- end }}

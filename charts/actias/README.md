@@ -126,6 +126,70 @@ sessions, and its one background job deletes aged-out node rows, which
 is harmless to run from several replicas. The default is 1 because the
 registry is rarely the busy part.
 
+## The placement store
+
+`placement.backend` chooses what holds leases, membership, alarms and
+the instance directory for the region: `postgres` or `scylla`. Both
+pass the same conformance suite, and nothing above the store can tell
+them apart.
+
+Postgres is one primary with transactions. A claim is one statement;
+failover is the database's own, a replica promoted by an operator or a
+managed service; the store is a database already being run for the
+control plane. It is the right choice for one region on one node or a
+few, which is every small deployment.
+
+Scylla is leaderless. Every row lives on `placement.replicationFactor`
+nodes of one datacenter and a claim is a lightweight transaction
+across them, so the store survives the loss of a node with no failover
+step and scales with the region's workers. That benefit exists only
+when the store spans several nodes. A one-node scylla is a slower
+postgres that uses more memory and has no transactions across rows.
+Choose scylla for a region that must survive node loss without an
+operator, or whose claim rate outgrows one primary; choose postgres
+otherwise. Either way the store is per region and never talks to
+another region's; scylla gives a region a highly available store, not
+a store shared between regions.
+
+`scylla.bundled: true` with `placement.backend: scylla` renders a
+one-node scylla (developer mode, one shard) so the backend can be
+tried on kind or a single region. It carries none of the benefit
+above and is for evaluation only; a real scylla region names its
+cluster in `placement.scyllaNodes`. The placement service and its
+migration wait on the store they use, so a scylla region need not run
+a postgres of its own.
+
+## Regions
+
+One release is one control plane and one region. The control plane
+(api, web, script, secret and kv services, their databases, redis) is
+shared; a region is a placement service, an object bucket and workers
+under one name, `placement.region`. `region.bucket` names the object
+bucket; empty means the blob bucket, the single-region layout.
+
+A second region is another release of the chart with
+`controlPlane.enabled: false` and the shared control plane's services
+in `controlPlane.external`. Such a release renders the placement
+service, the workers, the stores it uses and the registration job;
+no api, web, script, secret or kv service, no redis, and only the
+placement migration. `values-region.yaml` is the worked example. The
+region's S3 endpoint must hold both the control plane's bundle bucket
+(workers pull bundles by hash from it) and the region's own object
+bucket.
+
+`region.register` names the region to the control plane: a Job after
+install and upgrade logs in to the api as the instance admin and PUTs
+`/regions/<name>` with the addresses other regions and the control
+plane reach this one on (`dataPlaneAddr`, the worker service's grpc
+port, and `placementAddr`), the bucket and the S3 credentials. The
+control plane offers homes, forwards calls and moves projects only
+among registered regions. The control plane's own release may set it
+too, so its region is registered the same way rather than by hand.
+
+The one secret a region carries is `secrets.internalToken`, the same
+value as the control plane's; `jwtKey` and `masterKey` belong to the
+control plane and are not asked for.
+
 ## Observability
 
 Set `otelEndpoint` to an OTLP collector and every service exports

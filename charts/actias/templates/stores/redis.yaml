@@ -1,4 +1,4 @@
-{{- if .Values.redis.bundled }}
+{{- if and .Values.redis.bundled .Values.controlPlane.enabled }}
 {{- $name := printf "%s-redis" (include "actias.fullname" .) }}
 apiVersion: v1
 kind: Service
