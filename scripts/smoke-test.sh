@@ -49,6 +49,11 @@ cleanup() {
     fi
     [ -n "${DEV_PID:-}" ] && kill "$DEV_PID" 2>/dev/null || true
     rm -rf "${DEVDIR:-}"
+    # SMOKE_KEEP=1 leaves a failed stack up for inspection.
+    if [ "$FAILED" = 1 ] && [ "${SMOKE_KEEP:-0}" = 1 ]; then
+        echo "== the stack is left up (SMOKE_KEEP=1); tear it down with: docker compose -p $PROJECT down -v"
+        return
+    fi
     compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -800,8 +805,13 @@ echo "visit verified $(echo "$DIR_VISIT" | jq '[.entries[] | select(.unverified 
 # The operator's answer to total loss: wipe the class's whole prefix,
 # which background discovery provably cannot find again, then ask for it
 # by name.
+# Through the S3 api with the image's own mc, not a path on its disk:
+# the on-disk layout is minio's to change, and did. Only mc is relied
+# on; the image carries no awk or find.
 docker exec "$(compose ps -q minio)" sh -c \
-    'rm -rf /data/actias-blobs/directory/*/Hits' >/dev/null 2>&1
+    'mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null \
+     && mc find local/actias-blobs/directory/ --path "*/Hits/*" --exec "mc rm --force {}" >/dev/null' \
+    || { echo "the wipe could not run"; exit 1; }
 # A read that names no field, because the wipe took the FIELD SET with
 # the manifest: ordering by one is refused outright until a rebuild
 # puts the declaration back.
