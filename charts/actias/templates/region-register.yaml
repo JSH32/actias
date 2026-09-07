@@ -66,16 +66,18 @@ spec:
             - bash
             - -ec
             - |
-              until [ "$(curl -s -o /dev/null -w '%{http_code}' "$API/regions")" != 000 ]; do
+              # The api serves under /api; an unauthenticated listing
+              # answers 401 once it is up, which is the readiness signal.
+              until [ "$(curl -s -o /dev/null -w '%{http_code}' "$API/api/regions")" = 401 ]; do
                 echo "waiting for the api at $API"; sleep 3
               done
               login=$(jq -n --arg u "$ADMIN_USERNAME" --arg p "$ADMIN_PASSWORD" '{auth: $u, password: $p}')
-              token=$(curl -sf -X POST "$API/auth/login" -H 'Content-Type: application/json' -d "$login" | jq -r .token)
-              [ -n "$token" ] && [ "$token" != null ] || { echo "admin login refused"; exit 1; }
+              token=$(curl -s -X POST "$API/api/auth/login" -H 'Content-Type: application/json' -d "$login" | jq -r .token)
+              [ -n "$token" ] && [ "$token" != null ] || { echo "admin login refused for '$ADMIN_USERNAME'"; exit 1; }
               body=$(jq -n --arg d "$DATA_PLANE_ADDR" --arg p "$PLACEMENT_ADDR" --arg b "$BUCKET" \
                 --arg e "$S3_ENDPOINT" --arg k "$S3_ACCESS_KEY" --arg s "$S3_SECRET_KEY" \
                 '{dataPlaneAddr: $d, placementAddr: $p, bucket: $b, s3Endpoint: $e, s3AccessKey: $k, s3SecretKey: $s}')
-              curl -sf -X PUT "$API/regions/$REGION" -H "Authorization: Bearer $token" \
+              curl -sf -X PUT "$API/api/regions/$REGION" -H "Authorization: Bearer $token" \
                 -H 'Content-Type: application/json' -d "$body" >/dev/null
               echo "region $REGION registered at $DATA_PLANE_ADDR"
 {{- end }}
