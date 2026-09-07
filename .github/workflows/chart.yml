@@ -70,7 +70,7 @@ jobs:
       # tested against this commit rather than a published tag.
       - name: Build images
         run: docker compose build --quiet
-          script_service secret_service kv_service worker_service actias_api actias_web
+          script_service secret_service kv_service placement_service worker_service actias_api actias_web
 
       - name: Install and probe
         run: nix develop .#kube -c just chart-install

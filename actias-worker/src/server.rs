@@ -1575,10 +1575,9 @@ async fn dial(
         handshake.headers_mut().insert(name, value);
     }
     if !protocols.is_empty() {
-        let value = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(
-            &protocols.join(", "),
-        )
-        .map_err(|_| "the subprotocol list is not a header value.".to_owned())?;
+        let value =
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&protocols.join(", "))
+                .map_err(|_| "the subprotocol list is not a header value.".to_owned())?;
         handshake
             .headers_mut()
             .insert("Sec-WebSocket-Protocol", value);
@@ -1638,8 +1637,15 @@ async fn dial_http(
         let snippet: String = text.chars().take(200).collect();
         return Err(format!("'{host}' answered {status}: {snippet}"));
     }
-    let mode = if sse { StreamMode::Sse } else { StreamMode::Lines };
-    Ok((Wire::Stream(Box::new(StreamWire::new(response, mode))), host))
+    let mode = if sse {
+        StreamMode::Sse
+    } else {
+        StreamMode::Lines
+    };
+    Ok((
+        Wire::Stream(Box::new(StreamWire::new(response, mode))),
+        host,
+    ))
 }
 
 /// How a streamed response is cut into frames.
@@ -1723,14 +1729,10 @@ impl StreamWire {
 }
 
 impl StreamParser {
-
     /// The next complete unit in the buffer, cut at its delimiter.
     fn take_unit(&mut self) -> Option<Vec<u8>> {
         let (at, width) = match self.mode {
-            StreamMode::Lines => (
-                self.buffer.iter().position(|byte| *byte == b'\n')?,
-                1,
-            ),
+            StreamMode::Lines => (self.buffer.iter().position(|byte| *byte == b'\n')?, 1),
             StreamMode::Sse => {
                 let lf = self
                     .buffer
@@ -1803,7 +1805,6 @@ impl StreamParser {
             self.push_unit(&rest);
         }
     }
-
 }
 
 /// The bridge between one live websocket and its connection actor:

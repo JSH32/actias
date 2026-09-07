@@ -182,8 +182,13 @@ pub struct DialRequest {
 /// The two wires a class can open: a websocket, which speaks both
 /// ways, and an HTTP response read as frames, which speaks one way.
 pub enum DialKind {
-    WebSocket { protocols: Vec<String> },
-    Http { method: String, body: Option<String> },
+    WebSocket {
+        protocols: Vec<String>,
+    },
+    Http {
+        method: String,
+        body: Option<String>,
+    },
 }
 
 /// Answers whether a wire this project opened is still registered on
@@ -382,7 +387,9 @@ fn instance_verb(lua: &Lua) -> mlua::Result<mlua::Function> {
                                 "a wire's liveness cannot be asked from here.".to_owned(),
                             )
                         })?;
-                    liveness(class, name).await.map_err(mlua::Error::RuntimeError)
+                    liveness(class, name)
+                        .await
+                        .map_err(mlua::Error::RuntimeError)
                 }
             })?,
         )?;
