@@ -1,0 +1,4 @@
+# Copy to `temp.nix` (gitignored) for tools you want in your own shell
+# that the project does not depend on. Read only under
+# `nix develop --impure`, which direnv passes; see flake.nix.
+{ pkgs }: with pkgs; [ gh ]

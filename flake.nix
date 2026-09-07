@@ -10,6 +10,24 @@
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+
+      # Tools one person wants in their shell and the project does not
+      # depend on (gh, an editor's helper) go in a local `temp.nix`,
+      # gitignored, that returns a package list:
+      #
+      #   { pkgs }: with pkgs; [ gh ]
+      #
+      # A flake sees only tracked files, so the file is read through the
+      # environment: `nix develop --impure` (direnv passes the flag) picks
+      # it up from the working directory; a pure evaluation, which is what
+      # CI and `nix build` run, sees nothing and the shell is exactly the
+      # checked-in one.
+      localExtras = pkgs:
+        let
+          cwd = builtins.getEnv "PWD";
+          file = "${cwd}/temp.nix";
+        in
+        if cwd != "" && builtins.pathExists file then import file { inherit pkgs; } else [ ];
     in
     {
       devShells = forAllSystems (pkgs: {
@@ -62,7 +80,7 @@
             openssl
             # `actias check` shells out to luau-analyze for typed lua.
             luau
-          ];
+          ] ++ localExtras pkgs;
 
           # Only greet a human; `nix develop -c ...` and CI stay quiet.
           #

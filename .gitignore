@@ -4,6 +4,8 @@ test
 
 # nix / direnv
 .direnv/
+# personal shell extras, read impurely by the flake (temp.nix.example)
+temp.nix
 result
 result-*
 
