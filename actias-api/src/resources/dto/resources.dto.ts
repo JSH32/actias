@@ -334,13 +334,18 @@ export class ConnectionDto {
   @ApiProperty({ description: 'Node-local connection id.' })
   id: string;
 
-  @ApiProperty({ description: 'The declared connection class running the wire.' })
+  @ApiProperty({
+    description: 'The declared connection class running the wire.',
+  })
   connectionClass: string;
 
   @ApiProperty({ description: "The identity it speaks as, 'Class/name'." })
   identity: string;
 
-  @ApiProperty({ description: "'inbound' (a client's upgrade) or 'outbound' (dialled by the project)." })
+  @ApiProperty({
+    description:
+      "'inbound' (a client's upgrade) or 'outbound' (dialled by the project).",
+  })
   direction: string;
 
   @ApiProperty({
@@ -359,7 +364,10 @@ export class ConnectionDto {
   @ApiProperty({ description: 'Unix milliseconds the wire opened.' })
   openedAt: number;
 
-  @ApiProperty({ description: "'new', 'warm' (holding a vm) or 'hibernated' (wire kept, vm dropped)." })
+  @ApiProperty({
+    description:
+      "'new', 'warm' (holding a vm) or 'hibernated' (wire kept, vm dropped).",
+  })
   status: string;
 
   @ApiProperty({ description: 'Edges the connection holds right now.' })

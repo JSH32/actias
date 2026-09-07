@@ -68,7 +68,9 @@ export class ShellController implements OnModuleInit {
           principal.serviceToken?.name ?? principal.serviceToken?.id ?? ''
         }`;
     this.logger.log(
-      `shell run by ${who} on ${project.id}: ${body.source.length} chars, ${body.write ? 'write' : 'read-only'}`,
+      `shell run by ${who} on ${project.id}: ${body.source.length} chars, ${
+        body.write ? 'write' : 'read-only'
+      }`,
     );
     const [namespaces, databases, classes] = await Promise.all([
       lastValueFrom(
