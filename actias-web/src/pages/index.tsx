@@ -123,13 +123,14 @@ end)`,
 local drafts = kv "drafts"
 
 local Model = connection "Model" {
-    frame = function(conn, data)  -- one wire per chat, dialled outward
+    frame = function(conn, data)  -- one sse event per frame
         local chat = conn.state.chat
-        if data.type == "token" then
-            local draft = (drafts:get(chat) or "") .. data.text
+        local delta = type(data) == "table" and data.choices[1].delta.content
+        if delta then
+            local draft = (drafts:get(chat) or "") .. delta
             drafts:set(chat, draft)           -- kv: no flight per token
             ChatHistory(chat):partial(draft)  -- fans out to followers
-        else
+        elseif data == "[DONE]" then
             ChatHistory(chat):seal(drafts:get(chat))  -- one durable row
             drafts:delete(chat)
         end
@@ -137,10 +138,12 @@ local Model = connection "Model" {
 }
 
 on "fetch" (function(request)
-    local chat = json.parse(request.body).chat
-    Model:open("wss://api.openai.com/v1/realtime", { chat = chat }, {
+    local body = json.parse(request.body)
+    Model:stream({
+        url = "https://api.openai.com/v1/chat/completions",
         headers = { authorization = "Bearer " .. secret "OPENAI_API_KEY" },
-    })
+        body = { model = "gpt-4o-mini", stream = true, messages = body.messages },
+    }, { chat = body.chat })
     return { status = 202 }
 end)`,
   },

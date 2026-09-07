@@ -48,15 +48,37 @@ type ConnectionBody = {
     -- counts ticks that fired while a previous run was still going.
     timer: { every: string, run: (conn: Conn, missed: number) -> () }?,
 }
--- A declared class is also the door outward: `Class:open(url, seed?,
+-- What `Class:stream` sends: the request table `http.make_request`
+-- takes. A table body is sent as json.
+type StreamRequest = {
+    url: string,
+    method: string?,
+    headers: { [string]: string }?,
+    body: (string | { [string]: any })?,
+}
+
+-- The handle of one wire this project opened, `Class(name)`: `alive`
+-- asks the registry whether a live node still holds it.
+type ConnectionInstance = {
+    __wire: string,
+    __name: string,
+    alive: (self: ConnectionInstance) -> boolean,
+}
+
+-- A declared class is also the door outward. `Class:open(url, seed?,
 -- options?)` dials a ws:// or wss:// url through the egress policy,
 -- runs the same handlers over the wire, and answers with the instance
--- name once the handshake is up. Sending upstream is publishing on a
--- topic the wire follows; there is no socket handle.
-type ConnectionClass = {
+-- name once the handshake is up. `Class:stream(request, seed?)` sends
+-- an http request and reads the response as frames: SSE events under
+-- text/event-stream, lines otherwise, each reaching `frame` as json
+-- when it parses and as a string when it does not; it has no uplink.
+-- Sending upstream is publishing on a topic the wire follows; there
+-- is no socket handle. `Class(name)` is the handle of a wire opened.
+type ConnectionClass = typeof(setmetatable({} :: {
     __connection: string,
     open: (self: ConnectionClass, url: string, seed: any?, options: OpenOptions?) -> string,
-}
+    stream: (self: ConnectionClass, request: StreamRequest, seed: any?) -> string,
+}, {} :: { __call: (self: ConnectionClass, name: string) -> ConnectionInstance }))
 
 declare connection: (class: string) -> (body: ConnectionBody) -> ConnectionClass
 

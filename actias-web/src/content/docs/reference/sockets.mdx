@@ -145,6 +145,71 @@ payload from its `event` handler. See [wires this project
 opened](/docs/runtime/sockets#wires-this-project-opened) for the
 pattern and who should own the reopen.
 
+## Streaming a response
+
+The same class reads an HTTP response as frames:
+
+```lua
+local name = Model:stream({
+    url = "https://api.openai.com/v1/chat/completions",
+    headers = { authorization = "Bearer " .. secret "OPENAI_API_KEY" },
+    body = { model = "gpt-4o-mini", stream = true, messages = messages },
+}, { chat = chat })
+```
+
+<table>
+  <thead>
+    <tr><th>Argument</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>request.url</code></td><td><code>http://</code> or <code>https://</code>; the egress policy applies</td></tr>
+    <tr><td><code>request.method</code></td><td>default <code>POST</code> with a body, <code>GET</code> without</td></tr>
+    <tr><td><code>request.headers</code></td><td>request headers</td></tr>
+    <tr><td><code>request.body</code></td><td>a string, or a table sent as json with <code>content-type: application/json</code> unless a content type is given</td></tr>
+    <tr><td><code>seed</code></td><td>the initial <code>conn.state</code>, optional, 64 KB cap</td></tr>
+    <tr><td>returns</td><td>the instance name once the response headers are in with a success status; any other status raises with the status and the start of the body, and the call gives up after 10 s</td></tr>
+  </tbody>
+</table>
+
+How the body becomes frames:
+
+<table>
+  <thead>
+    <tr><th>Response</th><th>Frames</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>text/event-stream</code></td><td>one per event: its <code>data</code> lines joined with newlines; <code>event</code>, <code>id</code>, <code>retry</code> and comments are dropped</td></tr>
+    <tr><td>anything else</td><td>one per line; empty lines dropped; the last line reaches you without a trailing newline too</td></tr>
+  </tbody>
+</table>
+
+Each frame reaches `frame(conn, data)` as json when it parses and as
+a string when it does not, so `data: [DONE]` arrives as the string
+`"[DONE]"`. A frame longer than 1 MiB without its delimiter ends the
+wire. The body's end runs `close` with `by = "peer"`. A stream has no
+uplink: `conn:send` raises on it, and its `event` handler receives
+what it follows like any connection.
+
+## A wire's liveness
+
+`Class(name)` is the handle of a wire this project opened, from the
+name `open` or `stream` returned:
+
+```lua
+if not Upstream(state.store:get("upstream")):alive() then
+    state.store:delete("upstream")
+end
+```
+
+<table>
+  <thead>
+    <tr><th>Verb</th><th>Meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>Class(name):alive()</code></td><td>true when a live node holds the wire; false after it ended, and after the node that held it died, which is the case no <code>close</code> handler reports</td></tr>
+  </tbody>
+</table>
+
 ## Example
 
 ```lua

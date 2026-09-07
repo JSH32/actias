@@ -168,6 +168,10 @@ export namespace worker_data {
         // Empty lists every project&#x27;s; the api always names one.
         projectId?: string;
         localOnly?: boolean;
+        // Both empty lists every connection; both set names one wire, which
+    // is how a project asks whether a wire it opened is still alive.
+        connectionClass?: string;
+        name?: string;
     }
     export interface ConnectionRow {
         id?: string;

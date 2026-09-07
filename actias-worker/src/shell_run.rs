@@ -132,6 +132,9 @@ pub async fn run(state: &AppState, run: ShellRun) -> Result<ShellOutcome, String
     runtime.set_app_data::<actias_worker_core::extensions::sockets::Dialer>(
         crate::server::dialer_for(state.clone(), prepared.clone(), None),
     );
+    runtime.set_app_data::<actias_worker_core::extensions::sockets::Liveness>(
+        crate::server::liveness_for(state.clone(), prepared.script.project_id.clone()),
+    );
     // `print` goes where the log lines go, in the same order, so a
     // chunk's output reads as one transcript.
     {

@@ -294,6 +294,10 @@ impl WorkerData for WorkerDataService {
             .list()
             .into_iter()
             .filter(|row| query.project_id.is_empty() || row.project_id == query.project_id)
+            .filter(|row| {
+                query.connection_class.is_empty() || row.connection_class == query.connection_class
+            })
+            .filter(|row| query.name.is_empty() || row.name == query.name)
             .map(|row| ConnectionRow {
                 id: row.id,
                 connection_class: row.connection_class,
@@ -336,6 +340,8 @@ impl WorkerData for WorkerDataService {
                 let ask = ConnectionQuery {
                     project_id: query.project_id.clone(),
                     local_only: true,
+                    connection_class: query.connection_class.clone(),
+                    name: query.name.clone(),
                 };
                 if let Ok(Ok(reply)) = tokio::time::timeout(
                     std::time::Duration::from_secs(2),

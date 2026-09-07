@@ -797,6 +797,12 @@ impl ObjectRouting {
                         }),
                     ),
                 );
+                runtime.set_app_data::<actias_worker_core::extensions::sockets::Liveness>(
+                    crate::server::liveness_for(
+                        routing.state.clone(),
+                        prepared.script.project_id.clone(),
+                    ),
+                );
                 // The pump reads this to deliver connection edges; a
                 // node without the socket serving the id prunes them.
                 runtime.set_app_data::<Arc<actias_worker_core::connections::ConnectionRegistry>>(

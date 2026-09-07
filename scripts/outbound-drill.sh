@@ -5,24 +5,41 @@
 #
 # Two scripts. The provider accepts an inbound connection and, per
 # prompt frame, streams five token frames and a done frame; a prompt
-# carrying `drop` makes it close the wire mid-answer instead. The
-# assistant holds a Chat object with the history, one outbound wire to
-# the provider (dialled with Upstream:open), and an inbound Session for
-# the tab. A tab asks, sees the tokens and the done; asks with `drop`,
-# sees `retry` and then a whole answer over a reopened wire. The
-# console's listing must show both directions meanwhile.
+# carrying `drop` makes it close the wire mid-answer instead, and one
+# carrying `hold` is never answered. It also serves the same answer as
+# an SSE response at /stream. The assistant holds a Chat object with
+# the history, one outbound wire to the provider (dialled with
+# Upstream:open), a Feed class for streamed responses (Feed:stream),
+# and an inbound Session for the tab.
+#
+# The run, in order: a tab asks and sees five tokens and a done, with
+# the listing showing both directions; asks with `drop` and sees
+# `retry` then a whole answer over a reopened wire; asks over a
+# streamed response and sees the same answer, with `conn:send` refused
+# on the stream; asks whether the wire is alive and hears yes; holds a
+# prompt open. Then the node holding the wire is killed. A tab on the
+# survivor wakes the object there, whose alarm finds the stored wire
+# dead (`alive()` false), announces `stale` and `retry`, reopens the
+# wire from the new node and finishes the held prompt.
 #
 # Workers must allow private egress for the dial to reach the peer
 # worker on the compose network; the drill restarts them with it set
-# and restores the default after.
+# and restores the default after. Run it under the isolated stack:
 #
-#   ./scripts/outbound-drill.sh
+#   COMPOSE_PROJECT_NAME=actias-smoke ACTIAS_API_PORT=13001 ACTIAS_WORKER_PORT=13002 \
+#   ACTIAS_WORKER2_PORT=13003 API=http://127.0.0.1:13001/api OWNER=http://127.0.0.1:13002 \
+#   PEER=http://127.0.0.1:13003 ./scripts/outbound-drill.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 API="${API:-http://127.0.0.1:3001/api}"
 OWNER="${OWNER:-http://127.0.0.1:3002}"
+PEER="${PEER:-http://127.0.0.1:3003}"
+OWNER_SERVICE="${OWNER_SERVICE:-worker_service}"
+# The registry reaps a silent node after NODE_TTL_SECS; the survivor's
+# claim waits for that.
+TAKEOVER_WAIT="${TAKEOVER_WAIT:-90}"
 # The address the owner dials the provider at, inside the compose network.
 PROVIDER_ADDR="${PROVIDER_ADDR:-worker_service_2:3000}"
 
@@ -70,6 +87,7 @@ local User = objects "User"
 
 local Provider = connection "Provider" {
     frame = function(conn, data)
+        if data.hold then return end
         if data.drop then
             conn:send({ type = "response.output_text.delta", response_id = data.id, delta = "half" })
             conn:close()
@@ -86,6 +104,20 @@ on "fetch" (function(request)
     if request.upgrade then
         return request:upgrade(Provider, {}, User("provider"))
     end
+    if request.path == "/stream" then
+        -- The same answer as an SSE body: five events and a done.
+        local prompt = json.parse(request.body)
+        local events = {}
+        for i = 1, 5 do
+            events[#events + 1] = "data: " .. json.stringify({ id = prompt.id, delta = "t" .. i })
+        end
+        events[#events + 1] = "data: [DONE]"
+        return {
+            status_code = 200,
+            headers = { ["content-type"] = "text/event-stream" },
+            body = table.concat(events, "\n\n") .. "\n\n",
+        }
+    end
     return { status_code = 404 }
 end)
 LUA
@@ -99,8 +131,34 @@ local Chat
 
 local Session = connection "Session" {
     open = function(conn) conn:follow(Chat(conn.state.room), "tokens") end,
-    frame = function(conn, data) Chat(conn.state.room):say(conn.name, data.text, data.drop) end,
+    frame = function(conn, data)
+        if data.alive then
+            Chat(conn.state.room):check()
+        elseif data.status then
+            Chat(conn.state.room):status()
+        else
+            Chat(conn.state.room):say(conn.name, data.text, data.drop, data.hold, data.http)
+        end
+    end,
     event = "forward",
+}
+
+-- A streamed response: the same tokens as SSE events. The first frame
+-- probes that a stream refuses send.
+local Feed = connection "Feed" {
+    frame = function(conn, data)
+        local chat = Chat(conn.state.room)
+        if type(data) == "table" then
+            if not conn.state.probed then
+                conn.state.probed = true
+                local ok = pcall(conn.send, conn, { probe = true })
+                chat:send_probe(ok)
+            end
+            chat:token(data.id, data.delta)
+        elseif data == "[DONE]" then
+            chat:done()
+        end
+    end,
 }
 
 local Upstream = connection "Upstream" {
@@ -136,25 +194,53 @@ Chat = object "Chat" {
         follow = function(state, topic, follower)
             return topic == "tokens" or follower:is(Upstream)
         end,
-        init = function(state)
-            if state.store:get("pending") then state:set_alarm("1s") end
-        end,
+        -- The alarm is the watchdog on a pending prompt: armed when the
+        -- prompt is taken, a row in the placement store until it fires,
+        -- so it fires wherever the object wakes after a node death.
+        -- (`init` runs once per instance ever, so it cannot do this.)
         alarm = function(state)
             local pending = state.store:get("pending")
             if not pending then return end
             state.store:delete("draft")
-            -- The retry never asks for the drop again; the reopened
-            -- wire sends it when it reports up.
+            -- A stored name from before a node death is stale; the
+            -- registry says so, and the memory is dropped.
+            local name = state.store:get("upstream")
+            if name and not Upstream(name):alive() then
+                state.store:delete("upstream")
+                state.store:delete("wire_up")
+                -- Recorded, not only published: the alarm may fire
+                -- before any tab follows the object on its new node.
+                state.store:set("recovered", { stale = true, answered = false })
+                state:publish("tokens", { stale = true })
+            end
+            -- The retry never asks for the drop or the hold again; the
+            -- reopened wire sends it when it reports up.
             pending.drop = false
+            pending.hold = false
             state.store:set("pending", pending)
             state:publish("tokens", { retry = true })
             ensure_upstream(state)
         end,
     },
-    say = function(state, user, text, drop)
+    check = function(state)
+        local name = state.store:get("upstream")
+        state:publish("tokens", { alive = name ~= nil and Upstream(name):alive() or false })
+    end,
+    status = function(state)
+        state:publish("tokens", { recovered = state.store:get("recovered") or false })
+    end,
+    send_probe = function(state, ok)
+        state:publish("tokens", { send_refused = not ok })
+    end,
+    say = function(state, user, text, drop, hold, http)
         local n = (state.store:get("n") or 0) + 1
         state.store:set("n", n)
-        state.store:set("pending", { id = "r" .. n, text = text, drop = drop or false })
+        if http then
+            Feed:stream({ url = "http://$PROVIDER_ADDR/$PROVIDER/stream", body = { id = "r" .. n } }, { room = state.name })
+            return
+        end
+        state.store:set("pending", { id = "r" .. n, text = text, drop = drop or false, hold = hold or false })
+        state:set_alarm("3s")
         ensure_upstream(state)
         if state.store:get("wire_up") then
             state:publish("upstream", state.store:get("pending"))
@@ -172,7 +258,12 @@ Chat = object "Chat" {
         state.store:set("draft", draft)
         state:publish("tokens", { delta = delta })
     end,
-    done = function(state, id)
+    done = function(state, _id)
+        local recovered = state.store:get("recovered")
+        if recovered then
+            recovered.answered = true
+            state.store:set("recovered", recovered)
+        end
         local draft = state.store:get("draft")
         state.store:delete("draft")
         state.store:delete("pending")
@@ -202,6 +293,7 @@ sleep "${SETTLE:-50}"
 
 publish "$PROVIDER" "$DIR/provider.lua"
 publish "$ASSIST" "$DIR/assistant.lua"
+echo "   provider $PROVIDER, assistant $ASSIST"
 
 echo "== a tab asks, a wire is dialled, tokens stream back; then a drop and a retry"
 WS_URL="ws://${OWNER#http://}/$ASSIST/" API="$API" AUTH_TOKEN="$TOKEN" PROJECT_ID="$PROJECT_ID" \
@@ -209,7 +301,7 @@ node -e '
 const fail = (why) => { console.error("outbound drill: " + why); process.exit(1); };
 setTimeout(() => fail("timeout"), 40000);
 const ws = new WebSocket(process.env.WS_URL);
-let phase = "first", tokens = 0, sawRetry = false, sawClosed = false;
+let phase = "first", tokens = 0, sawRetry = false, sawClosed = false, sendRefused = null;
 const listConnections = async () => {
   const res = await fetch(process.env.API + "/project/" + process.env.PROJECT_ID + "/connections",
     { headers: { Authorization: "Bearer " + process.env.AUTH_TOKEN } });
@@ -224,6 +316,18 @@ ws.addEventListener("message", async (event) => {
   if (data.delta) tokens += 1;
   if (data.retry) sawRetry = true;
   if (data.closed) sawClosed = true;
+  if (data.send_refused !== undefined) sendRefused = data.send_refused;
+  if (data.alive !== undefined) {
+    if (phase !== "alive") fail("an unasked liveness answer");
+    if (data.alive !== true) fail("the wire is held, but alive() said false");
+    console.log("   alive(): true while the node holds the wire");
+    phase = "hold";
+    ws.send(JSON.stringify({ text: "held", hold: true }));
+    // The provider never answers a held prompt; the object keeps it
+    // pending for the node kill that follows.
+    setTimeout(() => { console.log("   a prompt is held open"); ws.close(); process.exit(0); }, 1500);
+    return;
+  }
   if (data.done) {
     if (phase === "first") {
       if (tokens !== 5) fail("first answer had " + tokens + " tokens");
@@ -235,14 +339,19 @@ ws.addEventListener("message", async (event) => {
       console.log("   first answer: 5 tokens; listing shows " + inbound + " inbound, 1 outbound to " + outbound[0].peer);
       phase = "drop"; tokens = 0;
       ws.send(JSON.stringify({ text: "again", drop: true }));
-    } else {
+    } else if (phase === "drop") {
       if (!sawClosed) fail("the close hook never reported the drop");
       if (!sawRetry) fail("no retry was announced");
       if (tokens < 5) fail("the retried answer had " + tokens + " tokens");
       console.log("   dropped mid-answer: close hook said peer, retry announced, whole answer over a reopened wire");
-      console.log("PASS: outbound wires open, report their end, and reopen under the object");
-      ws.close();
-      process.exit(0);
+      phase = "stream"; tokens = 0;
+      ws.send(JSON.stringify({ text: "over http", http: true }));
+    } else if (phase === "stream") {
+      if (tokens !== 5) fail("the streamed answer had " + tokens + " tokens");
+      if (sendRefused !== true) fail("conn:send on a stream was not refused: " + sendRefused);
+      console.log("   streamed response: 5 sse events as frames, [DONE] as a string, send refused");
+      phase = "alive";
+      ws.send(JSON.stringify({ alive: true }));
     }
   }
 });
@@ -253,6 +362,52 @@ ws.addEventListener("error", () => fail("socket error"));
         docker compose logs --since 3m worker_service worker_service_2 2>&1 \
             | grep -v "did not ship\|heartbeat\|_metrics" | grep -i "error\|warn\|ended\|denied" | cut -c1-400 | tail -12
     fi
+    docker compose up -d worker_service worker_service_2 >/dev/null 2>&1
+    rm -rf "$DIR"
+    exit 1
+}
+
+echo "== killing the node holding the wire"
+docker compose kill "$OWNER_SERVICE" >/dev/null
+
+echo "== a tab on the survivor (waits for the lease to age out, up to ${TAKEOVER_WAIT}s)"
+WS_URL="ws://${PEER#http://}/$ASSIST/" TAKEOVER_WAIT="$TAKEOVER_WAIT" \
+node -e '
+const fail = (why) => { console.error("outbound drill: " + why); process.exit(1); };
+const deadline = Date.now() + Number(process.env.TAKEOVER_WAIT) * 1000 + 30000;
+setTimeout(() => fail("timeout on the survivor"), deadline - Date.now());
+// The object wakes on the survivor when the dead node\u0027s lease ages
+// out, and its due alarm fires there at that moment, before this tab
+// can follow it. So the tab asks for the recorded outcome instead of
+// listening for it: the alarm found the stored wire dead, reopened one
+// from the new node, and the held prompt was answered over it.
+const connect = () => {
+  const ws = new WebSocket(process.env.WS_URL);
+  let settled = false, poll = null;
+  const ask = () => { if (ws.readyState === 1) ws.send(JSON.stringify({ status: true })); };
+  if (process.env.VERBOSE) ws.addEventListener("open", () => console.log("   survivor tab open"));
+  ws.addEventListener("open", () => { ask(); poll = setInterval(ask, 2000); });
+  ws.addEventListener("message", (event) => {
+    settled = true;
+    if (process.env.VERBOSE) console.log("   frame", String(event.data));
+    const data = JSON.parse(String(event.data)).data || {};
+    if (data.recovered && data.recovered.stale && data.recovered.answered) {
+      console.log("   survivor: the alarm found the dead node\u0027s wire stale (alive() false), reopened one here, and the held prompt was answered over it");
+      console.log("PASS: outbound wires open, stream, report their end, answer alive(), and reopen under the object after a node death");
+      clearInterval(poll); ws.close(); process.exit(0);
+    }
+  });
+  // The lease is still the dead node\u0027s for a while: the follow fails
+  // and the socket closes; try again until it holds.
+  ws.addEventListener("close", (event) => {
+    if (process.env.VERBOSE) console.log("   survivor tab closed", event.code);
+    clearInterval(poll);
+    if (Date.now() < deadline) setTimeout(connect, 3000);
+  });
+  ws.addEventListener("error", () => {});
+};
+connect();
+' || {
     docker compose up -d worker_service worker_service_2 >/dev/null 2>&1
     rm -rf "$DIR"
     exit 1

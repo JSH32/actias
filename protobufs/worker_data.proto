@@ -117,6 +117,10 @@ message ConnectionQuery {
     // Empty lists every project's; the api always names one.
     string project_id = 1;
     bool local_only = 2;
+    // Both empty lists every connection; both set names one wire, which
+    // is how a project asks whether a wire it opened is still alive.
+    string connection_class = 3;
+    string name = 4;
 }
 
 message ConnectionRow {

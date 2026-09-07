@@ -264,10 +264,25 @@ Knowing a wire dropped, in order of trust:
 2. The next send: a publish into a topic the gone wire followed
    reaches nobody, and the object's next call finds no stored name
    and opens again.
-3. A node death runs no handler at all. The object's stored "work
-   pending" fact, its `init` and an alarm reopen the wire wherever
-   the object wakes next, which is why the intent lives in the object
-   and not in the connection.
+3. A node death runs no handler at all. The object armed an alarm
+   when it took the work; an alarm is a row in the placement store
+   until it fires, so it fires wherever the object wakes next, and its
+   handler reopens the wire and resends. This is why the intent lives
+   in the object and not in the connection, and why the watchdog is
+   an alarm rather than `init`, which runs once per instance ever.
+   Before reopening, the alarm asks
+   `Upstream(name):alive()`: the registry answers whether any live
+   node still holds the wire, so a stored name from before a node
+   death is found stale rather than trusted.
+
+A response can be a wire too. `Class:stream(request, seed?)` sends an
+HTTP request and delivers the response body to `frame` as it arrives:
+one frame per event under `text/event-stream`, one per line
+otherwise, json when it parses. This is what a model API that streams
+tokens over SSE looks like from a script, and it is the same
+connection in every other way: it follows, hibernates, is listed, and
+runs `close` when the body ends. It has no uplink, so `conn:send`
+raises on it; the request is the whole of what goes up.
 
 A wire dropping mid-answer loses the rest of that answer. What the
 `frame` handler already posted into the object is durable, since each

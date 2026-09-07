@@ -1206,6 +1206,10 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
     lua.set_app_data::<ObjectRouter>(router);
     // A request may open a wire outward; the connection outlives it.
     lua.set_app_data::<Dialer>(dialer_for(state.clone(), prepared.clone(), logs.clone()));
+    lua.set_app_data::<actias_worker_core::extensions::sockets::Liveness>(liveness_for(
+        state.clone(),
+        prepared.script.project_id.clone(),
+    ));
     // The listing seam. Without it every `Class:list` in a request
     // handler refuses, because the verb resolves against app data that
     // only this call installs.
@@ -1265,6 +1269,7 @@ async fn run_script(state: AppState, request: axum::extract::Request) -> anyhow:
             project_id: prepared.script.project_id.clone(),
             script_id: prepared.script.id.clone(),
             opened_at_ms: actias_worker_core::extensions::objects::unix_now_ms(),
+            read_only: false,
         };
         // The connection's share is taken before the handshake answers,
         // so a project at its bound is refused with a status, never
@@ -1361,6 +1366,10 @@ fn vm_factory(
             lua.set_app_data::<DirectoryLister>(routing.as_lister());
             let policy = project_policy(&state, &prepared.script.project_id).await;
             lua.set_app_data(scope_egress(&policy));
+            lua.set_app_data::<actias_worker_core::extensions::sockets::Liveness>(liveness_for(
+                state.clone(),
+                prepared.script.project_id.clone(),
+            ));
             lua.set_app_data::<Dialer>(dialer_for(state.clone(), prepared, logs));
             Ok(lua)
         })
@@ -1386,6 +1395,10 @@ pub(crate) fn dialer_for(
                     .await
                     .as_ref(),
             );
+            let read_only = matches!(
+                request.kind,
+                actias_worker_core::extensions::sockets::DialKind::Http { .. }
+            );
             let (wire, host) = tokio::time::timeout(DIAL_BUDGET, dial(&state, &request, &scope))
                 .await
                 .map_err(|_| "the handshake took too long.".to_owned())??;
@@ -1403,6 +1416,7 @@ pub(crate) fn dialer_for(
                 project_id: prepared.script.project_id.clone(),
                 script_id: prepared.script.id.clone(),
                 opened_at_ms: actias_worker_core::extensions::objects::unix_now_ms(),
+                read_only,
             };
             let permit = state
                 .shares
@@ -1431,9 +1445,68 @@ pub(crate) fn dialer_for(
     })
 }
 
-/// Longest a `Class:open` waits for the far side to complete the
-/// handshake.
+/// Longest a `Class:open` or `Class:stream` waits for the far side to
+/// complete the handshake, or to answer with the response headers.
 const DIAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Answers whether a wire this project opened is registered on a live
+/// node: this one first, then every other live node asked with the
+/// class and the name. A node that does not answer in time counts as
+/// not holding it.
+pub(crate) fn liveness_for(
+    state: AppState,
+    project_id: String,
+) -> actias_worker_core::extensions::sockets::Liveness {
+    Arc::new(move |class, name| {
+        let state = state.clone();
+        let project_id = project_id.clone();
+        Box::pin(async move { Ok(connection_alive(&state, &project_id, &class, &name).await) })
+    })
+}
+
+async fn connection_alive(state: &AppState, project_id: &str, class: &str, name: &str) -> bool {
+    let held_here = state.connections.list().into_iter().any(|row| {
+        row.project_id == project_id && row.connection_class == class && row.name == name
+    });
+    if held_here {
+        return true;
+    }
+    let own = state
+        .node_identity
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone());
+    for node in crate::directory::rebuild::live_nodes(state).await {
+        if own.as_deref() == Some(node.as_str()) {
+            continue;
+        }
+        let Ok(address) = crate::directory::route::address_of(state, &node).await else {
+            continue;
+        };
+        if address == state.node_address {
+            continue;
+        }
+        let Ok(mut client) = crate::data_plane::peer_client(state, &address).await else {
+            continue;
+        };
+        let ask = actias_worker_core::proto::worker_data::ConnectionQuery {
+            project_id: project_id.to_owned(),
+            local_only: true,
+            connection_class: class.to_owned(),
+            name: name.to_owned(),
+        };
+        if let Ok(Ok(reply)) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.list_connections(crate::data_plane::authed(&state.internal_token, ask)),
+        )
+        .await
+            && !reply.into_inner().connections.is_empty()
+        {
+            return true;
+        }
+    }
+    false
+}
 
 /// Opens the wire: the url through the egress policy, every address
 /// the host resolves to checked before any is connected, then the
@@ -1443,7 +1516,14 @@ async fn dial(
     request: &actias_worker_core::extensions::sockets::DialRequest,
     scope: &ScopeEgress,
 ) -> Result<(Wire, String), String> {
+    use actias_worker_core::extensions::sockets::DialKind;
     let url = url::Url::parse(&request.url).map_err(|_| "the url does not parse.".to_owned())?;
+    let protocols = match &request.kind {
+        DialKind::Http { method, body } => {
+            return dial_http(state, request, &url, method, body.clone(), scope).await;
+        }
+        DialKind::WebSocket { protocols } => protocols,
+    };
     let secure = match url.scheme() {
         "wss" => true,
         "ws" => false,
@@ -1494,9 +1574,9 @@ async fn dial(
             .map_err(|_| format!("the value of '{name}' is not a header value."))?;
         handshake.headers_mut().insert(name, value);
     }
-    if !request.protocols.is_empty() {
+    if !protocols.is_empty() {
         let value = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(
-            &request.protocols.join(", "),
+            &protocols.join(", "),
         )
         .map_err(|_| "the subprotocol list is not a header value.".to_owned())?;
         handshake
@@ -1507,6 +1587,223 @@ async fn dial(
         .await
         .map_err(|error| format!("the handshake with '{host}' failed: {error}"))?;
     Ok((Wire::Outbound(Box::new(socket)), host))
+}
+
+/// Sends the request through the guarded client and, on a success
+/// status, hands the response body to the wire as a stream of frames:
+/// SSE events under `text/event-stream`, lines otherwise. Any other
+/// status is the dial's failure, with the start of the body as the
+/// reason.
+async fn dial_http(
+    state: &AppState,
+    request: &actias_worker_core::extensions::sockets::DialRequest,
+    url: &url::Url,
+    method: &str,
+    body: Option<String>,
+    scope: &ScopeEgress,
+) -> Result<(Wire, String), String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("the url must start with http:// or https://.".to_owned());
+    }
+    state
+        .egress
+        .policy
+        .check_url(url, Some(scope))
+        .map_err(|denied| denied.to_string())?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "the url has no host.".to_owned())?
+        .to_owned();
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| format!("'{method}' is not an http method."))?;
+    let mut builder = state.egress.client.request(method, url.clone());
+    for (name, value) in &request.headers {
+        builder = builder.header(name, value);
+    }
+    if let Some(body) = body {
+        builder = builder.body(body);
+    }
+    let response = builder
+        .send()
+        .await
+        .map_err(|error| format!("'{host}' did not answer: {error}"))?;
+    let status = response.status();
+    let sse = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        let snippet: String = text.chars().take(200).collect();
+        return Err(format!("'{host}' answered {status}: {snippet}"));
+    }
+    let mode = if sse { StreamMode::Sse } else { StreamMode::Lines };
+    Ok((Wire::Stream(Box::new(StreamWire::new(response, mode))), host))
+}
+
+/// How a streamed response is cut into frames.
+#[derive(Clone, Copy)]
+enum StreamMode {
+    /// `text/event-stream`: one frame per event, the `data` lines
+    /// joined; comments, ids and retry hints are dropped.
+    Sse,
+    /// Anything else: one frame per line, empty lines dropped.
+    Lines,
+}
+
+/// A frame is json when it parses and the text itself when it does
+/// not, so `data: [DONE]` reaches the handler as a string.
+fn stream_frame(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_owned()))
+}
+
+/// A frame longer than this without its delimiter ends the wire.
+const STREAM_FRAME_CAP: usize = 1024 * 1024;
+
+/// An HTTP response body read as frames. Bytes arrive in chunks that
+/// need not align with events or lines, so the wire buffers until a
+/// delimiter is in and only then decodes, which also keeps a utf-8
+/// sequence split across chunks whole.
+struct StreamWire {
+    response: reqwest::Response,
+    parser: StreamParser,
+    ended: bool,
+}
+
+/// The cutting and decoding half of a streamed response, apart from
+/// the response so it can be driven by hand.
+struct StreamParser {
+    mode: StreamMode,
+    buffer: Vec<u8>,
+    ready: std::collections::VecDeque<serde_json::Value>,
+}
+
+impl StreamWire {
+    fn new(response: reqwest::Response, mode: StreamMode) -> Self {
+        Self {
+            response,
+            parser: StreamParser {
+                mode,
+                buffer: Vec::new(),
+                ready: std::collections::VecDeque::new(),
+            },
+            ended: false,
+        }
+    }
+
+    async fn recv(&mut self) -> Received {
+        loop {
+            if let Some(value) = self.parser.ready.pop_front() {
+                return Received::Value(value);
+            }
+            if self.ended {
+                return Received::Ended(None);
+            }
+            match self.response.chunk().await {
+                Ok(Some(chunk)) => {
+                    self.parser.buffer.extend_from_slice(&chunk);
+                    self.parser.drain(false);
+                    if self.parser.buffer.len() > STREAM_FRAME_CAP {
+                        self.ended = true;
+                        return Received::Ended(Some("a frame exceeded 1 MiB.".to_owned()));
+                    }
+                }
+                Err(error) => {
+                    self.ended = true;
+                    return Received::Ended(Some(error.to_string()));
+                }
+                Ok(None) => {
+                    self.ended = true;
+                    self.parser.drain(true);
+                }
+            }
+        }
+    }
+}
+
+impl StreamParser {
+
+    /// The next complete unit in the buffer, cut at its delimiter.
+    fn take_unit(&mut self) -> Option<Vec<u8>> {
+        let (at, width) = match self.mode {
+            StreamMode::Lines => (
+                self.buffer.iter().position(|byte| *byte == b'\n')?,
+                1,
+            ),
+            StreamMode::Sse => {
+                let lf = self
+                    .buffer
+                    .windows(2)
+                    .position(|pair| pair == b"\n\n")
+                    .map(|at| (at, 2));
+                let crlf = self
+                    .buffer
+                    .windows(4)
+                    .position(|quad| quad == b"\r\n\r\n")
+                    .map(|at| (at, 4));
+                match (lf, crlf) {
+                    (Some(a), Some(b)) => {
+                        if a.0 <= b.0 {
+                            a
+                        } else {
+                            b
+                        }
+                    }
+                    (Some(a), None) => a,
+                    (None, Some(b)) => b,
+                    (None, None) => return None,
+                }
+            }
+        };
+        let rest = self.buffer.split_off(at + width);
+        let mut unit = std::mem::replace(&mut self.buffer, rest);
+        unit.truncate(at);
+        Some(unit)
+    }
+
+    fn push_unit(&mut self, unit: &[u8]) {
+        let text = String::from_utf8_lossy(unit);
+        match self.mode {
+            StreamMode::Lines => {
+                let line = text.trim_end_matches('\r');
+                if !line.is_empty() {
+                    self.ready.push_back(stream_frame(line));
+                }
+            }
+            StreamMode::Sse => {
+                let mut data = Vec::new();
+                for line in text.lines() {
+                    if line.starts_with(':') {
+                        continue;
+                    }
+                    let (field, value) = match line.split_once(':') {
+                        Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
+                        None => (line, ""),
+                    };
+                    if field == "data" {
+                        data.push(value.to_owned());
+                    }
+                }
+                if !data.is_empty() {
+                    self.ready.push_back(stream_frame(&data.join("\n")));
+                }
+            }
+        }
+    }
+
+    /// Cuts every complete unit out of the buffer; with `flush`, the
+    /// remainder too, which is the body's last line without a newline.
+    fn drain(&mut self, flush: bool) {
+        while let Some(unit) = self.take_unit() {
+            self.push_unit(&unit);
+        }
+        if flush && !self.buffer.is_empty() {
+            let rest = std::mem::take(&mut self.buffer);
+            self.push_unit(&rest);
+        }
+    }
+
 }
 
 /// The bridge between one live websocket and its connection actor:
@@ -1548,11 +1845,16 @@ enum Wire {
             >,
         >,
     ),
+    /// An HTTP response body, read as frames; nothing goes up it.
+    Stream(Box<StreamWire>),
 }
 
 /// What the bridge cares about in a received message.
 enum Received {
     Text(String),
+    /// A frame already decoded by the wire: a streamed response's
+    /// event or line.
+    Value(serde_json::Value),
     /// A close frame, the peer going away, or a read error.
     Ended(Option<String>),
     Other,
@@ -1579,6 +1881,7 @@ impl Wire {
                     Some(Ok(_)) => Received::Other,
                 }
             }
+            Self::Stream(stream) => stream.recv().await,
         }
     }
 
@@ -1595,6 +1898,7 @@ impl Wire {
                     .await
                     .map_err(|error| error.to_string())
             }
+            Self::Stream(_) => Err("a streamed response has no uplink.".to_owned()),
         }
     }
 
@@ -1609,6 +1913,8 @@ impl Wire {
                     .send(tokio_tungstenite::tungstenite::Message::Close(None))
                     .await;
             }
+            // Dropping the body is the close; the request is abandoned.
+            Self::Stream(_) => {}
         }
     }
 }
@@ -1662,6 +1968,13 @@ async fn drive_wire(mut wire: Wire, spawn: ConnectionSpawn) {
                             break;
                         }
                     }
+                    Received::Value(data) => {
+                        if inbox_tx.push(InboxItem::Frame(data)).is_err() {
+                            wire_shared.record_closed(Closed { by: ClosedBy::Overflow, reason: None });
+                            wire.close().await;
+                            break;
+                        }
+                    }
                     Received::Ended(reason) => {
                         wire_shared.record_closed(Closed { by: ClosedBy::Peer, reason });
                         let _ = inbox_tx.push(InboxItem::Closed);
@@ -1702,6 +2015,74 @@ async fn drive_wire(mut wire: Wire, spawn: ConnectionSpawn) {
         actias_common::tracing::debug!(%error, connection_id, "connection ended with an error");
     }
     registry.unregister(&connection_id);
+}
+
+#[cfg(test)]
+mod stream_wire_tests {
+    use super::*;
+
+    /// A wire over no response: the parser alone, fed by hand.
+    fn wire(mode: StreamMode) -> StreamParser {
+        StreamParser {
+            mode,
+            buffer: Vec::new(),
+            ready: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn feed(parser: &mut StreamParser, chunks: &[&str]) -> Vec<serde_json::Value> {
+        for chunk in chunks {
+            parser.buffer.extend_from_slice(chunk.as_bytes());
+            parser.drain(false);
+        }
+        parser.drain(true);
+        parser.ready.drain(..).collect()
+    }
+
+    #[test]
+    fn sse_events_are_cut_at_blank_lines_across_chunks() {
+        let mut parser = wire(StreamMode::Sse);
+        let frames = feed(
+            &mut parser,
+            &[
+                ": keep-alive\n\nevent: delta\ndata: {\"tok",
+                "en\": \"a\"}\n\ndata: line one\ndata: line two\r\n\r\ndata: [DONE]\n\n",
+            ],
+        );
+        assert_eq!(
+            frames,
+            vec![
+                serde_json::json!({ "token": "a" }),
+                serde_json::json!("line one\nline two"),
+                serde_json::json!("[DONE]"),
+            ]
+        );
+    }
+
+    #[test]
+    fn lines_are_frames_and_the_last_one_needs_no_newline() {
+        let mut parser = wire(StreamMode::Lines);
+        let frames = feed(&mut parser, &["{\"n\": 1}\r\n\n{\"n\"", ": 2}\nplain text"]);
+        assert_eq!(
+            frames,
+            vec![
+                serde_json::json!({ "n": 1 }),
+                serde_json::json!({ "n": 2 }),
+                serde_json::json!("plain text"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_utf8_sequence_split_across_chunks_stays_whole() {
+        let mut parser = wire(StreamMode::Lines);
+        let bytes = "héllo\n".as_bytes();
+        parser.buffer.extend_from_slice(&bytes[..2]);
+        parser.drain(false);
+        parser.buffer.extend_from_slice(&bytes[2..]);
+        parser.drain(true);
+        assert_eq!(parser.ready.pop_front(), Some(serde_json::json!("héllo")));
+    }
 }
 
 /// State builders every worker test suite shares: clients that never

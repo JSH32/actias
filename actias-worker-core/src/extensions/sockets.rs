@@ -156,6 +156,12 @@ impl LuaExtension for ConnectionExtension {
                 let handle = lua.create_table()?;
                 handle.set("__connection", class.clone())?;
                 handle.set("open", open_verb(lua)?)?;
+                handle.set("stream", stream_verb(lua)?)?;
+                // `Class(name)` is the instance handle of a wire this
+                // project opened: what `open` or `stream` returned.
+                let meta = lua.create_table()?;
+                meta.set("__call", instance_verb(lua)?)?;
+                handle.set_metatable(Some(meta))?;
                 Ok(handle)
             })
         })?;
@@ -164,14 +170,29 @@ impl LuaExtension for ConnectionExtension {
     }
 }
 
-/// What `Class:open` asks the worker to dial.
+/// What `Class:open` or `Class:stream` asks the worker to dial.
 pub struct DialRequest {
     pub spec: Arc<ConnectionSpec>,
     pub url: String,
     pub seed: serde_json::Value,
     pub headers: Vec<(String, String)>,
-    pub protocols: Vec<String>,
+    pub kind: DialKind,
 }
+
+/// The two wires a class can open: a websocket, which speaks both
+/// ways, and an HTTP response read as frames, which speaks one way.
+pub enum DialKind {
+    WebSocket { protocols: Vec<String> },
+    Http { method: String, body: Option<String> },
+}
+
+/// Answers whether a wire this project opened is still registered on
+/// a live node. The worker installs one beside the [`Dialer`].
+pub type Liveness = Arc<
+    dyn Fn(String, String) -> std::pin::Pin<Box<dyn Future<Output = Result<bool, String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Dials a wire, mints the identity, spawns the actor, and answers with
 /// the instance name once the handshake is up. The worker installs one
@@ -240,12 +261,133 @@ fn open_verb(lua: &Lua) -> mlua::Result<mlua::Function> {
                 url,
                 seed,
                 headers,
-                protocols,
+                kind: DialKind::WebSocket { protocols },
             })
             .await
             .map_err(mlua::Error::RuntimeError)
         },
     )
+}
+
+/// `Class:stream(request, seed?) -> name`. The request is the table
+/// `http.make_request` takes: `url`, `method`, `headers`, `body` (a
+/// string, or a table sent as json). The response is read as frames:
+/// SSE events when the far side answers `text/event-stream`, lines
+/// otherwise, each delivered to `frame` as json when it parses and as
+/// a string when it does not. The call answers with the instance name
+/// once the response headers are in and the status is a success.
+fn stream_verb(lua: &Lua) -> mlua::Result<mlua::Function> {
+    lua.create_async_function(
+        |lua, (handle, request, seed): (Table, Table, Option<mlua::Value>)| async move {
+            let class: String = handle.get("__connection")?;
+            let Some(spec) = ConnectionRegistry::of(&lua).spec(&class) else {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Connection '{class}' is not declared in this script."
+                )));
+            };
+            let seed = match seed {
+                None | Some(mlua::Value::Nil) => serde_json::json!({}),
+                Some(value) => lua.from_value::<serde_json::Value>(value)?,
+            };
+            let size = seed.to_string().len();
+            if size > STATE_CAP_BYTES {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "The state seed is {size} bytes; conn.state caps at \
+                     {STATE_CAP_BYTES}. A session worth more belongs in an object."
+                )));
+            }
+            let url: String = request.get("url").map_err(|_| {
+                mlua::Error::RuntimeError(
+                    "stream takes a request table with a url: Class:stream({ url = ... })."
+                        .to_owned(),
+                )
+            })?;
+            let mut headers = Vec::new();
+            if let Ok(table) = request.get::<Table>("headers") {
+                for pair in table.pairs::<String, String>() {
+                    let (name, value) = pair?;
+                    headers.push((name, value));
+                }
+            }
+            let body = match request.get::<mlua::Value>("body")? {
+                mlua::Value::Nil => None,
+                mlua::Value::String(text) => Some(text.to_str()?.to_string()),
+                value @ mlua::Value::Table(_) => {
+                    if !headers
+                        .iter()
+                        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                    {
+                        headers.push(("content-type".to_owned(), "application/json".to_owned()));
+                    }
+                    Some(lua.from_value::<serde_json::Value>(value)?.to_string())
+                }
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "the request body is a string or a table.".to_owned(),
+                    ));
+                }
+            };
+            let method = match request.get::<Option<String>>("method")? {
+                Some(method) => method.to_ascii_uppercase(),
+                None if body.is_some() => "POST".to_owned(),
+                None => "GET".to_owned(),
+            };
+            let dialer = lua
+                .app_data_ref::<Dialer>()
+                .map(|dialer| dialer.clone())
+                .ok_or_else(|| {
+                    mlua::Error::RuntimeError(
+                        "outbound connections cannot be opened from here.".to_owned(),
+                    )
+                })?;
+            dialer(DialRequest {
+                spec,
+                url,
+                seed,
+                headers,
+                kind: DialKind::Http { method, body },
+            })
+            .await
+            .map_err(mlua::Error::RuntimeError)
+        },
+    )
+}
+
+/// `Class(name)`: the handle of one wire this project opened. Its one
+/// verb, `alive()`, asks the registry whether the wire is still held
+/// by a live node, so an object's alarm can check before reopening
+/// rather than trust its own memory.
+fn instance_verb(lua: &Lua) -> mlua::Result<mlua::Function> {
+    lua.create_function(|lua, (handle, name): (Table, String)| {
+        let class: String = handle.get("__connection")?;
+        if name.is_empty() {
+            return Err(mlua::Error::RuntimeError(format!(
+                "{class}(name) needs the name open or stream returned."
+            )));
+        }
+        let instance = lua.create_table()?;
+        instance.set("__wire", class.clone())?;
+        instance.set("__name", name.clone())?;
+        instance.set(
+            "alive",
+            lua.create_async_function(move |lua, _this: mlua::Value| {
+                let class = class.clone();
+                let name = name.clone();
+                async move {
+                    let liveness = lua
+                        .app_data_ref::<Liveness>()
+                        .map(|liveness| liveness.clone())
+                        .ok_or_else(|| {
+                            mlua::Error::RuntimeError(
+                                "a wire's liveness cannot be asked from here.".to_owned(),
+                            )
+                        })?;
+                    liveness(class, name).await.map_err(mlua::Error::RuntimeError)
+                }
+            })?,
+        )?;
+        Ok(instance)
+    })
 }
 
 /// A requested upgrade, parked in app data until the HTTP layer picks
@@ -398,6 +540,8 @@ pub struct About {
     pub project_id: String,
     pub script_id: String,
     pub opened_at_ms: i64,
+    /// A streamed response has no uplink: `conn:send` is refused.
+    pub read_only: bool,
 }
 
 impl SockShared {
@@ -643,6 +787,12 @@ pub fn conn_surface(lua: &Lua, shared: Arc<SockShared>) -> mlua::Result<Table> {
         lua.create_async_function(move |lua, (_conn, value): (mlua::Value, mlua::Value)| {
             let this = this.clone();
             async move {
+                if this.about.read_only {
+                    return Err(mlua::Error::RuntimeError(
+                        "this connection is a streamed response; it has no uplink to send on."
+                            .to_owned(),
+                    ));
+                }
                 let json = lua.from_value::<serde_json::Value>(value)?;
                 this.outbound
                     .send(OutboundFrame::Json(json))
