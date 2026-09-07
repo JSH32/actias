@@ -231,6 +231,24 @@ on "queue:jobs" (function(message)
     db:exec("INSERT INTO queue_done VALUES (?)", { message.n })
 end)
 
+-- A durable workflow: the first step fails once and succeeds on its
+-- retry, recording the effect id of each try; the run then sleeps,
+-- waits for a signal from outside, and finishes with what it saw.
+local approve = workflow "approve" (function(wf, input)
+    local ids = wf:step("reserve", { retries = 2, backoff = "100ms" }, function()
+        local tries = ns:get("reserve-tries:" .. input.order) or 0
+        ns:set("reserve-tries:" .. input.order, tries + 1)
+        if tries == 0 then error("the desk was busy") end
+        return { id = wf.step_id, tries = tries + 1 }
+    end)
+    wf:sleep("200ms")
+    local decision = wf:await("decision", { timeout = "1h" })
+    wf:step("record", function()
+        db:exec("INSERT INTO queue_done VALUES (?)", { 1000 })
+    end)
+    return { order = input.order, reserve = ids, decision = decision }
+end)
+
 on "fetch" (function(request)
     if request.upgrade and string.find(request.context_uri or "", "/live") then
         return request:upgrade(Live, Hits("watcher"))
@@ -681,6 +699,41 @@ done
 [ "$QN2" -ge 4 ] 2>/dev/null \
     || { echo "the sibling producer's message did not reach the consumer ($QN2 of 4)"; exit 1; }
 echo "sibling script produced into the shared queue; consumer count $QN2"
+
+echo "== a workflow run parks on a signal and completes when it arrives"
+# Started through the api, the run's first step fails once and its
+# retry succeeds (attempt 2 of 2), the run sleeps, then parks on the
+# `decision` signal; the api reads it awaiting; the signal completes it;
+# the detail shows the output with the effect id of the second try.
+WF_DECLARED=$(curl -sf "$API/revisions/$REV_ID" -H "$AUTH" | jq -r '.scriptConfig.capabilities.workflows[0]')
+[ "$WF_DECLARED" = "approve" ] \
+    || { echo "the workflow was not in the stored contract (got '$WF_DECLARED')"; exit 1; }
+RUN_ID=$(curl -sf -X POST "$API/project/$PROJECT_ID/workflows/approve/runs" -H "$AUTH" \
+    -H 'Content-Type: application/json' -d '{"id":"order-7","payload":{"order":"lot-7"}}' | jq -r .id)
+[ "$RUN_ID" = "order-7" ] || { echo "the run did not start (got '$RUN_ID')"; exit 1; }
+WF_STATUS=""
+for _ in $(seq 1 20); do
+    WF_STATUS=$(curl -sf "$API/project/$PROJECT_ID/workflows/approve/runs/$RUN_ID" -H "$AUTH" | jq -r .status)
+    [ "$WF_STATUS" = "awaiting" ] && break
+    sleep 1
+done
+[ "$WF_STATUS" = "awaiting" ] || { echo "the run did not park on its signal (status '$WF_STATUS')"; exit 1; }
+curl -sf -X POST "$API/project/$PROJECT_ID/workflows/approve/runs/$RUN_ID/signal" -H "$AUTH" \
+    -H 'Content-Type: application/json' -d '{"name":"decision","payload":"approved"}' -o /dev/null
+for _ in $(seq 1 20); do
+    WF_STATUS=$(curl -sf "$API/project/$PROJECT_ID/workflows/approve/runs/$RUN_ID" -H "$AUTH" | jq -r .status)
+    [ "$WF_STATUS" = "completed" ] && break
+    sleep 1
+done
+[ "$WF_STATUS" = "completed" ] || { echo "the signal did not complete the run (status '$WF_STATUS')"; exit 1; }
+WF_DETAIL=$(curl -sf "$API/project/$PROJECT_ID/workflows/approve/runs/$RUN_ID" -H "$AUTH")
+WF_OUTPUT=$(echo "$WF_DETAIL" | jq -c '[.journal[] | select(.kind == "COMPLETED")][0].data.value // {}')
+WF_TRIES=$(echo "$WF_OUTPUT" | jq -r '.reserve.tries')
+WF_EFFECT=$(echo "$WF_OUTPUT" | jq -r '.reserve.id')
+WF_DECISION=$(echo "$WF_OUTPUT" | jq -r '.decision')
+[ "$WF_TRIES" = 2 ] && [ "$WF_DECISION" = approved ] && [[ "$WF_EFFECT" == *"/reserve#1.2" ]] \
+    || { echo "the run's output is wrong: $WF_OUTPUT"; echo "$WF_DETAIL" | jq -c '.journal[] | {kind, step: .data.step}' | head -20; exit 1; }
+echo "workflow: reserve failed once and succeeded on try 2 as $WF_EFFECT; slept; awaited; signal 'approved' completed it"
 
 echo "== dashboard resources speak for the platform's own storage"
 # The union listing knows the queue and database from the contract; the

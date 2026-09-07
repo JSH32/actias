@@ -2064,8 +2064,7 @@ impl mlua::UserData for WfHandle {
 
     fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
         use mlua::LuaSerdeExt;
-        // step(name, fn) or step(name, opts, fn); opts (retries, backoff,
-        // timeout) are accepted and recorded but not yet enforced.
+        // step(name, fn) or step(name, opts, fn).
         methods.add_async_method(
             "step",
             |lua, _this, (name, a, b): (String, mlua::Value, Option<mlua::Function>)| async move {
